@@ -1080,7 +1080,9 @@
     "scripts/jones/updates/native-startup-qualification.mjs": "jones-owned",
     "scripts/jones/updates/offline-preparation-build.test.ts": "jones-owned",
     "scripts/jones/updates/offline-preparation-build.ts": "jones-owned",
-    "scripts/jones/updates/paired-executor-fixture.mjs": "jones-owned"
+    "scripts/jones/updates/paired-executor-fixture.mjs": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.ts": "jones-owned",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

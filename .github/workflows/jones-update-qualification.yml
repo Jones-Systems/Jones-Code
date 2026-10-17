@@ -19,6 +19,8 @@ on:
       - apps/web/src/components/sidebar/SidebarUpdatePill.tsx
       - apps/server/src/jones/updates/**
       - apps/server/src/jones/cloud/qualified*.ts
+      - apps/server/src/jones/cloud/stoppedServerOwnership*
+      - apps/server/src/jones/cloud/capturedProcess*
       - apps/server/src/serviceLauncher*
       - apps/server/src/cloud/serviceLauncher*
       - apps/server/src/cloud/serviceProtocol*
@@ -103,6 +105,15 @@ jobs:
           apps/server/src/serverSettings.test.ts
           apps/server/src/jones/updates/trialStartup.test.ts
           apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
+          apps/server/src/jones/cloud/qualifiedBackup.test.ts
+          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
+          apps/server/src/jones/cloud/capturedProcess.test.ts
+          apps/server/src/jones/hostService/systemAdoption.test.ts
+          apps/server/src/jones/hostService/systemServiceControl.test.ts
+          apps/server/src/jones/hostService/cli.test.ts
+          apps/server/src/serviceLauncher.test.ts
+          apps/server/src/jones/updates/migrationPlan.test.ts
           scripts/stamp-jones-build.test.ts
           scripts/jones/updates/build-provenance.test.ts
           scripts/build-desktop-artifact.test.ts
@@ -118,6 +129,39 @@ jobs:
 
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
+
+  qualify-mac:
+    name: Jones install lifecycle on macOS
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Qualify migration, launcher recovery and desktop snapshot cleanup
+        run: >-
+          vp test run
+          apps/server/src/jones/updates/migrationPlan.test.ts
+          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
+          apps/server/src/jones/cloud/qualifiedBackup.test.ts
+          apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
+          apps/server/src/serviceLauncher.test.ts
+          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
+          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          --maxWorkers=1
 
   preview-changes:
     name: Detect renderer update changes

@@ -30,15 +30,6 @@
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts",
     "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
-    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts",
-    "apps/server/src/jones/cloud/qualifiedLinuxLease.ts",
-    "apps/server/src/jones/cloud/qualifiedWriterObserver.pl",
-    "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
-    "apps/server/src/jones/cloud/qualifiedWriterObserver.ts",
-    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
-    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts",
-    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
-    "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
     "apps/server/src/jones/cloud/qualifiedRuntime.ts",
     "apps/server/src/jones/cloud/qualifiedStartup.test.ts",
@@ -96,7 +87,11 @@
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.ts",
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
     "apps/desktop/src/jones/updates/jonesColdDarwinLayout.ts",
-    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts"
+    "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
+    "apps/server/src/jones/cloud/capturedProcess.ts",
+    "apps/server/src/jones/cloud/capturedProcess.test.ts",
+    "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
+    "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -205,7 +200,16 @@
     "scripts/jones/updates/offline-preparation-producer-loader.mjs",
     "scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs",
     "scripts/jones/updates/offline-preparation-qualification.test.ts",
-    "scripts/jones/updates/offline-preparation-qualification.ts"
+    "scripts/jones/updates/offline-preparation-qualification.ts",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.ts",
+    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserver.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserver.pl",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts",
+    "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
+    "apps/server/src/jones/cloud/qualifiedLinuxLease.ts",
+    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts"
   ],
   "allowedImports": [
     {
@@ -318,7 +322,7 @@
     },
     {
       "from": "apps/server/src/serviceLauncher.ts",
-      "to": "apps/server/src/jones/cloud/qualifiedQuiescence.ts"
+      "to": "apps/server/src/jones/cloud/stoppedServerOwnership.ts"
     },
     {
       "from": "apps/server/src/serviceLauncher.ts",

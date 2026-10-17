@@ -191,7 +191,7 @@ const adoptSystem = Command.make("adopt-system", {
           ...planned.plan.effects.map((effect) => `  ${effect}`),
           `Owned drop-in ${planned.plan.ownedDropin.path}:`,
           planned.plan.ownedDropin.text,
-          `Root bootstrap observed: worker ${bootstrap.worker}, policy ${bootstrap.policy}, observer ${bootstrap.observer}, socket ${bootstrap.socket}.`,
+          `Root bootstrap observed: worker ${bootstrap.worker}, policy ${bootstrap.policy}.`,
           "Root bootstrap manifest (a separate approved root operation; adoption installs none):",
           ...planned.manifest.files.flatMap((file) => [
             `  ${file.path} mode ${file.mode} sha256 ${file.sha256} from ${file.source}`,

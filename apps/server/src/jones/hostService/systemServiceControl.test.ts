@@ -5,10 +5,6 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 import {
-  QUALIFIED_WRITER_OBSERVER_PATH,
-  QUALIFIED_WRITER_OBSERVER_SHA256,
-} from "../cloud/qualifiedWriterObserver.ts";
-import {
   OWNED_SYSTEM_DROPIN,
   parseRetainedServeCommand,
   parseSystemControlResult,
@@ -1280,15 +1276,11 @@ it("renders closed policy, owned drop-in and bootstrap manifest text", () => {
     expect(parseRetainedServeCommand(argv, retained, policy.base), argv).toBeUndefined();
   const manifest = renderSystemBootstrapManifest(policy);
   expect(manifest.files.map((file) => [file.path, file.mode])).toEqual([
-    [QUALIFIED_WRITER_OBSERVER_PATH, "0755"],
     [SYSTEM_SERVICE_CONTROL_PATH, "0755"],
     [SYSTEM_SERVICE_POLICY_PATH, "0644"],
-    ["/etc/systemd/system/jones-qualified-writer-observer.socket", "0644"],
-    ["/etc/systemd/system/jones-qualified-writer-observer@.service", "0644"],
   ]);
-  expect(manifest.files[0]?.sha256).toBe(QUALIFIED_WRITER_OBSERVER_SHA256);
-  expect(manifest.files[1]?.sha256).toBe(SYSTEM_SERVICE_CONTROL_SHA256);
-  expect(manifest.enable).toEqual(["jones-qualified-writer-observer.socket"]);
+  expect(manifest.files[0]?.sha256).toBe(SYSTEM_SERVICE_CONTROL_SHA256);
+  expect(manifest.enable).toEqual([]);
 });
 
 it("accepts the exact observed historical start command only at its WorkingDirectory", () => {
