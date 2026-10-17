@@ -652,12 +652,23 @@ jobs:
           qualification_node="$(command -v node)"
           "$qualification_node" --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
-          import { realpathSync } from 'node:fs';
+          import { lstatSync, realpathSync } from 'node:fs';
+          import { tmpdir } from 'node:os';
+          import { join, parse, sep } from 'node:path';
           assert.equal(process.versions.node, '26.8.2');
           assert.equal(process.versions.sqlite, '3.53.4');
           assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
           assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
           console.log({ node: process.versions.node, sqlite: process.versions.sqlite, executable: realpathSync(process.execPath), platform: process.platform, architecture: process.arch });
+          const temporaryRoot = tmpdir();
+          const ancestors = [];
+          let current = parse(temporaryRoot).root;
+          for (const part of temporaryRoot.slice(current.length).split(sep).filter(Boolean)) {
+            current = join(current, part);
+            const stat = lstatSync(current);
+            ancestors.push({ path: current, symlink: stat.isSymbolicLink(), directory: stat.isDirectory() });
+          }
+          console.log({ temporaryRoot, canonicalTemporaryRoot: realpathSync(temporaryRoot), ancestors });
           NODE
           # Invoke the installed JS runner directly so vp cannot select the development Node version.
           qualification_runner="$("$qualification_node" -e 'const r = require("node:module").createRequire(require.resolve("vite-plus/package.json")); const p = r.resolve("vitest/package.json"); console.log(require("node:path").resolve(require("node:path").dirname(p), r(p).bin.vitest));')"

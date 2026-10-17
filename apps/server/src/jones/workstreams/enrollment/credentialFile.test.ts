@@ -11,9 +11,11 @@ import { makeNativeCredentialWriter } from "./credentialFile.ts";
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const fixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const baseDir = yield* fs.makeTempDirectoryScoped({
+  const ownedBaseDir = yield* fs.makeTempDirectoryScoped({
     prefix: "workstreams-credential-synthetic-",
   });
+  // Keep cleanup bound to the acquired directory while passing physical paths to the strict adapter.
+  const baseDir = yield* fs.realPath(ownedBaseDir);
   const credentialPath = `${baseDir}/credential.json`;
   return {
     fs,
@@ -120,5 +122,26 @@ it.effect(
         "Failure",
       );
       assert.deepEqual(yield* f.children(), ["credential.json"]);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect(
+  "credential locations reject symlinked ancestors even when their physical target is owned",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const alias = `${f.baseDir}/alias`;
+      yield* Effect.tryPromise(() => NodeFSP.symlink(f.baseDir, alias)).pipe(Effect.orDie);
+      const aliased = makeNativeCredentialWriter({
+        baseDir: alias,
+        credentialPath: `${alias}/credential.json`,
+      });
+      assert.strictEqual((yield* aliased.observe().pipe(Effect.flip)).code, "invalid_location");
+      assert.strictEqual(
+        (yield* aliased.publish("synthetic.token.signature", null).pipe(Effect.flip)).code,
+        "invalid_location",
+      );
+      assert.deepEqual(yield* f.writer.observe(), { sha256: null });
+      assert.deepEqual(yield* f.children(), ["alias"]);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
