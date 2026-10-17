@@ -2,7 +2,7 @@
 
 The **Linux CLI artifacts** workflow produces unsigned Linux x64 and arm64
 archives for a headless server trial. These are GitHub Actions artifacts retained
-for seven days. They are not GitHub Releases, package publications, or a deployed
+for 30 days. They are not GitHub Releases, package publications, or a deployed
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
@@ -62,10 +62,18 @@ or real user state into this first smoke trial.
 
 Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
 checked-in server package version. Both the CLI channel parser and desktop build
-recognize that preview form. The archive retains T3 branding. These Actions
+recognize that preview form. The archive retains T3 branding. Each workflow run
+stamps its own run ID, so the Linux CLI, Mac CLI and Mac desktop builds of one
+commit carry different versions; compare hosts by the recorded source commit and
+tree, not the version string. Rebuilding a commit produces a new version. These Actions
 outputs do not create GitHub Releases or populate a release channel: download
-another successful workflow artifact for subsequent trials. Upstream installers
-and release discovery remain separate from these Jones trial workflows.
+another successful workflow artifact for subsequent trials. Once an artifact
+expires it cannot be downloaded again, so keep any build needed for rollback or a
+later install in a retained local copy. Upstream installers and release discovery
+remain separate from these Jones trial workflows: `scripts/install.sh` and
+`scripts/install.ps1` resolve `pingdotgg/t3code` Releases and install upstream
+T3 Code, never a Jones build. On a Jones preview runtime, `t3 update` refuses a
+version-only release update.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
@@ -84,7 +92,7 @@ scratch use the exact workspace directory `.artifact-cli-mac-scratch`; scoped
 script cleanup and the always-run job cleanup own removal, with disposable-runner
 teardown covering forced termination.
 
-Download the successful run's seven-day artifact into a new empty directory and
+Download the successful run's 30-day artifact into a new empty directory and
 verify it on a Mac:
 
 ```bash
@@ -116,7 +124,7 @@ installation.
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
 DMG on `macos-15`. It runs on main pushes and manual dispatch, and on matching pull requests whose
-base is `main` and whose head belongs to the same repository. Dependency-base
+base is `main` or `work/jones-rebuild/staging` and whose head belongs to the same repository. Other dependency-base
 pull requests do not trigger this workflow;
 use a separate manual run for DMG evidence when needed. It follows the same seven-day
 Actions download process, with artifact name
@@ -130,10 +138,64 @@ hdiutil verify T3-Code-VERSION-arm64.dmg
 
 The DMG has no Developer ID signing or notarization. Container and checksum
 validation do not establish Gatekeeper acceptance or successful application
-launch. Its preview version has no automatic desktop update feed. Installation,
-Gatekeeper changes, application launch against a real T3 home, and replacing an
-existing Mac installation require a separate approved trial plan. Download and
-verification alone do not perform those steps.
+launch. Installation, Gatekeeper changes, application launch against a real T3
+home, and replacing an existing Mac installation require a separate approved
+trial plan. Download and verification alone do not perform those steps.
+
+### Installed Mac desktop facts
+
+These facts hold for the DMG above and affect any install or update plan:
+
+- The DMG is named `T3-Code-VERSION-arm64.dmg`, but it contains `Jones Code.app`
+  with bundle identifier `com.t3tools.t3code`. Upstream T3 Code builds, such as
+  `T3 Code (Nightly).app` from the upstream installers or Homebrew cask, use the
+  same identifier. Launch Services can then route `t3code://` links and app
+  lookups to either app. If both are installed, verify which app Launch
+  Services selects before using those links or lookups.
+- In one observed laptop trial, Gatekeeper rejected the ad hoc signed bundle;
+  first launch there required a deliberate local override.
+- There is no Electron or Squirrel update feed. Packaged preview builds use the
+  Jones updater instead (`apps/desktop/src/updates/DesktopUpdates.ts`). It
+  checks 15 seconds after launch and then every 4 minutes, on the fixed
+  `jones-main` channel. It offers successful main-branch runs of this workflow
+  with green CI, read through the GitHub CLI. The updater only downloads and
+  installs when you choose to, and it does not install on quit.
+- The Jones updater needs several things on the laptop. `gh` must be installed
+  and authenticated in the login-shell `PATH`. A missing CLI reports
+  `gh-missing`; an authentication failure reports `authentication-required`.
+  `/usr/bin/python3` runs the activation helper. The
+  app must run from a stable, writable Applications folder: updates are refused
+  from a mounted DMG, an App Translocation path, or a temporary directory.
+- On a packaged install that already has `userdata/statev2.sqlite` and
+  `userdata/environment-id`, the Jones updater adopts the install. It records
+  the admitted generation in `$T3CODE_HOME/runtime/jones-active-install.json`
+  (default `~/.t3`). For builds containing the startup fence, ordinary startup
+  is refused when the version or source differs from that record or an
+  activation transaction requires reconciliation. A qualified activation trial
+  can start with its matching trial descriptor in an allowed transaction phase.
+  The startup fence
+  (`packages/shared/src/jones/nativeWriterFence.ts`) prints the reason to
+  stderr and exits with status 1. For example:
+  `The native writer does not match the admitted source generation.` A
+  Finder or Dock launch shows no message: the app simply does not appear. So
+  simply copying a newer build containing this fence over an adopted install
+  does not update its admission record. Use the Jones updater or the
+  [native helper's manual-install route](../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts)
+  (`--inspect-manual-install` and `--manual-install`) with an approved,
+  hash-bound plan. To see a startup refusal while no Jones Code process is
+  running, use this terminal command:
+
+  ```bash
+  "/Applications/Jones Code.app/Contents/MacOS/Jones Code"
+  ```
+
+  Never edit the admission record or transaction files to get past the fence.
+
+- A successful activation keeps the replaced bundle beside the stable app as
+  `Jones Code.app.jones-previous-GENERATION`. Staging can also leave
+  `Jones Code.app.jones-incoming-GENERATION`. These siblings are recovery
+  material. Remove them only after confirming that no update transaction or
+  recovery hold still refers to them.
 
 ## Public Connect configuration and provenance
 

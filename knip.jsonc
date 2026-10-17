@@ -45,6 +45,8 @@
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
       ],
+      // The `t3` npm package's files: copied into the package, never imported.
+      "ignore": ["npm-launcher/**"],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
@@ -117,6 +119,8 @@
         "src/jones/updates/fixtures/install-preview-entry.ts",
         // The dev server serves this synthetic update-views fixture through its HTML page.
         "src/jones/updates/fixtures/environment-updates-entry.tsx",
+        // The standalone client-notice HTML fixture loads this module through a script tag.
+        "src/jones/updates/fixtures/client-update-notices-entry.tsx",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
@@ -166,6 +170,11 @@
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
       "ignoreIssues": { "src/_generated/**": ["exports", "types"] },
+    },
+    "packages/source-control-github": {
+      // graphqlgen reads its config; the generated operations export every selection's class.
+      "entry": ["graphql.config.ts"],
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
     },
   },
 }

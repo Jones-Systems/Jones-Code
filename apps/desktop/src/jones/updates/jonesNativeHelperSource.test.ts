@@ -85,6 +85,50 @@ intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 
     'listener': 'http://127.0.0.1:3777'}
 durable(tx / 'intent.json', intent, True)
 events = []
+authority_state = 'active'
+def persisted_transition(operation, guard=None):
+    request = {'operation': operation, 'directory': str(root / 'native-store-authority'), 'environmentId': expected['environmentId'], 'databasePath': str(database), 'guard': guard}
+    script = "import fs from 'node:fs'; const m=await import(process.argv[1]); const r=JSON.parse(fs.readFileSync(0,'utf8')); const v=r.operation==='initialize'?m.initializeNativeStoreAuthority(r.directory,r.environmentId):r.operation==='fence'?m.fenceNativeAuthorityRestore(r.directory,r.environmentId):m.advanceNativeAuthorityRestore(r.directory,r.environmentId,r.databasePath,r.guard); process.stdout.write(JSON.stringify(v));"
+    result = subprocess.run([sys.argv[3], '--input-type=module', '-e', script, sys.argv[4]], input=json.dumps(request).encode(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=True)
+    return json.loads(result.stdout)
+if fault == 'authority-advance-lost': persisted_transition('initialize')
+restore_guard = {'kind': 'fenced', 'environmentId': expected['environmentId'], 'authorityNamespace': 't3-native:11111111-1111-4111-8111-111111111111', 'storeGeneration': 3, 'transitionId': '22222222-2222-4222-8222-222222222222', 'recordSha256': 'a' * 64}
+def synthetic_transition(active, selected, operation, guard=None):
+    global authority_state
+    assert selected == staged
+    # The real home/profile exclusion transactions must remain held at BOTH boundaries.
+    for path, scope in native_writer_lease_paths(active):
+        probe = "import sqlite3,sys; c=sqlite3.connect(sys.argv[1],timeout=0,isolation_level=None); c.execute('BEGIN EXCLUSIVE')"
+        result = subprocess.run([sys.executable, '-c', probe, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        assert result.returncode != 0 and b'database is locked' in result.stderr, 'Native writer exclusion released before transition'
+    events.append('authority-' + operation)
+    if operation == 'fence':
+        assert events.count('authority-fence') == 1
+        authority_state = 'fenced'
+        if fault == 'authority-fence-lost': raise RuntimeError('Lost fence response')
+        if fault == 'authority-advance-lost': return persisted_transition('fence')
+        return {'kind': 'absent'} if fault == 'authority-absent' else restore_guard
+    assert events.count('authority-advance') == 1
+    assert read(tx / 'advanced-state-authority-guard.json')['guard'] == guard
+    assert (tx / 'advanced-state/retained.json').exists()
+    with sqlite3.connect(database) as db:
+        assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
+    if fault == 'authority-advance-failed': raise RuntimeError('Failed advance')
+    authority_state = 'active'
+    if fault == 'authority-advance-lost':
+        committed = persisted_transition('advance', guard)
+        assert committed['state'] == 'active' and committed['store_generation'] == guard['storeGeneration'] + 1 and committed['transition_id'] is None
+        raise RuntimeError('Lost committed advance response')
+    return {'protocol': 1, 'operation': 'advance', 'state': 'absent'} if guard == {'kind': 'absent'} else {'protocol': 1, 'operation': 'advance', 'state': 'advanced', 'authorityNamespace': guard['authorityNamespace'], 'storeGeneration': guard['storeGeneration'] + 1}
+native_authority_transition = synthetic_transition
+native_state_rename = os.rename
+def observed_state_rename(source, target):
+    if pathlib.Path(source) == database:
+        assert authority_state == 'fenced'
+        assert (tx / 'advanced-state-authority-guard.json').exists()
+        events.append('first-database-replacement')
+    return native_state_rename(source, target)
+os.rename = observed_state_rename
 native_storage_preflight = storage_preflight
 def synthetic_storage_preflight(active, candidate, transaction):
     events.append('storage-preflight')
@@ -168,6 +212,7 @@ def synthetic_launch(active, descriptor=None):
     if fault == 'invalid-backend': receipt['backendProcess'] = {'pid': True, 'identity': 'unqualified-process'}
     if fault.startswith('missing-'): receipt.pop(fault.removeprefix('missing-'))
     if fault in ('trial-mismatch', 'candidate-stop', 'resume-dispatched', 'reserve-release-failed', 'recovery-space-missing', 'recovery-lease-busy'): receipt['sourceSha'] = 'wrong-source'
+    if fault.startswith('authority-'): receipt['sourceSha'] = 'wrong-source'
     if fault == 'resume-dispatched': durable(tx / 'resume-dispatched.json', {'uncertain': True}, True)
     durable(tx / 'trial-receipt.json', receipt, True)
     return {'pid': 456, 'identity': 'tracked-native-app'}
@@ -183,16 +228,27 @@ def synthetic_identity(pid):
 process_identity = synthetic_identity
 process_start = lambda pid: ('S', '')
 native_durable = durable
+syncing_marker = None
 def synthetic_durable(destination, value, exclusive=False):
+    global syncing_marker
     destination = pathlib.Path(destination)
     if fault == 'resume-grant' and destination.name == 'commit-grant.json': raise RuntimeError('Dispatch outcome uncertain.')
     if destination == manifest_path and value['sourceSha'] == staged['sourceSha']:
         assert events[-1] == 'identity:654'
         events.append('manifest-commit')
-    native_durable(destination, value, exclusive)
+    try:
+        syncing_marker = destination.name
+        native_durable(destination, value, exclusive)
+    finally: syncing_marker = None
     if fault == 'commit-uncertain' and destination == manifest_path and value['sourceSha'] == staged['sourceSha']:
         raise RuntimeError('Commit readback interrupted.')
 durable = synthetic_durable
+native_fsync = os.fsync
+def failing_fsync(fd):
+    if stat.S_ISDIR(os.fstat(fd).st_mode) and ((fault == 'authority-guard-sync' and syncing_marker == 'advanced-state-authority-guard.json') or (fault == 'authority-retention-sync' and syncing_marker == 'retained.json')):
+        raise OSError('Synthetic directory fsync failure')
+    return native_fsync(fd)
+os.fsync = failing_fsync
 if fault in ('interrupted-trial', 'interrupted-rollback', 'interrupted-resume'):
     phase = {'interrupted-trial': 'trial', 'interrupted-rollback': 'rollback-intent', 'interrupted-resume': 'resume-intent'}[fault]
     durable(tx / 'journal.json', {'intent': intent, 'phase': phase}, True)
@@ -256,21 +312,131 @@ else:
         else:
             assert 'candidate-launch' not in events
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
-        assert state == 'advanced-state'
+        assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
         assert (tx / 'previous-pair' / 'state.sqlite').exists()
         assert 'restart-previous' not in events
-        if fault != 'recovery-space-missing': assert (tx / 'recovery-reserve.bin').exists()
+        if fault != 'recovery-space-missing' and not fault.startswith('authority-'): assert (tx / 'recovery-reserve.bin').exists()
     if fault == 'recovery-space-missing':
         assert not (tx / 'advanced-state').exists()
         assert 'available 0 bytes' in journal['message'] and 'needed ' in journal['message']
         assert events[-1] == 'recovery-capacity'
         assert events.index('stop:1', events.index('candidate-launch') + 1) > events.index('candidate-launch')
         assert events[-2] == 'exclusive-writers'
+    if fault.startswith('authority-'):
+        assert events.count('authority-fence') == 1
+        if fault in ('authority-fence-lost', 'authority-guard-sync'):
+            assert 'first-database-replacement' not in events
+            assert 'authority-advance' not in events
+        elif fault == 'authority-retention-sync': assert 'authority-advance' not in events
+        else:
+            assert events.index('authority-fence') < events.index('first-database-replacement') < events.index('authority-advance')
+            assert events.count('authority-advance') == 1
+        if journal['phase'] == 'blocked':
+            assert 'restart-previous' not in events
+            assert authority_state == ('active' if fault == 'authority-advance-lost' else 'fenced')
+        else: assert events.index('authority-advance') < events.index('restart-previous')
     if journal['phase'] == 'rolled-back': assert not (tx / 'recovery-reserve.bin').exists()
     print(json.dumps({'phase': journal['phase'], 'events': events, 'state': state}))
 `;
 
 describe("Jones native helper", () => {
+  it.each([
+    "fenced",
+    "absent",
+    "advanced",
+    "absent-advance",
+    "wrong-source",
+    "wrong-version",
+    "digest-drift",
+    "binary-link",
+    "binary-mode",
+    "nonzero",
+    "malformed",
+    "trailing",
+    "oversized",
+    "bad-guard",
+    "bad-generation",
+    "timeout",
+  ])(
+    "binds the authority subprocess to the verified candidate and handles %s once",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const scenario = String.raw`
+root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+app = root / 'Candidate.app'
+(app / 'Contents/MacOS').mkdir(parents=True)
+(app / 'Contents/Resources').mkdir()
+for directory in (app, app / 'Contents', app / 'Contents/MacOS', app / 'Contents/Resources'): directory.chmod(0o700)
+executable = app / 'Contents/MacOS/Jones'
+executable.write_text('synthetic executable'); executable.chmod(0o700)
+candidate = {'appPath': str(app), 'executablePath': str(executable), 'version': '1.2.3',
+             'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'bundleIdentifier': 'com.jones.code'}
+with open(app / 'Contents/Info.plist', 'wb') as stream:
+    plistlib.dump({'CFBundleIdentifier': 'com.jones.code', 'CFBundleExecutable': 'Jones', 'CFBundleShortVersionString': '1.2.3'}, stream)
+payload = json.dumps({'version': '1.2.3', 'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'a' * 40, 'tree': 'b' * 40}}).encode()
+header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+(app / 'Contents/Resources/app.asar').write_bytes(struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+(app / 'Contents/Resources/app.asar').chmod(0o600)
+candidate['appDigest'] = app_digest(app)
+expected = {'home': str(root), 'databasePath': str(root / 'userdata/state.sqlite'), 'environmentId': 'synthetic-environment'}
+guard = {'kind': 'fenced', 'environmentId': expected['environmentId'], 'authorityNamespace': 't3-native:11111111-1111-4111-8111-111111111111', 'storeGeneration': 2, 'transitionId': '22222222-2222-4222-8222-222222222222', 'recordSha256': 'c' * 64}
+operation = 'advance' if fault in ('advanced', 'absent-advance', 'bad-generation') else 'fence'
+if fault == 'absent-advance': guard = {'kind': 'absent'}
+if fault == 'wrong-source': candidate['sourceSha'] = 'd' * 40
+if fault == 'wrong-version': candidate['version'] = 'other'
+if fault == 'digest-drift': executable.write_text('changed bytes')
+if fault == 'binary-mode': executable.chmod(0o777); candidate['appDigest'] = app_digest(app)
+if fault == 'binary-link':
+    target = app / 'Contents/MacOS/Other'; target.write_text('other'); target.chmod(0o700)
+    executable.unlink(); executable.symlink_to(target); candidate['appDigest'] = app_digest(app)
+calls = []
+os.environ['T3CODE_JONES_TRIAL_DESCRIPTOR'] = 'must-not-reach-transition'
+def child(command, **kwargs):
+    calls.append(command)
+    assert command == [str(executable), str(app / 'Contents/Resources/app.asar/apps/server/dist/bin.mjs'), '__jones-native-authority-transition']
+    request = json.loads(kwargs['input'])
+    assert request['candidate'] == {key: candidate[key] for key in ('version', 'sourceSha', 'sourceTree')}
+    assert request['baseDir'] == expected['home'] and request['operation'] == operation
+    assert kwargs['env']['ELECTRON_RUN_AS_NODE'] == '1' and 'T3CODE_JONES_TRIAL_DESCRIPTOR' not in kwargs['env']
+    if fault == 'timeout': raise subprocess.TimeoutExpired(command, 30)
+    response = {'protocol': 1, 'operation': 'fence', 'guard': {'kind': 'absent'} if fault == 'absent' else guard}
+    if operation == 'advance':
+        assert request['guard'] == guard
+        response = {'protocol': 1, 'operation': 'advance', 'state': 'absent'} if guard == {'kind': 'absent'} else {'protocol': 1, 'operation': 'advance', 'state': 'advanced', 'authorityNamespace': guard['authorityNamespace'], 'storeGeneration': 99 if fault == 'bad-generation' else 3}
+    if fault == 'bad-guard': response['guard'] = dict(guard, recordSha256='-' * 64)
+    raw = json.dumps(response).encode()
+    if fault == 'malformed': raw = b'{'
+    if fault == 'trailing': raw += b' trailing'
+    if fault == 'oversized': raw = b' ' * 16385
+    return type('Result', (), {'returncode': 1 if fault == 'nonzero' else 0, 'stdout': raw})()
+subprocess.run = child
+try: result = native_authority_transition(expected, candidate, operation, guard if operation == 'advance' else None)
+except RuntimeError:
+    assert fault not in ('fenced', 'absent', 'advanced', 'absent-advance')
+else:
+    assert fault in ('fenced', 'absent', 'advanced', 'absent-advance')
+    assert result == ({'kind': 'absent'} if fault == 'absent' else guard) if operation == 'fence' else result['state'] in ('advanced', 'absent')
+assert len(calls) == (0 if fault in ('wrong-source', 'wrong-version', 'digest-drift', 'binary-link', 'binary-mode') else 1)
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", nativeFunctions + "\n" + scenario, f.directory, fault],
+          {
+            encoding: "utf8",
+            maxBuffer: 1024 * 1024,
+            timeout: 10000,
+          },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it("clears inherited trial and cold selectors for an ordinary native launch", () => {
     const nativeFunctions = jonesNativeHelperSource.split(
       "\nparser = argparse.ArgumentParser()",
@@ -1221,6 +1387,13 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
   it.each([
     ["success", "resumed"],
     ["trial-mismatch", "rolled-back"],
+    ["authority-restore", "rolled-back"],
+    ["authority-absent", "rolled-back"],
+    ["authority-fence-lost", "blocked"],
+    ["authority-guard-sync", "blocked"],
+    ["authority-retention-sync", "blocked"],
+    ["authority-advance-failed", "blocked"],
+    ["authority-advance-lost", "blocked"],
     ["bundle-denied", "rolled-back"],
     ["bundle-second-rename-denied", "rolled-back"],
     ["legacy-receipt", "blocked"],
@@ -1275,10 +1448,45 @@ assert sorted(path.name for path in root.iterdir()) == ['jones-activation.lock',
         const nativeFunctions = jonesNativeHelperSource.split(
           "\nparser = argparse.ArgumentParser()",
         )[0];
+        const heldLaunch =
+          fault === "authority-advance-lost"
+            ? String.raw`
+guard_file = tx / 'advanced-state-authority-guard.json'
+guard = read(guard_file)['guard']
+assert stat.S_IMODE(guard_file.stat().st_mode) == 0o600 and guard_file.stat().st_uid == os.getuid()
+persisted = read(root / 'native-store-authority/native-store-authority-v1.json')
+assert persisted['state'] == 'active' and persisted['transition_id'] is None
+assert persisted['store_generation'] == guard['storeGeneration'] + 1
+assert persisted['authority_namespace'] == guard['authorityNamespace']
+assert (tx / 'advanced-state/retained.json').exists()
+before = list(events)
+activate(tx / 'intent.json')
+assert events == before, 'An unresolved transition was replayed'
+sys.platform = 'darwin'
+sys.argv = ['helper', '--manifest', str(manifest_path), '--launch']
+bundle_identity = lambda active: None
+try:
+    exec(${JSON.stringify("parser = argparse.ArgumentParser()" + jonesNativeHelperSource.split("parser = argparse.ArgumentParser()")[1])})
+except SystemExit as error:
+    assert 'reconciliation' in str(error)
+else: raise AssertionError('Ordinary launch bypassed unresolved restore')
+assert 'restart-previous' not in events
+`
+            : "";
         const result = JSON.parse(
           NodeChildProcess.execFileSync(
             "python3",
-            ["-c", `${nativeFunctions}\n${activationScenario}`, f.directory, fault!],
+            [
+              "-c",
+              `${nativeFunctions}\n${activationScenario}\n${heldLaunch}`,
+              f.directory,
+              fault!,
+              process.execPath,
+              new URL(
+                "../../../../server/src/environment/nativeStoreAuthorityPersistence.ts",
+                import.meta.url,
+              ).href,
+            ],
             { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
           ),
         ) as { phase: string };
@@ -1310,7 +1518,8 @@ app_digest = forbidden
 pair_state(expected, root / 'pair')
 assert read(root / 'pair' / 'pair.json')['recovery']['method'] in ('clone', 'copy')
 prove_quiescence = lambda active: None
-restore_pair(expected, root / 'pair', root / 'advanced')
+native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
+restore_pair(expected, root / 'pair', root / 'advanced', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous'
 `;
@@ -1421,7 +1630,8 @@ def recorded(path, value, exclusive=False):
     return native_durable(path, value, exclusive)
 os.open, os.fsync, durable = opened, synced, recorded
 prove_quiescence = lambda active: None
-restore_pair(expected, tx / 'pair', tx / 'advanced')
+native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
+restore_pair(expected, tx / 'pair', tx / 'advanced', expected)
 retained = events.index(('retained', str(tx / 'advanced' / 'retained.json')))
 for path in (database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), state, profile.parent, tx, tx / 'advanced'):
     assert ('sync', str(path)) in events[:retained], (str(path), events)
@@ -1473,7 +1683,8 @@ for suffix, content in contents.items():
     assert (root / 'copy-pair' / ('state.sqlite' + suffix)).read_bytes() == content
     pathlib.Path(str(database) + suffix).write_bytes(b'advanced state')
 prove_quiescence = lambda active: None
-restore_pair(expected, root / 'copy-pair', root / 'copy-advanced')
+native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
+restore_pair(expected, root / 'copy-pair', root / 'copy-advanced', expected)
 for suffix, content in contents.items():
     assert pathlib.Path(str(database) + suffix).read_bytes() == content
     assert (root / 'copy-advanced' / ('state.sqlite' + suffix)).read_bytes() == b'advanced state'
@@ -1728,7 +1939,8 @@ with sqlite3.connect(database) as db:
 (home / 'client-settings.json').write_text('new-setting-created-by-startup')
 (profile / 'opaque-profile').write_text('advanced-profile')
 prove_quiescence = lambda expected: None
-restore_pair(expected, pair, root / 'advanced-state')
+native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
+restore_pair(expected, pair, root / 'advanced-state', expected)
 with sqlite3.connect(database) as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-native-state'
 with sqlite3.connect(root / 'advanced-state' / 'state.sqlite') as db:

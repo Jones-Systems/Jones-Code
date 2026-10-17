@@ -3,10 +3,15 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6"
+    "commit": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4"
   },
-  "baseline": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6",
+  "baseline": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4",
   "paths": {
+    "apps/web/src/jones/updates/clientUpdateBanner.tsx": "jones-owned",
+    "apps/web/src/jones/updates/clientUpdateBanner.test.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices.html": "jones-owned",
+    "apps/server/src/persistence/DatabaseMaintenance.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx": "hook",
     "scripts/jones/boundary/fragments/provider-order.json": "jones-owned",
     "apps/server/src/testUtils/weightedShardSequencer.ts": "hook",
@@ -218,6 +223,7 @@
     "apps/server/src/device/DeviceHubProxy.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/DeviceHubProxy.ts": "hook",
     "apps/server/src/device/DeviceService.ts": "accepted-shared",
+    "apps/server/src/device/DeviceService.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/SshDeviceHost.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/SshDeviceHost.ts": "hook",
     "apps/server/src/device/sshDeviceScript.test.ts": "jones-tests-in-upstream",
@@ -626,7 +632,6 @@
     "apps/web/src/components/settings/deviceHostConnectionChecks.ts": "accepted-shared",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts": "accepted-shared",
-    "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx": "jones-owned",
     "apps/web/src/components/sidebar/SidebarChrome.tsx": "hook",
     "apps/web/src/components/sidebar/SidebarThreadHeader.tsx": "accepted-shared",
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx": "hook",
@@ -745,6 +750,7 @@
     "docs/user/background-service.md": "accepted-shared",
     "docs/user/composer.md": "policy",
     "docs/user/devices.md": "accepted-shared",
+    "docs/user/install.md": "policy",
     "docs/user/providers-codex.md": "policy",
     "docs/user/remote-access.md": "accepted-shared",
     "docs/user/thread-sidebar.md": "policy",
@@ -949,6 +955,7 @@
     "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
     "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned",
     "patches/effect@4.0.4.patch": "accepted-shared",
+    "patches/effect@4.0.5.patch": "accepted-shared",
     "pnpm-workspace.yaml": "accepted-shared",
     "scripts/jones/boundary/fragments/connection-rpc-isolation.json": "jones-owned",
     "apps/web/src/observability/clientTracing.ts": "accepted-shared",
@@ -1017,7 +1024,29 @@
     "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/provider/providerMaintenanceRunner.ts": "hook",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared"
+    "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared",
+    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.ts": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "packages/contracts/src/desktopBootstrap.ts": "hook",
+    "packages/contracts/src/jones/workstreamsNativeOwner.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned",
+    "apps/server/src/bin.ts": "hook",
+    "apps/server/src/entrypoint.test.ts": "jones-tests-in-upstream",
+    "scripts/dev-runner.ts": "accepted-shared",
+    "apps/server/src/startupAccess.ts": "hook",
+    "apps/server/src/startupAccess.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/startupAccess.logging.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/cloud/serviceLog.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
+    "docs/internals/t3-connect.md": "accepted-shared",
+    "docs/operations/release.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1347,10 +1376,6 @@
       "to": "apps/web/src/components/files/PdfPreview.tsx"
     },
     {
-      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
-      "to": "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"
-    },
-    {
       "from": "apps/web/src/composerDraftStore.ts",
       "to": "apps/web/src/draftId.ts"
     },
@@ -1497,6 +1522,10 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

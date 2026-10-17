@@ -101,3 +101,5 @@ export * from "./jones/runtimeStop.ts";
 export * from "./jones/importedHistory.ts";
 export * from "./secretRequest.ts";
 export * from "./clientRpcPermissions.ts";
+
+export * from "./jones/workstreamsNativeOwner.ts";

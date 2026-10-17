@@ -104,6 +104,10 @@ const make = Effect.gen(function* () {
           const persisted = yield* read(attempt.request);
           if (Option.isNone(persisted))
             return yield* new NativeProviderAttemptError({ operation: "reserve" });
+          yield* sql`INSERT INTO jones_workstreams_settlement_proofs
+            (native_command_id, thread_id, native_action)
+            SELECT ${persisted.value.nativeCommandId}, ${persisted.value.request.identity.native_id}, ${persisted.value.request.native_action}
+            WHERE NOT EXISTS (SELECT 1 FROM jones_workstreams_settlement_proofs WHERE native_command_id = ${persisted.value.nativeCommandId})`;
           return persisted.value;
         }),
       )

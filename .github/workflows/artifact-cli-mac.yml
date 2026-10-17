@@ -131,7 +131,7 @@ jobs:
           name: jones-code-cli-mac-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.ARTIFACT_VERSION }}
           path: release-cli/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
           compression-level: 0
 
       - name: Clean job scratch

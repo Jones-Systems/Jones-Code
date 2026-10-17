@@ -73,6 +73,7 @@ const makeApp = (enrolled = true) => {
       Layer.provide(nativeWorkstreamsHttpApiLayer),
       Layer.provide(
         Layer.succeed(NativeWorkstreamsRuntime, {
+          ownerOperations: () => Effect.die("Native-provider tests must not invoke owner setup."),
           provider: fixture.provider(),
           enrollments: {
             getBySessionId: () =>

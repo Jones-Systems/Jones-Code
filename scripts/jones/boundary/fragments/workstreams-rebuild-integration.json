@@ -52,6 +52,8 @@
     "apps/web/src/jones/workstreamAppearance/useWorkstreamAppearance.ts",
     "apps/web/src/state/workstreams.test.ts",
     "apps/web/src/state/workstreams.ts",
+    "docs/operations/workstreams-activation.md",
+    "docs/operations/workstreams-native-enrollment.md",
     "docs/user/workstreams.md",
     "packages/client-runtime/src/state/workstreams/appearance.test.ts",
     "packages/client-runtime/src/state/workstreams/appearance.ts",
@@ -100,12 +102,24 @@
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnectRefresh.ts",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
     "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.tsx",
     "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
     "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts",
-    "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    "apps/desktop/src/jones/workstreams/shellActivation.ts",
+    "packages/shared/src/jones/desktopNativeOwner.ts",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+    "packages/contracts/contracts/workstreams-registration-context/v2/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -136,10 +150,25 @@
     "packages/contracts/src/auth.ts",
     "vite.config.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
-    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+    "packages/contracts/src/desktopBootstrap.ts",
+    "apps/server/src/bin.ts",
+    "apps/server/src/entrypoint.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/enrollment.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/testFixtures.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts"
+    },
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamAppearance.ts"
@@ -259,6 +288,26 @@
     {
       "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
       "to": "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

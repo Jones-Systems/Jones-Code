@@ -1,12 +1,15 @@
 import * as NodeAssert from "node:assert/strict";
 import * as NodeTest from "node:test";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
+import * as NodeStream from "node:stream";
 import * as NodeReadline from "node:readline";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
 import {
   assertVisible,
   assertInactiveDenied,
@@ -23,6 +26,8 @@ import {
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
+  recordBuild,
+  readBuildReceipt,
   isolatedEnvironment,
   readRendererManifest,
   serveRendererFixture,
@@ -34,12 +39,191 @@ import {
   waitInactive,
   waitProviderReady,
   openRpc,
+  waitForFixtureStartup,
+  issueFixturePairing,
 } from "./install-preview-qualification.mjs";
+
+const nativePlatform = HostProcess.Platform.defaultValue();
 
 const source = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
   "../../..",
 );
+
+function startupChildFixture() {
+  return Object.assign(new NodeEvents.EventEmitter(), {
+    stdout: new NodeStream.PassThrough(),
+    stderr: new NodeStream.PassThrough(),
+  });
+}
+
+NodeTest.test(
+  "fixture readiness uses the nonsecret issuance marker, never a printed token",
+  async () => {
+    const child = startupChildFixture();
+    let ready = false;
+    const startup = waitForFixtureStartup(child, "synthetic", undefined, 5_000).then((output) => {
+      ready = true;
+      return output;
+    });
+    child.stdout.write("Pairing URL: http://127.0.0.1:1234/pair#token=SYNTHETIC_OLD_TOKEN\n");
+    await Promise.resolve();
+    NodeAssert.equal(ready, false);
+    child.stdout.write("Startup pairing credential issued; credential ");
+    child.stdout.write("output withheld.\n");
+    const output = await startup;
+    NodeAssert.match(output(), /credential output withheld/);
+    child.emit("exit", 0);
+    NodeAssert.equal(child.stdout.listenerCount("data"), 0);
+    NodeAssert.equal(child.stderr.listenerCount("data"), 0);
+    NodeAssert.equal(child.listenerCount("exit"), 0);
+  },
+);
+
+for (const outcome of ["exit", "error", "abort", "timeout"]) {
+  NodeTest.test(
+    `fixture startup ${outcome} keeps output private and removes listeners`,
+    async () => {
+      const child = startupChildFixture();
+      const controller = new AbortController();
+      const startup = waitForFixtureStartup(child, "synthetic", controller.signal, 20);
+      child.stderr.write("SYNTHETIC_PRIVATE_DIAGNOSTIC\n");
+      const rejected = NodeAssert.rejects(startup, (error) => {
+        NodeAssert.match(error.message, /^Owned synthetic server /);
+        NodeAssert.equal(JSON.stringify(error).includes("SYNTHETIC_PRIVATE"), false);
+        NodeAssert.equal(error.message.includes("SYNTHETIC_PRIVATE"), false);
+        return true;
+      });
+      if (outcome === "exit") child.emit("exit", 1);
+      if (outcome === "error") child.emit("error", new Error("SYNTHETIC_PRIVATE_ERROR"));
+      if (outcome === "abort") controller.abort(new Error("SYNTHETIC_PRIVATE_ABORT"));
+      await rejected;
+      NodeAssert.equal(child.stdout.listenerCount("data"), 0);
+      NodeAssert.equal(child.stderr.listenerCount("data"), 0);
+      NodeAssert.equal(child.listenerCount("exit"), 0);
+      NodeAssert.equal(child.listenerCount("error"), 0);
+    },
+  );
+}
+
+async function withPairingCommandFixture(program, use) {
+  let capturedRoot;
+  try {
+    return await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+      capturedRoot = root;
+      const entry = NodePath.join(root, "apps/server/dist/bin.mjs");
+      await NodeFSP.mkdir(NodePath.dirname(entry), { recursive: true });
+      const env = isolatedEnvironment(root);
+      await Promise.all([NodeFSP.mkdir(env.HOME), NodeFSP.mkdir(env.TMPDIR)]);
+      await NodeFSP.writeFile(entry, program);
+      const processes = [];
+      try {
+        return await use({
+          source: root,
+          owned: root,
+          baseDir: NodePath.join(root, "t3"),
+          processes,
+        });
+      } finally {
+        await Promise.all(processes.map(stopChild));
+        NodeAssert.ok(
+          processes.every((child) => child.exitCode !== null || child.signalCode !== null),
+        );
+      }
+    });
+  } finally {
+    if (capturedRoot) await NodeAssert.rejects(NodeFSP.lstat(capturedRoot), { code: "ENOENT" });
+  }
+}
+
+NodeTest.test(
+  "fixture explicitly pairs only its own base with administrative scopes and isolated environment",
+  async () => {
+    await withPairingCommandFixture(
+      `import assert from "node:assert/strict";
+     import path from "node:path";
+     const args = process.argv.slice(2);
+     assert.deepEqual(args.slice(0, 3), ["pair", "--base-dir", path.join(process.cwd(), "t3")]);
+     assert.equal(process.env.HOME, path.join(process.cwd(), "home"));
+     assert.equal(process.env.TMPDIR, path.join(process.cwd(), "tmp"));
+     assert.equal(process.env.T3CODE_DESKTOP_USER_DATA_DIR, undefined);
+     assert.equal(process.env.T3CODE_DEV_AUTH_TOKEN, undefined);
+     assert.equal(process.env.T3CODE_REVEAL_STARTUP_PAIRING_CREDENTIAL, undefined);
+     const scopes = [];
+     for (let i = 3; i < args.length; i += 2) {
+       assert.equal(args[i], "--scope");
+       scopes.push(args[i + 1]);
+     }
+     assert.deepEqual(scopes.sort(), [
+       "orchestration:read", "orchestration:operate", "settings:write", "providers:manage",
+       "environment:maintain", "preview:operate", "diagnostics:read", "terminal:read",
+       "terminal:operate", "source-control:write", "filesystem:read", "filesystem:write",
+       "relay:read", "access:read", "access:write", "relay:write"
+     ].sort());
+     console.log("Token: SYNTHETIC_EXPLICIT_PAIR_TOKEN");`,
+      async (options) => {
+        NodeAssert.equal(await issueFixturePairing(options), "SYNTHETIC_EXPLICIT_PAIR_TOKEN");
+        NodeAssert.equal(options.processes.length, 1);
+      },
+    );
+  },
+);
+
+for (const outcome of ["failure", "malformed", "timeout", "abort"]) {
+  NodeTest.test(
+    `fixture pairing ${outcome} hides credentials and reaps its child`,
+    { timeout: 10_000 },
+    async () => {
+      const program =
+        outcome === "failure"
+          ? 'console.log("Token: SYNTHETIC_PRIVATE_TOKEN"); console.error("SYNTHETIC_PRIVATE_ERROR"); process.exitCode = 1;'
+          : outcome === "malformed"
+            ? 'console.log("SYNTHETIC_PRIVATE_MALFORMED");'
+            : 'console.log("Token: SYNTHETIC_PRIVATE_TOKEN"); setInterval(() => {}, 1000);';
+      await withPairingCommandFixture(program, async (options) => {
+        const controller = new AbortController();
+        const pairing = issueFixturePairing({
+          ...options,
+          signal: controller.signal,
+          timeoutMs: outcome === "timeout" ? 50 : 5_000,
+        });
+        const rejected = NodeAssert.rejects(pairing, (error) => {
+          NodeAssert.match(
+            error.message,
+            /^Owned fixture pairing command (failed|returned invalid output)$/,
+          );
+          NodeAssert.equal(error.message.includes("SYNTHETIC_PRIVATE"), false);
+          NodeAssert.equal(JSON.stringify(error).includes("SYNTHETIC_PRIVATE"), false);
+          NodeAssert.equal(error.cause, undefined);
+          return true;
+        });
+        if (outcome === "abort") {
+          await NodeEvents.once(options.processes[0].stdout, "data");
+          controller.abort(new Error("SYNTHETIC_PRIVATE_ABORT"));
+        }
+        await rejected;
+        NodeAssert.equal(options.processes.length, 1);
+        NodeAssert.ok(
+          options.processes[0].exitCode !== null || options.processes[0].signalCode !== null,
+        );
+      });
+    },
+  );
+}
+
+NodeTest.test("fixture pairing refuses another base before spawning", async () => {
+  const processes = [];
+  await NodeAssert.rejects(
+    issueFixturePairing({
+      source: "/synthetic",
+      owned: "/synthetic/owned",
+      baseDir: "/synthetic/other/t3",
+      processes,
+    }),
+    /Pair only the owned fixture base/,
+  );
+  NodeAssert.deepEqual(processes, []);
+});
 
 NodeTest.test(
   "native ACP framing retains the exact scenario through T3's instruction wrapper",
@@ -1043,6 +1227,225 @@ NodeTest.test(
     });
   },
 );
+
+async function withBuildReceiptFixture(use) {
+  await withOwnedScratch(NodeOS.tmpdir(), async (root) => {
+    const checkout = NodePath.join(root, "source");
+    const evidence = NodePath.join(root, "evidence");
+    const env = {
+      ...isolatedEnvironment(root),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: NodePath.join(root, "gitconfig"),
+      GIT_AUTHOR_NAME: "Synthetic Preview",
+      GIT_AUTHOR_EMAIL: "preview@example.invalid",
+      GIT_COMMITTER_NAME: "Synthetic Preview",
+      GIT_COMMITTER_EMAIL: "preview@example.invalid",
+    };
+    await Promise.all(
+      [checkout, evidence, env.HOME, env.TMPDIR].map((directory) => NodeFSP.mkdir(directory)),
+    );
+    await NodeFSP.writeFile(env.GIT_CONFIG_GLOBAL, "");
+    const git = (...args) =>
+      NodeChildProcess.execFileSync("git", ["-C", checkout, ...args], { env });
+    git("init", "--quiet", "--initial-branch=fixture");
+    await NodeFSP.writeFile(
+      NodePath.join(checkout, ".gitignore"),
+      ".env\napps/server/dist/\napps/web/dist/\n",
+    );
+    await NodeFSP.writeFile(NodePath.join(checkout, "source.txt"), "original\n");
+    await NodeFSP.writeFile(NodePath.join(checkout, "binary.bin"), Buffer.from([0, 1, 2, 255]));
+    git("add", ".gitignore", "source.txt", "binary.bin");
+    git("commit", "--quiet", "-m", "Synthetic Preview base");
+    for (const directory of ["apps/server/dist", "apps/web/dist"]) {
+      await NodeFSP.mkdir(NodePath.join(checkout, directory), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(checkout, directory, "index.html"), "synthetic build");
+    }
+    await NodeFSP.writeFile(NodePath.join(checkout, ".env"), "SYNTHETIC_IGNORED_CREDENTIAL");
+    await NodeFSP.writeFile(
+      NodePath.join(checkout, "credentials.txt"),
+      "SYNTHETIC_UNTRACKED_CREDENTIAL",
+    );
+    await use({
+      checkout,
+      git,
+      env,
+      receipt: NodePath.join(evidence, "install-preview-build.json"),
+      patch: NodePath.join(evidence, "install-preview-build.patch"),
+    });
+  });
+}
+
+const patchDigest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+
+NodeTest.test(
+  "build receipt preserves replayable binary bytes and the unchanged normalized v1 digest",
+  async () => {
+    await withBuildReceiptFixture(async (fixture) => {
+      const binary = Buffer.from([0, 3, 2, 254]);
+      await NodeFSP.writeFile(NodePath.join(fixture.checkout, "source.txt"), "café\n\n");
+      await NodeFSP.writeFile(NodePath.join(fixture.checkout, "binary.bin"), binary);
+      const ordinaryPatch = fixture.git("diff", "HEAD", "--", ".").toString("utf8").trim();
+      const expectedPatch = fixture.git("diff", "--binary", "--full-index", "HEAD", "--", ".");
+      const receipt = await recordBuild(fixture.checkout, fixture.receipt);
+      const savedPatch = await NodeFSP.readFile(fixture.patch);
+      NodeAssert.deepEqual(savedPatch, expectedPatch);
+      NodeAssert.match(savedPatch.toString("utf8"), /GIT binary patch/);
+      NodeAssert.match(savedPatch.toString("utf8"), /index [a-f0-9]{40}\.\.[a-f0-9]{40}/);
+      NodeAssert.ok(savedPatch.includes(Buffer.from("café\n")));
+      NodeAssert.equal(savedPatch.at(-1), 10);
+      NodeAssert.ok(!savedPatch.includes(Buffer.from("SYNTHETIC_")));
+      NodeAssert.equal(receipt.schema, "jones-install-preview-build/v1");
+      NodeAssert.equal(receipt.trackedPatchSha256, patchDigest(ordinaryPatch));
+      NodeAssert.equal(receipt.cleanTrackedSource, false);
+      NodeAssert.deepEqual(receipt.trackedPatchArtifact, {
+        format: "git-diff-binary-full-index/v1",
+        file: "install-preview-build.patch",
+        sha256: patchDigest(savedPatch),
+        bytes: savedPatch.length,
+      });
+      NodeAssert.equal((await NodeFSP.stat(fixture.patch)).mode & 0o777, 0o600);
+      fixture.git("apply", "--reverse", fixture.patch);
+      NodeAssert.deepEqual(
+        await NodeFSP.readFile(NodePath.join(fixture.checkout, "binary.bin")),
+        Buffer.from([0, 1, 2, 255]),
+      );
+      fixture.git("apply", fixture.patch);
+      NodeAssert.deepEqual(
+        await NodeFSP.readFile(NodePath.join(fixture.checkout, "binary.bin")),
+        binary,
+      );
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(fixture.checkout, "source.txt"), "utf8"),
+        "café\n\n",
+      );
+      NodeAssert.deepEqual(await readBuildReceipt(fixture.checkout, fixture.receipt), receipt);
+    });
+  },
+);
+
+NodeTest.test(
+  "clean tracked source records an empty patch despite untracked credentials",
+  async () => {
+    await withBuildReceiptFixture(async (fixture) => {
+      const receipt = await recordBuild(fixture.checkout, fixture.receipt);
+      NodeAssert.equal(receipt.cleanTrackedSource, true);
+      NodeAssert.equal(receipt.trackedPatchSha256, patchDigest(Buffer.alloc(0)));
+      NodeAssert.equal(receipt.trackedPatchArtifact.bytes, 0);
+      NodeAssert.equal(receipt.trackedPatchArtifact.sha256, patchDigest(Buffer.alloc(0)));
+      NodeAssert.deepEqual(await NodeFSP.readFile(fixture.patch), Buffer.alloc(0));
+      NodeAssert.deepEqual(await readBuildReceipt(fixture.checkout, fixture.receipt), receipt);
+    });
+  },
+);
+
+NodeTest.test(
+  "build receipt refuses a FIFO without a writer before qualification",
+  { skip: nativePlatform === "win32" ? "Named FIFOs require POSIX mkfifo" : false },
+  async () => {
+    await withBuildReceiptFixture(async (fixture) => {
+      await recordBuild(fixture.checkout, fixture.receipt);
+      await NodeFSP.unlink(fixture.patch);
+      NodeChildProcess.execFileSync("mkfifo", [fixture.patch], {
+        env: fixture.env,
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 64 * 1024,
+      });
+      NodeAssert.ok((await NodeFSP.lstat(fixture.patch)).isFIFO());
+      const moduleUrl = new URL("./install-preview-qualification.mjs", import.meta.url).href;
+      // A blocking-open regression is killed and reaped before the owned FIFO is removed.
+      NodeChildProcess.execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `import * as NodeAssert from "node:assert/strict";
+           import { readBuildReceipt } from ${JSON.stringify(moduleUrl)};
+           await NodeAssert.rejects(
+             readBuildReceipt(process.argv[1], process.argv[2]),
+             /Tracked patch artifact must be a regular file/,
+           );`,
+          fixture.checkout,
+          fixture.receipt,
+        ],
+        {
+          env: fixture.env,
+          timeout: 10_000,
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024,
+        },
+      );
+    });
+  },
+);
+
+for (const fault of ["missing", "tampered", "current-binary", "metadata-bound"]) {
+  NodeTest.test(`build receipt refuses ${fault} patch evidence before qualification`, async () => {
+    await withBuildReceiptFixture(async (fixture) => {
+      await NodeFSP.writeFile(
+        NodePath.join(fixture.checkout, "binary.bin"),
+        Buffer.from([0, 3, 2, 254]),
+      );
+      const receipt = await recordBuild(fixture.checkout, fixture.receipt);
+      if (fault === "missing") await NodeFSP.unlink(fixture.patch);
+      if (fault === "tampered") {
+        const bytes = await NodeFSP.readFile(fixture.patch);
+        bytes[0] ^= 1;
+        await NodeFSP.writeFile(fixture.patch, bytes);
+      }
+      if (fault === "current-binary") {
+        await NodeFSP.writeFile(
+          NodePath.join(fixture.checkout, "binary.bin"),
+          Buffer.from([0, 4, 2, 253]),
+        );
+        // Refresh only the legacy digest to isolate the current binary-byte check.
+        receipt.trackedPatchSha256 = patchDigest(
+          fixture.git("diff", "HEAD", "--", ".").toString("utf8").trim(),
+        );
+        await atomicJson(fixture.receipt, receipt);
+      }
+      if (fault === "metadata-bound") {
+        receipt.trackedPatchArtifact.bytes = 16 * 1024 * 1024 + 1;
+        await atomicJson(fixture.receipt, receipt);
+      }
+      await NodeAssert.rejects(
+        readBuildReceipt(fixture.checkout, fixture.receipt),
+        fault === "missing"
+          ? { code: "ENOENT" }
+          : fault === "tampered"
+            ? /artifact digest differs/
+            : fault === "current-binary"
+              ? /differs from current source/
+              : /exceeds its byte bound/,
+      );
+    });
+  });
+}
+
+NodeTest.test("patch collision preserves the existing file and publishes no receipt", async () => {
+  await withBuildReceiptFixture(async (fixture) => {
+    await NodeFSP.writeFile(fixture.patch, "preserved prior evidence");
+    await NodeAssert.rejects(recordBuild(fixture.checkout, fixture.receipt), { code: "EEXIST" });
+    NodeAssert.equal(await NodeFSP.readFile(fixture.patch, "utf8"), "preserved prior evidence");
+    await NodeAssert.rejects(NodeFSP.lstat(fixture.receipt), { code: "ENOENT" });
+  });
+});
+
+NodeTest.test("oversized binary diff publishes neither sidecar nor receipt", async () => {
+  await withBuildReceiptFixture(async (fixture) => {
+    // Incompressible bytes exceed the 16 MiB binary-patch limit;
+    // the ordinary binary summary stays small.
+    const binary = NodeCrypto.randomBytes(16 * 1024 * 1024);
+    binary[0] = 0;
+    await NodeFSP.writeFile(NodePath.join(fixture.checkout, "binary.bin"), binary);
+    await NodeAssert.rejects(
+      recordBuild(fixture.checkout, fixture.receipt),
+      (error) => error.code === "ENOBUFS" || error.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    );
+    await NodeAssert.rejects(NodeFSP.lstat(fixture.patch), { code: "ENOENT" });
+    await NodeAssert.rejects(NodeFSP.lstat(fixture.receipt), { code: "ENOENT" });
+  });
+});
 
 NodeTest.test(
   "renderer manifest refuses a stale source revision, tree or undeclared boundary",
