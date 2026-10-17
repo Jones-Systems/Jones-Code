@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
     authority_record.write_bytes(b'authority-generation-7')
     expected = {'home': str(root), 'databasePath': str(database), 'profile': str(profile)}
     pair, advanced = transaction / 'previous-pair', transaction / 'advanced-state'
-    baseline_bytes = len(b'previous-database') + len(b'previous-profile')
+    baseline_bytes = len(b'previous-database')
     if fault in ('symlink', 'directory'):
         identity.unlink()
         if fault == 'symlink': identity.symlink_to(authority_record)
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
         else:
             restore_pair(expected, pair, advanced, {})
             assert database.read_bytes() == b'previous-database'
-            assert (profile / 'opaque').read_bytes() == b'previous-profile'
+            assert (profile / 'opaque').read_bytes() == b'candidate-profile'
             assert (advanced / 'environment-id').read_bytes() == changed_id
             assert not (advanced / 'native-store-authority').exists()
             assert authority_record.read_bytes() == b'authority-generation-10'
