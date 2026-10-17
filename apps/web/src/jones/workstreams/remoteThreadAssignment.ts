@@ -200,6 +200,19 @@ export type RemoteWorkstreamCommandLedger = Map<
   { readonly environmentId: string; readonly ownerRegistry: string }
 >;
 
+/**
+ * True while a command sent through another environment may still change this binding's owner
+ * registry. Only an exact receipt read on that environment clears it; a later reload does not.
+ */
+export const hasUnresolvedRemoteCommand = (
+  commands: RemoteWorkstreamCommandLedger,
+  binding: T3WorkstreamBinding,
+): boolean => {
+  const ownerRegistry = ownerRegistryKey(binding);
+  for (const entry of commands.values()) if (entry.ownerRegistry === ownerRegistry) return true;
+  return false;
+};
+
 const waitForReceipt = (delayMs: number, signal?: AbortSignal): Promise<void> =>
   new Promise<void>((resolve, reject) => {
     signal?.throwIfAborted();
@@ -277,8 +290,8 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
   if (routes.environmentId !== thread.environmentId) throw new WorkstreamActionError("stale");
   const ownerRegistry = ownerRegistryKey(input.primary.binding);
   // An unreconciled command may already have changed this registry; Retry checks it first.
-  for (const entry of input.commands.values())
-    if (entry.ownerRegistry === ownerRegistry) throw new WorkstreamActionError("unknown");
+  if (hasUnresolvedRemoteCommand(input.commands, input.primary.binding))
+    throw new WorkstreamActionError("unknown");
   let commandAttempted = false;
   const refuse = (refusal: RemoteAssignmentRefusal) =>
     commandAttempted

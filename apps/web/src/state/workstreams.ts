@@ -55,6 +55,7 @@ import { requestEnvironmentWorkstreams } from "../jones/workstreams/environmentW
 import {
   assignRemoteNativeThread,
   environmentWorkstreamsRoutes,
+  hasUnresolvedRemoteCommand,
   ownerRegistryKey,
   reconcileRemoteWorkstreamCommands,
   type RemoteWorkstreamCommandLedger,
@@ -945,6 +946,9 @@ export function useWorkstreams(
       const authority = actionAuthorityKey(startedBinding);
       const startedGeneration = generation.current;
       if ([...unresolvedCommands.current.values()].includes(authority))
+        throw new WorkstreamActionError("unknown");
+      // A command sent through another environment can still change this same owner registry.
+      if (hasUnresolvedRemoteCommand(remoteCommands.current, startedBinding))
         throw new WorkstreamActionError("unknown");
       const controller = new AbortController();
       const operationRequest: BindingOperationRequest = {

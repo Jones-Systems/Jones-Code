@@ -68,6 +68,11 @@ const realSetTimeout = globalThis.setTimeout;
 const start = Date.parse("2026-09-30T12:00:00Z");
 
 const local = { environmentId: "env:a", id: "local" };
+const primarySource = {
+  source_instance_id: local.environmentId,
+  authority_namespace: "authority",
+  store_generation: 1,
+};
 const remote = { environmentId: "env:b", id: "remote" };
 const threads = [local, remote];
 const sha256Hex = async (text: string): Promise<string> =>
@@ -573,6 +578,133 @@ describe("assigning a thread from another environment", () => {
     environment.state.intercept = null;
     expect(await assignRemote()).toBeUndefined();
     expect(primarySubmits(shared)).toEqual([]);
+  });
+
+  it("holds primary writes until an unresolved remote command is reconciled", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    let lost: WorkstreamCommand | undefined;
+    environment.state.intercept = (call) => {
+      if (call.route === "submit" && lost === undefined) {
+        lost = call.request.payload?.command as WorkstreamCommand;
+        environment.apply(lost);
+        throw new RemoteEnvironmentAuthFetchError({ message: "response lost", cause: null });
+      }
+      return undefined;
+    };
+    expect(await assignRemote()).toBeDefined();
+    // An ordinary primary reload succeeds, but it does not resolve the remote command.
+    await settle(() => {
+      expect(latest.loading).toBe(false);
+      expect(latest.stale).toBe(false);
+      expect(latest.data?.binding.registryVersion).toBe(shared.state.version);
+    });
+
+    const primaryPosts = () => shared.state.calls.filter((call) => call.route === "submit").length;
+    const update = (commandId: string): WorkstreamCommand => ({
+      command_id: commandId,
+      expected_server_generation: data.binding.serverGeneration,
+      expected_registry_version: latest.data!.binding.registryVersion,
+      action: {
+        operation: "update_workstream",
+        workstream_id: "alpha",
+        expected_version: 3,
+        name: "renamed",
+        lifecycle: "active",
+        progress: { state: "unknown" },
+        sort_order: 0,
+      },
+    });
+    // The F-REV-1 path: the primary can register its own thread, so only the remote-command
+    // hold stops this assignment from submitting before Retry.
+    shared.state.intercept = (call) =>
+      call.route === "registrationContext"
+        ? {
+            ...shared.registration(),
+            sources: [{ ...environment.state.sources[0]!, ...primarySource }],
+          }
+        : undefined;
+    let assignmentFailure: unknown;
+    await act(async () => {
+      await latest.assignNativeThread!(local, "beta", {
+        commandId: async () => "primary-assign-1",
+      }).catch((cause: unknown) => {
+        assignmentFailure = cause;
+      });
+    });
+    // Restore the primary's ordinary context for the plain update.
+    shared.state.intercept = null;
+    let updateFailure: unknown;
+    await act(async () => {
+      await latest.submit(update("primary-update-1")).catch((cause: unknown) => {
+        updateFailure = cause;
+      });
+    });
+    expect(
+      shared.state.calls
+        .filter((call) => call.route === "submit")
+        .map(
+          (call) =>
+            (call.request.payload?.command as WorkstreamCommand | undefined)?.action.operation,
+        ),
+    ).toEqual([]);
+    expect(updateFailure).toMatchObject({ reason: "unknown" });
+    expect(assignmentFailure).toMatchObject({ reason: "unknown" });
+
+    const remoteCallsBeforeRetry = environment.state.calls.length;
+    environment.state.intercept = (call) =>
+      call.route === "command"
+        ? ({
+            command_id: call.request.params?.commandId,
+            owner_id: "owner",
+            actor: { principal_id: "principal-b" },
+            operation: lost!.action.operation,
+            request_sha256: "c".repeat(64),
+            server_generation: 7,
+            accepted_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            state: "committed",
+            registry_version: shared.state.version,
+            changed: true,
+            effects: { native_reference_id: "reference-b" },
+          } as unknown as WorkstreamReceipt)
+        : undefined;
+    await act(async () => latest.retry!());
+    expect(
+      environment.state.calls
+        .slice(remoteCallsBeforeRetry)
+        .map((call) => [call.environmentId, call.route, call.request.params?.commandId]),
+    ).toEqual([["env:b", "command", lost!.command_id]]);
+    await settle(() => expect(latest.loading).toBe(false));
+
+    shared.state.intercept = (call) => {
+      if (call.route !== "submit") return undefined;
+      const command = call.request.payload?.command as WorkstreamCommand;
+      shared.state.version += 1;
+      return {
+        command_id: command.command_id,
+        owner_id: "owner",
+        actor: { principal_id: "principal" },
+        operation: command.action.operation,
+        request_sha256: "c".repeat(64),
+        server_generation: 7,
+        accepted_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        state: "committed",
+        registry_version: shared.state.version,
+        changed: true,
+        effects: {},
+      } as unknown as WorkstreamReceipt;
+    };
+    let receipt: WorkstreamReceipt | undefined;
+    await act(async () => {
+      receipt = await latest.submit(update("primary-update-2"));
+    });
+    expect(receipt?.state).toBe("committed");
+    expect(primaryPosts()).toBe(1);
+    // The original remote POST was sent once and never again.
+    expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
   });
 
   it("keeps primary-environment assignment on the primary server", async () => {
