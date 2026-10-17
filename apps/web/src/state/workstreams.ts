@@ -1085,6 +1085,13 @@ export function useWorkstreams(
           refreshPrimary: refresh,
           // Remote access loss says nothing about primary access, so nothing is purged here.
           commandFailed: () => {
+            // A superseded or unmounted snapshot is replaced by its own reload instead.
+            if (
+              generation.current !== startedGeneration ||
+              !dataRef.current ||
+              actionAuthorityKey(dataRef.current.binding) !== authority
+            )
+              return;
             markStale();
             setError("Workstreams changed or are unavailable. Retry to reload current access.");
           },

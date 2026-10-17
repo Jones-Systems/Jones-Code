@@ -756,6 +756,93 @@ describe("assigning a thread from another environment", () => {
     expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
   });
 
+  it("keeps the primary read-only when the caller cancels after a remote submit", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    const controller = new AbortController();
+    let sent: WorkstreamCommand | undefined;
+    environment.state.intercept = (call) => {
+      if (call.route === "submit" && sent === undefined) {
+        sent = call.request.payload?.command as WorkstreamCommand;
+        environment.apply(sent);
+        controller.abort(new DOMException("Cancelled by the caller.", "AbortError"));
+        throw controller.signal.reason;
+      }
+      return undefined;
+    };
+
+    const rendersBeforeCancel = staleRenders.length;
+    let cancelled: unknown;
+    await act(async () => {
+      await latest.assignNativeThread!(remote, "beta", {
+        commandId: async () => "remote-cancelled-1",
+        signal: controller.signal,
+      }).catch((cause: unknown) => {
+        cancelled = cause;
+      });
+    });
+    expect(cancelled).toBeDefined();
+    expect(sent?.action.operation).toBe("register_reference");
+    // Cancellation does not undo a sent command: the primary is read-only until it reloads.
+    expect(staleRenders.slice(rendersBeforeCancel)).toContain(true);
+    await settle(() => expect(latest.loading).toBe(false));
+
+    // The ledger entry survives the cancellation, so writes wait for reconciliation.
+    const callsAfterCancel = environment.state.calls.length;
+    expect(await assignRemote()).toMatchObject({ reason: "unknown" });
+    let updateFailure: unknown;
+    await act(async () => {
+      await latest
+        .submit({
+          command_id: "primary-update-1",
+          expected_server_generation: data.binding.serverGeneration,
+          expected_registry_version: latest.data!.binding.registryVersion,
+          action: {
+            operation: "update_workstream",
+            workstream_id: "alpha",
+            expected_version: 3,
+            name: "renamed",
+            lifecycle: "active",
+            progress: { state: "unknown" },
+            sort_order: 0,
+          },
+        })
+        .catch((cause: unknown) => {
+          updateFailure = cause;
+        });
+    });
+    expect(updateFailure).toMatchObject({ reason: "unknown" });
+    expect(environment.state.calls.length).toBe(callsAfterCancel);
+    expect(primarySubmits(shared)).toEqual([]);
+
+    environment.state.intercept = (call) =>
+      call.route === "command"
+        ? ({
+            command_id: call.request.params?.commandId,
+            owner_id: "owner",
+            actor: { principal_id: "principal-b" },
+            operation: sent!.action.operation,
+            request_sha256: "c".repeat(64),
+            server_generation: 7,
+            accepted_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            state: "committed",
+            registry_version: shared.state.version,
+            changed: true,
+            effects: { native_reference_id: "reference-b" },
+          } as unknown as WorkstreamReceipt)
+        : undefined;
+    await act(async () => latest.retry!());
+    expect(
+      environment.state.calls
+        .slice(callsAfterCancel)
+        .map((call) => [call.environmentId, call.route, call.request.params?.commandId]),
+    ).toEqual([["env:b", "command", sent!.command_id]]);
+    // The cancelled POST was sent once and never again.
+    expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
+  });
+
   const expiredAssignment = (environmentId: string, threadId: string): SyntheticAssignment => ({
     environmentId,
     threadId,

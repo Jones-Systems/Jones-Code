@@ -272,8 +272,9 @@ export interface RemoteThreadAssignmentInput extends NativeThreadAssignmentOptio
   /** Reloads the primary index; the remote receipt is never placement proof. */
   readonly refreshPrimary: () => void;
   /**
-   * A failure after a command was sent may have changed the shared registry, so the primary
-   * snapshot becomes read-only until its reload. Earlier refusals changed nothing and leave it.
+   * A failure or cancellation after a command was sent may have changed the shared registry, so
+   * the primary snapshot becomes read-only until its reload. Earlier refusals changed nothing and
+   * leave it. The caller ignores this once its primary snapshot has been superseded.
    */
   readonly commandFailed: () => void;
   readonly now?: () => number;
@@ -411,7 +412,8 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
     try {
       return await operation(submit);
     } catch (cause) {
-      if (commandAttempted && !signal?.aborted) input.commandFailed();
+      // Cancelling after a submit does not undo it, so the primary still becomes read-only.
+      if (commandAttempted) input.commandFailed();
       throw cause;
     } finally {
       if (commandAttempted) input.refreshPrimary();
