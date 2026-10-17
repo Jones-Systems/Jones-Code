@@ -24,6 +24,7 @@ import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams
 import {
   routeWorkstreamsHttp,
   syntheticWorkstreams,
+  type SyntheticAssignment,
   type WorkstreamsHttpCall,
 } from "./workstreamsHttp.fixtures";
 
@@ -133,6 +134,10 @@ const captureCall = (run: (client: unknown, headers: unknown) => unknown): Works
 interface EnvironmentCall extends WorkstreamsHttpCall {
   readonly environmentId: string;
 }
+
+/** The synthetic control plane's membership ID for an assignment at a list position. */
+const membershipIdOf = (assignment: SyntheticAssignment, position: number) =>
+  assignment.membershipId ?? `membership-${String(position).padStart(5, "0")}`;
 
 /**
  * The thread's own environment: it shares the primary's control plane (one registry version,
@@ -247,8 +252,52 @@ function remoteEnvironment(shared: ReturnType<typeof syntheticWorkstreams>) {
         threadId: remote.id,
         workstreamId: action.workstream_id,
       });
+    } else if (action.operation === "remove_membership") {
+      const index = shared.state.assignments.findIndex(
+        (assignment, position) => membershipIdOf(assignment, position) === action.membership_id,
+      );
+      expect(index).toBeGreaterThanOrEqual(0);
+      shared.state.assignments.splice(index, 1);
     }
     return receipt(command);
+  };
+  /** Proof from this environment's own store: only a current attestation proves membership. */
+  const placementItems = (identities: readonly T3PlacementIdentity[]) => {
+    const reference = state.reference;
+    const evidence = reference?.registration.evidence;
+    if (
+      !reference ||
+      !evidence ||
+      reference.registration.state !== "attested" ||
+      Date.parse(reference.registration.expires_at ?? "") <= Date.now() ||
+      !identities.some(
+        (identity) =>
+          identity.source_instance_id === remote.environmentId &&
+          identity.native_thread_id === remote.id,
+      )
+    )
+      return [];
+    return shared.state.assignments.flatMap((assignment, position) =>
+      assignment.environmentId === remote.environmentId && assignment.threadId === remote.id
+        ? [
+            {
+              native_reference_id: reference.native_reference_id,
+              membership_id: membershipIdOf(assignment, position),
+              workstream_id: assignment.workstreamId,
+              kind: assignment.kind ?? "primary",
+              source_instance_id: remote.environmentId,
+              native_thread_id: remote.id,
+              attestation_version: reference.registration.attestation_version,
+              attested_at: reference.registration.attested_at!,
+              expires_at: reference.registration.expires_at!,
+              evidence_sha256: evidence.evidence_sha256,
+              authority_namespace: evidence.authority_namespace,
+              store_generation: evidence.store_generation,
+              source_binding_version: 1,
+            },
+          ]
+        : [],
+    );
   };
   const handle = async (call: EnvironmentCall): Promise<unknown> => {
     state.calls.push(call);
@@ -276,7 +325,7 @@ function remoteEnvironment(shared: ReturnType<typeof syntheticWorkstreams>) {
           page: {
             inventory_sha256: await sha256Hex(t3PlacementInventoryJson(identities)),
             context: placementContext(),
-            items: [],
+            items: placementItems(identities),
             next_cursor: null,
           },
           trustedEnvironments: [
@@ -705,6 +754,167 @@ describe("assigning a thread from another environment", () => {
     expect(primaryPosts()).toBe(1);
     // The original remote POST was sent once and never again.
     expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
+  });
+
+  const expiredAssignment = (environmentId: string, threadId: string): SyntheticAssignment => ({
+    environmentId,
+    threadId,
+    workstreamId: "alpha",
+    attestedAt: "2026-09-30T11:50:00Z",
+    expiresAt: "2026-09-30T11:55:00Z",
+  });
+  const recordedReference = (
+    environmentId: string,
+    threadId: string,
+    evidence: { readonly authority_namespace: string; readonly store_generation: number },
+    attestation = { attested_at: "2026-09-30T11:50:00Z", expires_at: "2026-09-30T11:55:00Z" },
+  ): NativeReference => ({
+    native_reference_id: "reference-00000",
+    owner_id: "owner",
+    identity: {
+      provider: "t3",
+      source_instance_id: environmentId,
+      native_id: threadId,
+      resource_kind: "thread",
+      id_kind: "internal",
+      account_provenance: { kind: "not_account_scoped" },
+    },
+    pr_locator: null,
+    registration: {
+      state: "attested",
+      attestation_version: 2,
+      ...attestation,
+      evidence: {
+        provider: "t3",
+        source_instance_id: environmentId,
+        native_id: threadId,
+        ...evidence,
+        evidence_sha256: "a".repeat(64),
+      },
+    },
+    created_at: "2026-09-30T11:00:00Z",
+    created_by: { principal_id: "owner" },
+    created_registry_version: 1,
+  });
+  const submitted = (calls: readonly WorkstreamsHttpCall[]) =>
+    calls
+      .filter((call) => call.route === "submit")
+      .map((call) => {
+        const action = (call.request.payload?.command as WorkstreamCommand).action;
+        return [
+          action.operation,
+          "membership_id" in action
+            ? action.membership_id
+            : "native_reference_id" in action
+              ? action.native_reference_id
+              : null,
+        ];
+      });
+
+  it("removes another environment's expired-proof primary through its recorded reference", async () => {
+    const shared = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [expiredAssignment(remote.environmentId, remote.id)],
+    });
+    await mountWith(shared);
+    expect(latest.assignmentIndex?.entries.get(keyOf(remote))?.primary?.membershipId).toBe(
+      "membership-00000",
+    );
+    const environment = remoteEnvironment(shared);
+    environment.state.reference = recordedReference(remote.environmentId, remote.id, {
+      authority_namespace: "authority-b",
+      store_generation: 3,
+    });
+
+    expect(await assignRemote(null)).toBeUndefined();
+
+    // Fresh proof first, then exactly one removal of the recorded membership.
+    expect(submitted(environment.state.calls)).toEqual([
+      ["verify_reference", "reference-00000"],
+      ["remove_membership", "membership-00000"],
+    ]);
+    expect(primarySubmits(shared)).toEqual([]);
+    await settle(() => expect(latest.assignmentIndex?.entries.get(keyOf(remote))).toBeUndefined());
+  });
+
+  it("removes a primary-environment expired-proof primary through its recorded reference", async () => {
+    const shared = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [expiredAssignment(local.environmentId, local.id)],
+    });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    const evidence = { authority_namespace: "authority", store_generation: 1 };
+    let reference = recordedReference(local.environmentId, local.id, evidence);
+    shared.state.intercept = (call) => {
+      switch (call.route) {
+        case "registrationContext":
+          return {
+            ...shared.registration(),
+            sources: [{ ...environment.state.sources[0]!, ...primarySource }],
+          };
+        case "reference":
+          return {
+            context: {
+              owner_id: "owner",
+              server_generation: 7,
+              registry_version: shared.state.version,
+            },
+            reference,
+            latest_observation: null,
+          };
+        case "submit": {
+          const command = call.request.payload?.command as WorkstreamCommand;
+          shared.state.version += 1;
+          if (command.action.operation === "verify_reference") {
+            const attestation = {
+              attested_at: "2026-09-30T11:59:00Z",
+              expires_at: "2026-09-30T12:04:00Z",
+            };
+            shared.state.assignments[0] = {
+              ...shared.state.assignments[0]!,
+              attestedAt: attestation.attested_at,
+              expiresAt: attestation.expires_at,
+            };
+            reference = recordedReference(local.environmentId, local.id, evidence, attestation);
+          } else if (command.action.operation === "remove_membership")
+            shared.state.assignments.splice(0, 1);
+          return {
+            command_id: command.command_id,
+            owner_id: "owner",
+            actor: { principal_id: "principal" },
+            operation: command.action.operation,
+            request_sha256: "c".repeat(64),
+            server_generation: 7,
+            accepted_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            state: "committed",
+            registry_version: shared.state.version,
+            changed: true,
+            effects: { native_reference_id: "reference-00000" },
+          } as unknown as WorkstreamReceipt;
+        }
+        default:
+          return undefined;
+      }
+    };
+
+    let nextId = 0;
+    let failure: unknown;
+    await act(async () => {
+      await latest.assignNativeThread!(local, null, {
+        commandId: async () => `local-command-${++nextId}`,
+      }).catch((cause: unknown) => {
+        failure = cause;
+      });
+    });
+
+    expect(failure).toBeUndefined();
+    expect(submitted(shared.state.calls)).toEqual([
+      ["verify_reference", "reference-00000"],
+      ["remove_membership", "membership-00000"],
+    ]);
+    expect(http.environment).not.toHaveBeenCalled();
   });
 
   it("keeps primary-environment assignment on the primary server", async () => {
