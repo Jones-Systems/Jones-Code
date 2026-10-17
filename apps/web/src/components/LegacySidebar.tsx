@@ -1,3 +1,8 @@
+import {
+  useThreadStatusFilter,
+  useThreadStatusSelection,
+} from "../jones/threadStatusFilter/useThreadStatusFilter";
+import type { ThreadStatusFilter } from "../jones/threadStatusFilter/model";
 import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
 import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { installLocalDesktopUpdate } from "../jones/updates/localDesktopUpdate";
@@ -192,9 +197,7 @@ import {
   buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   getSidebarThreadIdsToPrewarm,
-  filterSidebarOperatingThreads,
   filterSidebarV2VisibleThreads,
-  isSidebarThreadOperating,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
@@ -1150,7 +1153,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 });
 
 interface SidebarProjectItemProps {
-  activeOnly: boolean;
+  statusFilter: ThreadStatusFilter;
   project: SidebarProjectSnapshot;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
@@ -1288,17 +1291,18 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const sidebarThreadByKeyRef = useRef(sidebarThreadByKey);
   sidebarThreadByKeyRef.current = sidebarThreadByKey;
   const { excludedEnvironmentIds } = useSidebarEnvironmentFilter();
-  const projectThreads = useMemo(
+  const scopedThreads = useMemo(
     () =>
-      filterSidebarOperatingThreads(
-        filterSidebarV2VisibleThreads(
-          filterSidebarEnvironmentThreads(sidebarThreads, excludedEnvironmentIds),
-          null,
-        ),
-        props.activeOnly,
-        isSidebarThreadOperating,
+      filterSidebarV2VisibleThreads(
+        filterSidebarEnvironmentThreads(sidebarThreads, excludedEnvironmentIds),
+        null,
       ),
-    [sidebarThreads, props.activeOnly, excludedEnvironmentIds],
+    [sidebarThreads, excludedEnvironmentIds],
+  );
+  const { threads: projectThreads } = useThreadStatusSelection(
+    scopedThreads,
+    props.statusFilter,
+    "legacy",
   );
   const projectPreferenceKeys = useMemo(() => projectExpansionPreferenceKeys(project), [project]);
   const projectExpanded = useUiStateStore((state) =>
@@ -2969,7 +2973,7 @@ function SortableProjectItem({
 }
 
 interface SidebarProjectsContentProps {
-  activeOnly: boolean;
+  statusFilter: ThreadStatusFilter;
   showArm64IntelBuildWarning: boolean;
   arm64IntelBuildWarningDescription: string | null;
   desktopUpdateButtonAction: "download" | "install" | "none";
@@ -3164,7 +3168,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                   <SortableProjectItem key={project.projectKey} projectId={project.projectKey}>
                     {(dragHandleProps) => (
                       <SidebarProjectItem
-                        activeOnly={props.activeOnly}
+                        statusFilter={props.statusFilter}
                         project={project}
                         isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                         activeRouteThreadKey={
@@ -3198,7 +3202,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           <SidebarMenu ref={attachProjectListAutoAnimateRef}>
             {sortedProjects.map((project) => (
               <SidebarProjectListRow
-                activeOnly={props.activeOnly}
+                statusFilter={props.statusFilter}
                 key={project.projectKey}
                 project={project}
                 isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
@@ -3236,8 +3240,6 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
 export default function LegacySidebar() {
   const projects = useProjects();
   const allSidebarThreads = useThreadShells();
-  const [activeOnly, setActiveOnly] = useState(false);
-  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const visibleThreads = useMemo(
     () =>
@@ -3247,14 +3249,12 @@ export default function LegacySidebar() {
       ),
     [allSidebarThreads, excludedEnvironmentIds],
   );
-  const activeThreadCount = useMemo(
-    () => visibleThreads.filter(isSidebarThreadOperating).length,
-    [visibleThreads],
-  );
-  const sidebarThreads = useMemo(
-    () => filterSidebarOperatingThreads(visibleThreads, activeOnly, isSidebarThreadOperating),
-    [visibleThreads, activeOnly],
-  );
+  const {
+    statusFilter,
+    cycleStatusFilter,
+    counts: statusCounts,
+    threads: sidebarThreads,
+  } = useThreadStatusFilter(visibleThreads, "legacy");
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
@@ -3301,7 +3301,7 @@ export default function LegacySidebar() {
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   useEffect(() => {
     clearSelection();
-  }, [activeOnly, clearSelection, excludedEnvironmentKey]);
+  }, [statusFilter, clearSelection, excludedEnvironmentKey]);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const platform = navigator.platform;
   const shortcutModifiers = useShortcutModifierState();
@@ -3894,13 +3894,13 @@ export default function LegacySidebar() {
       ))}
       <SidebarChromeHeader
         isElectron={isElectron}
-        activeThreadCount={activeThreadCount}
-        activeOnly={activeOnly}
-        onToggleActiveOnly={toggleActiveOnly}
+        statusCounts={statusCounts}
+        statusFilter={statusFilter}
+        onCycleStatusFilter={cycleStatusFilter}
       />
 
       <SidebarProjectsContent
-        activeOnly={activeOnly}
+        statusFilter={statusFilter}
         showArm64IntelBuildWarning={showArm64IntelBuildWarning}
         arm64IntelBuildWarningDescription={arm64IntelBuildWarningDescription}
         desktopUpdateButtonAction={desktopUpdateButtonAction}
