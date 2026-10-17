@@ -4,7 +4,12 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import {
+  buildWorkstreamAssignmentIndex,
+  type WorkstreamAssignmentIndex,
+} from "@t3tools/client-runtime/state/workstreams";
 import type {
+  MembershipEpisode,
   WorkstreamCommand,
   WorkstreamReceipt,
   WorkstreamsRegistrationContextAcceptedResponse,
@@ -145,9 +150,14 @@ afterEach(async () => {
 async function render(
   visibleThreads: readonly EnvironmentThreadShell[] = threads,
   summaryThreads: readonly EnvironmentThreadShell[] = visibleThreads,
+  assignment: {
+    readonly assignmentIndex?: WorkstreamAssignmentIndex;
+    readonly verificationNow?: string;
+  } = {},
 ) {
   const group = (members: readonly EnvironmentThreadShell[]) =>
     groupNativeThreadsByWorkstream({
+      ...assignment,
       workstreams: controller.data?.items ?? [],
       placements: controller.placements?.items ?? [],
       threads: members,
@@ -1055,5 +1065,144 @@ describe("Workstream live thread summaries", () => {
       "thread",
     );
     expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();
+  });
+});
+
+describe("durable Workstream assignment display", () => {
+  const episode = (id: string, workstreamId: string): MembershipEpisode => ({
+    membership_id: id,
+    workstream_id: workstreamId,
+    native_reference_id: reference.native_reference_id,
+    kind: "primary",
+    opened: {
+      at: "2026-09-30T11:00:00Z",
+      actor: { principal_id: "owner" },
+      command_id: "command-open-0001",
+      registry_version: 1,
+    },
+    closed: null,
+  });
+  const index = (memberships: readonly MembershipEpisode[], complete = true) =>
+    buildWorkstreamAssignmentIndex({
+      ownerId: "owner",
+      registryVersion: 11,
+      references: [reference],
+      memberships,
+      complete,
+    });
+  const menuButton = (text: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent?.trim() === text,
+    );
+  const useIndex = (
+    assignmentIndex: WorkstreamAssignmentIndex,
+    changes: Partial<WorkstreamListView> = {},
+  ) => {
+    controller = {
+      ...controller,
+      placements: null,
+      placementInventory: { coverage: "complete", identities: [], json: "[]", totalIdentities: 0 },
+      assignmentIndex,
+      stale: false,
+      ...changes,
+    };
+    return { assignmentIndex, verificationNow: new Date(now).toISOString() };
+  };
+
+  it("groups and counts a recorded member without current proof and confirms Unassigned", async () => {
+    const options = useIndex(index([episode("membership", "alpha")]));
+    const running = statusThread("thread", "running");
+    await render([running, threads[1]!], [running, threads[1]!], options);
+    expect(
+      container.querySelector('[aria-label="alpha: 1 of 1 known threads running"]')?.textContent,
+    ).toBe("1/1");
+    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.textContent).not.toContain("Thread assignments are unavailable");
+    expect(container.textContent).not.toContain("Showing the last loaded Workstreams");
+  });
+
+  it("offers recorded membership choices without claiming the row is unchecked", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+    });
+    await render(threads, threads, options);
+    await openAssignment();
+    expect(document.body.textContent).not.toContain("Assignment unknown");
+    expect(document.body.textContent).not.toContain("Assignment not checked");
+    expect(menuButton("alpha (primary)")?.disabled).toBe(true);
+    await clickMenu("beta");
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "beta",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("never confirms Unassigned from an incomplete index", async () => {
+    const options = useIndex(index([episode("membership", "alpha")], false));
+    await render(threads, threads, options);
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.querySelector('[aria-label="Unassigned threads"]')).toBeNull();
+    expect(container.textContent).toContain("Some thread assignments could not be loaded");
+    expect(container.querySelector('[aria-label="Collapse alpha"]')).not.toBeNull();
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment unknown");
+  });
+
+  it("shows stale Workstreams read-only without confirming Unassigned", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+      stale: true,
+    });
+    await render(threads, threads, options);
+    expect(container.textContent).toContain(
+      "Showing the last loaded Workstreams. Refresh to update.",
+    );
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.querySelector('[aria-label="Workstream threads"]')?.textContent).toContain(
+      threads[0]!.title,
+    );
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!);
+    await release();
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    await openAssignment();
+    expect(menuButton("beta")?.disabled).toBe(true);
+    expect(menuButton("Unassigned (remove primary)")?.disabled).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+  });
+
+  it("warns about conflicting primaries and blocks every membership change", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(
+      index([episode("membership", "alpha"), episode("membership-beta", "beta")]),
+      { assignNativeThread: assignment },
+    );
+    await render(threads, threads, options);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "conflicting Workstream assignments",
+    );
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[0]!.title,
+    );
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).not.toBe("thread");
+    await release();
+    await openAssignment();
+    expect(document.body.textContent).toContain("Conflicting assignments; changes blocked");
+    for (const label of ["alpha", "beta", "Unassigned (remove primary)"])
+      expect(menuButton(label)?.disabled, label).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+    expect(controller.submit).not.toHaveBeenCalled();
   });
 });

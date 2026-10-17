@@ -1,6 +1,8 @@
 import {
   EnvironmentHttpConflictError,
+  T3_PLACEMENT_MAX_IDENTITIES,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
+  type T3PlacementIdentity,
   type WorkstreamDetail,
   type WorkstreamReadContext,
   type WorkstreamReceipt,
@@ -11,14 +13,15 @@ import {
   loadCompleteWorkstreamDetail,
   loadCompleteWorkstreamList,
   loadCompleteWorkstreamReferences,
+  mergeLivePlacements,
+  nativePlacementBatches,
   reconcileWorkstreamCommands,
-  nativePlacementInventory,
-  nativePlacementInventoryJson,
   reuseNativePlacementIdentitySnapshot,
   workstreamListErrorMessage,
   type WorkstreamDetailLoaders,
   type NativePlacementThread,
 } from "./workstreams";
+import { placements } from "../components/workstreams/nativeWorkstreamActions.fixtures";
 
 const binding = {
   registryId: "registry",
@@ -76,95 +79,90 @@ const detailCalls = (): Record<keyof WorkstreamDetailLoaders, Array<string | und
   references: [],
 });
 
-describe("complete Workstream list loading", () => {
-  it("projects only stable native identity pairs, preserves colon IDs and caps excess inventory", () => {
+describe("proof request batching", () => {
+  const requestBytes = (identities: readonly T3PlacementIdentity[]) =>
+    new TextEncoder().encode(JSON.stringify({ identities })).byteLength;
+  const canonical = (identities: readonly T3PlacementIdentity[]) =>
+    identities.map((entry) => JSON.stringify([entry.source_instance_id, entry.native_thread_id]));
+  const expectWithinCeilings = (batches: readonly (readonly T3PlacementIdentity[])[]) => {
+    for (const batch of batches) {
+      expect(batch.length).toBeGreaterThan(0);
+      expect(batch.length).toBeLessThanOrEqual(T3_PLACEMENT_MAX_IDENTITIES);
+      expect(requestBytes(batch)).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
+      expect(canonical(batch)).toEqual(canonical(batch).toSorted());
+    }
+  };
+
+  it("projects only stable identity pairs, preserves colon IDs and deduplicates", () => {
     const threads = [
       { environmentId: "a:b", id: "c", title: "private" },
       { environmentId: "a", id: "b:c", title: "private" },
     ];
-    const inventory = nativePlacementInventoryJson([...threads, threads[0]!]);
-    expect(JSON.parse(inventory)).toHaveLength(2);
-    expect(inventory).not.toContain("private");
-    expect(
-      nativePlacementInventoryJson(
-        [...threads].reverse().map((value) => ({ ...value, title: "changed" })),
-      ),
-    ).toBe(inventory);
-    const excessThreads = Array.from({ length: 20_000 }, (_, i) => ({
-      environmentId: "env",
-      id: String(i),
-    }));
-    const excessInventory = nativePlacementInventory(excessThreads);
-    expect(excessInventory.identities).toHaveLength(1_000);
-    expect(excessInventory.totalIdentities).toBe(20_000);
-    expect(excessInventory.coverage).toBe("partial");
-    expect(nativePlacementInventory([...excessThreads].reverse())).toEqual(excessInventory);
-    expect(nativePlacementInventory(threads).coverage).toBe("complete");
-
-    const byteBoundInventory = nativePlacementInventory(
-      Array.from({ length: 900 }, (_, i) => ({
-        environmentId: `environment-${String(i).padStart(3, "0")}`,
-        id: `${String(i).padStart(3, "0")}-${"x".repeat(508)}`,
-      })),
-    );
-    expect(byteBoundInventory.identities.length).toBeLessThan(900);
-    expect(byteBoundInventory.coverage).toBe("partial");
-    expect(
-      new TextEncoder().encode(JSON.stringify({ identities: byteBoundInventory.identities }))
-        .byteLength,
-    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
-    const nextIdentity = {
-      source_instance_id: `environment-${String(byteBoundInventory.identities.length).padStart(3, "0")}`,
-      native_thread_id: `${String(byteBoundInventory.identities.length).padStart(3, "0")}-${"x".repeat(508)}`,
-    };
-    expect(
-      new TextEncoder().encode(
-        JSON.stringify({ identities: [...byteBoundInventory.identities, nextIdentity] }),
-      ).byteLength,
-    ).toBeGreaterThan(T3_PLACEMENT_MAX_REQUEST_BYTES);
+    const batches = nativePlacementBatches([...threads, threads[0]!]);
+    expect(batches).toEqual([
+      [
+        { source_instance_id: "a", native_thread_id: "b:c" },
+        { source_instance_id: "a:b", native_thread_id: "c" },
+      ],
+    ]);
+    expect(JSON.stringify(batches)).not.toContain("private");
+    expect(nativePlacementBatches([...threads].reverse())).toEqual(batches);
+    expect(nativePlacementBatches([])).toEqual([]);
   });
 
-  it("retains the chosen tail identity within the cap without admitting absent identities", () => {
-    const threads = Array.from({ length: 4501 }, (_, i) => ({
+  it("requests every identity of a large inventory within the count ceiling", () => {
+    const threads = Array.from({ length: 4_600 }, (_, i) => ({
       environmentId: "env",
       id: String(i).padStart(5, "0"),
     }));
-    const chosen = threads[4500]!;
-    const initial = nativePlacementInventory(threads);
-    expect(initial.identities.some((identity) => identity.native_thread_id === chosen.id)).toBe(
-      false,
-    );
-    const retained = nativePlacementInventory(threads, chosen);
-    expect(retained.identities).toHaveLength(1000);
-    expect(
-      retained.identities.filter((identity) => identity.native_thread_id === chosen.id),
-    ).toHaveLength(1);
-    expect(retained.coverage).toBe("partial");
-    expect(retained.totalIdentities).toBe(4501);
-    expect(nativePlacementInventory(threads.toReversed(), chosen)).toEqual(retained);
-    expect(
-      nativePlacementInventory(threads, { ...chosen, environmentId: "remote" }).identities,
-    ).toEqual(initial.identities);
-    expect(
-      new TextEncoder().encode(JSON.stringify({ identities: retained.identities })).byteLength,
-    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
+    const batches = nativePlacementBatches(threads);
+    expect(batches.map((batch) => batch.length)).toEqual([1_000, 1_000, 1_000, 1_000, 600]);
+    expectWithinCeilings(batches);
+    expect(new Set(batches.flat().map((entry) => entry.native_thread_id)).size).toBe(4_600);
+    expect(nativePlacementBatches(threads.toReversed())).toEqual(batches);
   });
 
-  it("keeps a deterministic 1,000-identity selection for a large reversed inventory", () => {
-    const threads = Array.from({ length: 100_001 }, (_, index) => ({
-      environmentId: `environment-${String(index % 7).padStart(2, "0")}`,
-      id: `thread-${String(index).padStart(6, "0")}`,
+  it("splits by encoded bytes before the identity ceiling", () => {
+    const threads = Array.from({ length: 900 }, (_, i) => ({
+      environmentId: `environment-${String(i).padStart(3, "0")}`,
+      id: `${String(i).padStart(3, "0")}-${"x".repeat(508)}`,
     }));
-    const inventory = nativePlacementInventory([...threads].reverse());
-    const ordered = nativePlacementInventory(threads);
-
-    expect(inventory).toEqual(ordered);
-    expect(inventory.identities).toHaveLength(1_000);
-    expect(inventory.totalIdentities).toBe(100_001);
-    expect(inventory.coverage).toBe("partial");
+    const batches = nativePlacementBatches(threads);
+    expect(batches.length).toBeGreaterThan(1);
+    expectWithinCeilings(batches);
+    expect(batches.flat()).toHaveLength(900);
+    const [first, second] = batches;
+    // The first batch is full: one more identity would exceed the byte ceiling.
+    expect(requestBytes([...first!, second![0]!])).toBeGreaterThan(T3_PLACEMENT_MAX_REQUEST_BYTES);
   });
 
-  it("prioritizes unsettled identities then recently settled conversations without changing canonical inventory order", () => {
+  it("requests only accepted identities and always includes the preferred thread first", () => {
+    const threads = Array.from({ length: 4_501 }, (_, i) => ({
+      environmentId: "env",
+      id: String(i).padStart(5, "0"),
+    }));
+    const chosen = threads[4_500]!;
+    const indexed = new Set(
+      threads.slice(0, 2_000).map((entry) => JSON.stringify(["env", entry.id])),
+    );
+    const include = (key: string) => indexed.has(key);
+    const batches = nativePlacementBatches(threads, { include, preferred: chosen });
+    expectWithinCeilings(batches);
+    expect(batches.flat()).toHaveLength(2_001);
+    expect(batches[0]!.some((entry) => entry.native_thread_id === chosen.id)).toBe(true);
+    expect(nativePlacementBatches(threads.toReversed(), { include, preferred: chosen })).toEqual(
+      batches,
+    );
+    // A preferred thread that is not present natively is never admitted.
+    expect(
+      nativePlacementBatches(threads, {
+        include,
+        preferred: { ...chosen, environmentId: "remote" },
+      }).flat(),
+    ).toHaveLength(2_000);
+  });
+
+  it("orders batches by preference, activity and recency", () => {
     const settled = Array.from({ length: 1_005 }, (_, index) => ({
       environmentId: "env",
       id: `old-${String(index).padStart(4, "0")}`,
@@ -183,73 +181,34 @@ describe("complete Workstream list loading", () => {
       settledOverride: "active" as const,
       settledAt: "2025-01-01T00:00:00Z",
     };
-    const subagent = {
-      environmentId: "env",
-      id: "zzz-subagent",
-      lineage: { parentThreadId: "parent" },
-    };
-    const threads = [...settled, recent, active, subagent];
-    const inventory = nativePlacementInventory(threads);
-    const selected = inventory.identities.map((identity) => identity.native_thread_id);
-    expect(selected).toContain(active.id);
-    expect(selected).toContain(recent.id);
-    expect(selected).toContain(subagent.id);
-    expect(selected).not.toContain("old-1004");
-    expect(selected).toEqual([...selected].sort());
-    expect(inventory.coverage).toBe("partial");
-    expect(nativePlacementInventory(threads.toReversed())).toEqual(inventory);
+    const preferred = { ...settled[1_004]!, id: "zzz-preferred-old" };
+    const threads = [...settled, recent, active, preferred];
+    const batches = nativePlacementBatches(threads, { preferred });
+    expectWithinCeilings(batches);
+    const first = batches[0]!.map((entry) => entry.native_thread_id);
+    expect(first).toContain(preferred.id);
+    expect(first).toContain(active.id);
+    expect(first).toContain(recent.id);
+    expect(first).not.toContain("old-1004");
+    expect(batches.flat()).toHaveLength(threads.length);
+    expect(nativePlacementBatches(threads.toReversed(), { preferred })).toEqual(batches);
   });
 
-  it("retains a selected older settled thread while filling the remaining cap by activity", () => {
-    const active = Array.from({ length: 999 }, (_, index) => ({
-      environmentId: "env",
-      id: `active-${String(index).padStart(4, "0")}`,
-    }));
-    const recent = {
-      environmentId: "env",
-      id: "recent",
-      settledOverride: "settled" as const,
-      settledAt: "2026-10-17T12:00:00Z",
-    };
-    const preferred = {
-      ...recent,
-      id: "preferred-old",
-      settledAt: "2026-01-01T00:00:00Z",
-    };
-    const threads = [...active, recent, preferred];
-    const result = nativePlacementInventory(threads, preferred);
-    expect(result.identities).toHaveLength(1000);
-    expect(result.identities.map((entry) => entry.native_thread_id)).toEqual(
-      [...active.map((entry) => entry.id), preferred.id].sort(),
-    );
-    expect(nativePlacementInventory(threads.toReversed(), preferred)).toEqual(result);
-    expect(
-      nativePlacementInventory(threads).identities.map((entry) => entry.native_thread_id),
-    ).toContain(recent.id);
-  });
-
-  it("retains a selected settled identity when request bytes fill before the identity cap", () => {
-    const threads = Array.from({ length: 900 }, (_, index) => ({
-      environmentId: "env",
-      id: `${String(index).padStart(4, "0")}-${"x".repeat(508)}`,
-    }));
-    const preferred = {
-      ...threads[899]!,
-      settledOverride: "settled" as const,
-      settledAt: "2026-01-01T00:00:00Z",
-    };
-    const inventory = [...threads.slice(0, 899), preferred];
-    const result = nativePlacementInventory(inventory, preferred);
-    expect(result.identities.length).toBeLessThan(900);
-    expect(
-      result.identities.filter((entry) => entry.native_thread_id === preferred.id),
-    ).toHaveLength(1);
-    expect(
-      new TextEncoder().encode(JSON.stringify({ identities: result.identities })).byteLength,
-    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
-    expect(nativePlacementInventory(inventory.toReversed(), preferred)).toEqual(result);
-    const ids = result.identities.map((entry) => entry.native_thread_id);
-    expect(ids).toEqual([...ids].sort());
+  it("merges proof batches only when their contexts and trust snapshots agree", () => {
+    const first = { ...placements, items: [placements.items[0]!] };
+    const second = { ...placements, items: [placements.items[1]!] };
+    expect(mergeLivePlacements([])).toBeNull();
+    expect(mergeLivePlacements([first, second])?.items).toEqual(placements.items);
+    for (const changed of [
+      { ...second, context: { ...second.context, registry_version: 12 } },
+      { ...second, context: { ...second.context, authorization_revision: 2 } },
+      { ...second, readiness: "trust-provider-required" as const, trustedEnvironments: [] },
+      {
+        ...second,
+        trustedEnvironments: [{ ...second.trustedEnvironments[0]!, storeGeneration: 2 }],
+      },
+    ])
+      expect(mergeLivePlacements([first, changed])).toBeNull();
   });
 
   it("refreshes priority when settlement changes and keeps irrelevant shell updates stable", () => {
@@ -275,33 +234,6 @@ describe("complete Workstream list loading", () => {
     expect(reuseNativePlacementIdentitySnapshot(settled, recent)).toBe(recent);
   });
 
-  it("never sorts more placement candidates than the identity cap", () => {
-    const originalSort = Array.prototype.sort;
-    const sortedLengths: number[] = [];
-    const sort = vi.spyOn(Array.prototype, "sort").mockImplementation(function (
-      this: unknown[],
-      compareFn?: (a: unknown, b: unknown) => number,
-    ) {
-      sortedLengths.push(this.length);
-      if (this.length > 1_000) throw new Error(`sorted ${this.length} placement candidates`);
-      return originalSort.call(this, compareFn);
-    });
-
-    try {
-      const inventory = nativePlacementInventory(
-        Array.from({ length: 20_000 }, (_, index) => ({
-          environmentId: "environment",
-          id: String(20_000 - index),
-        })),
-      );
-      expect(inventory.totalIdentities).toBe(20_000);
-      expect(inventory.identities).toHaveLength(1_000);
-      expect(sortedLengths).toEqual([1_000, 1_000]);
-    } finally {
-      sort.mockRestore();
-    }
-  });
-
   it("reuses a large placement identity snapshot until identity membership changes", () => {
     const original = Array.from({ length: 100_001 }, (_, index) => ({
       environmentId: `environment-${index % 7}`,
@@ -316,7 +248,9 @@ describe("complete Workstream list loading", () => {
     expect(reuseNativePlacementIdentitySnapshot(original, minuteTick)).toBe(original);
     expect(reuseNativePlacementIdentitySnapshot(original, changed)).toBe(changed);
   });
+});
 
+describe("complete Workstream list loading", () => {
   it("loads across page boundaries before exposing an owner list", async () => {
     const cursors: Array<string | undefined> = [];
     const result = await loadCompleteWorkstreamList(async (cursor) => {

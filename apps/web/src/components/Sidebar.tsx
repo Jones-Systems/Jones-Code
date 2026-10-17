@@ -2992,11 +2992,19 @@ export default function Sidebar() {
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
+  // Stored assignments group immediately; only proof assurance follows the hook's clock.
+  const workstreamAssignmentInput = workstreamController.assignmentIndex
+    ? {
+        assignmentIndex: workstreamController.assignmentIndex,
+        verificationNow: workstreamController.verificationNow ?? snoozeNow,
+      }
+    : {};
   const workstreamGrouping = groupNativeThreadsByWorkstream({
     workstreams: workstreamController.data?.items ?? [],
     placements: workstreamController.placements?.items ?? [],
     threads: activeThreads,
     trustedNow: snoozeNow,
+    ...workstreamAssignmentInput,
     trustedEnvironments: new Map(
       (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
         value.environmentId,
@@ -3010,6 +3018,7 @@ export default function Sidebar() {
     placements: workstreamController.placements?.items ?? [],
     threads: environmentThreads,
     trustedNow: snoozeNow,
+    ...workstreamAssignmentInput,
     trustedEnvironments: new Map(
       (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
         value.environmentId,
