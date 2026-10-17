@@ -580,6 +580,20 @@ import { ATTACHMENT_ONLY_BOOTSTRAP_PROMPT } from "@t3tools/shared/composerContex
 import { recallableComposerPrompt } from "./chat/composerPromptHistory";
 import { observeResize } from "~/lib/observeResize";
 
+async function runImportedHistoryReviewWithCleanup(
+  review: () => Promise<void>,
+  onError: (error: unknown) => void,
+  cleanup: () => void,
+): Promise<void> {
+  try {
+    await review();
+  } catch (error) {
+    onError(error);
+  } finally {
+    cleanup();
+  }
+}
+
 const EMPTY_PROVIDERS: ServerProvider[] = [];
 const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_USAGE_LIMIT_SOURCES: UsageLimitSourceSnapshots = [];
@@ -6924,86 +6938,90 @@ export default function ChatView(props: ChatViewProps) {
       isServerThread &&
       !shouldQueueBehindActiveRun
     ) {
-      try {
-        const attachments = await turnAttachmentsPromise;
-        const fileBlockReason = readLiveAttachmentCapabilities().fileBlockReason;
-        if (fileBlockReason !== null) throw new Error(fileBlockReason);
-        const context = buildOutgoingMessageContext(
-          attachments.map((attachment, index) =>
-            "id" in attachment && attachment.id !== undefined
-              ? attachment.id
-              : composerAttachmentsSnapshot[index]!.id,
-          ),
-        );
-        const inlineContext =
-          appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
-            .capabilities.inlineMessageContext === true;
-        const unchanged = () =>
-          currentRouteThreadKeyRef.current === routeThreadKey &&
-          useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
-            submittedComposerDraft &&
-          promptRef.current === importedPromptSnapshot;
-        const prepared = await prepareImportedHistory({
-          environmentId,
-          input: {
-            commandId: CommandId.make(randomUUID()),
-            threadId: threadIdForSend,
-            message: {
-              role: "user",
-              messageId: messageIdForSend,
-              text:
-                context && !inlineContext
-                  ? serializeLegacyContextMessage({
-                      text: outgoingMessageText,
-                      records: context.records,
-                    })
-                  : outgoingMessageText,
-              attachments,
-              ...(context && inlineContext ? { context } : {}),
+      await runImportedHistoryReviewWithCleanup(
+        async () => {
+          const attachments = await turnAttachmentsPromise;
+          const fileBlockReason = readLiveAttachmentCapabilities().fileBlockReason;
+          if (fileBlockReason !== null) throw new Error(fileBlockReason);
+          const context = buildOutgoingMessageContext(
+            attachments.map((attachment, index) =>
+              "id" in attachment && attachment.id !== undefined
+                ? attachment.id
+                : composerAttachmentsSnapshot[index]!.id,
+            ),
+          );
+          const inlineContext =
+            appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment
+              .capabilities.inlineMessageContext === true;
+          const unchanged = () =>
+            currentRouteThreadKeyRef.current === routeThreadKey &&
+            useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
+              submittedComposerDraft &&
+            promptRef.current === importedPromptSnapshot;
+          const prepared = await prepareImportedHistory({
+            environmentId,
+            input: {
+              commandId: CommandId.make(randomUUID()),
+              threadId: threadIdForSend,
+              message: {
+                role: "user",
+                messageId: messageIdForSend,
+                text:
+                  context && !inlineContext
+                    ? serializeLegacyContextMessage({
+                        text: outgoingMessageText,
+                        records: context.records,
+                      })
+                    : outgoingMessageText,
+                attachments,
+                ...(context && inlineContext ? { context } : {}),
+              },
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: sendInteractionMode,
             },
-            modelSelection: ctxSelectedModelSelection,
-            runtimeMode,
-            interactionMode: sendInteractionMode,
-          },
-        });
-        if (prepared._tag !== "Success")
-          throw new Error("Imported history preparation is unavailable.");
-        const delivery = { type: "message" as const, command: prepared.value };
-        const reviewed = await reviewImportedHistory({
-          environmentId,
-          input: { threadId: threadIdForSend, delivery },
-        });
-        const review = resolveImportedHistoryReview(
-          reviewed._tag === "Success" ? reviewed.value : null,
-        );
-        if (unchanged())
-          setImportedChoice({
-            environmentId,
-            threadId: threadIdForSend,
-            reason: review.reason,
-            prepared:
-              review.status === "available"
-                ? {
-                    delivery,
-                    reviewedBasis: review.reviewedBasis,
-                    draftIdentity: `${routeThreadKey}:${messageIdForSend}`,
-                    unchanged,
-                  }
-                : null,
           });
-      } catch (error) {
-        if (currentRouteThreadKeyRef.current === routeThreadKey)
-          setImportedChoice({
+          if (prepared._tag !== "Success")
+            throw new Error("Imported history preparation is unavailable.");
+          const delivery = { type: "message" as const, command: prepared.value };
+          const reviewed = await reviewImportedHistory({
             environmentId,
-            threadId: threadIdForSend,
-            prepared: null,
-            reason:
-              error instanceof Error ? error.message : "Imported history review is unavailable.",
+            input: { threadId: threadIdForSend, delivery },
           });
-      } finally {
-        sendInFlightRef.current = false;
-        resetLocalDispatch();
-      }
+          const review = resolveImportedHistoryReview(
+            reviewed._tag === "Success" ? reviewed.value : null,
+          );
+          if (unchanged())
+            setImportedChoice({
+              environmentId,
+              threadId: threadIdForSend,
+              reason: review.reason,
+              prepared:
+                review.status === "available"
+                  ? {
+                      delivery,
+                      reviewedBasis: review.reviewedBasis,
+                      draftIdentity: `${routeThreadKey}:${messageIdForSend}`,
+                      unchanged,
+                    }
+                  : null,
+            });
+        },
+        (error) => {
+          if (currentRouteThreadKeyRef.current === routeThreadKey)
+            setImportedChoice({
+              environmentId,
+              threadId: threadIdForSend,
+              prepared: null,
+              reason:
+                error instanceof Error ? error.message : "Imported history review is unavailable.",
+            });
+        },
+        () => {
+          sendInFlightRef.current = false;
+          resetLocalDispatch();
+        },
+      );
       return;
     }
     if (multipleModelSelections !== null) {
@@ -7893,120 +7911,105 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
-  const onProviderModelSelect = useCallback(
-    (instanceId: ProviderInstanceId, model: string, options?: ComposerModelSelectOptions) => {
-      if (
-        !activeThread ||
-        isEnvironmentChanging ||
-        activeEnvironmentUnavailable ||
-        isRevertingCheckpoint
-      )
-        return;
-      // Look up the configured instance so model normalization and custom
-      // model lookup stay scoped to that exact instance. Unknown instance ids
-      // are rejected by returning early; the server remains authoritative too.
-      const configuredEntry = providerInstanceEntries.find(
-        (entry) => entry.instanceId === instanceId,
-      );
-      if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-      const entry = configuredEntry.snapshot;
-      const resolvedDriverKind = entry.driver;
-      if (
-        !supportsProviderSwitchingViaHandoff &&
-        lockedProvider !== null &&
-        resolvedDriverKind !== null &&
-        resolvedDriverKind !== lockedProvider
-      ) {
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-      if (
-        !supportsProviderSwitchingViaHandoff &&
-        !matchesProviderModelLock(
-          configuredEntry,
-          lockedProvider,
-          lockedContinuationGroupKey,
-          activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
-        )
-      ) {
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-      const resolvedModel = resolveAppModelSelectionForInstance(
-        instanceId,
-        settings,
-        providerStatuses,
-        model,
-      );
-      if (!resolvedModel) {
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-      // Resolve remembered traits first; a shortcut supplies its explicit effort
-      // before the complete model selection is persisted.
-      const store = useComposerDraftStore.getState();
-      const draft = store.getComposerDraft(composerDraftTarget);
-      const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
-      const currentSelection =
-        draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
-      const pickerSelection = resolveComposerPickerModelSelection({
-        instanceId,
-        model: resolvedModel,
-        currentSelection,
-        rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
-      });
-      const nextModelSelection = options?.effort
-        ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
-        : pickerSelection;
-      if (!nextModelSelection) return;
-      const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-        providers: providerStatuses,
-        hasStartedSession: activeRuntime !== null,
-        supportsProviderSwitchingViaHandoff,
-        currentModelSelection: activeThread.modelSelection,
-        currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
-        nextModelSelection,
-      });
-      if (modelChangeBlockReason) {
-        toastManager.add({
-          type: "warning",
-          title: modelChangeBlockReason.title,
-          description: modelChangeBlockReason.description,
-        });
-        if (options?.focusComposer !== false) scheduleComposerFocus();
-        return;
-      }
-      setComposerDraftModelSelection(
-        scopeThreadRef(activeThread.environmentId, activeThread.id),
-        nextModelSelection,
-        // A complete snapshot: an absent options field means "start from the
-        // model default", not "keep the previous model's options".
-        { explicit: true, replaceOptions: true },
-      );
-      setStickyComposerModelSelection(nextModelSelection);
+  const onProviderModelSelect = (
+    instanceId: ProviderInstanceId,
+    model: string,
+    options?: ComposerModelSelectOptions,
+  ) => {
+    if (
+      !activeThread ||
+      isEnvironmentChanging ||
+      activeEnvironmentUnavailable ||
+      isRevertingCheckpoint
+    )
+      return;
+    // Look up the configured instance so model normalization and custom
+    // model lookup stay scoped to that exact instance. Unknown instance ids
+    // are rejected by returning early; the server remains authoritative too.
+    const configuredEntry = providerInstanceEntries.find(
+      (entry) => entry.instanceId === instanceId,
+    );
+    if (!configuredEntry || !isProviderInstancePickerReady(configuredEntry)) {
       if (options?.focusComposer !== false) scheduleComposerFocus();
-    },
-    [
-      activeThread,
-      activeRuntime,
-      lockedProvider,
-      supportsProviderSwitchingViaHandoff,
-      lockedContinuationGroupKey,
-      providerInstanceEntries,
-      composerDraftTarget,
-      isEnvironmentChanging,
-      activeEnvironmentUnavailable,
-      isRevertingCheckpoint,
-      scheduleComposerFocus,
-      setComposerDraftModelSelection,
-      setStickyComposerModelSelection,
-      providerStatuses,
+      return;
+    }
+    const entry = configuredEntry.snapshot;
+    const resolvedDriverKind = entry.driver;
+    if (
+      !supportsProviderSwitchingViaHandoff &&
+      lockedProvider !== null &&
+      resolvedDriverKind !== null &&
+      resolvedDriverKind !== lockedProvider
+    ) {
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    if (
+      !supportsProviderSwitchingViaHandoff &&
+      !matchesProviderModelLock(
+        configuredEntry,
+        lockedProvider,
+        lockedContinuationGroupKey,
+        activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+      )
+    ) {
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    const resolvedModel = resolveAppModelSelectionForInstance(
+      instanceId,
       settings,
-    ],
-  );
+      providerStatuses,
+      model,
+    );
+    if (!resolvedModel) {
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    // Resolve remembered traits first; a shortcut supplies its explicit effort
+    // before the complete model selection is persisted.
+    const store = useComposerDraftStore.getState();
+    const draft = store.getComposerDraft(composerDraftTarget);
+    const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+    const currentSelection =
+      draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+    const pickerSelection = resolveComposerPickerModelSelection({
+      instanceId,
+      model: resolvedModel,
+      currentSelection,
+      rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
+    });
+    const nextModelSelection = options?.effort
+      ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
+      : pickerSelection;
+    if (!nextModelSelection) return;
+    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
+      providers: providerStatuses,
+      hasStartedSession: activeRuntime !== null,
+      supportsProviderSwitchingViaHandoff,
+      currentModelSelection: activeThread.modelSelection,
+      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
+      nextModelSelection,
+    });
+    if (modelChangeBlockReason) {
+      toastManager.add({
+        type: "warning",
+        title: modelChangeBlockReason.title,
+        description: modelChangeBlockReason.description,
+      });
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    setComposerDraftModelSelection(
+      scopeThreadRef(activeThread.environmentId, activeThread.id),
+      nextModelSelection,
+      // A complete snapshot: an absent options field means "start from the
+      // model default", not "keep the previous model's options".
+      { explicit: true, replaceOptions: true },
+    );
+    setStickyComposerModelSelection(nextModelSelection);
+    if (options?.focusComposer !== false) scheduleComposerFocus();
+  };
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;

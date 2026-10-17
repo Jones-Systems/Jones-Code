@@ -821,11 +821,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
         let renameStage = false;
         const renameCase = scenario.startsWith("rename_");
         const renameDone = yield* Deferred.make<void>();
+        const renameStarted = yield* Deferred.make<Fiber.Fiber<unknown, unknown>>();
         const oid = "a".repeat(40);
         const harness = makeHarness({
           workspaceRoot,
           renameBranch: (input) =>
             Effect.gen(function* () {
+              yield* Deferred.succeed(renameStarted, yield* Effect.fiber);
               const hooks = input.legacyPreparation;
               if (hooks === undefined)
                 return yield* Effect.die("Legacy rename must supply its exact journal");
@@ -1019,6 +1021,13 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
               }),
             ),
           );
+          if (scenario === "rename_verified") {
+            // Git completion precedes the background worker's thread metadata update.
+            yield* Deferred.await(renameStarted).pipe(
+              Effect.flatMap(Fiber.await),
+              Effect.timeout("5 seconds"),
+            );
+          }
           const projection = yield* threads.getThreadProjection(base.threadId);
           const preparation = projection.runs[0]!.legacyPreparation;
           assert.isDefined(

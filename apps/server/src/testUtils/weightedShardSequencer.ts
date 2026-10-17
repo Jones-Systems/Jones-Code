@@ -4,7 +4,10 @@ import * as NodePath from "node:path";
 
 import { BaseSequencer, type TestSpecification } from "vite-plus/test/node";
 
-import { resolveSequencerWeight, WEIGHTS_PATH_ENV } from "../../../../scripts/jones/server-shard-weights/envelope.ts";
+import {
+  resolveSequencerWeight,
+  WEIGHTS_PATH_ENV,
+} from "../../../../scripts/jones/server-shard-weights/envelope.ts";
 import shardWeights from "./shardWeights.json" with { type: "json" };
 
 // The median recorded file, for files added since the weights were recorded.

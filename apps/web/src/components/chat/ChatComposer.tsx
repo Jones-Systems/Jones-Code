@@ -2886,29 +2886,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [inlineRestingControlsHost, setInlineRestingControlsHost] = useState<HTMLDivElement | null>(
     null,
   );
-  const effectiveTraitsOptions = useMemo(
-    () =>
-      getComposerEffectiveTraitsOptions({
-        provider: selectedProvider,
-        instanceId: selectedInstanceId,
-        defaultModelSelection: activeProjectDefaultModelSelection,
-        defaultDriverKind: configuredDefaultDriverKind,
-        model: selectedModel,
-        models: selectedProviderModels,
-        modelOptions: composerModelOptions?.[selectedInstanceId],
-        planModeEnabled: settings.planModeEnabled,
-      }),
-    [
-      selectedProvider,
-      selectedInstanceId,
-      activeProjectDefaultModelSelection,
-      configuredDefaultDriverKind,
-      selectedModel,
-      selectedProviderModels,
-      composerModelOptions,
-      settings.planModeEnabled,
-    ],
-  );
+  const effectiveTraitsOptions = getComposerEffectiveTraitsOptions({
+    provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
+    model: selectedModel,
+    models: selectedProviderModels,
+    modelOptions: composerModelOptions?.[selectedInstanceId],
+    planModeEnabled: settings.planModeEnabled,
+  });
   const {
     controlsRef: restingComposerControlsRef,
     attachControls: attachRestingComposerControls,

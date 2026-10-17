@@ -1066,9 +1066,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
               ),
               ([enabled, active]) => succeeded(active) || succeeded(enabled),
             )
-          : succeeded(
-              yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]),
-            );
+          : succeeded(yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]));
       return yield* Effect.acquireUseRelease(
         // Every stop step is required when the service is to be restored: a
         // step that was fine to skip during uninstall would leave the server

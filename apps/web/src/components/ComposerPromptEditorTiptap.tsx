@@ -1364,7 +1364,9 @@ function ComposerPromptEditorTiptapInner(props: ComposerPromptEditorProps) {
             !literalText && importFragment
               ? importPastedComposerText(clipboardData, importFragment)
               : pastedText;
-          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`, text.length);
+          const tokens = literalText
+            ? []
+            : collectComposerPromptInlineTokens(`${text}\n`, text.length);
           const lastToken = tokens.at(-1);
           if (
             (lastToken?.type === "mention" || lastToken?.type === "skill") &&
