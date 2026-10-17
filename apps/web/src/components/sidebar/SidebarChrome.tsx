@@ -4,7 +4,8 @@ import { Link } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
+import { ThreadStatusFilterPill } from "../../jones/threadStatusFilter/ThreadStatusFilterPill";
+import type { ThreadStatusCounts, ThreadStatusFilter } from "../../jones/threadStatusFilter/model";
 import { SidebarWorkModePill } from "../../jones/workMode/SidebarWorkModePill";
 import { T3Wordmark } from "../T3Wordmark";
 import {
@@ -23,14 +24,14 @@ import { observeResize } from "~/lib/observeResize";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
-  activeThreadCount,
-  activeOnly,
-  onToggleActiveOnly,
+  statusCounts,
+  statusFilter,
+  onCycleStatusFilter,
 }: {
   isElectron: boolean;
-  activeThreadCount?: number;
-  activeOnly?: boolean;
-  onToggleActiveOnly?: () => void;
+  statusCounts?: ThreadStatusCounts;
+  statusFilter?: ThreadStatusFilter;
+  onCycleStatusFilter?: () => void;
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
@@ -44,7 +45,6 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       : null;
 
   return (
-    // The titlebar row, not a padded SidebarHeader: it aligns to the window controls.
     <div
       className={cn(
         "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 pr-3",
@@ -52,24 +52,20 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       )}
     >
       {backdropVariant ? <SidebarStageBackdrop variant={backdropVariant} /> : null}
-      {/* Match the fixed control's inset and border compensation inside the sheet's safe area. */}
       <div className="relative top-[calc(var(--workspace-controls-top)-env(safe-area-inset-top))] z-10 ml-[calc(var(--workspace-controls-left)+1px-env(safe-area-inset-left))] flex shrink-0 items-center md:hidden">
         <SidebarTrigger
-          // Over the stage artwork: the media viewer's control-on-imagery treatment.
           variant={backdropVariant ? "media-navigation" : "ghost"}
           className="relative top-auto translate-y-0"
           aria-label="Toggle main sidebar"
         />
       </div>
-      {/* One visible line: the pill wraps onto the clipped second line once it no longer fits.
-          The padding keeps the brand's focus ring inside the clip. */}
       <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
         <SidebarBrand onBackdrop={backdropVariant !== null} />
-        {onToggleActiveOnly ? (
-          <SidebarActiveThreadsPill
-            count={activeThreadCount ?? 0}
-            activeOnly={activeOnly ?? false}
-            onToggle={onToggleActiveOnly}
+        {onCycleStatusFilter ? (
+          <ThreadStatusFilterPill
+            counts={statusCounts ?? { working: 0, input: 0, done: 0 }}
+            filter={statusFilter ?? "all"}
+            onCycle={onCycleStatusFilter}
           />
         ) : null}
         <SidebarWorkModePill />
@@ -85,8 +81,6 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   );
 });
 
-// Measures the brand at its titlebar inset, plus the header's right padding and the
-// sidebar border, so the sidebar minimum follows font size, zoom and macOS window controls.
 export function SidebarBrandWidthProbe({
   onWidthChange,
 }: {
@@ -131,8 +125,6 @@ function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
 
 function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
   return (
-    // Center the visible capitals, without the font's ascender/descender space.
-    // Padding keeps ascenders and round-letter overshoot inside the truncation clip.
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
       <T3Wordmark aria-label="J3" className="h-[1cap] w-auto shrink-0" />
       <span
