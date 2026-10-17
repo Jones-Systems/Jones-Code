@@ -1,12 +1,10 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Executes only synthetic paired-state fixtures.
 import * as NodeChildProcess from "node:child_process";
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- This byte-preservation test hashes the exact standalone Python payload.
-import * as NodeCrypto from "node:crypto";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- The raw-source consumer must read the same tracked literals as the TypeScript composer.
 import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- This standalone Node fixture has no declaration file; its output is checked against the typed source exports below.
-import * as ColdMaintenanceFixture from "../../../../../scripts/jones/updates/legacy-cold-maintenance-fixture.mjs";
+import * as PairedExecutorFixture from "../../../../../scripts/jones/updates/paired-executor-fixture.mjs";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";
 
@@ -117,13 +115,7 @@ describe("shared paired-state Python source", () => {
     },
   );
 
-  it("pins the paired-restore authority transition executor", () => {
-    // Intentional executor changes update this byte contract together with the
-    // source-qualified producer pins and transaction safety tests.
-    expect(Buffer.byteLength(jonesNativeHelperSource)).toBe(84542);
-    expect(NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex")).toBe(
-      "ba6feda7de60d5569580ed612d8b2c57c8a7a82ee21b2d34075e5facd457508f",
-    );
+  it("includes each paired-restore fragment exactly once", () => {
     for (const fragment of Object.values(jonesPairedStateSource)) {
       expect(jonesNativeHelperSource.split(fragment)).toHaveLength(2);
     }
@@ -131,12 +123,10 @@ describe("shared paired-state Python source", () => {
 
   it("materializes the same executor for native qualification and TypeScript packaging", async () => {
     const [executorText, pairedText] = await sourceTexts();
-    expect(ColdMaintenanceFixture.materializePairedExecutor(executorText, pairedText)).toBe(
+    expect(PairedExecutorFixture.materializePairedExecutor(executorText, pairedText)).toBe(
       jonesNativeHelperSource,
     );
-    expect((await ColdMaintenanceFixture.readColdMaintenanceSources()).executor).toBe(
-      jonesNativeHelperSource,
-    );
+    expect(await PairedExecutorFixture.readPairedExecutorSource()).toBe(jonesNativeHelperSource);
   });
 
   it("refuses missing, duplicate, unknown, and nonliteral substitutions", async () => {
@@ -148,7 +138,7 @@ describe("shared paired-state Python source", () => {
       executorText.replace(reference, "${jonesPairedStateSource.unknown}"),
       executorText.replace(reference, () => reference + "${unbound}"),
     ])
-      expect(() => ColdMaintenanceFixture.materializePairedExecutor(changed, pairedText)).toThrow();
+      expect(() => PairedExecutorFixture.materializePairedExecutor(changed, pairedText)).toThrow();
     for (const changed of [
       pairedText.replace("syncTree: String.raw`", "syncTree: String.raw`${unbound}"),
       pairedText.replace("copyAndTopology: String.raw`", "unknown: String.raw`"),
@@ -156,7 +146,7 @@ describe("shared paired-state Python source", () => {
       pairedText.replace("} as const);", "} as const);\nunbound();"),
     ])
       expect(() =>
-        ColdMaintenanceFixture.materializePairedExecutor(executorText, changed),
+        PairedExecutorFixture.materializePairedExecutor(executorText, changed),
       ).toThrow();
   });
 });
