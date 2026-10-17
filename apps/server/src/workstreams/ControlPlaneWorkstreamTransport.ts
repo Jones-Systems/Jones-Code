@@ -34,6 +34,9 @@ import {
   T3PlacementRequest,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+  type WorkstreamsRegistrationContextVersion,
   WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
@@ -62,6 +65,7 @@ const TIMEOUT_MS = 15_000;
 const REGISTRATION_CONTEXT_ROUTE = "/workstreams/v1/t3/registration-context";
 
 export interface WorkstreamRegistrationTransport {
+  readonly registrationContextVersion: WorkstreamsRegistrationContextVersion | null;
   readonly activationState?: WorkstreamActivation["state"];
   readonly configuredBinding: Pick<
     T3WorkstreamBinding,
@@ -131,7 +135,8 @@ export function signWorkstreamRequest(input: {
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
     | typeof WORKSTREAM_APPEARANCE_CONTRACT
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
+    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL;
   readonly requestId: string;
   readonly idempotencyKey?: string;
   readonly sentAt: string;
@@ -210,6 +215,7 @@ async function readBoundedResponse(
 async function performRequest(input: {
   readonly fetch: WorkstreamFetch;
   readonly config: ControlPlaneWorkstreamActivation;
+  readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
   readonly method: "GET" | "POST";
   readonly target: string;
   readonly body: string;
@@ -218,6 +224,18 @@ async function performRequest(input: {
   readonly signal: AbortSignal;
 }): Promise<string> {
   const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
+  const registrationVersion =
+    input.registrationContextVersion === undefined ? "1.0.0" : input.registrationContextVersion;
+  if (registration && registrationVersion !== "1.0.0" && registrationVersion !== "2.0.0")
+    throw new BoundedTransportFailure("invalid_target");
+  const registrationProtocol =
+    registrationVersion === "2.0.0"
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL
+      : WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
+  const registrationManifest =
+    registrationVersion === "2.0.0"
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256
+      : WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256;
   const appearance =
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
@@ -246,7 +264,7 @@ async function performRequest(input: {
       : NodeCrypto.createHash("sha256").update(input.body).digest("hex");
   const signature = signWorkstreamRequest({
     contractVersion: registration
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+      ? registrationProtocol
       : appearance
         ? WORKSTREAM_APPEARANCE_CONTRACT
         : placement
@@ -272,14 +290,14 @@ async function performRequest(input: {
       "content-type": "application/json; charset=utf-8",
       "x-control-algorithm": "hmac-sha256-v1",
       "x-control-contract-version": registration
-        ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+        ? registrationProtocol
         : appearance
           ? WORKSTREAM_APPEARANCE_CONTRACT
           : placement
             ? T3_PLACEMENT_CONTRACT
             : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
       "x-control-contract-manifest": registration
-        ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
+        ? registrationManifest
         : appearance
           ? WORKSTREAM_APPEARANCE_MANIFEST
           : placement
@@ -319,10 +337,8 @@ async function performRequest(input: {
   }
   if (
     registration &&
-    (response.headers.get("x-control-contract-version") !==
-      WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
-      response.headers.get("x-control-contract-manifest") !==
-        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
+    (response.headers.get("x-control-contract-version") !== registrationProtocol ||
+      response.headers.get("x-control-contract-manifest") !== registrationManifest)
   ) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
@@ -357,6 +373,7 @@ export function makeControlPlaneWorkstreamTransport(
       activationState,
       transport: disabled(detail),
       registrationContext: {
+        registrationContextVersion: null,
         activationState,
         configuredBinding: null,
         readRegistrationContext: Effect.fail(
@@ -376,6 +393,7 @@ export function makeControlPlaneWorkstreamTransport(
     };
   }
   const config = activation.value;
+  const registrationContextVersion = config.registrationContextVersion ?? "1.0.0";
   const request = <S extends Schema.Top>(
     operation: string,
     method: "GET" | "POST",
@@ -449,6 +467,7 @@ export function makeControlPlaneWorkstreamTransport(
   return {
     activationState: "enabled",
     registrationContext: {
+      registrationContextVersion,
       activationState: "enabled",
       configuredBinding: {
         ownerId: config.ownerId,
@@ -464,6 +483,7 @@ export function makeControlPlaneWorkstreamTransport(
               config,
               method: "GET",
               target: REGISTRATION_CONTEXT_ROUTE,
+              registrationContextVersion,
               body: "",
               sentAt,
               signal,

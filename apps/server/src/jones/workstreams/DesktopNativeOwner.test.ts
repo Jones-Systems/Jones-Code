@@ -109,11 +109,13 @@ it.each(["current", "parent-eof", "replay", "wrong-path", "wrong-run"] as const)
 it("permanently loses qualification when the actual channel parent exits", async () => {
   const childScript = [
     "const {openDesktopNativeOwnerChannel}=await import(" + JSON.stringify(moduleUrl) + ");",
+    "const {writeSync,closeSync}=await import('node:fs');const parentPid=process.ppid;let timedOut=false;",
     "const channel=openDesktopNativeOwnerChannel({binding:" +
       JSON.stringify(binding) +
       ",assertCurrent(){}},8,9);",
-    "const deadline=setTimeout(()=>{channel.close();process.exitCode=2;},2000);",
-    "try{await channel.refresh();process.stdout.write('qualified\\n');await new Promise(resolve=>setTimeout(resolve,100));",
+    "const deadline=setTimeout(()=>{timedOut=true;channel.close();process.exitCode=2;},2000);",
+    "try{await channel.refresh();channel.assertCurrent();process.stdout.write('qualified\\n');writeSync(10,'qualified\\n');closeSync(10);",
+    "while(process.ppid===parentPid){if(timedOut)throw new Error('Channel parent did not exit');await new Promise(resolve=>setTimeout(resolve,1));}",
     "let refused=false;try{channel.assertCurrent();}catch{refused=true;}if(!refused)throw new Error('Dead parent remained qualified');",
     "let retryRefused=false;try{await channel.refresh();}catch{retryRefused=true;}if(!retryRefused)throw new Error('Dead parent reconnected');process.stdout.write('parent-loss-refused\\n');}",
     "finally{clearTimeout(deadline);channel.close();}",
@@ -122,10 +124,12 @@ it("permanently loses qualification when the actual channel parent exits", async
     "const {spawn}=await import('node:child_process');",
     "const child=spawn(process.execPath,['--input-type=module','-e'," +
       JSON.stringify(childScript) +
-      "],{stdio:['ignore',1,2,'ignore','ignore','ignore','ignore','ignore','pipe','pipe']});",
+      "],{stdio:['ignore',1,2,'ignore','ignore','ignore','ignore','ignore','pipe','pipe','pipe']});",
     "process.once('SIGTERM',()=>{child.kill('SIGKILL');child.once('close',()=>process.exit(1));});",
+    "child.once('close',()=>process.exit(1));",
+    "let acknowledgment='';child.stdio[10].on('data',data=>{acknowledgment+=String(data);if(acknowledgment==='qualified\\n')process.exit(0);});",
     "let buffer='';child.stdio[9].on('data',data=>{buffer+=String(data);const at=buffer.indexOf('\\n');if(at<0)return;",
-    "const request=JSON.parse(buffer.slice(0,at));child.stdio[8].write(JSON.stringify({...request,parentPid:process.pid,runId:'d'.repeat(64)})+'\\n',()=>process.exit(0));});",
+    "const request=JSON.parse(buffer.slice(0,at));child.stdio[8].write(JSON.stringify({...request,parentPid:process.pid,runId:'d'.repeat(64)})+'\\n');});",
   ].join("\n");
   const parent = NodeChildProcess.spawn(
     process.execPath,

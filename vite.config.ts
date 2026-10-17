@@ -78,6 +78,7 @@ export default defineConfig({
     ignorePatterns: [
       // Versioned contract manifests pin these schema bytes; whitespace changes break identity.
       "packages/contracts/contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json",
+      "packages/contracts/contracts/workstreams-registration-context/v2/**",
       "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
       ".repos/**",
       // Macroscope's glob-per-line ignore grammar, not Markdown: formatting

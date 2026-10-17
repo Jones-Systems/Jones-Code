@@ -10,6 +10,15 @@ import readmeRaw from "../../contracts/workstreams-registration-context/v1/READM
 import conformanceRaw from "../../contracts/workstreams-registration-context/v1/fixtures/conformance.json?raw";
 import negativesRaw from "../../contracts/workstreams-registration-context/v1/fixtures/negative-cases.json?raw";
 import schemaRaw from "../../contracts/workstreams-registration-context/v1/schemas/registration-context.schema.json?raw";
+import v2Manifest from "../../contracts/workstreams-registration-context/v2/manifest.json" with { type: "json" };
+import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
+import v2Negatives from "../../contracts/workstreams-registration-context/v2/fixtures/negative-cases.json" with { type: "json" };
+import v2Semantics from "../../contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json" with { type: "json" };
+import v2ReadmeRaw from "../../contracts/workstreams-registration-context/v2/README.md?raw";
+import v2ConformanceRaw from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json?raw";
+import v2NegativesRaw from "../../contracts/workstreams-registration-context/v2/fixtures/negative-cases.json?raw";
+import v2SemanticsRaw from "../../contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json?raw";
+import v2SchemaRaw from "../../contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json?raw";
 import * as Context from "./workstreamsRegistrationContext.ts";
 
 const rawFiles: Readonly<Record<string, string>> = {
@@ -72,5 +81,50 @@ describe("workstreams-registration-context/1.0.0 native contract", () => {
 
   it.each(negatives)("rejects $name without caller parse options", (fixture) => {
     expect(() => decode(fixture)).toThrow();
+  });
+});
+
+const v2RawFiles: Readonly<Record<string, string>> = {
+  "README.md": v2ReadmeRaw,
+  "fixtures/conformance.json": v2ConformanceRaw,
+  "fixtures/negative-cases.json": v2NegativesRaw,
+  "fixtures/semantic-cases.json": v2SemanticsRaw,
+  "schemas/registration-context.schema.json": v2SchemaRaw,
+};
+const decodeV2 = (fixture: Fixture) => {
+  if (fixture.schema === "#/$defs/Request")
+    return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextRequest)(fixture.value);
+  return Schema.decodeUnknownSync(Context.WorkstreamsRegistrationContextV2Response)(fixture.value);
+};
+
+describe("workstreams-registration-context/2.0.0 pinned consumer", () => {
+  it.each(v2Manifest.files)("preserves producer bytes for $path", ({ path, sha256 }) => {
+    const bytes = v2RawFiles[path];
+    if (bytes === undefined) throw new Error(`Uncovered manifest file: ${path}`);
+    expect(NodeCrypto.createHash("sha256").update(bytes).digest("hex")).toBe(sha256);
+  });
+
+  it("pins the producer and exact family manifest independently of v1", () => {
+    expect(Context.WORKSTREAMS_REGISTRATION_CONTEXT_V2_PRODUCER_COMMIT).toBe(
+      "0817d23ca2547c5ff8b88b0034e6e2b1de0dd431",
+    );
+    expect(v2Manifest.contract_version).toBe(Context.WORKSTREAMS_REGISTRATION_CONTEXT_V2_VERSION);
+    const digestInput = v2Manifest.files.map(({ path, sha256 }) => `${sha256}  ${path}\n`).join("");
+    expect(NodeCrypto.createHash("sha256").update(digestInput).digest("hex")).toBe(
+      Context.WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+    );
+    expect(v2Manifest.manifest_sha256).toBe(
+      Context.WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+    );
+    expect(v2Conformance.contract_version).toBe("2.0.0");
+    expect(v2Negatives.contract_version).toBe("2.0.0");
+    expect(v2Semantics.contract_version).toBe("2.0.0");
+  });
+
+  it.each(v2Conformance.cases)("decodes $name", (fixture) => {
+    expect(decodeV2(fixture)).toEqual(fixture.value);
+  });
+  it.each([...v2Negatives.cases, ...v2Semantics.cases])("rejects $name", (fixture) => {
+    expect(() => decodeV2(fixture)).toThrow();
   });
 });

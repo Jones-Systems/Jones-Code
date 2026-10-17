@@ -2,7 +2,7 @@ import type {
   T3WorkstreamListResult,
   WorkstreamReadContext,
   WorkstreamReferencePage,
-  WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
 import type { LiveT3Placements } from "@t3tools/client-runtime/state/workstreams";
 import type { WorkstreamListView } from "../../state/workstreams";
@@ -12,14 +12,14 @@ export interface WorkstreamActionSnapshot {
   readonly data: T3WorkstreamListResult;
   readonly references: WorkstreamReferencePage;
   readonly placements: LiveT3Placements | null;
-  readonly registrationContext: WorkstreamsRegistrationContextResponse | null;
+  readonly registrationContext: WorkstreamsRegistrationContextAcceptedResponse | null;
 }
 
 export interface WorkstreamReferenceController extends Pick<
   WorkstreamListView,
   "data" | "loading" | "runBindingOperation" | "loadDetail" | "loadReference"
 > {
-  readonly registrationContext: WorkstreamsRegistrationContextResponse | null;
+  readonly registrationContext: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot: (options?: {
     readonly signal?: AbortSignal;
   }) => Promise<WorkstreamActionSnapshot>;

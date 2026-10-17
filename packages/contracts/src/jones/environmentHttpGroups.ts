@@ -58,7 +58,7 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
-import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
+import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
   WorkstreamsNativeAttestationRequest,
@@ -347,7 +347,7 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
         headers: OptionalBearerHeaders,
-        success: WorkstreamsRegistrationContextResponse,
+        success: WorkstreamsRegistrationContextAcceptedResponse,
         error: [
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,

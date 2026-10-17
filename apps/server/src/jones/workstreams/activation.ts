@@ -1,3 +1,4 @@
+import type { WorkstreamsRegistrationContextVersion } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Startup-only private-file reads require no-follow descriptors and POSIX identity checks.
 import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Resolve the fixed installation-owned activation path without shell expansion.
@@ -10,6 +11,7 @@ export interface ControlPlaneWorkstreamActivation {
   readonly authorizationRevision: number;
   readonly keyId: string;
   readonly signingSecret: string;
+  readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion;
 }
 
 export type WorkstreamActivation =
@@ -42,6 +44,9 @@ export function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation)
     (config.baseUrl.pathname === "/" || config.baseUrl.pathname === "") &&
     Number.isSafeInteger(config.authorizationRevision) &&
     config.authorizationRevision > 0 &&
+    (config.registrationContextVersion === undefined ||
+      config.registrationContextVersion === "1.0.0" ||
+      config.registrationContextVersion === "2.0.0") &&
     headerValues.every((value) => value.length > 0 && !/[\r\n]/.test(value)) &&
     decodeSigningSecret(config.signingSecret) !== null
   );
@@ -61,26 +66,39 @@ const ENVIRONMENT_KEYS = [
   "T3_WORKSTREAM_SIGNING_SECRET",
   "T3_WORKSTREAM_AUTHORIZATION_REVISION",
 ] as const;
+const REGISTRATION_VERSION_KEY = "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION";
 const MAX_BYTES = 65_536;
 const invalid = (): WorkstreamActivation => ({ state: "invalid" });
 
 export function activationFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): WorkstreamActivation {
-  if (ENVIRONMENT_KEYS.every((key) => environment[key] === undefined)) return { state: "disabled" };
+  const registrationContextVersion = environment[REGISTRATION_VERSION_KEY];
+  if (
+    ENVIRONMENT_KEYS.every((key) => environment[key] === undefined) &&
+    registrationContextVersion === undefined
+  )
+    return { state: "disabled" };
+  if (
+    registrationContextVersion !== undefined &&
+    registrationContextVersion !== "1.0.0" &&
+    registrationContextVersion !== "2.0.0"
+  )
+    return invalid();
   const [raw, ownerId, principalId, keyId, signingSecret, rawRevision] = ENVIRONMENT_KEYS.map(
     (key) => environment[key],
   );
   if (!raw || !ownerId || !principalId || !keyId || !signingSecret || !rawRevision)
     return invalid();
   try {
-    const value = {
+    const value: ControlPlaneWorkstreamActivation = {
       baseUrl: new URL(raw),
       ownerId,
       principalId,
       keyId,
       signingSecret,
       authorizationRevision: Number(rawRevision),
+      ...(registrationContextVersion === undefined ? {} : { registrationContextVersion }),
     };
     return hasCanonicalActivation(value) ? { state: "enabled", value } : invalid();
   } catch {
@@ -92,14 +110,18 @@ function parseActivation(bytes: Buffer): WorkstreamActivation {
   const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  if (lines.length !== ENVIRONMENT_KEYS.length) return invalid();
+  if (lines.length !== ENVIRONMENT_KEYS.length && lines.length !== ENVIRONMENT_KEYS.length + 1)
+    return invalid();
   const environment: NodeJS.ProcessEnv = {};
   for (const line of lines) {
     const equals = line.indexOf("=");
     if (equals < 1) return invalid();
     const key = line.slice(0, equals);
     const value = line.slice(equals + 1);
-    if (!ENVIRONMENT_KEYS.some((allowed) => allowed === key) || Object.hasOwn(environment, key))
+    if (
+      (!ENVIRONMENT_KEYS.some((allowed) => allowed === key) && key !== REGISTRATION_VERSION_KEY) ||
+      Object.hasOwn(environment, key)
+    )
       return invalid();
     environment[key] = value;
   }

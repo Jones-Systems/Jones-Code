@@ -11,7 +11,7 @@ import {
   EnvironmentScopeRequiredError,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
-import { WorkstreamsRegistrationContextResponse } from "@t3tools/contracts";
+import { WorkstreamsRegistrationContextAcceptedResponse } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -29,14 +29,17 @@ import { expect, it } from "vite-plus/test";
 import { createRegistrationContextHandler } from "./http.ts";
 import {
   makeRegistrationFixture,
-  response,
+  makeV2RegistrationFixture,
+  v2Response,
+  t3Source,
   githubSource,
+  response,
   fixtureTransportError,
 } from "./testFixtures.ts";
 
 class TestGroup extends HttpApiGroup.make("registrationContext").add(
   HttpApiEndpoint.get("context", "/api/workstreams/registration-context", {
-    success: WorkstreamsRegistrationContextResponse,
+    success: WorkstreamsRegistrationContextAcceptedResponse,
     error: [
       EnvironmentScopeRequiredError,
       EnvironmentHttpBadRequestError,
@@ -219,6 +222,18 @@ it("upstream failures return fixed environment errors without origins, credentia
     for (const secret of ["private-origin", "private-header", "private-session"])
       expect(text).not.toContain(secret);
     expect(result.headers.get("cache-control")).toBe("private, no-store");
+  } finally {
+    await app.dispose();
+  }
+});
+
+it("encodes the selected v2 protocol while exposing only this environment and non-native sources", async () => {
+  const fixture = makeV2RegistrationFixture();
+  const app = makeApp(fixture);
+  try {
+    const result = await app.handler(readRequest());
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ ...v2Response, sources: [githubSource, t3Source] });
   } finally {
     await app.dispose();
   }
