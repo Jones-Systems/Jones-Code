@@ -142,6 +142,144 @@ it("ignores a late registration failure from a superseded read without starting 
   expect(http.run).toHaveBeenCalledTimes(4);
 });
 
+it("reloads the list and context together when registration recovery observes a newer registry", async () => {
+  vi.useFakeTimers();
+  const initialConnection = registry.get(connection);
+  const nextVersion = data.binding.registryVersion + 1;
+  const updatedData = { ...data, binding: { ...data.binding, registryVersion: nextVersion } };
+  const updatedRegistration = { ...registration, registry_version: nextVersion };
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockRejectedValueOnce(unavailable)
+    .mockResolvedValueOnce(updatedRegistration)
+    .mockResolvedValueOnce(updatedData)
+    .mockResolvedValueOnce(updatedRegistration);
+  await act(() => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  expect(latest.registrationContext).toBeNull();
+  await act(() => vi.advanceTimersByTimeAsync(2_000));
+  expect(latest.data).toEqual(updatedData);
+  expect(latest.registrationContext).toEqual(updatedRegistration);
+  expect(latest.loading).toBe(false);
+  expect(latest.error).toBeNull();
+  expect(http.run).toHaveBeenCalledTimes(5);
+  expect(registry.get(connection)).toBe(initialConnection);
+});
+
+it("shares the finite recovery budget between outages and repeated registry changes", async () => {
+  vi.useFakeTimers();
+  http.run.mockResolvedValueOnce(data).mockRejectedValueOnce(unavailable);
+  for (let advance = 1; advance <= 5; advance += 1) {
+    const version = data.binding.registryVersion + advance;
+    http.run.mockResolvedValueOnce({ ...registration, registry_version: version });
+    if (advance < 5)
+      http.run.mockResolvedValueOnce({
+        ...data,
+        binding: { ...data.binding, registryVersion: version },
+      });
+  }
+  await act(() => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  await act(() => vi.advanceTimersByTimeAsync(31_000));
+  expect(http.run).toHaveBeenCalledTimes(11);
+  expect(latest.data?.binding.registryVersion).toBe(data.binding.registryVersion + 4);
+  expect(latest.registrationContext).toBeNull();
+  expect(latest.loading).toBe(false);
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(http.run).toHaveBeenCalledTimes(11);
+});
+
+it.each([
+  { owner_id: `${registration.owner_id}-other` },
+  { principal_id: `${registration.principal_id}-other` },
+  { authorization_revision: registration.authorization_revision + 1 },
+  { server_generation: `${registration.server_generation}-other` },
+])(
+  "does not turn a registry change with an authority mismatch into a retry: %j",
+  async (mismatch) => {
+    vi.useFakeTimers();
+    http.run.mockResolvedValueOnce(data).mockResolvedValueOnce({
+      ...registration,
+      registry_version: registration.registry_version + 1,
+      ...mismatch,
+    });
+    await act(() => {
+      renderer = create(
+        <RegistryContext.Provider value={registry}>
+          <MountedWorkstreams />
+        </RegistryContext.Provider>,
+      );
+    });
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(http.run).toHaveBeenCalledTimes(2);
+    expect(latest.registrationContext).toBeNull();
+    expect(latest.loading).toBe(false);
+  },
+);
+
+it("fences a late list reload after a registry mismatch when refresh supersedes it", async () => {
+  vi.useFakeTimers();
+  let resolveReload!: (value: typeof data) => void;
+  const interrupted = new Promise<typeof data>((resolve) => {
+    resolveReload = resolve;
+  });
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce({ ...registration, registry_version: registration.registry_version + 1 })
+    .mockReturnValueOnce(interrupted)
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce(registration);
+  await act(() => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  await act(() => vi.advanceTimersByTimeAsync(1_000));
+  const signal = http.run.mock.calls[2]?.[1]?.signal;
+  await act(() => latest.refresh());
+  expect(signal?.aborted).toBe(true);
+  expect(latest.registrationContext).toEqual(registration);
+  await act(() => resolveReload(data));
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(latest.data).toEqual(data);
+  expect(latest.registrationContext).toEqual(registration);
+  expect(http.run).toHaveBeenCalledTimes(5);
+});
+
+it("hides the previous list when authorization rejects a coherent reload", async () => {
+  vi.useFakeTimers();
+  const denied = new EnvironmentHttpUnauthorizedError({ message: "authorization revoked" });
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce({ ...registration, registry_version: registration.registry_version + 1 })
+    .mockRejectedValueOnce(denied);
+  await act(() => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(latest.data).toBeNull();
+  expect(latest.registrationContext).toBeNull();
+  expect(latest.error).toBe(denied.message);
+  expect(http.run).toHaveBeenCalledTimes(3);
+});
+
 it("stops automatic reads after a bounded outage and permits an explicit retry", async () => {
   vi.useFakeTimers();
   http.run.mockRejectedValue(unavailable);

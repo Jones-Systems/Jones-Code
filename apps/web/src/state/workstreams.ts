@@ -94,6 +94,8 @@ const waitForRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener("abort", abort, { once: true });
   });
 
+class WorkstreamRegistryVersionChanged extends Error {}
+
 async function withTransientReadRecovery<A>(
   load: () => Promise<A>,
   signal: AbortSignal,
@@ -107,7 +109,11 @@ async function withTransientReadRecovery<A>(
     } catch (cause) {
       throwIfAborted(signal);
       // CP outages share the opaque internal-error response; never retry reads indefinitely.
-      if (!isInternalReadError(cause) || cause.reason !== "internal_error" || retry === 5)
+      if (
+        retry === 5 ||
+        (!(cause instanceof WorkstreamRegistryVersionChanged) &&
+          (!isInternalReadError(cause) || cause.reason !== "internal_error"))
+      )
         throw cause;
       await waitForRetry(1_000 * 2 ** retry, signal);
     }
@@ -505,38 +511,56 @@ export function useWorkstreams(
     setPlacements(null);
     setRegistrationContext(null);
     setLoading(true);
-    void withTransientReadRecovery(
-      () =>
-        loadCompleteWorkstreamList(
-          (cursor) =>
-            request(
-              (client) =>
-                client.workstreams.list({
-                  headers: {},
-                  payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-                }),
-              controller.signal,
-            ),
-          { signal: controller.signal },
-        ),
-      controller.signal,
-    )
+    const loadList = () =>
+      loadCompleteWorkstreamList(
+        (cursor) =>
+          request(
+            (client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            controller.signal,
+          ),
+        { signal: controller.signal },
+      );
+    void withTransientReadRecovery(loadList, controller.signal)
       .then(async (value) => {
         if (generation.current !== current) return;
-        const normalized = { ...value, items: [...orderWorkstreamMetadata(value.items)] };
+        let normalized = { ...value, items: [...orderWorkstreamMetadata(value.items)] };
         metadataCache.write(normalized);
         setData(metadataCache.read(normalized.binding));
         setError(null);
-        void withTransientReadRecovery(
-          () =>
-            request(
-              (client) => client.workstreams.registrationContext({ headers: {} }),
-              controller.signal,
-            ),
-          controller.signal,
-        ).then(
+        let reloadList = false;
+        await withTransientReadRecovery(async () => {
+          if (reloadList) {
+            const updated = await loadList();
+            if (generation.current !== current || controller.signal.aborted) return null;
+            normalized = { ...updated, items: [...orderWorkstreamMetadata(updated.items)] };
+            metadataCache.write(normalized);
+            setData(metadataCache.read(normalized.binding));
+            setPlacements(null);
+          }
+          const context = await request(
+            (client) => client.workstreams.registrationContext({ headers: {} }),
+            controller.signal,
+          );
+          if (
+            context.owner_id === normalized.binding.ownerId &&
+            context.principal_id === normalized.binding.principalId &&
+            context.authorization_revision === normalized.binding.authorizationRevision &&
+            context.server_generation === normalized.binding.serverGeneration &&
+            context.registry_version !== normalized.binding.registryVersion
+          ) {
+            // Refresh both reads within this budget; authority mismatches never trigger recovery.
+            reloadList = true;
+            throw new WorkstreamRegistryVersionChanged();
+          }
+          return context;
+        }, controller.signal).then(
           (context) => {
-            if (generation.current !== current || controller.signal.aborted) return;
+            if (context === null || generation.current !== current || controller.signal.aborted)
+              return;
             if (
               context.owner_id === normalized.binding.ownerId &&
               context.principal_id === normalized.binding.principalId &&
@@ -546,10 +570,12 @@ export function useWorkstreams(
             )
               setRegistrationContext(context);
           },
-          () => {
+          (cause: unknown) => {
             if (generation.current === current) setRegistrationContext(null);
+            if (reloadList && !(cause instanceof WorkstreamRegistryVersionChanged)) throw cause;
           },
         );
+        if (generation.current !== current || controller.signal.aborted) return;
         if (placementsEnabled) {
           try {
             const projection = await loadLiveT3Placements(normalized, identities, () =>
