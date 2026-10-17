@@ -3,6 +3,15 @@
 T3 Code runs coding agents on your computer and lets you control them from its
 desktop, web, or mobile app. Set up the machine where the agents will work first.
 
+> **Jones Code:** every installer on this page installs upstream T3 Code, not
+> Jones Code. That includes the `install.sh` and `install.ps1` scripts, `npx t3`,
+> GitHub Releases, package managers, and the mobile store apps. Jones Code Mac
+> builds are unsigned preview artifacts. See
+> [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
+> for how they install and update. The upstream macOS app uses the same bundle
+> identifier as Jones Code. If both are installed, verify which app opens
+> `t3code://` links and app lookups before using them.
+
 ## Requirements
 
 You need an installed, authenticated provider before starting a thread. You can
