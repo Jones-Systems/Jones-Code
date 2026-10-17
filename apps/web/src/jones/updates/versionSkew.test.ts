@@ -104,6 +104,43 @@ describe("Jones client update notice", () => {
     }
   });
 
+  it.each([
+    ["0.0.45-preview.20261010.1+client", "0.0.45-preview.20261011.2+server"],
+    ["0.0.45-preview.20261010.1+client", "0.1.0-preview.20261011.2+server"],
+    ["0.1.0-preview.20261010.1+client", "0.0.45-preview.20261011.2+server"],
+    ["0.0.45-preview.20261010.1", "0.1.0-preview.20261011.2+server"],
+  ])(
+    "keeps preview source policy for client %s and server %s with build metadata",
+    (client, server) => {
+      expect(isJonesPreviewBuildPair(client, server)).toBe(true);
+      expect(
+        resolveJonesClientUpdateNotice(server, client, {
+          clientSourceSha: "a".repeat(40),
+          serverSourceSha: "b".repeat(40),
+        }),
+      ).toMatchObject({
+        kind: "preview-source-difference",
+        clientVersion: client,
+        serverVersion: server,
+        hint: "Client and server use different Jones preview sources. Which source is newer is unknown.",
+      });
+      for (const sources of [
+        { clientSourceSha: "a".repeat(40), serverSourceSha: "a".repeat(40) },
+        { clientSourceSha: "a".repeat(40), serverSourceSha: undefined },
+        { clientSourceSha: undefined, serverSourceSha: "b".repeat(40) },
+      ]) {
+        expect(resolveJonesClientUpdateNotice(server, client, sources)).toBeNull();
+      }
+      expect(resolveVersionMismatch(server, client)).toBeNull();
+      expect(resolveVersionMismatch(server, client, "ahead")).toBeNull();
+      expect(resolveVersionMismatch(server, client, "behind")).toMatchObject({
+        clientVersion: client,
+        serverVersion: server,
+        hint: "A newer Jones source is available. Use the qualified update controls for this host.",
+      });
+    },
+  );
+
   it.each([undefined, "", "abc", "g".repeat(40), "a".repeat(40), "A".repeat(40)])(
     "keeps equal or invalid preview source %s quiet",
     (serverSourceSha) => {

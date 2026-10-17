@@ -3,7 +3,10 @@ import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 const previewBuild = /-preview\.\d{8}\.\d+(?:\.\d+)?$/;
 
 export function isJonesPreviewBuildPair(clientVersion: string, serverVersion: string): boolean {
-  return previewBuild.test(clientVersion) && previewBuild.test(serverVersion);
+  return (
+    previewBuild.test(clientVersion.replace(/\+.*/, "")) &&
+    previewBuild.test(serverVersion.replace(/\+.*/, ""))
+  );
 }
 
 export const JONES_CLIENT_UPDATE_HINT =
