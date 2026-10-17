@@ -985,6 +985,14 @@ export function useWorkstreams(
       const submitCommand = async (command: WorkstreamCommand) => {
         assertCurrentBinding();
         if (staleRef.current) throw new WorkstreamActionError("stale");
+        // Checked again at the POST: an overlapping operation may have sent a command since entry.
+        if (
+          [...unresolvedCommands.current].some(
+            ([commandId, key]) => commandId !== command.command_id && key === authority,
+          ) ||
+          hasUnresolvedRemoteCommand(remoteCommands.current, startedBinding)
+        )
+          throw new WorkstreamActionError("unknown");
         commandAttempted = true;
         unresolvedCommands.current.set(command.command_id, authority);
         let receipt = await request(
@@ -1089,6 +1097,8 @@ export function useWorkstreams(
           commands: remoteCommands.current,
           loadCompleteList: (load) => loadCompleteWorkstreamList(load, options),
           refreshPrimary: refresh,
+          primaryCommandUnresolved: () =>
+            [...unresolvedCommands.current.values()].includes(authority),
           // Remote access loss says nothing about primary access, so nothing is purged here.
           commandFailed: () => {
             // A superseded or unmounted snapshot is replaced by its own reload instead.

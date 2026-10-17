@@ -207,9 +207,11 @@ export type RemoteWorkstreamCommandLedger = Map<
 export const hasUnresolvedRemoteCommand = (
   commands: RemoteWorkstreamCommandLedger,
   binding: T3WorkstreamBinding,
+  exceptCommandId?: string,
 ): boolean => {
   const ownerRegistry = ownerRegistryKey(binding);
-  for (const entry of commands.values()) if (entry.ownerRegistry === ownerRegistry) return true;
+  for (const [commandId, entry] of commands)
+    if (commandId !== exceptCommandId && entry.ownerRegistry === ownerRegistry) return true;
   return false;
 };
 
@@ -277,6 +279,8 @@ export interface RemoteThreadAssignmentInput extends NativeThreadAssignmentOptio
    * leave it. The caller ignores this once its primary snapshot has been superseded.
    */
   readonly commandFailed: () => void;
+  /** True while a primary-environment command may still change the primary's owner registry. */
+  readonly primaryCommandUnresolved: () => boolean;
   readonly now?: () => number;
 }
 
@@ -389,6 +393,12 @@ export async function assignRemoteNativeThread(input: RemoteThreadAssignmentInpu
   ): Promise<A> => {
     const submit = async (command: WorkstreamCommand) => {
       input.check();
+      // Checked again at the POST: an overlapping operation may have sent a command since entry.
+      if (
+        hasUnresolvedRemoteCommand(input.commands, input.primary.binding, command.command_id) ||
+        input.primaryCommandUnresolved()
+      )
+        throw new WorkstreamActionError("unknown");
       commandAttempted = true;
       input.commands.set(command.command_id, {
         environmentId: routes.environmentId,

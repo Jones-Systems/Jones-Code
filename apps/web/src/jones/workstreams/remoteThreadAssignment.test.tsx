@@ -843,6 +843,168 @@ describe("assigning a thread from another environment", () => {
     expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
   });
 
+  describe("when operations overlap before their submits", () => {
+    const deferred = <A,>() => {
+      let resolve!: (value: A) => void;
+      const promise = new Promise<A>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const committed = (command: WorkstreamCommand, registryVersion: number): WorkstreamReceipt =>
+      ({
+        command_id: command.command_id,
+        owner_id: "owner",
+        actor: { principal_id: "principal" },
+        operation: command.action.operation,
+        request_sha256: "c".repeat(64),
+        server_generation: 7,
+        accepted_at: new Date().toISOString(),
+        completed_at: new Date().toISOString(),
+        state: "committed",
+        registry_version: registryVersion,
+        changed: true,
+        effects: { native_reference_id: "reference-00000" },
+      }) as unknown as WorkstreamReceipt;
+    const remoteSubmits = (environment: ReturnType<typeof remoteEnvironment>) =>
+      environment.state.calls.filter((call) => call.route === "submit");
+    /** Starts an assignment that waits at its first command ID until the gate opens. */
+    const startGated = (
+      thread: { readonly environmentId: string; readonly id: string },
+      prefix: string,
+    ) => {
+      const gate = deferred<void>();
+      const outcome: { reached: boolean; failure?: unknown; done: boolean } = {
+        reached: false,
+        done: false,
+      };
+      let nextId = 0;
+      void latest.assignNativeThread!(thread, "beta", {
+        commandId: async () => {
+          outcome.reached = true;
+          await gate.promise;
+          return `${prefix}-${++nextId}`;
+        },
+      })
+        .catch((cause: unknown) => {
+          outcome.failure = cause;
+        })
+        .finally(() => {
+          outcome.done = true;
+        });
+      return { gate, outcome };
+    };
+    const primaryCanRegister = (
+      shared: ReturnType<typeof syntheticWorkstreams>,
+      environment: ReturnType<typeof remoteEnvironment>,
+    ) =>
+      ({
+        ...shared.registration(),
+        sources: [{ ...environment.state.sources[0]!, ...primarySource }],
+      }) as unknown;
+
+    it("refuses a gated primary submit while a remote command is unknown", async () => {
+      const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+      await mountWith(shared);
+      const environment = remoteEnvironment(shared);
+      shared.state.intercept = (call) =>
+        call.route === "registrationContext" ? primaryCanRegister(shared, environment) : undefined;
+      const primary = startGated(local, "primary");
+      await settle(() => expect(primary.outcome.reached).toBe(true));
+
+      // The remote command is sent and its response held, so its effect is unknown.
+      const held = deferred<WorkstreamReceipt>();
+      let sent: WorkstreamCommand | undefined;
+      environment.state.intercept = (call) => {
+        if (call.route !== "submit" || sent !== undefined) return undefined;
+        sent = call.request.payload!.command as WorkstreamCommand;
+        return held.promise;
+      };
+      const remoteAssignment = startGated(remote, "remote");
+      remoteAssignment.gate.resolve();
+      await settle(() => expect(sent).toBeDefined());
+
+      primary.gate.resolve();
+      await settle(() => expect(primary.outcome.done).toBe(true));
+      expect(primarySubmits(shared)).toEqual([]);
+      expect(primary.outcome.failure).toMatchObject({ reason: "unknown" });
+
+      held.resolve(environment.apply(sent!) as WorkstreamReceipt);
+      await settle(() => expect(remoteAssignment.outcome.done).toBe(true));
+      expect(remoteSubmits(environment)).toHaveLength(1);
+      expect(primarySubmits(shared)).toEqual([]);
+    });
+
+    it("refuses a gated remote submit while a primary command is unknown", async () => {
+      const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+      await mountWith(shared);
+      const environment = remoteEnvironment(shared);
+      const remoteAssignment = startGated(remote, "remote");
+      await settle(() => expect(remoteAssignment.outcome.reached).toBe(true));
+
+      // The primary command is sent and its response held, so its effect is unknown.
+      const held = deferred<WorkstreamReceipt>();
+      let sent: WorkstreamCommand | undefined;
+      shared.state.intercept = (call) => {
+        if (call.route === "registrationContext") return primaryCanRegister(shared, environment);
+        if (call.route !== "submit" || sent !== undefined) return undefined;
+        sent = call.request.payload!.command as WorkstreamCommand;
+        return held.promise;
+      };
+      const primary = startGated(local, "primary");
+      primary.gate.resolve();
+      await settle(() => expect(sent).toBeDefined());
+
+      remoteAssignment.gate.resolve();
+      await settle(() => expect(remoteAssignment.outcome.done).toBe(true));
+      expect(remoteSubmits(environment)).toEqual([]);
+      expect(remoteAssignment.outcome.failure).toMatchObject({ reason: "unknown" });
+
+      shared.state.version += 1;
+      held.resolve(committed(sent!, shared.state.version));
+      await settle(() => expect(primary.outcome.done).toBe(true));
+      expect(primarySubmits(shared)).toHaveLength(1);
+      expect(remoteSubmits(environment)).toEqual([]);
+    });
+
+    it("refuses a second gated remote submit while the first remote command is unknown", async () => {
+      const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+      await mountWith(shared);
+      const environment = remoteEnvironment(shared);
+      const held = deferred<WorkstreamReceipt>();
+      let sent: WorkstreamCommand | undefined;
+      environment.state.intercept = (call) => {
+        if (call.route !== "submit" || sent !== undefined) return undefined;
+        sent = call.request.payload!.command as WorkstreamCommand;
+        return held.promise;
+      };
+      const first = startGated(remote, "remote-a");
+      const second = startGated(remote, "remote-b");
+      await settle(() => {
+        expect(first.outcome.reached).toBe(true);
+        expect(second.outcome.reached).toBe(true);
+      });
+
+      first.gate.resolve();
+      await settle(() => expect(sent).toBeDefined());
+      second.gate.resolve();
+      await settle(() => expect(second.outcome.done).toBe(true));
+      expect(second.outcome.failure).toMatchObject({ reason: "unknown" });
+      expect(remoteSubmits(environment)).toHaveLength(1);
+
+      held.resolve(environment.apply(sent!) as WorkstreamReceipt);
+      await settle(() => expect(first.outcome.done).toBe(true));
+      // The first operation continues with its own commands; the second never sent one.
+      expect(sent?.command_id).toBe("remote-a-1");
+      expect(
+        remoteSubmits(environment).map(
+          (call) => (call.request.payload!.command as WorkstreamCommand).command_id,
+        ),
+      ).not.toContain("remote-b-1");
+      expect(primarySubmits(shared)).toEqual([]);
+    });
+  });
+
   const expiredAssignment = (environmentId: string, threadId: string): SyntheticAssignment => ({
     environmentId,
     threadId,
