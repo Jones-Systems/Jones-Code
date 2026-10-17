@@ -3830,6 +3830,133 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   });
   const capacityPreamble = (threadId: string, turnId: string, prompt = "Work") =>
     codexReplayPreamble({ nativeThreadId: threadId, nativeTurnId: turnId, prompt });
+  it.effect.each(["ack-first", "completion-first"] as const)(
+    "recovers sibling admission after a late start acknowledgement and completion (%s)",
+    (order) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `late-start-${order}`;
+        const nativeTurnId = "late-native-turn";
+        const sent = yield* Deferred.make<void>();
+        let sends = 0;
+        let complete: ((payload: unknown) => Effect.Effect<unknown>) | undefined;
+        const entries = capacityPreamble(nativeThreadId, nativeTurnId).map((entry) =>
+          entry.type === "emit_inbound" && entry.label === "turn/start"
+            ? { ...entry, afterMs: 31_000 }
+            : entry,
+        );
+        entries.push(
+          ...capacityPreamble("new-sibling", "unused")
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, 4)),
+          {
+            type: "expect_outbound",
+            frame: {
+              id: 5,
+              method: "thread/resume",
+              params: {
+                threadId: "saved-sibling",
+                excludeTurns: true,
+                config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            frame: {
+              id: 5,
+              result: { thread: { id: "saved-sibling", updatedAt: 1782622440 }, model: "gpt-5.4" },
+            },
+          },
+        );
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+          undefined,
+          (method) =>
+            method === "turn/start"
+              ? Effect.sync(() => {
+                  sends++;
+                }).pipe(Effect.andThen(Deferred.succeed(sent, undefined)))
+              : Effect.void,
+          undefined,
+          {
+            onNotification: (method, handler) => {
+              if (method === "turn/completed") complete = handler;
+            },
+          },
+        );
+        const newSibling = () =>
+          harness.runtime.ensureThread({
+            threadId: ThreadId.make("new-sibling"),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          });
+        const savedSibling = {
+          ...harness.providerThread,
+          id: ProviderThreadId.make("saved-sibling"),
+          appThreadId: ThreadId.make("saved-sibling"),
+          nativeThreadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: "saved-sibling",
+            strength: "strong" as const,
+          },
+        };
+        const resumeSibling = () => harness.runtime.resumeThread({ providerThread: savedSibling });
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("timed-out-attempt"),
+              text: "Work",
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(sent);
+        yield* TestClock.adjust("30 seconds");
+        assert.equal((yield* Fiber.join(start))._tag, "Failure");
+        assert.equal((yield* newSibling().pipe(Effect.result))._tag, "Failure");
+        assert.equal((yield* resumeSibling().pipe(Effect.result))._tag, "Failure");
+        const notifyComplete = (threadId: string, turnId: string) =>
+          complete!({
+            threadId,
+            turn: makeCodexReplayTurn({ id: turnId, status: "completed" }),
+          });
+        yield* notifyComplete("wrong-conversation", nativeTurnId);
+        yield* notifyComplete(nativeThreadId, "wrong-turn");
+        if (order === "completion-first") yield* notifyComplete(nativeThreadId, nativeTurnId);
+        assert.equal((yield* newSibling().pipe(Effect.result))._tag, "Failure");
+        yield* TestClock.adjust("1 second");
+        if (order === "ack-first") {
+          assert.equal((yield* newSibling().pipe(Effect.result))._tag, "Failure");
+          yield* notifyComplete(nativeThreadId, nativeTurnId);
+        }
+        const opened = yield* newSibling().pipe(Effect.result);
+        assert.equal(
+          opened._tag,
+          "Success",
+          "matching late evidence must restore new-conversation admission",
+        );
+        const resumed = yield* resumeSibling().pipe(Effect.result);
+        assert.equal(
+          resumed._tag,
+          "Success",
+          "matching late evidence must restore saved-conversation admission",
+        );
+        assert.equal(sends, 1, "the timed-out prompt is never replayed");
+        assert.lengthOf(
+          harness.terminalEvents(),
+          0,
+          "the failed start is not resurrected as a provider result",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
   const awaitCapacityDelay = (
     harness: { readonly events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> },
     ordinal = 1,

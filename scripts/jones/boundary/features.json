@@ -550,9 +550,10 @@
       "id": "codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
-      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded. The original turn/start RPC remains owned by its exact producer after caller timeout. A bounded Jones ledger lifts admission only after matching late acknowledgement and terminal evidence, without replaying or reviving the failed attempt. Shared adapter hooks retain producer scope and admission ownership; integration tests stay in the upstream replay harness to prove real RPC correlation and new/resumed sibling admission."
     },
     {
       "id": "connection-diagnostics",
