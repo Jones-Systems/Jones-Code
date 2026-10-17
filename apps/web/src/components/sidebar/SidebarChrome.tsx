@@ -4,7 +4,8 @@ import { Link } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { SidebarActiveThreadsPill } from "./SidebarActiveThreadsPill";
+import { ThreadStatusFilterPill } from "../../jones/threadStatusFilter/ThreadStatusFilterPill";
+import type { ThreadStatusCounts, ThreadStatusFilter } from "../../jones/threadStatusFilter/model";
 import { SidebarWorkModePill } from "../../jones/workMode/SidebarWorkModePill";
 import { T3Wordmark } from "../T3Wordmark";
 import {
@@ -23,14 +24,14 @@ import { observeResize } from "~/lib/observeResize";
 
 export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   isElectron,
-  activeThreadCount,
-  activeOnly,
-  onToggleActiveOnly,
+  statusCounts,
+  statusFilter,
+  onCycleStatusFilter,
 }: {
   isElectron: boolean;
-  activeThreadCount?: number;
-  activeOnly?: boolean;
-  onToggleActiveOnly?: () => void;
+  statusCounts?: ThreadStatusCounts;
+  statusFilter?: ThreadStatusFilter;
+  onCycleStatusFilter?: () => void;
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
@@ -60,11 +61,11 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
       </div>
       <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
         <SidebarBrand onBackdrop={backdropVariant !== null} />
-        {onToggleActiveOnly ? (
-          <SidebarActiveThreadsPill
-            count={activeThreadCount ?? 0}
-            activeOnly={activeOnly ?? false}
-            onToggle={onToggleActiveOnly}
+        {onCycleStatusFilter ? (
+          <ThreadStatusFilterPill
+            counts={statusCounts ?? { working: 0, input: 0, done: 0 }}
+            filter={statusFilter ?? "all"}
+            onCycle={onCycleStatusFilter}
           />
         ) : null}
         <SidebarWorkModePill />

@@ -193,8 +193,6 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
-  filterSidebarOperatingThreads,
-  isSidebarThreadOperating,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -2823,7 +2821,7 @@ export default function Sidebar() {
   ]);
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
-    if (activeOnly) return 0;
+    if (statusFilter !== "all") return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null || excludedEnvironmentIds.has(session.environmentId)) {
@@ -4455,9 +4453,9 @@ export default function Sidebar() {
       <ThreadContextDragGhost />
       <SidebarChromeHeader
         isElectron={isElectron}
-        activeThreadCount={activeThreadCount}
-        activeOnly={activeOnly}
-        onToggleActiveOnly={toggleActiveOnly}
+        statusCounts={statusCounts}
+        statusFilter={statusFilter}
+        onCycleStatusFilter={cycleStatusFilter}
       />
       <SidebarContent
         className="min-h-full"
@@ -4862,7 +4860,7 @@ export default function Sidebar() {
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
-                        !activeOnly ? (
+                        statusFilter === "all" ? (
                           <SidebarDraftBlock
                             key="draft-sessions"
                             projectByKey={projectByKey}
