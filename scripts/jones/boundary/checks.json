@@ -4,12 +4,13 @@
     {
       "id": "jones-thread-status-filter",
       "tests": [
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "vp test run apps/web/src/components/Sidebar.statusFilter.test.tsx apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
         "vp run --filter @t3tools/web typecheck"
       ]
     },
