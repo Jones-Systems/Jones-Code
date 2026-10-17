@@ -142,9 +142,10 @@ These facts hold for the DMG above and affect any install or update plan:
   with bundle identifier `com.t3tools.t3code`. Upstream T3 Code builds, such as
   `T3 Code (Nightly).app` from the upstream installers or Homebrew cask, use the
   same identifier. Launch Services can then route `t3code://` links and app
-  lookups to either app. Do not install upstream T3 Code beside Jones Code.
-- Gatekeeper rejects the bundle because it is only ad hoc signed. Opening it
-  for the first time needs a deliberate local override.
+  lookups to either app. If both are installed, verify which app Launch
+  Services selects before using those links or lookups.
+- In one observed laptop trial, Gatekeeper rejected the ad hoc signed bundle;
+  first launch there required a deliberate local override.
 - There is no Electron or Squirrel update feed. Packaged preview builds use the
   Jones updater instead (`apps/desktop/src/updates/DesktopUpdates.ts`). It
   checks 15 seconds after launch and then every 4 minutes, on the fixed
@@ -152,24 +153,34 @@ These facts hold for the DMG above and affect any install or update plan:
   with green CI, read through the GitHub CLI. The updater only downloads and
   installs when you choose to, and it does not install on quit.
 - The Jones updater needs several things on the laptop. `gh` must be installed
-  and authenticated in the login-shell `PATH`, or checks report
-  `authentication-required`. `/usr/bin/python3` runs the activation helper. The
+  and authenticated in the login-shell `PATH`. A missing CLI reports
+  `gh-missing`; an authentication failure reports `authentication-required`.
+  `/usr/bin/python3` runs the activation helper. The
   app must run from a stable, writable Applications folder: updates are refused
   from a mounted DMG, an App Translocation path, or a temporary directory.
 - On a packaged install that already has `userdata/statev2.sqlite` and
   `userdata/environment-id`, the Jones updater adopts the install. It records
   the admitted generation in `$T3CODE_HOME/runtime/jones-active-install.json`
-  (default `~/.t3`). From then on, a build whose version or source differs from
-  that record will not start, and neither will any build while an unreconciled
-  activation transaction exists. The startup fence
+  (default `~/.t3`). For builds containing the startup fence, ordinary startup
+  is refused when the version or source differs from that record or an
+  activation transaction requires reconciliation. A qualified activation trial
+  can start with its matching trial descriptor in an allowed transaction phase.
+  The startup fence
   (`packages/shared/src/jones/nativeWriterFence.ts`) prints the reason to
   stderr and exits with status 1. For example:
   `The native writer does not match the admitted source generation.` A
   Finder or Dock launch shows no message: the app simply does not appear. So
-  copying a newer DMG over an adopted install fails unless it goes through the
-  Jones updater or a qualified manual activation. To see the reason while no
-  Jones Code process is running, start
-  `/Applications/Jones Code.app/Contents/MacOS/Jones Code` from a terminal.
+  simply copying a newer build containing this fence over an adopted install
+  does not update its admission record. Use the Jones updater or the
+  [native helper's manual-install route](../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts)
+  (`--inspect-manual-install` and `--manual-install`) with an approved,
+  hash-bound plan. To see a startup refusal while no Jones Code process is
+  running, use this terminal command:
+
+  ```bash
+  "/Applications/Jones Code.app/Contents/MacOS/Jones Code"
+  ```
+
   Never edit the admission record or transaction files to get past the fence.
 - A successful activation keeps the replaced bundle beside the stable app as
   `Jones Code.app.jones-previous-GENERATION`. Staging can also leave

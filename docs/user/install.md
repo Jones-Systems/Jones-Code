@@ -9,7 +9,8 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 > builds are unsigned preview artifacts. See
 > [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
 > for how they install and update. The upstream macOS app uses the same bundle
-> identifier as Jones Code, so do not install both on one Mac.
+> identifier as Jones Code. If both are installed, verify which app opens
+> `t3code://` links and app lookups before using them.
 
 ## Requirements
 
