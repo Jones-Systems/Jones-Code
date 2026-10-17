@@ -15,6 +15,7 @@ import {
   nativePlacementInventory,
   nativePlacementInventoryJson,
   reuseNativePlacementIdentitySnapshot,
+  workstreamListErrorMessage,
   type WorkstreamDetailLoaders,
 } from "./workstreams";
 
@@ -468,5 +469,25 @@ describe("Workstream reference action reads", () => {
     ).rejects.toThrow("lost-read-response");
     expect(observe).toHaveBeenCalledExactlyOnceWith("exact-command");
     expect(resolved).not.toHaveBeenCalled();
+  });
+});
+
+describe("Workstream list error classification", () => {
+  it("treats an unconfigured server as no Workstreams rather than an error", () => {
+    expect(
+      workstreamListErrorMessage(
+        new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps every other list failure visible", () => {
+    expect(
+      workstreamListErrorMessage(
+        new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
+      ),
+    ).toBe("workstream_cursor_stale");
+    expect(workstreamListErrorMessage(new Error("internal failure"))).toBe("internal failure");
+    expect(workstreamListErrorMessage("opaque")).toBe("Workstreams are unavailable.");
   });
 });

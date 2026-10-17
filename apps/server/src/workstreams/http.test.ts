@@ -111,7 +111,7 @@ const withHttpFixture = Effect.fn(function* (
     handler: (request: Request) => Promise<Response>;
     calls: { reads: number; writes: number };
   }) => Promise<void>,
-  failure?: "offline" | "cursor-stale",
+  failure?: "offline" | "cursor-stale" | "not-configured",
 ) {
   const calls = { reads: 0, writes: 0 };
   const gateway = yield* make(makeSyntheticWorkstreamTransport(), {
@@ -268,31 +268,34 @@ it.effect("rejects missing HTTP credentials before registry reads", () =>
 );
 
 it.effect.each([
-  ["offline", 500],
-  ["cursor-stale", 409],
-] as const)("keeps %s HTTP failures distinct and contains the response", ([reason, status]) =>
-  withHttpFixture(
-    [AuthOrchestrationReadScope],
-    async ({ handler, calls }) => {
-      const response = await handler(
-        new Request("http://fixture/api/workstreams?limit=50", {
-          headers: { authorization: "Bearer synthetic-token" },
-        }),
-      );
-      expect(response.status).toBe(status);
-      expect(response.headers.get("cache-control")).toBe("private, no-store");
-      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
-      expect(calls).toEqual({ reads: 1, writes: 0 });
-      const body = await response.json();
-      if (reason === "cursor-stale")
-        expect(Schema.decodeUnknownSync(EnvironmentHttpConflictError)(body).message).toBe(
-          "workstream_cursor_stale",
+  ["offline", 500, undefined],
+  ["cursor-stale", 409, "workstream_cursor_stale"],
+  ["not-configured", 409, "workstreams_not_configured"],
+] as const)(
+  "keeps %s HTTP failures distinct and contains the response",
+  ([reason, status, conflict]) =>
+    withHttpFixture(
+      [AuthOrchestrationReadScope],
+      async ({ handler, calls }) => {
+        const response = await handler(
+          new Request("http://fixture/api/workstreams?limit=50", {
+            headers: { authorization: "Bearer synthetic-token" },
+          }),
         );
-      else
-        expect(Schema.decodeUnknownSync(EnvironmentInternalError)(body).reason).toBe(
-          "internal_error",
-        );
-    },
-    reason,
-  ),
+        expect(response.status).toBe(status);
+        expect(response.headers.get("cache-control")).toBe("private, no-store");
+        expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(calls).toEqual({ reads: 1, writes: 0 });
+        const body = await response.json();
+        if (conflict !== undefined)
+          expect(Schema.decodeUnknownSync(EnvironmentHttpConflictError)(body).message).toBe(
+            conflict,
+          );
+        else
+          expect(Schema.decodeUnknownSync(EnvironmentInternalError)(body).reason).toBe(
+            "internal_error",
+          );
+      },
+      reason,
+    ),
 );
