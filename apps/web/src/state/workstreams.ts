@@ -45,6 +45,11 @@ import {
   type NativeThreadAssignmentSnapshot,
 } from "../jones/workstreams/nativeThreadAssignment";
 
+import {
+  runNativeAttestationRenewal,
+  nativeRenewalStorage,
+} from "../jones/workstreams/nativeAttestationRenewal";
+
 import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
 
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
@@ -520,6 +525,7 @@ export function useWorkstreams(
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
   const listRequest = useRef<AbortController | null>(null);
+  const renewalRequest = useRef<AbortController | null>(null);
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
@@ -527,6 +533,7 @@ export function useWorkstreams(
   dataRef.current = data;
   const refresh = useCallback(() => {
     listRequest.current?.abort();
+    renewalRequest.current?.abort();
     for (const operation of commandRequests.current) operation.controller.abort();
     generation.current += 1;
     setPlacements(null);
@@ -555,6 +562,7 @@ export function useWorkstreams(
 
   useEffect(() => {
     listRequest.current?.abort();
+    renewalRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
     const current = ++generation.current;
@@ -582,7 +590,7 @@ export function useWorkstreams(
         setData(metadataCache.read(normalized.binding));
         setError(null);
         let reloadList = false;
-        await withTransientReadRecovery(async () => {
+        const loadedContext = await withTransientReadRecovery(async () => {
           if (reloadList) {
             const updated = await loadList();
             if (generation.current !== current || controller.signal.aborted) return null;
@@ -610,19 +618,23 @@ export function useWorkstreams(
         }, controller.signal).then(
           (context) => {
             if (context === null || generation.current !== current || controller.signal.aborted)
-              return;
+              return null;
             if (
               context.owner_id === normalized.binding.ownerId &&
               context.principal_id === normalized.binding.principalId &&
               context.authorization_revision === normalized.binding.authorizationRevision &&
               context.server_generation === normalized.binding.serverGeneration &&
               context.registry_version === normalized.binding.registryVersion
-            )
+            ) {
               setRegistrationContext(context);
+              return context;
+            }
+            return null;
           },
           (cause: unknown) => {
             if (generation.current === current) setRegistrationContext(null);
             if (reloadList && !(cause instanceof WorkstreamRegistryVersionChanged)) throw cause;
+            return null;
           },
         );
         if (generation.current !== current || controller.signal.aborted) return;
@@ -639,6 +651,110 @@ export function useWorkstreams(
               ),
             );
             if (generation.current === current) setPlacements(projection);
+            if (loadedContext) {
+              const storage = nativeRenewalStorage();
+              if (!storage) {
+                if (loadedContext.sources.some((source) => source.provider === "t3"))
+                  setError(
+                    "Automatic Workstream verification needs browser storage. Existing verification expires on schedule.",
+                  );
+                return;
+              }
+              const renewal = new AbortController();
+              renewalRequest.current = renewal;
+              const check = () => {
+                if (generation.current !== current || controller.signal.aborted) renewal.abort();
+                renewal.signal.throwIfAborted();
+              };
+              const read = async <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) => {
+                check();
+                const result = await request(run, renewal.signal);
+                check();
+                return result;
+              };
+              let renewalUnavailable = false;
+              void runNativeAttestationRenewal({
+                initial: { data: normalized, context: loadedContext, placements: projection },
+                identities,
+                signal: renewal.signal,
+                storage,
+                commandPending: (id, pending) => {
+                  if (pending)
+                    unresolvedCommands.current.set(id, actionAuthorityKey(normalized.binding));
+                  else unresolvedCommands.current.delete(id);
+                },
+                load: async () => {
+                  check();
+                  const live = await loadCompleteWorkstreamList(
+                    (cursor) =>
+                      read((client) =>
+                        client.workstreams.list({
+                          headers: {},
+                          payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+                        }),
+                      ),
+                    { signal: renewal.signal },
+                  );
+                  check();
+                  const context = await read((client) =>
+                    client.workstreams.registrationContext({ headers: {} }),
+                  );
+                  const placements = await loadLiveT3Placements(live, identities, () =>
+                    read((client) =>
+                      client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
+                    ),
+                  );
+                  return { data: live, context, placements };
+                },
+                references: (cursor) =>
+                  read((client) =>
+                    client.workstreams.references({
+                      headers: {},
+                      payload: { limit: 100, ...(cursor === undefined ? {} : { cursor }) },
+                    }),
+                  ),
+                reference: (nativeReferenceId) =>
+                  read((client) =>
+                    client.workstreams.reference({ headers: {}, params: { nativeReferenceId } }),
+                  ),
+                memberships: (workstreamId, cursor) =>
+                  read((client) =>
+                    client.workstreams.memberships({
+                      headers: {},
+                      params: { workstreamId },
+                      payload: { limit: 100, ...(cursor === undefined ? {} : { cursor }) },
+                    }),
+                  ),
+                submit: (command) =>
+                  read((client) =>
+                    client.workstreams.submit({ headers: {}, payload: { command } }),
+                  ),
+                observe: (commandId) =>
+                  read((client) =>
+                    client.workstreams.command({ headers: {}, params: { commandId } }),
+                  ),
+                publish: (snapshot) => {
+                  check();
+                  metadataCache.write(snapshot.data);
+                  setData(metadataCache.read(snapshot.data.binding));
+                  setRegistrationContext(snapshot.context);
+                  setPlacements(snapshot.placements);
+                  if (!renewalUnavailable) setError(null);
+                },
+                unavailable: () => {
+                  check();
+                  renewalUnavailable = true;
+                  setError(
+                    "Workstream verification is unavailable. Existing verification expires on schedule; Retry reloads access and checks pending commands.",
+                  );
+                },
+              }).catch(() => {
+                if (!renewal.signal.aborted && generation.current === current)
+                  setError(
+                    "Workstream verification is unavailable. Retry to reload current access.",
+                  );
+              });
+            }
           } catch {
             if (generation.current === current) setPlacements(null);
           }
@@ -657,6 +773,7 @@ export function useWorkstreams(
       });
     return () => {
       controller.abort();
+      renewalRequest.current?.abort();
       if (listRequest.current === controller) listRequest.current = null;
       generation.current += 1;
     };
@@ -676,6 +793,7 @@ export function useWorkstreams(
     async <A>(
       operation: (submit: (command: WorkstreamCommand) => Promise<WorkstreamReceipt>) => Promise<A>,
     ) => {
+      renewalRequest.current?.abort();
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
       const authority = actionAuthorityKey(startedBinding);

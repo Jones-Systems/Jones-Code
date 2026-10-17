@@ -682,3 +682,274 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
   expect(latest.error).toBeNull();
   expect(http.run).toHaveBeenCalledTimes(4);
 });
+
+it("automatically starts verify-only renewal before the original native proof expires", async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(now);
+  vi.stubGlobal("window", globalThis);
+  const storage = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  });
+  const source = {
+    provider: "t3" as const,
+    source_instance_id: thread.environmentId,
+    authority_namespace: "authority",
+    store_generation: 1,
+    resource_kind: "thread" as const,
+    id_kind: "internal" as const,
+    account_provenance: { kind: "not_account_scoped" as const },
+    native_protocol: "workstreams-t3-provider/1.0.0" as const,
+    build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+  };
+  const identities = nativePlacementInventory(nativeThreads).identities;
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(t3PlacementInventoryJson(identities)),
+  );
+  const projection = {
+    page: {
+      context: placements.context,
+      items: placements.items.map((item) => ({
+        ...item,
+        expires_at: new Date(now + 300_000).toISOString(),
+      })),
+      next_cursor: null,
+      inventory_sha256: Array.from(new Uint8Array(digest), (value) =>
+        value.toString(16).padStart(2, "0"),
+      ).join(""),
+    },
+    trustedEnvironments: placements.trustedEnvironments,
+    readiness: "ready",
+  };
+  http.run
+    .mockResolvedValueOnce(data)
+    .mockResolvedValueOnce({ ...registration, sources: [source] })
+    .mockResolvedValueOnce(projection);
+  await act(async () => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams enabled />
+      </RegistryContext.Provider>,
+    );
+  });
+  expect(latest.placements?.items).toHaveLength(2);
+  http.run.mockRejectedValue(new Error("synthetic renewal read outage"));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(240_000);
+  });
+  expect(http.run.mock.calls.length).toBeGreaterThan(3);
+  expect(latest.placements?.items).toHaveLength(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(latest.placements).toBeNull();
+});
+
+it.each(["cold load", "reconnect"])(
+  "restores expired grouping on %s and keeps the mounted membership through two expiries",
+  async (mode) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    vi.stubGlobal("window", globalThis);
+    const storage = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => storage.set(key, value),
+    });
+    const source = {
+      provider: "t3" as const,
+      source_instance_id: thread.environmentId,
+      authority_namespace: "authority",
+      store_generation: 1,
+      resource_kind: "thread" as const,
+      id_kind: "internal" as const,
+      account_provenance: { kind: "not_account_scoped" as const },
+      native_protocol: "workstreams-t3-provider/1.0.0" as const,
+      build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+    };
+    const identities = nativePlacementInventory(nativeThreads).identities;
+    const hash = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(t3PlacementInventoryJson(identities)),
+    );
+    const digest = Array.from(new Uint8Array(hash), (value) =>
+      value.toString(16).padStart(2, "0"),
+    ).join("");
+    const readContext = (version: number) => ({ ...placements.context, registry_version: version });
+    const list = (version: number) => ({
+      ...data,
+      binding: { ...data.binding, registryVersion: version },
+    });
+    const context = (version: number) => ({
+      ...registration,
+      registry_version: version,
+      sources: [source],
+    });
+    const native = (proof: number, at: number) => ({
+      ...reference,
+      registration: {
+        ...reference.registration,
+        attestation_version: proof,
+        attested_at: new Date(at).toISOString(),
+        expires_at: new Date(at + 300_000).toISOString(),
+      },
+    });
+    const projection = (version: number, proof: number, at: number, expired = false) => ({
+      page: {
+        context: readContext(version),
+        inventory_sha256: digest,
+        next_cursor: null,
+        items: expired
+          ? []
+          : [
+              {
+                ...placements.items[0]!,
+                attestation_version: proof,
+                attested_at: new Date(at).toISOString(),
+                expires_at: new Date(at + 300_000).toISOString(),
+              },
+            ],
+      },
+      readiness: "ready",
+      trustedEnvironments: placements.trustedEnvironments,
+    });
+    const member = {
+      membership_id: "membership",
+      workstream_id: "alpha",
+      native_reference_id: "reference",
+      kind: "primary",
+      opened: {
+        at: new Date(now).toISOString(),
+        actor: { principal_id: "principal" },
+        command_id: "original",
+        registry_version: 1,
+      },
+      closed: null,
+    };
+    const members = (version: number, present = true) => ({
+      context: readContext(version),
+      items: present ? [member] : [],
+      next_cursor: null,
+    });
+    const expiredAt = now - 300_001;
+    const responses: unknown[] = [];
+    if (mode === "reconnect")
+      responses.push(list(11), registration, projection(11, 2, expiredAt, true));
+    responses.push(
+      list(11),
+      context(11),
+      projection(11, 2, expiredAt, true),
+      { context: readContext(11), items: [native(2, expiredAt)], next_cursor: null },
+      members(11),
+      members(11, false),
+    );
+    for (let round = 0; round < 3; round++) {
+      const version = 11 + round;
+      const proof = 2 + round;
+      const at = round === 0 ? expiredAt : now + (round - 1) * 240_000;
+      const freshAt = now + round * 240_000;
+      responses.push(
+        list(version),
+        context(version),
+        projection(version, proof, at, round === 0),
+        { context: readContext(version), reference: native(proof, at), latest_observation: null },
+        members(version),
+      );
+      const commandId = `renewal-mounted-${round}`;
+      responses.push({
+        command_id: commandId,
+        owner_id: "owner",
+        actor: { principal_id: "principal" },
+        operation: "verify_reference",
+        request_sha256: "c".repeat(64),
+        server_generation: 7,
+        accepted_at: new Date(freshAt).toISOString(),
+        completed_at: new Date(freshAt).toISOString(),
+        state: "committed",
+        registry_version: version + 1,
+        changed: true,
+        effects: {
+          native_reference_id: "reference",
+          registration: native(proof + 1, freshAt).registration,
+          workstream_versions: [],
+          membership_ids: [],
+          declaration_id: null,
+          declaration_revision: null,
+          edge_id: null,
+          observation: null,
+          lifecycle_declaration: null,
+          coordination_disposition: null,
+          native_settlement: null,
+        },
+      });
+      responses.push(
+        list(version + 1),
+        context(version + 1),
+        projection(version + 1, proof + 1, freshAt),
+        {
+          context: readContext(version + 1),
+          reference: native(proof + 1, freshAt),
+          latest_observation: null,
+        },
+        members(version + 1),
+      );
+    }
+    // Command IDs are generated by the application's UUID helper; bind each synthetic receipt to the persisted intent.
+    http.run.mockImplementation(async () => {
+      const response = responses.shift();
+      if (response && typeof response === "object" && "command_id" in response) {
+        const records: { commandId: string }[] = JSON.parse([...storage.values()][0]!);
+        return { ...response, command_id: records[0]!.commandId };
+      }
+      if (!response) throw new Error("unexpected HTTP request");
+      return response;
+    });
+    await act(async () => {
+      renderer = create(
+        <RegistryContext.Provider value={registry}>
+          <MountedWorkstreams enabled />
+        </RegistryContext.Provider>,
+      );
+    });
+    if (mode === "reconnect")
+      await act(async () => {
+        registry.set(connection, AsyncResult.success({ ...connected, generation: 2 }));
+      });
+    await act(async () => {
+      await vi.waitFor(() =>
+        expect(http.run).toHaveBeenCalledTimes(mode === "cold load" ? 17 : 20),
+      );
+    });
+    expect(latest.placements?.items[0]).toMatchObject({
+      membership_id: "membership",
+      native_reference_id: "reference",
+      attestation_version: 3,
+    });
+    const sameConnection = registry.get(connection);
+    for (const proof of [4, 5]) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240_000);
+      });
+      await act(async () => {
+        await vi.waitFor(() =>
+          expect(http.run).toHaveBeenCalledTimes(
+            (mode === "cold load" ? 17 : 20) + (proof - 3) * 11,
+          ),
+        );
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120_000);
+    });
+    expect(latest.placements?.items[0]).toMatchObject({
+      membership_id: "membership",
+      native_reference_id: "reference",
+      attestation_version: 5,
+    });
+    expect(latest.error).toBeNull();
+    expect(registry.get(connection)).toBe(sameConnection);
+    expect(responses).toHaveLength(0);
+  },
+);
