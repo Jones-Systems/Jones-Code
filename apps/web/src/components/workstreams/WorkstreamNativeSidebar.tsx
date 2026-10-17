@@ -15,11 +15,14 @@ import type { ThreadActionMenuId } from "../threadActionMenu.logic";
 import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer";
 
 import { WorkstreamSidebarSection, workstreamCommandId } from "./WorkstreamSidebarSection";
-import { canEditWorkstreams, planNativeMembership } from "./nativeWorkstreamActions";
+import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import {
   nativeWorkstreamThreadKey,
   type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
+
+import { nativeThreadSourceAvailable } from "../../jones/workstreams/nativeThreadAssignment";
+import { workstreamFailureMessage } from "../../jones/workstreams/workstreamActionSnapshot";
 
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 
@@ -88,10 +91,17 @@ export function WorkstreamNativeSidebar(props: {
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
     ),
   );
+  const assignmentChecked = (thread: EnvironmentThreadShell) =>
+    controller.placements?.readiness === "ready" &&
+    controller.placements.trustedEnvironments.some(
+      (entry) => entry.environmentId === thread.environmentId,
+    ) &&
+    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
-    controller.placements !== null &&
-    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+    controller.assignNativeThread !== undefined &&
+    nativeThreadSourceAvailable(controller.registrationContext, thread);
+  const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
   const run = (operation: () => Promise<void>) => {
     if (busyRef.current || bindingRef.current !== binding) return;
     busyRef.current = true;
@@ -100,8 +110,7 @@ export function WorkstreamNativeSidebar(props: {
     const startedBinding = binding;
     void operation()
       .catch((cause: unknown) => {
-        if (bindingRef.current === startedBinding)
-          setError(cause instanceof Error ? cause.message : "Workstream action failed.");
+        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
       })
       .finally(() => {
         if (bindingRef.current === startedBinding) {
@@ -111,56 +120,15 @@ export function WorkstreamNativeSidebar(props: {
       });
   };
   const move = async (thread: EnvironmentThreadShell, destination: string | null) => {
-    const data = controller.data;
-    const placements = controller.placements;
-    if (!data || !placements || !canMove(thread))
-      throw new Error("Refresh thread placements before changing membership.");
-    const current =
-      statusGrouping.groups.find((group) =>
-        group.threads.some(
-          (item) => item.environmentId === thread.environmentId && item.id === thread.id,
-        ),
-      )?.workstream.workstreamId ?? null;
-    if (current === destination) return;
-    const detailId = destination ?? current;
-    if (!detailId) return;
+    if (!canMove(thread) || !controller.assignNativeThread)
+      throw new Error("This environment is unavailable for Workstream assignment.");
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
-    const startedBinding = binding;
-    const detail = await controller.loadDetail(detailId, { signal: abort.signal });
-    abort.signal.throwIfAborted();
-    if (bindingRef.current !== startedBinding)
-      throw new Error("Workstream access changed. Refresh before retrying.");
-    const context = detail.detail.context;
-    if (
-      context.owner_id !== data.binding.ownerId ||
-      context.server_generation !== data.binding.serverGeneration ||
-      context.registry_version !== data.binding.registryVersion
-    )
-      throw new Error("Workstreams changed. Refresh before retrying.");
-    const action = planNativeMembership({
-      data,
-      placements,
-      references: detail.references.items,
-      destinationMemberships: detail.memberships.items,
-      thread,
-      destination,
-      now: Date.now(),
+    await controller.assignNativeThread(thread, destination, {
+      signal: abort.signal,
+      commandId: workstreamCommandId,
     });
-    if (!action) return;
-    const commandId = await workstreamCommandId();
-    abort.signal.throwIfAborted();
-    if (bindingRef.current !== startedBinding)
-      throw new Error("Workstream access changed. Refresh before retrying.");
-    const receipt = await controller.submit({
-      command_id: commandId,
-      expected_server_generation: data.binding.serverGeneration,
-      expected_registry_version: data.binding.registryVersion,
-      action,
-    });
-    if (receipt.state !== "committed")
-      throw new Error(`Membership change ${receipt.state}. Refresh before retrying.`);
   };
   const currentWorkstream = (thread: EnvironmentThreadShell) =>
     statusGrouping.groups.find((group) =>
@@ -182,6 +150,7 @@ export function WorkstreamNativeSidebar(props: {
     threadsByKey,
     canMove,
     currentWorkstream,
+    assignmentChecked,
     run,
     move,
     reorder: props.reorder,
@@ -192,6 +161,7 @@ export function WorkstreamNativeSidebar(props: {
       threadsByKey,
       canMove,
       currentWorkstream,
+      assignmentChecked,
       run,
       move,
       reorder: props.reorder,
@@ -232,10 +202,12 @@ export function WorkstreamNativeSidebar(props: {
       const neighbor = row?.dataset.nativeWorkstreamThread
         ? actions.threadsByKey.get(row.dataset.nativeWorkstreamThread)
         : undefined;
-      const sameGroup = actions.currentWorkstream(thread) === destination;
+      const sameGroup =
+        actions.assignmentChecked(thread) && actions.currentWorkstream(thread) === destination;
       if (
         sameGroup &&
         (!neighbor ||
+          !actions.assignmentChecked(neighbor) ||
           (neighbor.environmentId === thread.environmentId && neighbor.id === thread.id) ||
           !actions.canReorder(thread) ||
           !actions.canReorder(neighbor))
@@ -288,22 +260,44 @@ export function WorkstreamNativeSidebar(props: {
         )
           return;
         actions.run(async () => {
-          if (actions.currentWorkstream(thread) !== destination)
+          if (
+            !actions.assignmentChecked(thread) ||
+            actions.currentWorkstream(thread) !== destination
+          )
             await actions.move(thread, destination);
-          else if (neighbor && actions.canReorder(thread) && actions.canReorder(neighbor))
+          else if (
+            neighbor &&
+            actions.assignmentChecked(neighbor) &&
+            actions.canReorder(thread) &&
+            actions.canReorder(neighbor)
+          )
             await actions.reorder(thread, neighbor, after);
         });
       },
     });
   };
   const assignmentMenu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => {
-    const workstreamId = currentWorkstream(thread);
+    const checked = assignmentChecked(thread);
+    const workstreamId = checked ? currentWorkstream(thread) : null;
     const secondary =
-      statusGrouping.secondaryWorkstreamIdsByKey.get(
-        nativeWorkstreamThreadKey(thread.environmentId, thread.id),
-      ) ?? [];
+      (checked
+        ? statusGrouping.secondaryWorkstreamIdsByKey.get(
+            nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+          )
+        : undefined) ?? [];
     return {
       items: [
+        ...(!nativeThreadSourceAvailable(controller.registrationContext, thread) || !checked
+          ? [
+              {
+                id: "assign-workstream:status" as const,
+                label: !nativeThreadSourceAvailable(controller.registrationContext, thread)
+                  ? "Assignment unavailable for this environment"
+                  : "Assignment not checked",
+                disabled: true,
+              },
+            ]
+          : []),
         ...(controller.data?.items ?? []).map((item) => ({
           id: `assign-workstream:group:${item.workstreamId}` as const,
           label: `${item.name}${item.workstreamId === workstreamId ? " (primary)" : secondary.includes(item.workstreamId) ? " (secondary)" : ""}`,
@@ -313,7 +307,7 @@ export function WorkstreamNativeSidebar(props: {
           id: "assign-workstream:remove",
           label: "Unassigned (remove primary)",
           separatorBefore: true,
-          disabled: !canMove(thread) || workstreamId === null,
+          disabled: !canMove(thread) || (checked && workstreamId === null),
         },
       ],
       onAction: (action) => {
@@ -343,7 +337,13 @@ export function WorkstreamNativeSidebar(props: {
             ?.threads ?? []);
     return (
       <ul
-        aria-label={workstreamId === null ? "Unassigned threads" : "Workstream threads"}
+        aria-label={
+          workstreamId === null
+            ? hasUnchecked
+              ? "Other threads"
+              : "Unassigned threads"
+            : "Workstream threads"
+        }
         className="space-y-px px-1 pb-1"
       >
         {threads.map((thread) => {
@@ -383,7 +383,15 @@ export function WorkstreamNativeSidebar(props: {
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
-          <button type="button" onClick={controller.refresh}>
+          <button
+            type="button"
+            onClick={() =>
+              run(async () => {
+                if (controller.retry) await controller.retry();
+                else controller.refresh();
+              })
+            }
+          >
             Refresh
           </button>
         </p>
@@ -401,6 +409,7 @@ export function WorkstreamNativeSidebar(props: {
       <WorkstreamSidebarSection
         controller={controller}
         renderMembers={renderMembers}
+        unassignedLabel={hasUnchecked ? "Other threads" : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}
         threadDropTarget={dropTarget && !dropTarget.threadKey ? dropTarget.workstreamId : undefined}
         threadActionBusy={busy}

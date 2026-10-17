@@ -124,6 +124,32 @@ describe("complete Workstream list loading", () => {
     ).toBeGreaterThan(T3_PLACEMENT_MAX_REQUEST_BYTES);
   });
 
+  it("retains the chosen tail identity within the cap without admitting absent identities", () => {
+    const threads = Array.from({ length: 4501 }, (_, i) => ({
+      environmentId: "env",
+      id: String(i).padStart(5, "0"),
+    }));
+    const chosen = threads[4500]!;
+    const initial = nativePlacementInventory(threads);
+    expect(initial.identities.some((identity) => identity.native_thread_id === chosen.id)).toBe(
+      false,
+    );
+    const retained = nativePlacementInventory(threads, chosen);
+    expect(retained.identities).toHaveLength(1000);
+    expect(
+      retained.identities.filter((identity) => identity.native_thread_id === chosen.id),
+    ).toHaveLength(1);
+    expect(retained.coverage).toBe("partial");
+    expect(retained.totalIdentities).toBe(4501);
+    expect(nativePlacementInventory(threads.toReversed(), chosen)).toEqual(retained);
+    expect(
+      nativePlacementInventory(threads, { ...chosen, environmentId: "remote" }).identities,
+    ).toEqual(initial.identities);
+    expect(
+      new TextEncoder().encode(JSON.stringify({ identities: retained.identities })).byteLength,
+    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
+  });
+
   it("keeps a deterministic 1,000-identity selection for a large reversed inventory", () => {
     const threads = Array.from({ length: 100_001 }, (_, index) => ({
       environmentId: `environment-${String(index % 7).padStart(2, "0")}`,
@@ -172,6 +198,58 @@ describe("complete Workstream list loading", () => {
     expect(selected).toEqual([...selected].sort());
     expect(inventory.coverage).toBe("partial");
     expect(nativePlacementInventory(threads.toReversed())).toEqual(inventory);
+  });
+
+  it("retains a selected older settled thread while filling the remaining cap by activity", () => {
+    const active = Array.from({ length: 999 }, (_, index) => ({
+      environmentId: "env",
+      id: `active-${String(index).padStart(4, "0")}`,
+    }));
+    const recent = {
+      environmentId: "env",
+      id: "recent",
+      settledOverride: "settled" as const,
+      settledAt: "2026-10-17T12:00:00Z",
+    };
+    const preferred = {
+      ...recent,
+      id: "preferred-old",
+      settledAt: "2026-01-01T00:00:00Z",
+    };
+    const threads = [...active, recent, preferred];
+    const result = nativePlacementInventory(threads, preferred);
+    expect(result.identities).toHaveLength(1000);
+    expect(result.identities.map((entry) => entry.native_thread_id)).toEqual(
+      [...active.map((entry) => entry.id), preferred.id].sort(),
+    );
+    expect(nativePlacementInventory(threads.toReversed(), preferred)).toEqual(result);
+    expect(
+      nativePlacementInventory(threads).identities.map((entry) => entry.native_thread_id),
+    ).toContain(recent.id);
+  });
+
+  it("retains a selected settled identity when request bytes fill before the identity cap", () => {
+    const threads = Array.from({ length: 900 }, (_, index) => ({
+      environmentId: "env",
+      id: `${String(index).padStart(4, "0")}-${"x".repeat(508)}`,
+    }));
+    const preferred = {
+      ...threads[899]!,
+      settledOverride: "settled" as const,
+      settledAt: "2026-01-01T00:00:00Z",
+    };
+    const inventory = [...threads.slice(0, 899), preferred];
+    const result = nativePlacementInventory(inventory, preferred);
+    expect(result.identities.length).toBeLessThan(900);
+    expect(
+      result.identities.filter((entry) => entry.native_thread_id === preferred.id),
+    ).toHaveLength(1);
+    expect(
+      new TextEncoder().encode(JSON.stringify({ identities: result.identities })).byteLength,
+    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
+    expect(nativePlacementInventory(inventory.toReversed(), preferred)).toEqual(result);
+    const ids = result.identities.map((entry) => entry.native_thread_id);
+    expect(ids).toEqual([...ids].sort());
   });
 
   it("refreshes priority when settlement changes and keeps irrelevant shell updates stable", () => {
