@@ -141,6 +141,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts"
+    },
+    {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamAppearance.ts"
     },
