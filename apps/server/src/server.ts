@@ -759,6 +759,8 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(workstreamGatewayLayerLive),
   Layer.provide(workstreamRegistrationContextLayerLive),
+  // Same layer identity as the gateway's, so the config descriptor reads the same authority.
+  Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(layerServerSelfUpdate),
   Layer.provide(FleetUpdates.layer),

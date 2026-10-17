@@ -29,6 +29,7 @@ import { RuntimeMode } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
 import { ServerSettings } from "./settings.ts";
+import { TrustedT3PlacementEnvironment } from "./workstreamPlacements.ts";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -614,6 +615,12 @@ export const ServerConfig = Schema.Struct({
   threadFindProgressive: Schema.optionalKey(Schema.Boolean),
   scratchWorkspaceRoot: Schema.optionalKey(TrimmedNonEmptyString),
   newProjectsRoot: Schema.optionalKey(TrimmedNonEmptyString),
+  /**
+   * This server's own native store descriptor, read when the config was
+   * assembled. Absent means unknown. It is not refreshed when authority
+   * changes, so it is a display hint, never proof that authorizes a change.
+   */
+  nativeStoreAuthority: Schema.optionalKey(TrustedT3PlacementEnvironment),
   /**
    * Never sent in a config snapshot: the theme stream emits the current set
    * before any change, so a snapshot carrying it too would hand every
