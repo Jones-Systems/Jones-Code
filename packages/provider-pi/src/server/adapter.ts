@@ -1,3 +1,4 @@
+import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";

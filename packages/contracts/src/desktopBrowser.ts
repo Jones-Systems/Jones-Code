@@ -10,7 +10,11 @@ const TabKey = {
 };
 
 export const DesktopBrowserEvent = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("attached"), ...TabKey }),
+  Schema.Struct({
+    type: Schema.Literal("attached"),
+    ...TabKey,
+    runtimeIdentity: Schema.optional(Schema.NullOr(PreviewAutomationRuntimeIdentity)),
+  }),
   /** Its `<webview>` went away: closed, crashed, swapped, or devtools took the debugger. */
   Schema.Struct({ type: Schema.Literal("detached"), ...TabKey }),
   Schema.Struct({ type: Schema.Literal("cdp"), ...TabKey, message: Schema.String }),

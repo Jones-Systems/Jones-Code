@@ -40,7 +40,7 @@ export const PREVIEW_AUTOMATION_V1_OPERATIONS = [
   "recordingStop",
 ] as const;
 
-const PREVIEW_AUTOMATION_OPERATIONS = [
+export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
   "setColorScheme",
@@ -118,6 +118,15 @@ export const PreviewAutomationStatus = Schema.Struct({
   ),
   viewportSetting: Schema.optional(PreviewViewportSetting),
   viewport: Schema.optional(PreviewRenderedViewportSize),
+  selectedClient: Schema.optional(
+    Schema.Struct({
+      clientId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+      connectionId: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+      requestId: TrimmedNonEmptyString,
+      completedAt: Schema.String,
+      runtimeIdentity: Schema.NullOr(PreviewAutomationRuntimeIdentity),
+    }),
+  ),
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
   ),

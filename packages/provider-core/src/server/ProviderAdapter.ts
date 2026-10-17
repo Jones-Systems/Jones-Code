@@ -154,6 +154,7 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("command_output.delta"),
     driver: ProviderDriverKind,
+    runtimeEvidence: Schema.optional(ProviderRuntimeEvidenceCapture),
     threadId: ThreadId,
     itemId: TurnItemId,
     chunk: Schema.String,
@@ -648,6 +649,13 @@ export interface ProviderAdapterV2EventSubscription {
 export interface ProviderAdapterV2HistoricalContext {
   readonly messages: ReadonlyArray<OrchestrationV2HistoricalMessage>;
   readonly context: string;
+}
+
+export interface CapturedRuntimeStop {
+  readonly binding: ProviderRuntimeBinding;
+  readonly evidenceRevision: number;
+  readonly isCurrent: Effect.Effect<boolean>;
+  readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
 }
 
 export interface ProviderAdapterV2McpTool {

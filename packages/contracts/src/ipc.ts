@@ -1050,12 +1050,49 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
   data: Schema.Uint8Array,
 });
 
+export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationClickInput,
+});
+
+export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationTypeInput,
+});
+
+export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationPressInput,
+});
+
+export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationScrollInput,
+});
+
+export const DesktopPreviewAutomationEvaluateInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationEvaluateInput,
+});
+
+export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationWaitForInput,
+});
+
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
   previewCompanion?: DesktopCompanionBridge;
   getAppBranding: () => DesktopAppBranding | null;
+  getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
   getPathForFile?: (file: File) => string;
   getClientPlatform?: () => string;
   setNotificationBadge?: (badge: { count: number; image: string | null }) => Promise<void>;

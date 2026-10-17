@@ -529,6 +529,7 @@ export const WS_METHODS = {
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
 
+  pullRequestsCiStatus: "pullRequests.ciStatus",
   pullRequestsList: "pullRequests.list",
   pullRequestsListStats: "pullRequests.listStats",
   pullRequestsSummary: "pullRequests.summary",
@@ -901,6 +902,12 @@ const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
   payload: UsageSummaryInput,
   success: UsageSummary,
   error: Schema.Union([EnvironmentAuthorizationError, UsageReadError]),
+});
+
+const WsServerReadTokenAccountingRpc = Rpc.make(WS_METHODS.serverReadTokenAccounting, {
+  payload: TokenAccountingReadInput,
+  success: TokenAccountingReadResult,
+  error: EnvironmentAuthorizationError,
 });
 
 const WsServerRefreshUsageRatesRpc = Rpc.make(WS_METHODS.serverRefreshUsageRates, {

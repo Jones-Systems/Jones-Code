@@ -187,11 +187,31 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: (use) =>
-      owner.withServer((server) =>
-        latest?.url === server.url
-          ? use(latest)
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
+    withConnection: (use, creationHooks, consumerKind) =>
+      owner.withServer(
+        (server) => {
+          // The owner verifies every server it starts before lending it out.
+          if (latest?.url !== server.url) {
+            return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+          }
+          if (
+            server.runtimeGeneration !== undefined &&
+            (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
+              latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
+          ) {
+            latest = {
+              ...latest,
+              ownedProcess: Object.freeze({
+                runtimeGeneration: server.runtimeGeneration,
+                isRunning: server.isRunning,
+                ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
+              }),
+            };
+          }
+          return use(latest);
+        },
+        creationHooks,
+        consumerKind,
       ),
   });
 });

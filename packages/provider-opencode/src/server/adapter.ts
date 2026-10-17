@@ -3073,6 +3073,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: (threadInput) =>
             Effect.gen(function* () {
+              yield* requireAdoption;
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,

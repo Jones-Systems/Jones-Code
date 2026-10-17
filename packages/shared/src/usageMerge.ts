@@ -36,6 +36,9 @@ export interface ModelTotals {
   readonly totalTokens: number;
   readonly tokens: UsageTokenTotals;
   readonly records: number;
+  readonly totals: UsageTokenTotals;
+  readonly providerReportedRecords: number;
+  readonly modelPricedRecords: number;
   readonly unpricedRecords: number;
   readonly unpricedTokens: number;
   readonly costShare: number;

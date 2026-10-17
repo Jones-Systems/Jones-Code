@@ -3092,6 +3092,13 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  */
 const OrchestrationV2InternalCommand = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("legacy-bootstrap.failure-delete"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    legacyBootstrap: OrchestrationV2LegacyBootstrapPolicy,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -3156,7 +3163,13 @@ const OrchestrationV2InternalCommand = Schema.Union([
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 
-export type OrchestrationV2ServerCommand = OrchestrationV2Command | OrchestrationV2InternalCommand;
+export type OrchestrationV2ServerCommand =
+  | (OrchestrationV2Command & {
+      /** Private receiving input; absent from both public dispatch and launch schemas. */
+      readonly legacyBootstrap?: OrchestrationV2LegacyBootstrapPolicy;
+      readonly legacyPreparationFailureKnown?: boolean;
+    })
+  | OrchestrationV2InternalCommand;
 
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",

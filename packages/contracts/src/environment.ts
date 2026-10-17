@@ -109,6 +109,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   ),
   repositoryIdentity: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   connectionProbe: Schema.optionalKey(Schema.Boolean),
+  worktreeDefaultBase: Schema.optionalKey(Schema.Boolean),
   attachmentUploads: Schema.optionalKey(Schema.Boolean),
   questionAttachments: Schema.optionalKey(Schema.Boolean),
   fileAttachments: Schema.optionalKey(
@@ -151,10 +152,13 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   environmentThemes: Schema.optionalKey(Schema.Boolean),
   usageLimitSources: Schema.optionalKey(Schema.Boolean),
   usagePriceOverrides: Schema.optionalKey(Schema.Boolean),
+  /** An enrolled adapter can explicitly read one configured, canonically validated saved report. */
+  savedTokenAccounting: Schema.optionalKey(Schema.Boolean),
   usageModelAliases: Schema.optionalKey(Schema.Boolean),
   threadPinning: Schema.optionalKey(Schema.Boolean),
   threadPinReorder: Schema.optionalKey(Schema.Boolean),
   threadActiveReorder: Schema.optionalKey(Schema.Boolean),
+  workMode: Schema.optionalKey(Schema.Boolean),
   threadAutoSettleOptOut: Schema.optionalKey(Schema.Boolean),
   threadTitleRegeneration: Schema.optionalKey(Schema.Boolean),
   threadVisitedTracking: Schema.optionalKey(Schema.Boolean),
@@ -194,6 +198,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   label: TrimmedNonEmptyString,
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
+  jonesSource: Schema.optionalKey(JonesSourceIdentity),
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,
 });

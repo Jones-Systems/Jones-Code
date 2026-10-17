@@ -5,6 +5,11 @@ import * as Semaphore from "effect/Semaphore";
 
 export interface KeyedLock<Key> {
   readonly withLock: <A, E, R>(key: Key, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  /** Runs only if the key has no holder or waiter; otherwise returns None without running `effect`. */
+  readonly tryWithLock: <A, E, R>(
+    key: Key,
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<Option.Option<A>, E, R>;
   readonly activeKeys: Effect.Effect<ReadonlyArray<Key>>;
 }
 

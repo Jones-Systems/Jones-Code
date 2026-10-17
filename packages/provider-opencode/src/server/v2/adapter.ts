@@ -1,3 +1,6 @@
+import * as OpenCodeCreationPolicy from "@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy";
+import * as Context from "effect/Context";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import {
   AbsolutePath,
   Agent,
@@ -750,6 +753,39 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       lastError: null,
     };
     const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event, Cause.Done>();
+    const makeConnectionProducer = (captured = adoption) =>
+      ProviderEventOrigin.makeProviderEventProducer(
+        {
+          driver,
+          instanceId,
+          providerSessionId: input.providerSessionId,
+          ...(captured !== undefined
+            ? { runtimeGeneration: captured.capture.runtimeGeneration }
+            : {}),
+        },
+        captured?.isCurrent,
+      );
+    let eventProducer = makeConnectionProducer();
+    const bindAdoption = (providerThread: OrchestrationV2ProviderThread) => {
+      const captured = adoption;
+      const producer = eventProducer.origin;
+      return captured === undefined
+        ? Effect.succeed(providerThread)
+        : OpenCodeCreationPolicy.bindSessionAdoption(captured, input.runtimeLifecycle!, {
+            providerThread,
+            requested: ProviderAdapter.requestedRuntimeIdentity(input.modelSelection, driver),
+            observed: ProviderAdapter.unobservedRuntimeIdentity(),
+            producerOrigin: producer,
+          });
+    };
+    const requireAdoption = Effect.suspend(() =>
+      adoption === undefined
+        ? Effect.void
+        : OpenCodeCreationPolicy.requireCurrent({
+            incarnation: adoption.capture.parent,
+            isCurrent: adoption.isCurrent,
+          }).pipe(Effect.asVoid),
+    );
     const threads = new Map<string, ThreadState>();
     const childOwners = new Map<string, ThreadState>();
     const announced = new Map<string, EventOf<"session.created">["data"]>();
@@ -2628,7 +2664,10 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
     );
 
     let currentScope = initial.scope;
-    yield* Effect.addFinalizer(() => Scope.close(currentScope, Exit.void));
+    yield* Effect.addFinalizer(() => {
+      eventProducer.drain();
+      return Scope.close(currentScope, Exit.void);
+    });
     const follow = (
       stream: Stream.Stream<OpenCode2Client.OpenCode2StreamEvent, unknown>,
       producer: ProviderEventOrigin.ProviderEventProducer,
@@ -3515,6 +3554,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
                   detail: `OpenCode session ${sessionId} already has an active turn`,
                 });
               }
+              state.providerThread = { ...state.providerThread, id: turnInput.providerThread.id };
               if (isContinuation(turnInput)) return yield* runWake(state, turnInput);
               const afterUnsettled = state.unsettled;
               let stillStopping = false;
