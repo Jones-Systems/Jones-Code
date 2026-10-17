@@ -10,7 +10,7 @@ import type { Ref } from "react";
 import { getAppModelOptionsForInstance, type AppModelOption } from "../../modelSelection";
 import { isProviderInstancePickerReady, type ProviderInstanceEntry } from "../../providerInstances";
 import { ComposerControl } from "../../components/chat/ComposerControl";
-import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
+import { ProviderShortcutIcon } from "./ProviderShortcutIcon";
 import { getProviderStatusMessage } from "../../components/chat/ProviderStatusBanner";
 
 const PROVIDER_INSTANCE_SHORTCUT_LIMIT = 9;
@@ -178,15 +178,7 @@ export function ProviderInstanceShortcuts(props: {
               props.onSelect(entry.instanceId, current.model.slug);
             }}
           >
-            <ProviderInstanceIcon
-              driverKind={entry.driverKind}
-              displayName={entry.displayName}
-              accentColor={entry.accentColor}
-              showBadge
-              className="size-4"
-              iconClassName="size-4"
-              indicatorBackground="var(--background)"
-            />
+            <ProviderShortcutIcon entry={entry} />
           </ComposerControl>
         );
       })}

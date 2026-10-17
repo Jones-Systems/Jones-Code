@@ -4,10 +4,6 @@ import { withUniwind } from "uniwind";
 
 const ThemedPath = withUniwind(Path);
 
-/**
- * The "J3" brand mark, matching the desktop sidebar's T3Wordmark SVG
- * (apps/web/src/components/T3Wordmark.tsx). Width derives from the viewBox aspect ratio.
- */
 export function T3Wordmark(props: {
   readonly height: number;
   readonly color?: ColorValue;

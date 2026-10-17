@@ -15,6 +15,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -32,6 +33,7 @@ import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../../orchestration-v2/EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
+import * as ProjectionMaintenance from "../../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../../../orchestration-v2/ProjectStore.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
@@ -54,6 +56,7 @@ const stores = Layer.mergeAll(
   EffectOutbox.layer,
   TurnItemPositionStore.layer,
 ).pipe(Layer.provide(database));
+const eventSink = EventSink.layerFromStores.pipe(Layer.provide(Layer.mergeAll(stores, database)));
 // Settlement, its policy, projections, event sink and receipts are real. These
 // unrelated capabilities fail if a native settlement tries to invoke them.
 const runtime = Orchestrator.layer.pipe(
@@ -61,7 +64,7 @@ const runtime = Orchestrator.layer.pipe(
     Layer.mergeAll(
       database,
       stores,
-      EventSink.layerFromStores.pipe(Layer.provide(Layer.mergeAll(stores, database))),
+      eventSink,
       CommandPolicy.layer,
       IdAllocator.layer,
       RuntimePolicy.layer,
@@ -79,6 +82,8 @@ const runtime = Orchestrator.layer.pipe(
 );
 const testLayer = Layer.mergeAll(
   runtime,
+  eventSink,
+  ProjectionMaintenance.layer.pipe(Layer.provide(Layer.mergeAll(stores, database))),
   stores,
   database,
   NativeProviderAttemptsLive.pipe(Layer.provide(database)),
@@ -452,4 +457,168 @@ it.effect(
         before,
       );
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each(["settle", "unsettle", "settle-companion"] as const)(
+  "lost %s reply reconciles after superseding metadata and real event compaction",
+  (scenario) =>
+    Effect.gen(function* () {
+      const action = scenario === "unsettle" ? "unsettle" : "settle";
+      const f = yield* fixture;
+      const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+      const sink = yield* EventSink.EventSinkV2;
+      if (action === "unsettle") {
+        yield* f.orchestrator.dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make("prepare-settle"),
+          threadId: f.threadId,
+        });
+      } else {
+        yield* f.orchestrator.dispatch({
+          type: "thread.pin",
+          commandId: CommandId.make("prepare-pin"),
+          threadId: f.threadId,
+        });
+      }
+      const input: WorkstreamsNativeSettlementRequest = { ...request, native_action: action };
+      const digest = sha256Bytes(
+        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
+          input,
+        ),
+      );
+      const committed = yield* Deferred.make<void>();
+      let dispatches = 0;
+      const ports: NativeProviderPorts = {
+        ...f.ports,
+        engine: {
+          dispatch: (command) =>
+            Effect.gen(function* () {
+              dispatches += 1;
+              if (scenario === "settle-companion") {
+                const thread = (yield* f.projections.getThreadProjection(f.threadId)).thread;
+                const at = yield* DateTime.now;
+                const payload = {
+                  ...thread,
+                  settledAt: at,
+                  settledOverride: "settled" as const,
+                  pinnedAt: null,
+                  pinOrderKey: null,
+                  updatedAt: at,
+                };
+                yield* sink.commitCommand({
+                  commandId: command.commandId,
+                  threadId: f.threadId,
+                  commandType: "thread.settle",
+                  acceptedAt: at,
+                  effects: [],
+                  events: [
+                    {
+                      id: EventId.make("settlement-companion"),
+                      type: "thread.settled",
+                      threadId: f.threadId,
+                      occurredAt: at,
+                      payload,
+                    },
+                    {
+                      id: EventId.make("unpin-companion"),
+                      type: "thread.unpinned",
+                      threadId: f.threadId,
+                      occurredAt: at,
+                      payload,
+                    },
+                  ],
+                });
+              } else {
+                yield* f.orchestrator.dispatch(command);
+              }
+              yield* Deferred.succeed(committed, undefined);
+              return yield* Effect.never;
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new Orchestrator.OrchestratorDispatchError({
+                    commandId: command.commandId,
+                    commandType: command.type,
+                    cause,
+                  }),
+              ),
+            ),
+        },
+      };
+      const pending = yield* Effect.forkChild(
+        makeWorkstreamsNativeProvider(ports).settle(binding, input, digest),
+      );
+      yield* Deferred.await(committed);
+      yield* Fiber.interrupt(pending);
+      const attempt = Option.getOrThrow(yield* f.attempts.get(input));
+      const original = yield* f.sql<{
+        event_id: string;
+        sequence: number;
+        event_type: string;
+      }>`SELECT event_id, sequence, event_type FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId} ORDER BY sequence`;
+      const settlement = original.find(
+        (event) =>
+          event.event_type === (action === "settle" ? "thread.settled" : "thread.unsettled"),
+      )!;
+      assert.strictEqual(original.length, scenario === "settle-companion" ? 2 : 1);
+      yield* f.orchestrator.dispatch({
+        type: "thread.pin",
+        commandId: CommandId.make("newer-metadata"),
+        threadId: f.threadId,
+      });
+      const compacted = yield* maintenance.compactEventStore;
+      assert.isAbove(compacted.deletedEventCount, 0);
+      assert.deepEqual(
+        yield* f.sql`SELECT event_id FROM orchestration_events WHERE command_id = ${attempt.nativeCommandId}`,
+        [],
+      );
+      const reopened = makeWorkstreamsNativeProvider(ports);
+      const recovered = yield* reopened.lookup(binding, input, digest);
+      assert.strictEqual(recovered.state, "terminal");
+      if (recovered.state !== "terminal") throw new Error("Expected compacted durable proof.");
+      assert.strictEqual(recovered.result.native_outcome, "committed");
+      assert.strictEqual(recovered.settlement_event?.eventId, settlement.event_id);
+      assert.strictEqual(recovered.native_receipt?.resultSequence, original.at(-1)!.sequence);
+      assert.deepEqual(yield* reopened.settle(binding, input, digest), recovered);
+      assert.strictEqual(dispatches, 1);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("proof write failure rolls back the real native command and never redispatches", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    const before = yield* f.projections.getThreadProjection(f.threadId);
+    yield* f.sql`CREATE TRIGGER fail_synthetic_proof BEFORE UPDATE OF proof_json ON jones_workstreams_settlement_proofs
+      BEGIN SELECT RAISE(ABORT, 'synthetic proof failure'); END`;
+    let dispatches = 0;
+    const ports: NativeProviderPorts = {
+      ...f.ports,
+      engine: {
+        dispatch: (command) => {
+          dispatches += 1;
+          return f.orchestrator.dispatch(command);
+        },
+      },
+    };
+    const result = yield* makeWorkstreamsNativeProvider(ports).settle(
+      binding,
+      request,
+      requestBytesSha256,
+    );
+    assert.strictEqual(result.state, "unknown");
+    assert.deepEqual(yield* f.projections.getThreadProjection(f.threadId), before);
+    assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_events`, []);
+    assert.deepEqual(yield* f.sql`SELECT * FROM orchestration_command_receipts`, []);
+    assert.deepEqual(yield* f.sql`SELECT proof_json FROM jones_workstreams_settlement_proofs`, [
+      { proof_json: null },
+    ]);
+    assert.deepEqual(
+      yield* makeWorkstreamsNativeProvider(ports).settle(binding, request, requestBytesSha256),
+      result,
+    );
+    assert.strictEqual(dispatches, 1);
+    assert.isTrue(
+      Exit.isFailure(yield* Effect.exit(f.sql`DELETE FROM jones_workstreams_settlement_proofs`)),
+    );
+  }).pipe(Effect.provide(testLayer)),
 );

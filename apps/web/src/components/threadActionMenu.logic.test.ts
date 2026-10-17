@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
-  canStopThreadSession,
   buildDraftActionMenuItems,
   buildThreadActionMenuItems,
   type ThreadActionMenuState,
@@ -18,7 +17,6 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: false,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -41,20 +39,9 @@ function allIds(state: ThreadActionMenuState): string[] {
   return flatten(buildThreadActionMenuItems(state));
 }
 
-describe("canStopThreadSession", () => {
-  it("requires a non-stopped projected session, including an idle or errored attachment", () => {
-    expect(canStopThreadSession(null)).toBe(false);
-    expect(canStopThreadSession([])).toBe(false);
-    expect(canStopThreadSession([{ status: "stopped" }, { status: "stopped" }])).toBe(false);
-    for (const status of ["starting", "ready", "running", "waiting", "error"] as const) {
-      expect(canStopThreadSession([{ status: "stopped" }, { status }])).toBe(true);
-    }
-  });
-});
-
 describe("buildThreadActionMenuItems", () => {
-  it("places Stop after settlement and disables it after all sessions stop", () => {
-    const items = buildThreadActionMenuItems({ ...baseState, canStopSession: true });
+  it("places Stop after settlement and keeps it reachable without session details", () => {
+    const items = buildThreadActionMenuItems(baseState);
     expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
       id: "stop-thread",
       label: "Stop thread",
@@ -63,13 +50,12 @@ describe("buildThreadActionMenuItems", () => {
     });
     expect(
       buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
-    ).toMatchObject({ disabled: true });
+    ).toMatchObject({ disabled: false });
     expect(
       buildThreadActionMenuItems({
         ...baseState,
         isPinned: true,
         isSettled: true,
-        canStopSession: true,
       }).find((item) => item.id === "stop-thread"),
     ).toMatchObject({ disabled: false });
   });
@@ -125,12 +111,11 @@ describe("buildThreadActionMenuItems", () => {
     const allowed = buildThreadActionMenuItems({
       ...baseState,
       canOperate: true,
-      canStopSession: true,
     });
     expect(allowed.every((item) => !item.disabled)).toBe(true);
   });
 
-  it("hides capability-gated items while keeping Stop available as a disabled action", () => {
+  it("hides capability-gated items while keeping Stop available", () => {
     expect(
       ids({
         ...baseState,
@@ -211,7 +196,6 @@ describe("buildThreadActionMenuItems", () => {
     ]);
     const off = find({ ...baseState, autoSettleEnabled: false });
     expect(off?.children?.map((child) => child.checked)).toEqual([false, true]);
-    // Sits with the per-thread settings after Mark unread, not the lifecycle verbs.
     const items = buildThreadActionMenuItems(baseState);
     expect(items[items.findIndex((item) => item.id === "mark-unread") + 1]?.id).toBe("auto-settle");
     expect(
