@@ -626,7 +626,6 @@
     "apps/web/src/components/settings/deviceHostConnectionChecks.ts": "accepted-shared",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/scheduledTasksSettings.logic.ts": "accepted-shared",
-    "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx": "jones-owned",
     "apps/web/src/components/sidebar/SidebarChrome.tsx": "hook",
     "apps/web/src/components/sidebar/SidebarThreadHeader.tsx": "accepted-shared",
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx": "hook",
@@ -1018,7 +1017,8 @@
     "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/provider/providerMaintenanceRunner.ts": "hook",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared"
+    "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared",
+    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1346,10 +1346,6 @@
     {
       "from": "apps/web/src/components/files/BrowserDocumentFrame.tsx",
       "to": "apps/web/src/components/files/PdfPreview.tsx"
-    },
-    {
-      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
-      "to": "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"
     },
     {
       "from": "apps/web/src/composerDraftStore.ts",

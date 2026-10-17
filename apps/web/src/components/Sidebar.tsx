@@ -1,3 +1,5 @@
+import { nextThreadStatusWakeAt } from "../jones/threadStatusFilter/model";
+import { useThreadStatusFilter } from "../jones/threadStatusFilter/useThreadStatusFilter";
 import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
 import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { type EnvironmentId, type ScopedProjectRef, type ServerConfig } from "@t3tools/contracts";
@@ -197,8 +199,6 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
-  filterSidebarOperatingThreads,
-  isSidebarThreadOperating,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -389,7 +389,6 @@ function routeThreadOnly(
 function useSidebarThreads(input: {
   readonly excludedEnvironmentIds: ReadonlySet<string>;
   readonly excludedEnvironmentKey: string;
-  readonly activeOnly: boolean;
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, ServerConfig>;
@@ -401,23 +400,31 @@ function useSidebarThreads(input: {
   const threads = useThreadShells();
   const environmentThreads = filterSidebarEnvironmentThreads(threads, input.excludedEnvironmentIds);
   const scopedThreads = filterSidebarV2VisibleThreads(environmentThreads, scopedProjectKeys);
-  const activeThreadCount = scopedThreads.filter(isSidebarThreadOperating).length;
-  const visibleThreads = filterSidebarOperatingThreads(
-    scopedThreads,
-    input.activeOnly,
-    isSidebarThreadOperating,
-  );
   const settledResetKey = JSON.stringify([projectScopeKey, input.excludedEnvironmentKey]);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
-  // Snooze wake times are second-precise, so classifying with the quantized
-  // minute would hold a woken thread on the shelf for up to a minute.
-  const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
-  const [nextSnoozeWakeAt, setNextSnoozeWakeAt] = useState<string | null>(null);
-  useEffect(
-    () => scheduleSnoozeWake(nextSnoozeWakeAt, () => bumpSnoozeWakeTick((tick) => tick + 1)),
-    [nextSnoozeWakeAt],
+  // Snooze wake times are second-precise, including rows hidden by the
+  // status filter whose counts must still update at their wake boundary.
+  const [snoozeWakeAt, setSnoozeWakeAt] = useState(() => new Date().toISOString());
+  const {
+    statusFilter,
+    cycleStatusFilter,
+    counts: statusCounts,
+    threads: visibleThreads,
+  } = useThreadStatusFilter(
+    scopedThreads,
+    "current",
+    nowMinute > snoozeWakeAt ? nowMinute : snoozeWakeAt,
   );
+  // Counts include filtered-out threads, so arm the scoped roster's next wake.
+  useEffect(() => {
+    const now = Math.max(Date.now(), Date.parse(snoozeWakeAt));
+    const nextWakeAtMs = nextThreadStatusWakeAt(scopedThreads, now);
+    if (nextWakeAtMs === null) return;
+    return scheduleSnoozeWake(new Date(nextWakeAtMs).toISOString(), () =>
+      setSnoozeWakeAt(new Date().toISOString()),
+    );
+  }, [scopedThreads, snoozeWakeAt]);
   const [settledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
     SETTLED_SHELF_EXPANDED_KEY,
     false,
@@ -451,10 +458,8 @@ function useSidebarThreads(input: {
     serverConfigs,
     optimisticDrop,
     workingShelfEnabled,
-    clockKey: `${nowMinute}:${snoozeWakeTick}`,
+    clockKey: `${nowMinute}:${snoozeWakeAt}`,
   });
-  const partitionNextWakeAt = partition.snoozedThreads[0]?.snoozedUntil ?? null;
-  if (partitionNextWakeAt !== nextSnoozeWakeAt) setNextSnoozeWakeAt(partitionNextWakeAt);
 
   const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
     partition;
@@ -499,7 +504,9 @@ function useSidebarThreads(input: {
     ...partition,
     threads,
     environmentThreads,
-    activeThreadCount,
+    statusFilter,
+    cycleStatusFilter,
+    statusCounts,
     workingShelfEnabled,
     searchableThreads: [
       ...pinnedThreads,
@@ -2742,8 +2749,6 @@ export default function Sidebar() {
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [searchHighlight, setSearchHighlight] = useState({ orderKey: "", index: 0 });
-  const [activeOnly, setActiveOnly] = useState(false);
-  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const connectedEnvironmentIds = useConnectedEnvironmentIds();
   const searchEnvironmentIds = connectedEnvironmentIds.filter(
@@ -2827,6 +2832,53 @@ export default function Sidebar() {
             (projectRef) => `${projectRef.environmentId}:${projectRef.projectId}`,
           ),
         );
+  const {
+    threads,
+    environmentThreads,
+    statusFilter,
+    cycleStatusFilter,
+    statusCounts,
+    workingShelfEnabled,
+    pinnedThreads,
+    draggableThreadKeys,
+    activeReorderableThreadKeys,
+    activeThreads,
+    workingThreads,
+    snoozedThreads,
+    settledThreads,
+    snoozeNow,
+    searchableThreads,
+    settledVisibleCount,
+    hiddenSettledCount,
+    showMoreSettled,
+    settledShelfExpanded,
+    toggleSettledShelf,
+    snoozedShelfExpanded,
+    toggleSnoozedShelf,
+    workingShelfExpanded,
+    toggleWorkingShelf,
+    renderedSettledThreads,
+    visibleSnoozedThreads,
+    visibleWorkingThreads,
+    orderedThreadKeys,
+    threadByKey,
+    settledThreadKeys,
+    snoozedThreadKeys,
+    sectionByThreadKey,
+    pinnedKeys,
+    activeKeys,
+    pinnedKeysById,
+    activeKeysById,
+  } = useSidebarThreads({
+    excludedEnvironmentIds,
+    excludedEnvironmentKey,
+    projectScopeKey,
+    scopedProjectKeys,
+    serverConfigs,
+    optimisticDrop,
+    routeThreadKey,
+  });
+
   useEffect(() => {
     const nextKey = resolveSidebarProjectScopeKey({
       groups: projectGroups,
@@ -2850,10 +2902,10 @@ export default function Sidebar() {
   // Hidden rows must never remain selected for bulk actions.
   useEffect(() => {
     clearSelection();
-  }, [activeOnly, clearSelection, projectScopeKey, excludedEnvironmentKey]);
+  }, [statusFilter, clearSelection, projectScopeKey, excludedEnvironmentKey]);
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
-    if (activeOnly) return 0;
+    if (statusFilter !== "all") return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null || excludedEnvironmentIds.has(session.environmentId)) {
@@ -2903,52 +2955,6 @@ export default function Sidebar() {
       openProjectSettings(projectGroup);
     },
   );
-
-  const {
-    threads,
-    environmentThreads,
-    activeThreadCount,
-    workingShelfEnabled,
-    pinnedThreads,
-    draggableThreadKeys,
-    activeReorderableThreadKeys,
-    activeThreads,
-    workingThreads,
-    snoozedThreads,
-    settledThreads,
-    snoozeNow,
-    searchableThreads,
-    settledVisibleCount,
-    hiddenSettledCount,
-    showMoreSettled,
-    settledShelfExpanded,
-    toggleSettledShelf,
-    snoozedShelfExpanded,
-    toggleSnoozedShelf,
-    workingShelfExpanded,
-    toggleWorkingShelf,
-    renderedSettledThreads,
-    visibleSnoozedThreads,
-    visibleWorkingThreads,
-    orderedThreadKeys,
-    threadByKey,
-    settledThreadKeys,
-    snoozedThreadKeys,
-    sectionByThreadKey,
-    pinnedKeys,
-    activeKeys,
-    pinnedKeysById,
-    activeKeysById,
-  } = useSidebarThreads({
-    excludedEnvironmentIds,
-    excludedEnvironmentKey,
-    activeOnly,
-    projectScopeKey,
-    scopedProjectKeys,
-    serverConfigs,
-    optimisticDrop,
-    routeThreadKey,
-  });
 
   const workstreamController = useWorkstreams(true, threads);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
@@ -4560,9 +4566,9 @@ export default function Sidebar() {
       <ThreadContextDragGhost />
       <SidebarChromeHeader
         isElectron={isElectron}
-        activeThreadCount={activeThreadCount}
-        activeOnly={activeOnly}
-        onToggleActiveOnly={toggleActiveOnly}
+        statusCounts={statusCounts}
+        statusFilter={statusFilter}
+        onCycleStatusFilter={cycleStatusFilter}
       />
       <SidebarContent
         className="min-h-full"
@@ -4967,7 +4973,7 @@ export default function Sidebar() {
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
-                        !activeOnly ? (
+                        statusFilter === "all" ? (
                           <SidebarDraftBlock
                             key="draft-sessions"
                             projectByKey={projectByKey}
