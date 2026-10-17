@@ -18,6 +18,7 @@
     "apps/mobile/src/features/workstreams/projection.ts",
     "apps/mobile/src/features/workstreams/types.ts",
     "apps/mobile/src/features/workstreams/useWorkstreams.ts",
+    "apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
     "apps/server/src/cli/workstream.ts",
     "apps/server/src/environment/NativePlacementTrust.ts",

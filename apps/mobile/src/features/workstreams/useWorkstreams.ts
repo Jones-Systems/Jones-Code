@@ -43,6 +43,7 @@ import {
 } from "./gateway";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
 import {
+  classifyMobileWorkstreamFailure,
   loadMobileWorkstreamRegistry,
   settleMobileWorkstreamSnapshots,
   type MobileWorkstreamLoadOutcome,
@@ -337,7 +338,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 items.push(...result.page.items);
                 appearance = { ...result.page, items };
               }
-            } catch {
+            } catch (cause) {
+              // Lost authorization fails the whole load so the settled round purges it.
+              if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
               appearance = null;
             }
             let placements: LiveT3Placements | null = null;
@@ -360,7 +363,8 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                     Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
                   ),
               );
-            } catch {
+            } catch (cause) {
+              if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
               /* Without current proof, stored assignments still group; changes stay blocked. */
             }
             return [
@@ -487,7 +491,18 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       assertCurrent(snapshot);
       return result;
     } catch (cause) {
-      if (!controller.signal.aborted) refresh();
+      if (!controller.signal.aborted) {
+        // Lost authorization drops this environment's Workstreams now, not after a reload.
+        if (classifyMobileWorkstreamFailure(cause) === "authorization")
+          setLoaded((previous) =>
+            settleMobileWorkstreamSnapshots(
+              previous,
+              new Map([[snapshot.prepared.environmentId, { kind: "failed", cause }]]),
+              retainedRef.current,
+            ),
+          );
+        refresh();
+      }
       throw cause;
     } finally {
       controllers.current.delete(controller);
