@@ -2,6 +2,10 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "qualified-updates",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/updates/clientUpdateBanner.tsx",
+    "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+    "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx",
+    "apps/web/src/jones/updates/fixtures/client-update-notices.html",
     "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.ts",
     "apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
@@ -162,6 +166,10 @@
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/updates/clientUpdateBanner.tsx"
+    },
     {
       "from": "apps/desktop/src/boot.ts",
       "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"

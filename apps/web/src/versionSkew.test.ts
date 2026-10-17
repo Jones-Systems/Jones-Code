@@ -15,6 +15,7 @@ import {
   isVersionMismatchDismissed,
   manualServerUpdateCommand,
   resolveServerConfigVersionMismatch,
+  resolveServerConfigClientUpdateNotice,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
   serverUpdateGuidance,
@@ -240,5 +241,23 @@ describe("versionSkew", () => {
   it("matches version-drift guidance to the advertised update path", () => {
     expect(serverUpdateGuidance("respawn")).toBe("Update to stay in sync");
     expect(serverUpdateGuidance("desktop-managed")).toBe("Update the desktop app");
+  });
+});
+
+describe("client notice config adapter", () => {
+  it("uses the branded client and stays quiet while an environment config is absent", () => {
+    expect(resolveServerConfigClientUpdateNotice(null)).toBeNull();
+    expect(resolveServerConfigClientUpdateNotice(undefined)).toBeNull();
+    expect(
+      resolveServerConfigClientUpdateNotice({
+        environment: {
+          environmentId: EnvironmentId.make("client-notice-adapter"),
+          label: "Remote",
+          platform: { os: "linux", arch: "x64" },
+          capabilities: { repositoryIdentity: true },
+          serverVersion: "0.0.35",
+        },
+      }),
+    ).toMatchObject({ kind: "server-newer", clientVersion: APP_VERSION, serverVersion: "0.0.35" });
   });
 });

@@ -558,6 +558,7 @@ import {
 } from "./ui/alert-dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ServerUpdateAction } from "./ServerUpdateAction";
+import { useClientUpdateBanners } from "../jones/updates/clientUpdateBanner";
 import { useAutoBalanceUpdateBanner } from "./chat/useAutoBalanceUpdateBanner";
 import {
   ComposerServerUpdateIcon,
@@ -2450,6 +2451,11 @@ export default function ChatView(props: ChatViewProps) {
     [automaticEnvironment, logicalProjectEnvironments, environmentById],
   );
   const autoBalanceUpdateBanner = useAutoBalanceUpdateBanner(autoUpdateEnvironments);
+  const clientUpdateBanners = useClientUpdateBanners({
+    activeEnvironment: activeThread ? activeEnvironment : primaryEnvironment,
+    automaticEnvironment,
+    eligibleEnvironments: autoUpdateEnvironments,
+  });
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThread
@@ -2614,10 +2620,12 @@ export default function ChatView(props: ChatViewProps) {
       });
     }
     if (autoBalanceUpdateBanner) items.push(autoBalanceUpdateBanner);
+    items.push(...clientUpdateBanners);
     return items;
   }, [
     automaticEnvironment,
     autoBalanceUpdateBanner,
+    clientUpdateBanners,
     activeEnvironmentUnavailableState,
     handleReconnectActiveEnvironmentStable,
     canDisconnectActiveEnvironment,

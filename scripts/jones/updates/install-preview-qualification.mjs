@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -86,12 +87,61 @@ export async function hashTree(root) {
   return output;
 }
 
+const trackedPatchFile = "install-preview-build.patch";
+const trackedPatchFormat = "git-diff-binary-full-index/v1";
+const trackedPatchMaxBytes = 16 * 1024 * 1024;
+const trackedPatchPath = (receiptPath) =>
+  NodePath.join(NodePath.dirname(receiptPath), trackedPatchFile);
+const readBinaryTrackedPatch = (source) =>
+  NodeChildProcess.execFileSync(
+    "git",
+    [
+      "-C",
+      source,
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--binary",
+      "--full-index",
+      "HEAD",
+      "--",
+      ".",
+    ],
+    { maxBuffer: trackedPatchMaxBytes },
+  );
+
+async function readPatchArtifact(file, bytes) {
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
+  try {
+    const stat = await handle.stat();
+    NodeAssert.ok(stat.isFile(), "Tracked patch artifact must be a regular file");
+    NodeAssert.equal(stat.size, bytes, "Tracked patch artifact size differs");
+    const buffer = Buffer.alloc(bytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    NodeAssert.equal(length, bytes, "Tracked patch artifact changed while reading");
+    return buffer.subarray(0, length);
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function recordBuild(source, out, rendererDir) {
   const git = (...args) =>
     NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
   const sourceSha = git("rev-parse", "HEAD");
   const sourceTree = git("rev-parse", "HEAD^{tree}");
+  // Keep the v1 ordinary UTF-8/trim digest distinct from the replayable binary patch.
   const patch = git("diff", "HEAD", "--", ".");
+  const binaryPatch = readBinaryTrackedPatch(source);
   const rendererManifest = rendererDir
     ? await readRendererManifest(rendererDir, sourceSha, sourceTree)
     : undefined;
@@ -100,11 +150,18 @@ export async function recordBuild(source, out, rendererDir) {
     sourceSha,
     sourceTree,
     trackedPatchSha256: digest(patch),
+    trackedPatchArtifact: {
+      format: trackedPatchFormat,
+      file: trackedPatchFile,
+      sha256: digest(binaryPatch),
+      bytes: binaryPatch.length,
+    },
     cleanTrackedSource: patch.length === 0,
     server: await hashTree(NodePath.join(source, "apps/server/dist")),
     web: await hashTree(NodePath.join(source, "apps/web/dist")),
     ...(rendererDir ? { renderer: await hashTree(rendererDir), rendererManifest } : {}),
   };
+  await NodeFSP.writeFile(trackedPatchPath(out), binaryPatch, { flag: "wx", mode: 0o600 });
   await atomicJson(out, receipt);
   return receipt;
 }
@@ -1181,6 +1238,142 @@ function rendererSteps(origin, sourceSha, runId) {
     `!s.initialReadPending && s.observed.jones.phase === 'staged' && s.observed.jones.revision === 2`,
   );
   capture("desktop-initial-read-race", ["Production atom: staged; revision 2", "Install"]);
+
+  begin("available", "client-notices");
+  wait("available");
+  identity();
+  control("show-client-notices");
+  const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
+  const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeTitles = (label, titles) =>
+    check(
+      label,
+      `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).map(e => e.querySelector('.font-medium').textContent).sort()`,
+      [...titles].sort(),
+    );
+  const details = () =>
+    steps.push({
+      action: "hover",
+      locator: '[data-testid="notice-banners"] >> role=button[name="Show notice details"]',
+    });
+  const syntheticSource = (sourceSha.startsWith("a") ? "b" : "a").repeat(39) + "b";
+  noticeCount(1);
+  check(
+    "Warning inputs use explicit synthetic older-client branding and the exact source",
+    `document.querySelector('[data-testid="notice-branding"]').textContent === ${JSON.stringify(`Synthetic client 0.0.45-preview.20261011.1.1; exact source ${sourceSha}`)}`,
+  );
+  noticeTitles("Manual selection shows only Laptop", ["Laptop: Different preview sources"]);
+  details();
+  steps.push({ action: "wait", text: "Which source is newer is unknown." });
+  capture(
+    "client-notice-active-laptop",
+    ["Laptop: Different preview sources", "Which source is newer is unknown."],
+    ["Remote: Different preview sources", "Client update available"],
+  );
+  control("notice-select-remote");
+  steps.push({ action: "wait", text: "Remote: Different preview sources" });
+  noticeTitles("Changing active environment selects Remote only", [
+    "Remote: Different preview sources",
+  ]);
+  capture(
+    "client-notice-active-remote",
+    ["Remote: Different preview sources"],
+    ["Laptop: Different preview sources"],
+  );
+  control("notice-select-excluded");
+  steps.push({ action: "wait", text: "Excluded: Different preview sources" });
+  control("notice-automatic");
+  noticeCount(2);
+  noticeTitles("Automatic selection uses eligible environments, not the active excluded one", [
+    "Laptop: Different preview sources",
+    "Remote: Different preview sources",
+  ]);
+  steps.push({
+    action: "hover",
+    locator: '[data-testid="notice-banners"] >> role=button[name="Show other notices"]',
+  });
+  steps.push({ action: "wait", text: "Remote: Different preview sources" });
+  check(
+    "Both automatic notices are visibly expanded",
+    `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).every(e => getComputedStyle(e).visibility === 'visible' && e.getBoundingClientRect().height > 0)`,
+  );
+  capture(
+    "client-notice-automatic-eligible",
+    ["Laptop: Different preview sources", "Remote: Different preview sources"],
+    ["Excluded: Different preview sources"],
+  );
+  control("notice-select-laptop");
+  noticeCount(1);
+  check(
+    "Initial preview pair renders the expected full source and abbreviation",
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource)}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+  );
+  click('[data-testid="notice-banners"] >> role=button[name="Dismiss client version notice"]');
+  noticeCount(0);
+  noticeTitles("Production dismissal removes the actual notice", []);
+  control("notice-remount");
+  steps.push({ action: "wait", text: "mount: 2" });
+  noticeCount(0);
+  noticeTitles("Dismissal survives remount of the production hook and stack", []);
+  capture(
+    "client-notice-dismissed-remount",
+    ["Client notices: 0", "mount: 2"],
+    ["Laptop: Different preview sources"],
+  );
+  control("notice-pair-changed");
+  noticeCount(1);
+  noticeTitles("A changed full SHA restores the dismissed notice", [
+    "Laptop: Different preview sources",
+  ]);
+  check(
+    "Changed full source retains the same displayed abbreviation",
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+  );
+  capture("client-notice-changed-full-source", [
+    "Laptop: Different preview sources",
+    syntheticSource.slice(0, 12),
+  ]);
+  control("notice-pair-equal");
+  noticeCount(0);
+  noticeTitles("Equal preview sources stay quiet", []);
+  capture(
+    "client-notice-equal-source",
+    ["pair: equal", "Client notices: 0"],
+    ["Laptop: Different preview sources"],
+  );
+  control("notice-pair-missing");
+  noticeCount(0);
+  steps.push({ action: "wait", text: "source missing" });
+  noticeTitles("Missing preview source stays quiet", []);
+  capture(
+    "client-notice-missing-source",
+    ["source missing", "Client notices: 0"],
+    ["Laptop: Different preview sources"],
+  );
+  control("notice-pair-stable");
+  noticeCount(1);
+  noticeTitles("Stable 0.1.0 directs the older client to update", [
+    "Laptop: Client update available",
+  ]);
+  check(
+    "Stable guidance keeps the ordinary version and update-or-reload instructions",
+    `${noticeText}.includes('Server 0.1.0') && ${noticeText}.includes('Update this app or reload an updated web client.')`,
+  );
+  details();
+  steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
+  capture(
+    "client-notice-stable-server",
+    [
+      "Laptop: Client update available",
+      "Update this app or reload an updated web client.",
+      "Server 0.1.0",
+    ],
+    ["Which source is newer is unknown."],
+  );
+  check(
+    "Client notices never request a server installation or download",
+    `s.calls.every(c => c.action !== 'downloadUpdate' && c.action !== 'installUpdate')`,
+  );
   return steps;
 }
 
@@ -1313,15 +1506,34 @@ export async function waitInactive(rpc, threadId) {
   }
 }
 
-export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
-  NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
-  await NodeFSP.mkdir(out, { recursive: false });
+export async function readBuildReceipt(source, buildReceipt, rendererDir) {
   const expected = JSON.parse(await NodeFSP.readFile(buildReceipt, "utf8"));
   const nativeGit = (...args) =>
     NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
   NodeAssert.equal(expected.sourceSha, nativeGit("rev-parse", "HEAD"));
   NodeAssert.equal(expected.sourceTree, nativeGit("rev-parse", "HEAD^{tree}"));
   NodeAssert.equal(expected.trackedPatchSha256, digest(nativeGit("diff", "HEAD", "--", ".")));
+  const artifact = expected.trackedPatchArtifact;
+  NodeAssert.equal(
+    artifact?.format,
+    trackedPatchFormat,
+    "Tracked patch format is missing or invalid",
+  );
+  NodeAssert.equal(artifact.file, trackedPatchFile, "Tracked patch filename differs");
+  NodeAssert.match(artifact.sha256, /^[a-f0-9]{64}$/);
+  NodeAssert.ok(
+    Number.isSafeInteger(artifact.bytes) &&
+      artifact.bytes >= 0 &&
+      artifact.bytes <= trackedPatchMaxBytes,
+    "Tracked patch artifact exceeds its byte bound",
+  );
+  const binaryPatch = await readPatchArtifact(trackedPatchPath(buildReceipt), artifact.bytes);
+  NodeAssert.equal(digest(binaryPatch), artifact.sha256, "Tracked patch artifact digest differs");
+  NodeAssert.deepEqual(
+    readBinaryTrackedPatch(source),
+    binaryPatch,
+    "Tracked patch artifact differs from current source",
+  );
   NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/server/dist")), expected.server);
   NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/web/dist")), expected.web);
   NodeAssert.equal(
@@ -1336,6 +1548,13 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
       expected.rendererManifest,
     );
   }
+  return expected;
+}
+
+export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
+  NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
+  await NodeFSP.mkdir(out, { recursive: false });
+  const expected = await readBuildReceipt(source, buildReceipt, rendererDir);
   const evidence = {
     schema: "jones-install-preview-qualification/v1",
     build: expected,
