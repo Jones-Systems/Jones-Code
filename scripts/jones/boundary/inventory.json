@@ -1027,7 +1027,11 @@
     "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
     "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
-    "packages/contracts/src/desktopBootstrap.ts": "hook"
+    "packages/contracts/src/desktopBootstrap.ts": "hook",
+    "packages/contracts/src/jones/workstreamsNativeOwner.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

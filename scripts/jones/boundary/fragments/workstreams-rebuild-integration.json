@@ -289,6 +289,10 @@
     {
       "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
       "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeOwner.ts"
     }
   ]
 }

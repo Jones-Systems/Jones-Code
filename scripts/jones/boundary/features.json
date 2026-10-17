@@ -108,7 +108,13 @@
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
-        "apps/desktop/scripts/main-process-bundle.test.mjs"
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ]
     },
     {

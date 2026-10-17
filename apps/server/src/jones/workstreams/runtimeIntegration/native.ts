@@ -1,4 +1,10 @@
-import { EnvironmentHttpApi, EnvironmentHttpBadRequestError } from "@t3tools/contracts";
+import {
+  AuthAccessWriteScope,
+  EnvironmentHttpApi,
+  EnvironmentHttpBadRequestError,
+  type WorkstreamsNativeOwnerRequest,
+  type WorkstreamsNativeOwnerResponse,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -9,6 +15,14 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import { annotateEnvironmentRequest, requireEnvironmentScope } from "../../../auth/http.ts";
 import { NativeStoreAuthority } from "../../../environment/NativeStoreAuthority.ts";
+import * as ServerConfig from "../../../config.ts";
+import * as DesktopNativeOwner from "../DesktopNativeOwner.ts";
+import {
+  assertLocalDesktopOwnerRequest,
+  readDesktopNativeOwnerRequest,
+  renderDesktopNativeOwnerResponse,
+  runDesktopNativeOwnerOperation,
+} from "../enrollment/desktopOwner.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import { NativeEnrollmentsLive, NativeProviderEnrollmentLive } from "../enrollment/service.ts";
 import {
@@ -33,6 +47,9 @@ export class NativeWorkstreamsRuntime extends Context.Service<
   {
     readonly provider: WorkstreamsNativeProvider;
     readonly enrollments: NativeProviderEnrollment["Service"];
+    readonly ownerOperations?: (
+      request: WorkstreamsNativeOwnerRequest,
+    ) => Effect.Effect<WorkstreamsNativeOwnerResponse, EnvironmentHttpBadRequestError>;
   }
 >()("t3/jones/workstreams/runtimeIntegration/native/NativeWorkstreamsRuntime") {}
 
@@ -43,11 +60,38 @@ const makeNativeWorkstreamsRuntimeLayer = (
     NativeWorkstreamsRuntime,
     Effect.gen(function* () {
       const authority = yield* NativeStoreAuthority;
+      const config = yield* ServerConfig.ServerConfig;
+      const owner = yield* DesktopNativeOwner.DesktopNativeOwner;
       const engine = yield* Orchestrator.OrchestratorV2;
       const attempts = yield* NativeProviderAttempts;
       const enrollments = yield* NativeProviderEnrollment;
       return NativeWorkstreamsRuntime.of({
         enrollments,
+        ownerOperations: (request) =>
+          owner.available && owner.binding !== undefined
+            ? runDesktopNativeOwnerOperation(
+                request,
+                {
+                  binding: owner.binding,
+                  assertCurrent: owner.assertCurrent,
+                  refresh: owner.refresh,
+                },
+                {
+                  baseDir: config.baseDir,
+                  authorityDir: config.authorityStateDir,
+                  environmentId: owner.binding.environmentId,
+                },
+              ).pipe(
+                Effect.mapError(
+                  () =>
+                    new EnvironmentHttpBadRequestError({
+                      message: "desktop_native_owner_unavailable",
+                    }),
+                ),
+              )
+            : Effect.fail(
+                new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_unavailable" }),
+              ),
         provider: makeWorkstreamsNativeProvider({
           authority,
           threadExists: (threadId) =>
@@ -124,6 +168,33 @@ export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const runtime = yield* NativeWorkstreamsRuntime;
     return handlers
+      .handleRaw(
+        "ownerOperations",
+        Effect.fnUntraced(function* () {
+          yield* annotateEnvironmentRequest("workstreams.native.ownerOperations");
+          const principal = yield* requireEnvironmentScope(AuthAccessWriteScope);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          yield* Effect.try({
+            try: () => assertLocalDesktopOwnerRequest(request, principal),
+            catch: () =>
+              new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_forbidden" }),
+          });
+          const operation = yield* readDesktopNativeOwnerRequest(request.stream);
+          if (runtime.ownerOperations === undefined)
+            return yield* new EnvironmentHttpBadRequestError({
+              message: "desktop_native_owner_unavailable",
+            });
+          const result = yield* runtime.ownerOperations(operation).pipe(
+            Effect.mapError(
+              () =>
+                new EnvironmentHttpBadRequestError({
+                  message: "desktop_native_owner_unavailable",
+                }),
+            ),
+          );
+          return renderDesktopNativeOwnerResponse(result);
+        }),
+      )
       .handleRaw("context", createNativeWorkstreamsHttpHandler(runtime, "context"))
       .handleRaw("attestations", createNativeWorkstreamsHttpHandler(runtime, "attestations"))
       .handleRaw("settlements", createNativeWorkstreamsHttpHandler(runtime, "settlements"))

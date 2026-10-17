@@ -1270,10 +1270,16 @@
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
-        "apps/desktop/scripts/main-process-bundle.test.mjs"
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/server/src/environment/NativeStoreAuthority.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs",
+        "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/server/src/environment/NativeStoreAuthority.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs packages/contracts/src/jones/workstreamsNativeOwner.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
         "vp run --filter @t3tools/desktop --filter t3 --filter @t3tools/shared --filter @t3tools/contracts typecheck"
       ]
     }
