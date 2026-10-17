@@ -56,7 +56,7 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     const swap = host.swapIoBytesPerSecond;
     const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
     const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
-    const ram = swapMiB === undefined ? "Swap —" : `Swap ${swapMiB.toFixed(1)} MiB/s`;
+    const ram = swapMiB === undefined ? "— mb/s" : `${swapMiB.toFixed(1)} mb/s`;
     const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
     const availableRam =
       availableMemoryBytes === undefined

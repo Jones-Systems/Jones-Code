@@ -152,7 +152,7 @@ it("shows Mac swap activity without a low available-RAM alarm", async () => {
     }),
   );
   const laptop = container.querySelectorAll('[role="img"]')[3];
-  expect(laptop?.textContent).toBe("Laptop · 12% · Swap 0.3 MiB/s");
+  expect(laptop?.textContent).toBe("Laptop · 12% · 0.3 mb/s");
   expect(laptop?.className).toContain("bg-emerald");
   expect(laptop?.getAttribute("aria-label")).toContain("Available RAM 0.0 GiB");
   expect(laptop?.getAttribute("aria-label")).toContain("10-second average");
