@@ -9,6 +9,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
 import {
   assertVisible,
   assertInactiveDenied,
@@ -41,6 +42,8 @@ import {
   waitForFixtureStartup,
   issueFixturePairing,
 } from "./install-preview-qualification.mjs";
+
+const nativePlatform = HostProcess.Platform.defaultValue();
 
 const source = NodePath.resolve(
   NodePath.dirname(NodeURL.fileURLToPath(import.meta.url)),
@@ -1337,7 +1340,7 @@ NodeTest.test(
 
 NodeTest.test(
   "build receipt refuses a FIFO without a writer before qualification",
-  { skip: NodeOS.platform() === "win32" ? "Named FIFOs require POSIX mkfifo" : false },
+  { skip: nativePlatform === "win32" ? "Named FIFOs require POSIX mkfifo" : false },
   async () => {
     await withBuildReceiptFixture(async (fixture) => {
       await recordBuild(fixture.checkout, fixture.receipt);
