@@ -749,6 +749,7 @@
     "docs/operations/development.md": "policy",
     "docs/operations/observability.md": "policy",
     "docs/operations/persistent-hosts.md": "jones-owned",
+    "docs/operations/release.md": "policy",
     "docs/operations/upstream-sync.md": "policy",
     "docs/user/background-service.md": "accepted-shared",
     "docs/user/composer.md": "policy",
