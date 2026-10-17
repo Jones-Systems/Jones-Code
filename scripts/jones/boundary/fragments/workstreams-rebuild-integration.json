@@ -142,7 +142,9 @@
     "vite.config.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
-    "packages/contracts/src/desktopBootstrap.ts"
+    "packages/contracts/src/desktopBootstrap.ts",
+    "apps/server/src/bin.ts",
+    "apps/server/src/entrypoint.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -293,6 +295,10 @@
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamsNativeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

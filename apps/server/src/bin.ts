@@ -17,16 +17,16 @@ if (
   if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
-  } else if (command === "__jones-native-authority-transition") {
-    const { runNativeAuthorityTransition } =
-      await import("./jones/workstreams/nativeAuthorityTransition.ts");
-    await runNativeAuthorityTransition();
-  } else {
+  } else if (command !== "__jones-native-authority-transition") {
     // Before anything reads stdin: the desktop app's Windows launcher starts
     // the CLI without one. Never for the fast paths, whose stdin is a pipe.
     const { attachConsoleStdin } = await import("./cli/consoleStdin.ts");
     attachConsoleStdin();
     const { runCli } = await import("./binCli.ts");
     runCli();
+  } else {
+    const { runNativeAuthorityTransition } =
+      await import("./jones/workstreams/nativeAuthorityTransition.ts");
+    await runNativeAuthorityTransition();
   }
 }

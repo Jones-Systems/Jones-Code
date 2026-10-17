@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { isEntrypoint } from "./entrypoint.ts";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
@@ -90,4 +90,66 @@ describe("isEntrypoint", () => {
       }),
     ).toBe(false);
   });
+});
+
+describe("bin dispatch", () => {
+  it.for(["acp-mcp-bridge", "acp-mcp-call", undefined] as const)(
+    "preserves lazy routing for %s",
+    async (command) => {
+      const previousArgv = process.argv;
+      const events: unknown[] = [];
+      vi.resetModules();
+      vi.doMock("./entrypoint.ts", () => ({ isEntrypoint: () => true }));
+      vi.doMock("./mcp/AcpMcpStdioBridge.ts", () => {
+        events.push("load-acp");
+        return {
+          runAcpMcpCliFastPath: async (actual: string, args: string[]) => {
+            events.push(["run-acp", actual, args]);
+          },
+        };
+      });
+      vi.doMock("./cli/consoleStdin.ts", () => {
+        events.push("load-console");
+        return {
+          attachConsoleStdin: () => {
+            events.push("attach-console");
+          },
+        };
+      });
+      vi.doMock("./binCli.ts", () => {
+        events.push("load-cli");
+        return {
+          runCli: () => {
+            events.push("run-cli");
+          },
+        };
+      });
+      vi.doMock("./jones/workstreams/nativeAuthorityTransition.ts", () => {
+        throw new Error("Non-native command loaded the native transition module");
+      });
+      try {
+        process.argv =
+          command === undefined
+            ? [process.execPath, "fixture-bin"]
+            : [process.execPath, "fixture-bin", command, "--fixture", "value"];
+        await import("./bin.ts");
+        expect(events).toEqual(
+          command === undefined
+            ? ["load-console", "attach-console", "load-cli", "run-cli"]
+            : ["load-acp", ["run-acp", command, ["--fixture", "value"]]],
+        );
+      } finally {
+        process.argv = previousArgv;
+        for (const module of [
+          "./entrypoint.ts",
+          "./mcp/AcpMcpStdioBridge.ts",
+          "./cli/consoleStdin.ts",
+          "./binCli.ts",
+          "./jones/workstreams/nativeAuthorityTransition.ts",
+        ])
+          vi.doUnmock(module);
+        vi.resetModules();
+      }
+    },
+  );
 });

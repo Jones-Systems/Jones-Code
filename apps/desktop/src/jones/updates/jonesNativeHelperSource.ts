@@ -6,7 +6,7 @@ import argparse, fcntl, hashlib, json, os, pathlib, signal, sqlite3, subprocess,
 
 PROTOCOL = 1
 STARTUP_GATE_PROTOCOL = 1
-SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json')
+SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json', 'environment-id')
 TRANSIENT_PROFILE = {'SingletonLock', 'SingletonCookie', 'SingletonSocket'}
 RECOVERY_HEADROOM = 256 * 1024 * 1024
 

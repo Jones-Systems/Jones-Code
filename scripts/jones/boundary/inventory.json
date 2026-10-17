@@ -1031,7 +1031,9 @@
     "packages/contracts/src/jones/workstreamsNativeOwner.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsNativeOwner.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/enrollment/desktopOwner.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned",
+    "apps/server/src/bin.ts": "hook",
+    "apps/server/src/entrypoint.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1507,6 +1509,10 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }
