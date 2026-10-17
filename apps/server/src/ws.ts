@@ -1,5 +1,9 @@
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
 import {
+  makeNativeStoreAuthorityConfigReader,
+  type NativeStoreAuthorityConfigReader,
+} from "./jones/workstreams/serverConfigNativeStoreAuthority.ts";
+import {
   NativeBootstrapDispatchError,
   NativeCreationRejectionCode,
   EnvironmentAuthenticatedPrincipal,
@@ -1176,6 +1180,7 @@ const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   previewAutomationBroker: PreviewAutomationBroker.PreviewAutomationBroker["Service"],
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
+  readNativeStoreAuthorityConfig: NativeStoreAuthorityConfigReader,
 ) =>
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
@@ -1739,6 +1744,7 @@ const layerWsRpc = (
               onSome: (root) => ({ scratchWorkspaceRoot: root }),
             }),
             newProjectsRoot: managedFolders.namedProjectsRoot,
+            ...(yield* readNativeStoreAuthorityConfig(environment.environmentId)),
           };
         });
 
@@ -3235,6 +3241,7 @@ export const layer = Layer.unwrap(
     const pullRequests = yield* PullRequestService.PullRequestService;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const sql = yield* SqlClient.SqlClient;
+    const readNativeStoreAuthorityConfig = yield* makeNativeStoreAuthorityConfigReader;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -3288,6 +3295,7 @@ export const layer = Layer.unwrap(
               clientAnalyticsProps,
               previewAutomationBroker,
               serverBrowser,
+              readNativeStoreAuthorityConfig,
             ).pipe(
               Layer.provide(QueueCompatibility.layer),
               Layer.provideMerge(RpcSerialization.layerJson),

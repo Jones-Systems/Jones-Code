@@ -192,10 +192,12 @@
       "tests": [
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
         "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
-        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts"
+        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts",
+        "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts",
+        "packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts"
+        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ]
     },
     {
