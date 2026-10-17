@@ -4,6 +4,15 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "client-update-notices",
+      "tests": [
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx"
+      ],
+      "scope": "Passive client guidance for ordered newer server versions and neutral unequal Jones preview sources. Full source identities scope per-environment dismissals; active and automatic eligible environments share the web/desktop renderer. ChatView adds only the notice hook and stack entries; versionSkew adapter tests stay shared to prove branded config forwarding. No server update action, source ancestry inference, connection block, or mobile version comparison. Synthetic renderer fixture exercises the production hook and stack with isolated descriptors."
+    },
+    {
       "id": "provider-order",
       "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."

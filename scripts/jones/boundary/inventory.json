@@ -7,6 +7,10 @@
   },
   "baseline": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6",
   "paths": {
+    "apps/web/src/jones/updates/clientUpdateBanner.tsx": "jones-owned",
+    "apps/web/src/jones/updates/clientUpdateBanner.test.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices.html": "jones-owned",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx": "hook",
     "scripts/jones/boundary/fragments/provider-order.json": "jones-owned",
     "apps/server/src/testUtils/weightedShardSequencer.ts": "hook",
