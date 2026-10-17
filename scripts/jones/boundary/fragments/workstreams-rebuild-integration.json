@@ -27,6 +27,7 @@
     "apps/server/src/environment/nativeStoreAuthorityPersistence.ts",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts",
+    "apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts",
     "apps/server/src/workstreams/SyntheticWorkstreamTransport.ts",
     "apps/server/src/workstreams/WorkstreamGateway.test.ts",
     "apps/server/src/workstreams/WorkstreamGateway.ts",

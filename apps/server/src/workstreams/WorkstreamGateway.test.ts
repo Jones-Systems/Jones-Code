@@ -192,6 +192,15 @@ it.effect("binds the accepted contract and exact idempotency bytes", () =>
     const submissions: Array<Parameters<WorkstreamTransport["submitCommand"]>[0]> = [];
     const transport: WorkstreamTransport = {
       ...fixture,
+      // Pin the advertised revision so the replay below exercises the gateway's own receipt
+      // cache under one unchanged binding; the synthetic registry advances on every commit.
+      getCapabilities: (input) =>
+        fixture.getCapabilities(input).pipe(
+          Effect.map((value) => ({
+            ...value,
+            context: { ...value.context, registry_version: 11 },
+          })),
+        ),
       submitCommand: (input) => {
         submissions.push(input);
         return fixture.submitCommand(input);
@@ -308,10 +317,11 @@ it.effect("keeps coordination disposition and native T3 settlement as distinct r
         other_disposition: null,
       },
     });
+    // The committed disposition advanced the synthetic registry version.
     const settlement = yield* gateway.submit({
       command_id: "command-settlement-0001",
       expected_server_generation: 7,
-      expected_registry_version: 11,
+      expected_registry_version: 12,
       action: {
         operation: "request_native_t3_settlement",
         native_reference_id: "reference-t3-1",
@@ -342,7 +352,8 @@ it.effect("reconciles pending and unresolved commands only through the exact GET
     const fixture = makeSyntheticWorkstreamTransport();
     const command = updateCommand({ command_id: "command-pending-0001" });
     const body = "fixture-request-body";
-    const terminal = yield* fixture.submitCommand({
+    // A separate instance supplies the terminal receipt, so the gateway's registry stays at 11.
+    const terminal = yield* makeSyntheticWorkstreamTransport().submitCommand({
       body,
       command,
       idempotencyKey: command.command_id,
