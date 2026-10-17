@@ -1,5 +1,7 @@
+import type { MembershipEpisode, NativeReference } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
+import { buildWorkstreamAssignmentIndex } from "./assignmentIndex.ts";
 import {
   groupNativeThreadsByWorkstream,
   nativeWorkstreamThreadKey,
@@ -304,5 +306,268 @@ describe("native Workstream thread grouping", () => {
       "ws-left",
       "ws-right",
     ]);
+  });
+});
+
+describe("native Workstream thread grouping from an assignment index", () => {
+  const index = (
+    references: readonly NativeReference[],
+    memberships: readonly MembershipEpisode[],
+    complete = true,
+  ) =>
+    buildWorkstreamAssignmentIndex({
+      ownerId: "owner",
+      registryVersion: 3,
+      references,
+      memberships,
+      complete,
+    });
+  const expired = (reference: NativeReference): NativeReference => ({
+    ...reference,
+    registration: {
+      ...reference.registration,
+      state: "expired",
+      expires_at: "2026-09-12T11:05:00Z",
+    },
+  });
+  const assurance = (
+    grouping: ReturnType<typeof groupNativeThreadsByWorkstream>,
+    environmentId: string,
+    threadId: string,
+  ) => grouping.assuranceByKey?.get(nativeWorkstreamThreadKey(environmentId, threadId));
+
+  it("groups expired and remote stored assignments as recorded and current proof as verified", () => {
+    const threads = [
+      { environmentId: "env", id: "current" },
+      { environmentId: "env", id: "expired" },
+      { environmentId: "remote", id: "remote" },
+    ];
+    const result = groupNativeThreadsByWorkstream({
+      workstreams: [ws("ws-a", 0), ws("ws-b", 1)],
+      threads,
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index(
+        [
+          ref("current", "env", "current"),
+          expired(ref("expired", "env", "expired")),
+          expired(ref("remote", "remote", "remote")),
+        ],
+        [
+          member("m-current", "ws-a", "current"),
+          member("m-expired", "ws-a", "expired"),
+          member("m-remote", "ws-b", "remote"),
+        ],
+      ),
+    });
+    expect(result.groups.map((group) => group.threads)).toEqual([
+      [threads[0], threads[1]],
+      [threads[2]],
+    ]);
+    expect(result.ungrouped).toEqual([]);
+    expect(assurance(result, "env", "current")).toBe("verified");
+    expect(assurance(result, "env", "expired")).toBe("recorded");
+    expect(assurance(result, "remote", "remote")).toBe("recorded");
+  });
+
+  it("verifies only from a current trusted placement for the indexed primary membership", () => {
+    const thread = { environmentId: "env", id: "thread" };
+    const placement = {
+      membership_id: "m",
+      workstream_id: "ws",
+      native_reference_id: "ref",
+      kind: "primary" as const,
+      source_instance_id: "env",
+      native_thread_id: "thread",
+      attestation_version: 1,
+      attested_at: "2026-09-12T11:59:00Z",
+      expires_at: "2026-09-12T12:04:00Z",
+      evidence_sha256: "a".repeat(64),
+      source_binding_version: 1,
+      authority_namespace: "env",
+      store_generation: 1,
+    };
+    const input = {
+      workstreams: [ws("ws", 0)],
+      threads: [thread],
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index([expired(ref("ref", "env", "thread"))], [member("m", "ws", "ref")]),
+    };
+    expect(
+      assurance(
+        groupNativeThreadsByWorkstream({ ...input, placements: [placement] }),
+        "env",
+        "thread",
+      ),
+    ).toBe("verified");
+    for (const changed of [
+      { ...placement, membership_id: "other" },
+      { ...placement, workstream_id: "ws-other" },
+      { ...placement, expires_at: trustedNow },
+      { ...placement, store_generation: 2 },
+    ]) {
+      const result = groupNativeThreadsByWorkstream({ ...input, placements: [changed] });
+      expect(assurance(result, "env", "thread")).toBe("recorded");
+      expect(result.groups[0]?.threads).toEqual([thread]);
+    }
+  });
+
+  it("keeps proof attested after the verification clock grouped as recorded", () => {
+    const thread = { environmentId: "env", id: "thread" };
+    const reference = ref("ref", "env", "thread");
+    const ahead = {
+      ...reference,
+      registration: {
+        ...reference.registration,
+        attested_at: "2026-09-12T12:00:30Z",
+        expires_at: "2026-09-12T12:05:30Z",
+      },
+    };
+    const input = {
+      workstreams: [ws("ws", 0)],
+      threads: [thread],
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index([ahead], [member("m", "ws", "ref")]),
+    };
+    const coarse = groupNativeThreadsByWorkstream(input);
+    expect(coarse.groups[0]?.threads).toEqual([thread]);
+    expect(assurance(coarse, "env", "thread")).toBe("recorded");
+    const current = groupNativeThreadsByWorkstream({
+      ...input,
+      verificationNow: "2026-09-12T12:01:00Z",
+    });
+    expect(current.groups[0]?.threads).toEqual([thread]);
+    expect(assurance(current, "env", "thread")).toBe("verified");
+  });
+
+  it("flags two open primaries and known namespace or generation mismatches as conflicts", () => {
+    const threads = [
+      { environmentId: "env", id: "shared" },
+      { environmentId: "env", id: "namespace" },
+      { environmentId: "env", id: "generation" },
+    ];
+    const namespace = ref("namespace", "env", "namespace");
+    const generation = ref("generation", "env", "generation");
+    const result = groupNativeThreadsByWorkstream({
+      workstreams: [ws("ws-a", 0), ws("ws-b", 1)],
+      threads,
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index(
+        [
+          ref("shared-a", "env", "shared"),
+          ref("shared-b", "env", "shared"),
+          {
+            ...namespace,
+            registration: {
+              ...namespace.registration,
+              evidence: { ...namespace.registration.evidence, authority_namespace: "old" },
+            },
+          },
+          expired({
+            ...generation,
+            registration: {
+              ...generation.registration,
+              evidence: { ...generation.registration.evidence, store_generation: 2 },
+            },
+          }),
+        ],
+        [
+          member("p-a", "ws-a", "shared-a"),
+          member("p-b", "ws-b", "shared-b"),
+          member("p-namespace", "ws-a", "namespace"),
+          member("p-generation", "ws-a", "generation"),
+        ],
+      ),
+    });
+    expect(result.groups).toEqual([]);
+    expect(result.ungrouped).toEqual(threads);
+    for (const thread of threads) {
+      expect(assurance(result, thread.environmentId, thread.id)).toBe("conflict");
+      expect(
+        result.conflictingKeys.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)),
+      ).toBe(true);
+    }
+  });
+
+  it("ignores closed episodes and assignments without a visible native thread", () => {
+    const closed = {
+      ...member("closed", "ws", "closed"),
+      closed: { ...member("x", "x", "x").opened, reason: "removed" as const, other_reason: null },
+    };
+    const result = groupNativeThreadsByWorkstream({
+      workstreams: [ws("ws", 0)],
+      threads: [{ environmentId: "env", id: "closed" }],
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index(
+        [ref("closed", "env", "closed"), ref("missing", "env", "missing")],
+        [closed, member("missing", "ws", "missing"), member("s", "ws", "missing", "secondary")],
+      ),
+    });
+    expect(result.groups).toEqual([]);
+    expect([...(result.assuranceByKey?.entries() ?? [])]).toEqual([
+      [nativeWorkstreamThreadKey("env", "closed"), "unassigned"],
+    ]);
+    expect(result.secondaryWorkstreamIdsByKey.size).toBe(0);
+    expect(result.groupedKeys.size).toBe(0);
+  });
+
+  it("confirms unassigned only from a complete index and labels secondary links", () => {
+    const threads = [
+      { environmentId: "env", id: "free" },
+      { environmentId: "env", id: "linked" },
+    ];
+    const input = {
+      workstreams: [{ ...ws("ws", 0), name: "Linked" }],
+      threads,
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+    };
+    const references = [ref("linked", "env", "linked")];
+    const memberships = [member("s", "ws", "linked", "secondary")];
+    const complete = groupNativeThreadsByWorkstream({
+      ...input,
+      assignmentIndex: index(references, memberships),
+    });
+    expect(complete.ungrouped).toEqual(threads);
+    expect(assurance(complete, "env", "free")).toBe("unassigned");
+    expect(assurance(complete, "env", "linked")).toBe("unassigned");
+    expect(secondaryNativeWorkstreamLabels(complete, threads[1]!)).toEqual(["Linked"]);
+    const partial = groupNativeThreadsByWorkstream({
+      ...input,
+      assignmentIndex: index(references, memberships, false),
+    });
+    expect(partial.ungrouped).toEqual(threads);
+    expect(assurance(partial, "env", "free")).toBe("unknown");
+    expect(assurance(partial, "env", "linked")).toBe("unknown");
+  });
+
+  it("leaves a primary in a workstream missing from the list as unknown", () => {
+    const thread = { environmentId: "env", id: "thread" };
+    const result = groupNativeThreadsByWorkstream({
+      workstreams: [],
+      threads: [thread],
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+      assignmentIndex: index([ref("ref", "env", "thread")], [member("m", "ws", "ref")]),
+    });
+    expect(result.ungrouped).toEqual([thread]);
+    expect(assurance(result, "env", "thread")).toBe("unknown");
+  });
+
+  it("adds no assurance output when no index is supplied", () => {
+    const result = groupNativeThreadsByWorkstream({
+      workstreams: [ws("ws", 0)],
+      references: [ref("ref", "env", "thread")],
+      memberships: [member("m", "ws", "ref")],
+      threads: [{ environmentId: "env", id: "thread" }],
+      trustedNow,
+      trustedEnvironments: trustedEnvironments("env"),
+    });
+    expect(result.groups).toHaveLength(1);
+    expect("assuranceByKey" in result).toBe(false);
   });
 });
