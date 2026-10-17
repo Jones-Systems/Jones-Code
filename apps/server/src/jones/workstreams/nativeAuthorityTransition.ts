@@ -8,6 +8,8 @@ import {
   type NativeAuthorityRestoreGuard,
 } from "../../environment/nativeStoreAuthorityPersistence.ts";
 
+import { bundleFileSystem } from "../cloud/qualifiedRuntime.ts";
+
 const MAX_BYTES = 16 * 1024;
 const fail = (): never => {
   throw new Error("Native authority transition refused; reconciliation required.");
@@ -34,14 +36,14 @@ const text = (value: unknown): string => {
   return value;
 };
 const uid = () => (typeof process.getuid === "function" ? process.getuid() : fail());
-const owned = (path: string, directory: boolean): void => {
-  const stat = NodeFS.lstatSync(path);
+const owned = (path: string, directory: boolean, fileSystem = NodeFS): void => {
+  const stat = fileSystem.lstatSync(path);
   if (
     stat.isSymbolicLink() ||
     (directory ? !stat.isDirectory() : !stat.isFile()) ||
     stat.uid !== uid() ||
     (stat.mode & 0o022) !== 0 ||
-    NodeFS.realpathSync(path) !== path
+    fileSystem.realpathSync(path) !== path
   )
     fail();
 };
@@ -118,7 +120,8 @@ const verifyRuntime = (candidate: Record<string, unknown>): void => {
   NodeFS.accessSync(executable, NodeFS.constants.X_OK);
   const resources = NodePath.join(contents, "Resources");
   owned(resources, true);
-  owned(NodePath.join(resources, "app.asar"), false);
+  // Electron presents the archive as a virtual directory; custody checks need the physical file.
+  owned(NodePath.join(resources, "app.asar"), false, bundleFileSystem());
   if (process.argv[1] !== NodePath.join(resources, "app.asar", "apps/server/dist/bin.mjs")) fail();
 };
 

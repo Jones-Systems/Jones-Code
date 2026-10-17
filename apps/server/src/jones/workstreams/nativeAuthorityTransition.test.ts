@@ -10,6 +10,12 @@ import {
   readNativeStoreAuthorityState,
 } from "../../environment/nativeStoreAuthorityPersistence.ts";
 
+vi.mock("node:fs", async (importOriginal) => {
+  const fileSystem = await importOriginal<typeof NodeFS>();
+  return { ...fileSystem, lstatSync: vi.fn(fileSystem.lstatSync) };
+});
+vi.mock("../cloud/qualifiedRuntime.ts", { spy: true });
+
 vi.mock("../../../package.json", () => ({
   default: {
     version: "1.2.3",
@@ -20,7 +26,10 @@ vi.mock("../../../package.json", () => ({
     },
   },
 }));
+import * as QualifiedRuntime from "../cloud/qualifiedRuntime.ts";
 import { executeNativeAuthorityTransition } from "./nativeAuthorityTransition.ts";
+
+const rawFileSystem = await vi.importActual<typeof NodeFS>("node:fs");
 
 const fixture = (run: (request: Record<string, unknown>, root: string) => void): void => {
   const root = NodeFS.realpathSync(
@@ -91,6 +100,36 @@ describe("bounded native authority command", () => {
       expect(() => execute({ ...request, operation: "advance", guard: result.guard })).toThrow();
     }));
 
+  it("checks the raw archive when Electron exposes its virtual directory", () =>
+    fixture((request, root) => {
+      const archive = NodePath.join(root, "Jones.app/Contents/Resources/app.asar");
+      const virtualDirectory = NodeFS.lstatSync(NodePath.dirname(archive));
+      const patchedStat = vi
+        .spyOn(NodeFS, "lstatSync")
+        .mockImplementation((...args) =>
+          args[0] === archive ? virtualDirectory : rawFileSystem.lstatSync(...args),
+        );
+      const selectRaw = vi
+        .spyOn(QualifiedRuntime, "bundleFileSystem")
+        .mockReturnValue(rawFileSystem);
+      try {
+        expect(NodeFS.lstatSync(archive).isDirectory()).toBe(true);
+        expect(rawFileSystem.lstatSync(archive).isFile()).toBe(true);
+        const directory = NodePath.join(request.baseDir as string, "native-store-authority");
+        initializeNativeStoreAuthority(directory, "native-transition");
+        const result = execute(request) as { guard: unknown };
+        expect(readNativeStoreAuthorityState(directory).state).toBe("fenced");
+        expect(execute({ ...request, operation: "advance", guard: result.guard })).toMatchObject({
+          state: "advanced",
+          storeGeneration: 2,
+        });
+        expect(selectRaw).toHaveBeenCalledTimes(2);
+      } finally {
+        patchedStat.mockRestore();
+        selectRaw.mockRestore();
+      }
+    }));
+
   it("preserves record absence across both operations", () =>
     fixture((request) => {
       expect(execute(request)).toEqual({
@@ -139,26 +178,40 @@ describe("bounded native authority command", () => {
     }),
   );
 
-  it.each(["argument", "backend", "binary", "archive", "base", "override"])(
-    "refuses unsafe %s",
-    (fault) =>
-      fixture((request, root) => {
-        if (fault === "argument") process.argv.push("extra");
-        if (fault === "backend") process.argv[1] = NodePath.join(root, "shadow/bin.mjs");
-        if (fault === "binary") NodeFS.chmodSync(process.execPath, 0o777);
-        if (fault === "archive") {
-          const archive = NodePath.join(root, "Jones.app/Contents/Resources/app.asar");
+  it.each([
+    "argument",
+    "backend",
+    "binary",
+    "archive",
+    "archive-directory",
+    "archive-mode",
+    "base",
+    "override",
+  ])("refuses unsafe %s", (fault) =>
+    fixture((request, root) => {
+      if (fault === "argument") process.argv.push("extra");
+      if (fault === "backend") process.argv[1] = NodePath.join(root, "shadow/bin.mjs");
+      if (fault === "binary") NodeFS.chmodSync(process.execPath, 0o777);
+      if (fault === "archive") {
+        const archive = NodePath.join(root, "Jones.app/Contents/Resources/app.asar");
+        NodeFS.unlinkSync(archive);
+        NodeFS.symlinkSync(request.databasePath as string, archive);
+      }
+      if (fault === "archive-directory" || fault === "archive-mode") {
+        const archive = NodePath.join(root, "Jones.app/Contents/Resources/app.asar");
+        if (fault === "archive-directory") {
           NodeFS.unlinkSync(archive);
-          NodeFS.symlinkSync(request.databasePath as string, archive);
-        }
-        if (fault === "base") NodeFS.chmodSync(request.baseDir as string, 0o777);
-        if (fault === "override")
-          process.env.T3CODE_NATIVE_AUTHORITY_STATE_DIR = NodePath.join(root, "other");
-        expect(() => execute(request)).toThrow();
-        expect(
-          NodeFS.existsSync(NodePath.join(request.baseDir as string, "native-store-authority")),
-        ).toBe(false);
-      }),
+          NodeFS.mkdirSync(archive, { mode: 0o700 });
+        } else NodeFS.chmodSync(archive, 0o666);
+      }
+      if (fault === "base") NodeFS.chmodSync(request.baseDir as string, 0o777);
+      if (fault === "override")
+        process.env.T3CODE_NATIVE_AUTHORITY_STATE_DIR = NodePath.join(root, "other");
+      expect(() => execute(request)).toThrow();
+      expect(
+        NodeFS.existsSync(NodePath.join(request.baseDir as string, "native-store-authority")),
+      ).toBe(false);
+    }),
   );
 
   it("dispatches malformed stdin without starting the ordinary CLI and emits only a bounded error", () => {
