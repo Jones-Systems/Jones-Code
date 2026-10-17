@@ -2,7 +2,7 @@
 
 > For maintainers. Using T3 Code? See [docs/user](../user/).
 
-> **Jones-Code:** this checklist describes the upstream T3 Code release pipeline. Jones-Code has no `release.yml`, publishes no GitHub Releases, npm packages, update manifests or hosted installers, and its builds are seven-day Actions artifacts. See [Trial build artifacts](./build-artifacts.md), [Persistent hosts](./persistent-hosts.md) and the [workflow policy](./upstream-sync.md#workflow-policy).
+> **Jones-Code:** this checklist describes the upstream T3 Code release pipeline. Jones-Code has no `release.yml`, publishes no GitHub Releases, npm packages, update manifests or hosted installers, and its builds are time-limited Actions artifacts. See [Trial build artifacts](./build-artifacts.md), [Persistent hosts](./persistent-hosts.md) and the [workflow policy](./upstream-sync.md#workflow-policy).
 
 This document covers the unified release workflow for stable and nightly desktop releases.
 
