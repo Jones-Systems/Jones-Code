@@ -12,7 +12,9 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
-        "apps/server/scripts/jones/currentFixtures.test.ts"
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
       ],
       "scope": "Captured initialized Codex client diagnostics with local OS incarnation and generation fences; sparse Jones-only history, restart noncurrentness, explicitly bound shared children, and observation without stop or creation authority. Synthetic qualification only; MCP connection incarnation and installed support remain unresolved."
     },

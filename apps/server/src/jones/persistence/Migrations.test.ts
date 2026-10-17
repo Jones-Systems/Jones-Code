@@ -496,6 +496,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
     const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
       [107, "WorkstreamsSettlementProofs"],
+      [108, "PhysicalProcessEvidence"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
