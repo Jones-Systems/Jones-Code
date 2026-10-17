@@ -12,6 +12,7 @@ import type { JonesNativeWriterAdmission } from "@t3tools/shared/jones/nativeWri
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import {
@@ -116,6 +117,46 @@ export const runDesktopNativeOwnerOperation = Effect.fn("runDesktopNativeOwnerOp
       },
       catch: unavailable,
     });
+    const sql = yield* SqlClient.SqlClient;
+    // Reserve the existing backend connection only for qualification. Releasing the
+    // reservation before enrollment avoids nesting its separate transaction acquisition.
+    yield* Effect.gen(function* () {
+      const connection = yield* sql.reserve;
+      const databases = yield* connection.execute("PRAGMA database_list", [], undefined).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Array(
+              Schema.Struct({
+                seq: Schema.Number,
+                name: Schema.String,
+                file: Schema.String,
+              }),
+            ),
+          ),
+        ),
+      );
+      const main = databases.filter((database) => database.name === "main");
+      const modes = yield* connection.execute("PRAGMA journal_mode", [], undefined).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Array(
+              Schema.Struct({
+                journal_mode: Schema.String,
+              }),
+            ),
+          ),
+        ),
+      );
+      if (
+        main.length !== 1 ||
+        main[0]?.seq !== 0 ||
+        main[0]?.file !== owner.binding.databasePath ||
+        modes.length !== 1 ||
+        !["wal", "delete", "truncate", "persist"].includes(modes[0]?.journal_mode ?? "")
+      )
+        return yield* unavailable();
+      yield* Effect.try({ try: owner.assertCurrent, catch: unavailable });
+    }).pipe(Effect.scoped, Effect.mapError(unavailable));
     if (request.operation === "authority-enroll") {
       return yield* Effect.try({
         try: () => {

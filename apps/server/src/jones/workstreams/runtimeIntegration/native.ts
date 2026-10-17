@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
@@ -62,6 +63,7 @@ const makeNativeWorkstreamsRuntimeLayer = (
       const authority = yield* NativeStoreAuthority;
       const config = yield* ServerConfig.ServerConfig;
       const owner = yield* DesktopNativeOwner.DesktopNativeOwner;
+      const sql = yield* SqlClient.SqlClient;
       const engine = yield* Orchestrator.OrchestratorV2;
       const attempts = yield* NativeProviderAttempts;
       const enrollments = yield* NativeProviderEnrollment;
@@ -85,6 +87,7 @@ const makeNativeWorkstreamsRuntimeLayer = (
               },
             );
           }).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(
               () =>
                 new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_unavailable" }),

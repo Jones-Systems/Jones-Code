@@ -13,6 +13,9 @@ import { vi } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Context from "effect/Context";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { runMigrations } from "../../../persistence/Migrations.ts";
 import enrollmentMigration from "../../persistence/Migrations/006_JonesWorkstreamsProviderEnrollments.ts";
@@ -74,10 +77,12 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const home = yield* fixture;
+      const databaseContext = yield* Layer.build(NodeSqliteClient.layer({ filename: home.dbPath }));
+      const sql = Context.get(databaseContext, SqlClient.SqlClient);
       yield* Effect.gen(function* () {
         yield* runMigrations({ toMigrationInclusive: 54 });
         yield* enrollmentMigration;
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: home.dbPath })), Effect.scoped);
+      }).pipe(Effect.provide(databaseContext));
       NodeFS.chmodSync(home.dbPath, 0o600);
       let live = true;
       const owner: DesktopNativeEnrollmentOwner = {
@@ -97,7 +102,9 @@ it.effect(
         refresh: Effect.void,
       };
       const run = (input: Parameters<typeof runDesktopNativeOwnerOperation>[0]) =>
-        runDesktopNativeOwnerOperation(input, owner, home);
+        runDesktopNativeOwnerOperation(input, owner, home).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+        );
       const enrolled = yield* run({ operation: "authority-enroll" });
       expect(enrolled.schema).toBe("jones-code.workstreams-native-authority-enrolled/v1");
       const before = readExistingNativeStoreAuthorityState(home.authorityDir);

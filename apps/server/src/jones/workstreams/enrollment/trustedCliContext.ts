@@ -144,6 +144,22 @@ const databaseIdentity = (
   }
 };
 
+// Closing an independently opened main-file descriptor can release this process's
+// SQLite POSIX locks. The running desktop uses SQLite for format/journal qualification;
+// these no-open checks compare pathname metadata, not an original connection's inode.
+const desktopDatabaseIdentity = (dbPath: string) => {
+  const stat = NodeFS.lstatSync(dbPath);
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isFile() ||
+    stat.uid !== uid() ||
+    (stat.mode & 0o022) !== 0 ||
+    NodeFS.realpathSync(dbPath) !== dbPath
+  )
+    fail("database_unavailable");
+  return { device: stat.dev, inode: stat.ino };
+};
+
 const capture = async (
   location: NativeEnrollmentCliLocation,
   access: NativeEnrollmentSqliteAccess,
@@ -354,7 +370,7 @@ export const makeTrustedNativeEnrollmentDesktopContext = (
     readonly refresh: Effect.Effect<void, NativeStoreAuthorityPersistenceError>;
   },
 ) => {
-  const captureDesktop: typeof capture = async (currentLocation, currentAccess, phase) => {
+  const captureDesktop: typeof capture = async (currentLocation, currentAccess) => {
     owner.assertCurrent();
     const { baseDir, authorityDir } = currentLocation;
     if (
@@ -384,7 +400,7 @@ export const makeTrustedNativeEnrollmentDesktopContext = (
     )
       return fail("source_mismatch");
     const dbPath = owner.binding.databasePath;
-    const database = databaseIdentity(dbPath, currentAccess, phase);
+    const database = desktopDatabaseIdentity(dbPath);
     const sqlite = makeNativeEnrollmentSqliteConfig(dbPath, currentAccess);
     return {
       environmentText,
