@@ -4,6 +4,23 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "workstream-thread-controls",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/components/threadActionMenu.logic.test.ts",
+        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Bounded identity selection prioritizes unsettled shells and then recent settlement without excluding subagents or changing canonical hashing and request caps. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
+    },
+    {
       "id": "client-update-notices",
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",

@@ -575,6 +575,7 @@
     "apps/web/src/components/Sidebar.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/Sidebar.logic.ts": "accepted-shared",
     "apps/web/src/components/Sidebar.tsx": "accepted-shared",
+    "apps/web/src/components/Sidebar.pointer.ts": "hook",
     "apps/web/src/components/T3Wordmark.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatComposer.tsx": "accepted-shared",
     "apps/web/src/components/chat/ChatHeader.tsx": "accepted-shared",

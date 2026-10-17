@@ -2,6 +2,27 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstream-thread-controls",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/components/threadActionMenu.logic.test.ts",
+        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts apps/web/src/components/Sidebar.pointer.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-client-update-notices",
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",

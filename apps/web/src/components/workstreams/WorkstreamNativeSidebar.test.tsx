@@ -12,6 +12,8 @@ import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
+import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFallback";
+import { buildThreadActionMenuItems } from "../threadActionMenu.logic";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
 
@@ -77,6 +79,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   localStorage.clear();
+  dismissContextMenu();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -104,9 +107,43 @@ async function render(
         controller={controller}
         grouping={group(visibleThreads)}
         summaryGrouping={group(summaryThreads)}
-        renderThread={(item) => (
+        renderThread={(item, assignment) => (
           <li>
-            <button type="button">{item.title}</button>
+            <div
+              role="button"
+              tabIndex={0}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                void showContextMenuFallback(
+                  buildThreadActionMenuItems({
+                    canOperate: true,
+                    branch: null,
+                    projectFilter: null,
+                    isPinned: false,
+                    isSettled: false,
+                    autoSettleEnabled: true,
+                    isSnoozed: false,
+                    canSnoozeNow: true,
+                    isRegeneratingTitle: false,
+                    isRunning: false,
+                    snoozePresets: [],
+                    supports: {
+                      settlement: true,
+                      autoSettleOptOut: true,
+                      snooze: true,
+                      pinning: true,
+                      titleRegeneration: true,
+                    },
+                    assignmentItems: assignment.items,
+                  }),
+                  { x: event.clientX, y: event.clientY },
+                ).then((action) => {
+                  if (action) assignment.onAction(action);
+                });
+              }}
+            >
+              {item.title}
+            </div>
           </li>
         )}
         canReorder={() => true}
@@ -122,12 +159,49 @@ async function clickLabel(label: string) {
   await act(async () => button!.click());
 }
 
+async function openAssignment(index = 0) {
+  await act(async () =>
+    nativeRow(index).dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    ),
+  );
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await clickMenu("Assign thread");
+}
+
 async function clickMenu(text: string) {
-  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-    (entry) => entry.textContent?.trim() === text,
+  const item = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (entry) => !container.contains(entry) && entry.textContent?.trim() === text,
   );
   expect(item, text).not.toBeUndefined();
   await act(async () => item!.click());
+}
+
+async function pointerEvent(element: EventTarget, type: string, clientY = 0, buttons = 1) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: 10,
+    clientY,
+    buttons,
+    button: 0,
+  });
+  Object.defineProperties(event, { pointerId: { value: 1 }, isPrimary: { value: true } });
+  await act(async () => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
+async function pointAt(target: Element, clientY = 10) {
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+  await pointerEvent(document, "pointermove", clientY);
+}
+
+async function release(clientY = 10) {
+  await pointerEvent(document, "pointerup", clientY, 0);
 }
 
 async function dragEvent(element: Element, type: string, clientY = 0) {
@@ -143,7 +217,7 @@ async function dragEvent(element: Element, type: string, clientY = 0) {
 }
 
 function nativeRow(index: number) {
-  return [...container.querySelectorAll("button")].find(
+  return [...container.querySelectorAll<HTMLElement>('[role="button"]')].find(
     (button) => button.textContent === threads[index]!.title,
   )!;
 }
@@ -153,12 +227,11 @@ describe("native Workstream sidebar interactions", () => {
     await render();
     expect(container.querySelector('[aria-label="New Workstream name"]')).toBeNull();
     const row = nativeRow(0);
-    expect(row.closest('[draggable="true"]')?.textContent).not.toContain("alpha");
-    await dragEvent(row, "dragstart");
+    await pointerEvent(row, "pointerdown");
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(true);
+    await pointAt(target);
     expect(target.getAttribute("data-drop-target")).toBe("thread");
-    await dragEvent(target, "drop");
+    await release();
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -174,11 +247,11 @@ describe("native Workstream sidebar interactions", () => {
 
   it("drops a native row on Unassigned to remove its primary membership", async () => {
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
+    await pointerEvent(nativeRow(0), "pointerdown");
     const target = container.querySelector('[aria-label="Collapse Unassigned"]')!.parentElement!;
-    await dragEvent(target, "dragover");
+    await pointAt(target);
     expect(target.getAttribute("data-drop-target")).toBe("thread");
-    await dragEvent(target, "drop");
+    await release();
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -207,11 +280,11 @@ describe("native Workstream sidebar interactions", () => {
       },
     };
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
-    const target = nativeRow(1).closest('[draggable="true"]')!;
-    await dragEvent(target, "dragover", 10);
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = nativeRow(1).closest("[data-native-workstream-thread]")!;
+    await pointAt(target);
     expect(target.getAttribute("data-drop-position")).toBe("after");
-    await dragEvent(target, "drop", 10);
+    await release();
     expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
     expect(controller.submit).not.toHaveBeenCalled();
   });
@@ -235,14 +308,17 @@ describe("native Workstream sidebar interactions", () => {
     expect(reorder).not.toHaveBeenCalled();
   });
 
-  it("clears drop feedback on cancellation and rejects a drop after write access changes", async () => {
+  it("clears pointer feedback on Escape and rejects a drop after write access changes", async () => {
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
+    await pointerEvent(nativeRow(0), "pointerdown");
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "dragover");
-    await dragEvent(nativeRow(0), "dragend");
+    await pointAt(target);
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
     expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
-    await dragEvent(nativeRow(0), "dragstart");
+    await release();
+    expect(controller.submit).not.toHaveBeenCalled();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
     controller = {
       ...controller,
       data: {
@@ -251,31 +327,34 @@ describe("native Workstream sidebar interactions", () => {
       },
     };
     await render();
-    await dragEvent(target, "drop");
+    await release();
     expect(controller.submit).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
   });
 
-  it("does not treat selected native text as a thread drag", async () => {
+  it("leaves clicks below the ordinary sidebar threshold idle and cancels on pointercancel", async () => {
     await render();
-    const row = nativeRow(0);
-    const selection = window.getSelection()!;
-    const range = document.createRange();
-    range.selectNodeContents(row);
-    selection.addRange(range);
-    expect((await dragEvent(row, "dragstart")).defaultPrevented).toBe(true);
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "drop");
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target, 6);
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    await release(6);
     expect(controller.submit).not.toHaveBeenCalled();
-    selection.removeAllRanges();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
+    await pointerEvent(document, "pointercancel");
+    await release();
+    expect(controller.submit).not.toHaveBeenCalled();
   });
 
-  it("ignores external drags and refuses row drags without verified placements", async () => {
+  it("ignores external drags and refuses pointer drags without verified placements", async () => {
     controller = { ...controller, placements: null };
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
     expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(false);
-    expect((await dragEvent(nativeRow(0), "dragstart")).defaultPrevented).toBe(true);
-    await dragEvent(target, "drop");
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
+    await release();
     expect(controller.submit).not.toHaveBeenCalled();
     expect(reorder).not.toHaveBeenCalled();
   });
@@ -290,11 +369,11 @@ describe("native Workstream sidebar interactions", () => {
     const unassigned = container.querySelector('[aria-label="Unassigned threads"]');
     for (const item of threads) expect(unassigned?.textContent).toContain(item.title);
     expect(container.textContent).toContain("Thread assignments are unavailable");
-    await clickLabel("Workstream actions for First native conversation");
-    const assignment = [...document.querySelectorAll('[role="menuitem"]')].find(
-      (entry) => entry.textContent === "Assign to beta",
+    await openAssignment();
+    const assignment = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent === "beta",
     );
-    expect(assignment?.getAttribute("aria-disabled")).toBe("true");
+    expect(assignment?.disabled).toBe(true);
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -313,8 +392,8 @@ describe("native Workstream sidebar interactions", () => {
 
   it("moves primary membership through the real menu without a native reorder or secondary change", async () => {
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move to beta");
+    await openAssignment();
+    await clickMenu("beta (secondary)");
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -333,26 +412,40 @@ describe("native Workstream sidebar interactions", () => {
     expect(placements.items[1]?.kind).toBe("secondary");
   });
 
-  it("reorders actual native members through the menu while leaving registry membership alone", async () => {
-    controller = {
-      ...controller,
-      placements: {
-        ...placements,
-        items: [
-          ...placements.items,
-          {
-            ...placements.items[0]!,
-            native_reference_id: "reference-two",
-            native_thread_id: "unassigned",
-            membership_id: "member-two",
-          },
-        ],
-      },
-    };
+  it("removes only primary membership through Unassigned and retains secondary context without a bottom strip", async () => {
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move thread down");
-    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(
+      container.querySelector(
+        '[aria-label="Drag First native conversation to a Workstream or reorder"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Workstream actions for First native conversation"]'),
+    ).toBeNull();
+    await openAssignment();
+    await clickMenu("Unassigned (remove primary)");
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
+    expect(controller.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: {
+          operation: "remove_membership",
+          workstream_id: "alpha",
+          expected_version: 3,
+          membership_id: "membership",
+        },
+      }),
+    );
+    expect(placements.items[1]?.kind).toBe("secondary");
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("refuses a native or fallback menu selection after the Workstream controls unmount", async () => {
+    await render();
+    await openAssignment();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await clickMenu("beta (secondary)");
+    expect(controller.loadDetail).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -366,8 +459,8 @@ describe("native Workstream sidebar interactions", () => {
     );
     controller = { ...controller, loadDetail };
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move to beta");
+    await openAssignment();
+    await clickMenu("beta (secondary)");
     expect(loadDetail).toHaveBeenCalledOnce();
     controller = {
       ...controller,
