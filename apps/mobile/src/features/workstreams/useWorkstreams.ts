@@ -7,6 +7,7 @@ import {
   planWorkstreamOwnerOrder,
   loadLiveT3Placements,
   workstreamBindingKey,
+  type ConnectedEnvironmentTrustInput,
   type LiveT3Placements,
   type WorkstreamAssignmentIndexFetchers,
   type WorkstreamThreadLike,
@@ -101,7 +102,19 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ),
     [idsKey],
   );
+  // Only the current session's bootstrap config is live; it adds display trust, never write trust.
+  const liveEnvironmentsAtom = useMemo(
+    () =>
+      Atom.make((get): readonly ConnectedEnvironmentTrustInput[] =>
+        decodeEnvironmentIds(idsKey).map((environmentId) => {
+          const config = get(environmentSession.initialConfigValueAtom(environmentId));
+          return { environmentId, config, live: config !== null };
+        }),
+      ),
+    [idsKey],
+  );
   const connections = useAtomValue(connectionsAtom);
+  const liveEnvironments = useAtomValue(liveEnvironmentsAtom);
   const signedOutKey = useAtomValue(signedOutAtom);
   const context = useAtomValue(connectionAtomRuntime);
   const retained = useMemo(() => {
@@ -634,8 +647,8 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return submitActions(group.snapshot, actions);
   };
   const projection = useMemo(
-    () => projectMobileWorkstreams(snapshots, threads, Date.now()),
-    [snapshots, threads],
+    () => projectMobileWorkstreams(snapshots, threads, Date.now(), liveEnvironments),
+    [snapshots, threads, liveEnvironments],
   );
   const saveAppearance = async (
     snapshot: MobileWorkstreamSnapshot,
