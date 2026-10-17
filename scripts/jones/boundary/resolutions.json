@@ -92,7 +92,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "cf3c052985a455c0235c0a3e735701f27edf8c3616d174aeb686535b47797d8a"
+          "sha256": "7f0a08b244a85367ff5fef012b6e10b6838db785b389d389d1d96efd077dd283"
         }
       ],
       "targets": []
@@ -126,7 +126,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "cf3c052985a455c0235c0a3e735701f27edf8c3616d174aeb686535b47797d8a"
+          "sha256": "7f0a08b244a85367ff5fef012b6e10b6838db785b389d389d1d96efd077dd283"
         }
       ],
       "targets": []
@@ -165,7 +165,7 @@
       "anchors": [
         {
           "path": "packages/shared/package.json",
-          "sha256": "77b62c7285e84d45fb7176772bab5ffe44d3be1d37ce1a13438a374586d3b1ea"
+          "sha256": "5577f49651feda74901e22f1b42c3b210de49a3a88f1ed5200e2e27a77582d7d"
         }
       ],
       "targets": []

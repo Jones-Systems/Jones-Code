@@ -1,6 +1,6 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
-import { sortPinnedThreadsByOrderKey } from "@t3tools/client-runtime/state/thread-sort";
+import { sortPinnedThreadsByOrderKey } from "@t3tools/shared/jones/pinOrder";
 import {
   EnvironmentId,
   EventId,

@@ -7,6 +7,10 @@
       "types": "./src/jones/nativeWriterFence.ts",
       "import": "./src/jones/nativeWriterFence.ts"
     },
+    "./jones/pinOrder": {
+      "types": "./src/jones/pinOrder.ts",
+      "import": "./src/jones/pinOrder.ts"
+    },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",
       "import": "./src/githubMarkdownLinks.ts"

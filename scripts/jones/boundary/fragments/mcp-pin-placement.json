@@ -3,9 +3,10 @@
   "feature": "mcp-pin-placement",
   "jonesOwnedPaths": [
     "apps/server/src/jones/mcp/pinPlacement/pinPlacement.ts",
-    "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"
+    "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
+    "packages/shared/src/jones/pinOrder.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["packages/client-runtime/src/state/threadSort.ts"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -15,6 +16,10 @@
     {
       "from": "apps/server/src/mcp/toolkits/thread/tools.ts",
       "to": "apps/server/src/jones/mcp/pinPlacement/pinPlacement.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/state/threadSort.ts",
+      "to": "packages/shared/src/jones/pinOrder.ts"
     }
   ]
 }

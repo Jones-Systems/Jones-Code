@@ -67,7 +67,6 @@
   "devDependencies": {
     "@effect/vitest": "catalog:",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/provider-testing": "workspace:*",
     "@t3tools/shared": "workspace:*",

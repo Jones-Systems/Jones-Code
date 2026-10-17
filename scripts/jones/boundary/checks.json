@@ -276,11 +276,14 @@
       "tests": [
         "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
         "apps/server/src/mcp/toolkits/thread/handlers.test.ts",
-        "apps/server/src/mcp/toolkits/core.test.ts"
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "packages/client-runtime/src/state/threadSort.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts apps/server/src/mcp/toolkits/core.test.ts",
-        "vp run --filter t3 typecheck"
+        "vp test run apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts apps/server/src/mcp/toolkits/thread/handlers.test.ts apps/server/src/mcp/toolkits/core.test.ts packages/client-runtime/src/state/threadSort.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck"
       ]
     },
     {
