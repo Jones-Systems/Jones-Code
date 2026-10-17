@@ -17,7 +17,8 @@ import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
 import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
-import { groupNativeThreadsByWorkstream } from "./workstreams/nativeThreadGrouping";
+import { groupNativeThreadsWithConnectedTrust } from "../jones/workstreams/connectedWorkstreamTrust";
+import { useConnectedWorkstreamTrust } from "../jones/workstreams/useConnectedWorkstreamTrust";
 import {
   WorkstreamNativeSidebar,
   type NativeThreadAssignmentMenu,
@@ -2992,6 +2993,10 @@ export default function Sidebar() {
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
+  // Display-only trust across connected environments; assignment changes keep placement trust.
+  const workstreamTrust = useConnectedWorkstreamTrust(
+    workstreamController.placements?.trustedEnvironments,
+  );
   // Stored assignments group immediately; only proof assurance follows the hook's clock.
   const workstreamAssignmentInput = workstreamController.assignmentIndex
     ? {
@@ -2999,32 +3004,22 @@ export default function Sidebar() {
         verificationNow: workstreamController.verificationNow ?? snoozeNow,
       }
     : {};
-  const workstreamGrouping = groupNativeThreadsByWorkstream({
+  const workstreamGrouping = groupNativeThreadsWithConnectedTrust({
     workstreams: workstreamController.data?.items ?? [],
     placements: workstreamController.placements?.items ?? [],
     threads: activeThreads,
     trustedNow: snoozeNow,
     ...workstreamAssignmentInput,
-    trustedEnvironments: new Map(
-      (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-        value.environmentId,
-        value,
-      ]),
-    ),
+    trust: workstreamTrust,
   });
 
-  const workstreamSummaryGrouping = groupNativeThreadsByWorkstream({
+  const workstreamSummaryGrouping = groupNativeThreadsWithConnectedTrust({
     workstreams: workstreamController.data?.items ?? [],
     placements: workstreamController.placements?.items ?? [],
     threads: environmentThreads,
     trustedNow: snoozeNow,
     ...workstreamAssignmentInput,
-    trustedEnvironments: new Map(
-      (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-        value.environmentId,
-        value,
-      ]),
-    ),
+    trust: workstreamTrust,
   });
 
   const isSearchingThreads = threadSearchQuery.trim().length > 0;

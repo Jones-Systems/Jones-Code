@@ -18,6 +18,7 @@
     "apps/mobile/src/features/workstreams/projection.ts",
     "apps/mobile/src/features/workstreams/types.ts",
     "apps/mobile/src/features/workstreams/useWorkstreams.ts",
+    "apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
     "apps/server/src/cli/workstream.ts",
     "apps/server/src/environment/NativePlacementTrust.ts",
@@ -130,7 +131,11 @@
     "apps/web/src/jones/workstreams/nativeThreadAssignment.test.ts",
     "apps/web/src/jones/workstreams/workstreamReadErrors.ts",
     "apps/web/src/jones/workstreams/workstreamsHttp.fixtures.ts",
-    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx"
+    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+    "apps/web/src/jones/workstreams/connectedWorkstreamTrust.ts",
+    "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
+    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.ts",
+    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -241,6 +246,14 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/connectedWorkstreamTrust.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.ts"
     },
     {
       "from": "packages/contracts/src/environment.ts",
