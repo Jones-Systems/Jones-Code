@@ -196,7 +196,6 @@ it.effect("parks automatic pull until activation without delaying command readin
           NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
         );
 
-        // A reverted, awaited pull reaches statusDetails instead of prepareTrial.
         // Race both receipts and startup failure so a failed phase cannot leave the test waiting.
         yield* Effect.raceFirst(
           Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled)),
@@ -211,7 +210,6 @@ it.effect("parks automatic pull until activation without delaying command readin
         yield* Deferred.succeed(commitTrial, undefined);
         yield* Deferred.await(activation);
         expect(yield* Deferred.await(statusCalled)).toBe(cwd);
-        // statusDetails can never finish; readiness must not depend on it.
         yield* startup.awaitCommandReady;
       }).pipe(
         Effect.provide(

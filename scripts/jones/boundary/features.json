@@ -13,6 +13,16 @@
       "scope": "Passive client guidance for ordered newer server versions and neutral unequal Jones preview sources. Full source identities scope per-environment dismissals; active and automatic eligible environments share the web/desktop renderer. ChatView adds only the notice hook and stack entries; versionSkew adapter tests stay shared to prove branded config forwarding. No server update action, source ancestry inference, connection block, or mobile version comparison. Synthetic renderer fixture exercises the production hook and stack with isolated descriptors."
     },
     {
+      "id": "thread-status-filter",
+      "tests": [
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+    },
+    {
       "id": "provider-order",
       "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
@@ -90,6 +100,9 @@
     {
       "id": "workstreams",
       "tests": [
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
@@ -224,6 +237,7 @@
     {
       "id": "direct-desktop-media",
       "tests": [
+        "apps/server/src/device/DeviceService.test.ts",
         "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/SshDeviceHost.test.ts",
@@ -483,6 +497,8 @@
     {
       "id": "persistence-upstream-isolation",
       "tests": [
+        "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+        "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],

@@ -22,6 +22,7 @@ import {
   setRoutesInCatalog,
   replaceCatalogValue,
   Persistence,
+  makeStoredShellSnapshotEncoder,
 } from "@t3tools/client-runtime/platform";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
@@ -77,7 +78,6 @@ const ConnectionCatalogDocumentJson = Schema.fromJsonString(ConnectionCatalogDoc
 const decodeConnectionCatalogDocument = Schema.decodeUnknownEffect(ConnectionCatalogDocumentJson);
 const encodeConnectionCatalogDocument = Schema.encodeEffect(ConnectionCatalogDocumentJson);
 const decodeStoredShellSnapshot = Schema.decodeUnknownEffect(StoredShellSnapshotJson);
-const encodeStoredShellSnapshot = Schema.encodeEffect(StoredShellSnapshotJson);
 const decodeStoredThreadSnapshot = Schema.decodeUnknownEffect(StoredThreadSnapshotJson);
 const encodeStoredThreadSnapshot = Schema.encodeEffect(StoredThreadSnapshotJson);
 const decodeStoredServerConfig = Schema.decodeUnknownEffect(StoredServerConfigJson);
@@ -213,11 +213,9 @@ const openCompatibilityHintDatabase = Effect.fn(
 
 interface DatabaseHandle {
   readonly get: Effect.Effect<IDBDatabase, ConnectionTransientError>;
-  /** Forget `database` if it is still the shared connection, so the next access reopens. */
   readonly invalidate: (database: IDBDatabase) => Effect.Effect<void>;
 }
 
-/** Share a connection until the browser closes it; the next access reopens it. */
 const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* (
   open: () => Effect.Effect<IDBDatabase, ConnectionTransientError> = openDatabase,
 ) {
@@ -258,16 +256,14 @@ const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")
 });
 
 /**
- * Runs `use` on the shared connection. A connection the browser already closed
- * throws InvalidStateError even when no close event reached this tab, so drop
- * it and retry once on a fresh one instead of failing every later operation.
+ * A connection the browser already closed throws InvalidStateError even when no
+ * close event reached this tab, so drop it and retry once on a fresh one
+ * instead of failing every later operation.
  */
 function withDatabase<A>(
   database: DatabaseHandle,
   use: (opened: IDBDatabase) => Effect.Effect<A, ConnectionTransientError>,
 ) {
-  // Only a connection that opened and then failed is stale; a failing open is
-  // storage being unavailable, which a retry would not fix.
   const closedConnection = Symbol("closedConnection");
   const attempt = Effect.flatMap(database.get, (opened) =>
     use(opened).pipe(
@@ -891,6 +887,25 @@ export function makeBrowserGitHubRoutingPermissions(
   });
 }
 
+// A posted message resumes in a fresh task, so input and rendering get a turn between
+// encoding chunks. A zero-delay timer would not do: browsers clamp nested timers to
+// 4 ms and throttle them to once a second or less in a background tab.
+const yieldToBrowserTask = Effect.callback<void>((resume) => {
+  const { port1, port2 } = new MessageChannel();
+  port1.addEventListener(
+    "message",
+    () => {
+      port1.close();
+      resume(Effect.void);
+    },
+    { once: true },
+  );
+  port1.start();
+  port2.postMessage(null);
+  // A closed port delivers nothing, so interruption needs no listener bookkeeping.
+  return Effect.sync(() => port1.close());
+});
+
 export const layer = Layer.effectContext(
   Effect.gen(function* () {
     const { handle: database } = yield* Effect.acquireRelease(
@@ -908,6 +923,10 @@ export const layer = Layer.effectContext(
     );
     const catalog = yield* makeCatalogStore(backend, hints.invalidate);
     const githubRoutingPermissions = makeBrowserGitHubRoutingPermissions();
+    // Remembers each thread row's encoding, so a save only encodes rows that changed.
+    const encodeStoredShellSnapshot = makeStoredShellSnapshotEncoder({
+      yieldToHost: yieldToBrowserTask,
+    });
 
     const targetStore = Persistence.ConnectionTargetStore.of({
       list: catalog.read.pipe(

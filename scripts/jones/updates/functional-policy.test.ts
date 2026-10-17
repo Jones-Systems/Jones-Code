@@ -12,7 +12,8 @@ const source = { repository: "Jones-Systems/Jones-Code", ...identity };
 describe("reviewed functional worker policy", () => {
   it.each([
     ["synthetic module", new TextEncoder().encode("export const qualified = true;")],
-    ["same-sized substituted bytes", new Uint8Array(2965629)],
+    ["same-sized substituted bytes", new Uint8Array(2914172)],
+    ["pre-sync reviewed worker size", new Uint8Array(2965629)],
     ["previously reviewed worker size", new Uint8Array(2965421)],
     ["original reviewed worker size", new Uint8Array(1888482)],
   ] as const)("refuses %s before reading source or trusting graph claims", (_name, entryBytes) => {

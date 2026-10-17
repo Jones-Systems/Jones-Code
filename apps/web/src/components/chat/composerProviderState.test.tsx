@@ -21,9 +21,6 @@ import {
   withImplicitFastModeDefault,
 } from "./composerProviderState";
 
-// Synthetic model descriptors keep selection and default behavior independent
-// of provider catalog changes.
-
 const PROVIDER: ProviderDriverKind = ProviderDriverKind.make("codex");
 const MODEL = "test-model";
 
