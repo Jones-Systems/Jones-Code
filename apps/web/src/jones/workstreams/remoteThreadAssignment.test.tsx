@@ -887,7 +887,7 @@ describe("assigning a thread from another environment", () => {
     calls
       .filter((call) => call.route === "submit")
       .map((call) => {
-        const action = (call.request.payload?.command as WorkstreamCommand).action;
+        const action = (call.request.payload!.command as WorkstreamCommand).action;
         return [
           action.operation,
           "membership_id" in action
