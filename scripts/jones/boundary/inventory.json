@@ -7,6 +7,9 @@
   },
   "baseline": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4",
   "paths": {
+    "packages/client-runtime/src/composerThreadItems.ts": "hook",
+    "packages/client-runtime/src/jones/composerThreadMatching.ts": "jones-owned",
+    "packages/client-runtime/src/jones/composerThreadMatching.test.ts": "jones-owned",
     "apps/web/src/jones/updates/clientUpdateBanner.tsx": "jones-owned",
     "apps/web/src/jones/updates/clientUpdateBanner.test.tsx": "jones-owned",
     "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx": "jones-owned",
