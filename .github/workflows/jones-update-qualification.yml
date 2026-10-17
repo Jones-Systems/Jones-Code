@@ -409,6 +409,7 @@ jobs:
           name: install-preview-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/install-preview-build.json
+            ${{ runner.temp }}/install-preview-build.patch
             ${{ runner.temp }}/install-preview-evidence/
           if-no-files-found: error
           retention-days: 7

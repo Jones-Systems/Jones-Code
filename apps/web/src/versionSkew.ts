@@ -9,7 +9,10 @@ import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
 import { APP_SOURCE_SHA, APP_VERSION } from "./branding";
-import { isJonesPreviewBuildPair } from "./jones/updates/versionSkew";
+import {
+  isJonesPreviewBuildPair,
+  resolveJonesClientUpdateNotice,
+} from "./jones/updates/versionSkew";
 import {
   resolveJonesSourceCurrency,
   type JonesSourceCurrency,
@@ -91,6 +94,15 @@ export function resolveVersionMismatch(
     serverVersion: normalizedServerVersion,
     hint: "Version mismatch. Try syncing the client and server to the same T3 Code version.",
   };
+}
+
+export function resolveServerConfigClientUpdateNotice(
+  serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
+) {
+  return resolveJonesClientUpdateNotice(serverConfig?.environment.serverVersion, APP_VERSION, {
+    clientSourceSha: APP_SOURCE_SHA,
+    serverSourceSha: serverConfig?.environment.jonesSource?.sha,
+  });
 }
 
 export function resolveServerConfigVersionMismatch(

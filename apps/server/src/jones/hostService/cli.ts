@@ -78,6 +78,8 @@ const adopt = Command.make("adopt", {
   launcherArtifactDir: Flag.String("launcher-artifact-dir"),
   launcherSourceCommit: Flag.String("launcher-source-commit"),
   supersedeExecstart: Flag.Boolean("supersede-execstart").pipe(Flag.withDefault(false)),
+  launchdLabel: Flag.Literals("launchd-label", ["com.t3tools.t3code.service"]).pipe(Flag.optional),
+  retainedExecutable: Flag.String("retained-executable").pipe(Flag.optional),
   legacyDirectServe: Flag.Boolean("legacy-direct-serve").pipe(Flag.withDefault(false)),
   acceptUnattestedChildCapability: Flag.Boolean("accept-unattested-child-capability").pipe(
     Flag.withDefault(false),
@@ -111,6 +113,10 @@ const adopt = Command.make("adopt", {
         legacyDirectServe: flags.legacyDirectServe,
         acceptUnattestedChildCapability: flags.acceptUnattestedChildCapability,
         preserveDropin: flags.preserveDropin,
+        ...(Option.isSome(flags.launchdLabel) ? { launchdLabel: flags.launchdLabel.value } : {}),
+        ...(Option.isSome(flags.retainedExecutable)
+          ? { retainedExecutable: flags.retainedExecutable.value }
+          : {}),
         ...(Option.isSome(flags.serviceUnit) ? { serviceUnit: flags.serviceUnit.value } : {}),
         ...(Option.isSome(flags.serviceUnitSha256)
           ? { serviceUnitSha256: flags.serviceUnitSha256.value }

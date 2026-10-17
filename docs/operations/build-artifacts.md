@@ -2,7 +2,7 @@
 
 The **Linux CLI artifacts** workflow produces unsigned Linux x64 and arm64
 archives for a headless server trial. These are GitHub Actions artifacts retained
-for seven days. They are not GitHub Releases, package publications, or a deployed
+for 30 days. They are not GitHub Releases, package publications, or a deployed
 Jones-Code installation. Native GitHub-hosted Ubuntu 24.04 runners build each
 architecture; the minimum compatible Linux environment is not yet established.
 
@@ -62,10 +62,18 @@ or real user state into this first smoke trial.
 
 Versions use `BASE-preview.YYYYMMDD.RUN_ID.RUN_ATTEMPT`, where `BASE` is the
 checked-in server package version. Both the CLI channel parser and desktop build
-recognize that preview form. The archive retains T3 branding. These Actions
+recognize that preview form. The archive retains T3 branding. Each workflow run
+stamps its own run ID, so the Linux CLI, Mac CLI and Mac desktop builds of one
+commit carry different versions; compare hosts by the recorded source commit and
+tree, not the version string. Rebuilding a commit produces a new version. These Actions
 outputs do not create GitHub Releases or populate a release channel: download
-another successful workflow artifact for subsequent trials. Upstream installers
-and release discovery remain separate from these Jones trial workflows.
+another successful workflow artifact for subsequent trials. Once an artifact
+expires it cannot be downloaded again, so keep any build needed for rollback or a
+later install in a retained local copy. Upstream installers and release discovery
+remain separate from these Jones trial workflows: `scripts/install.sh` and
+`scripts/install.ps1` resolve `pingdotgg/t3code` Releases and install upstream
+T3 Code, never a Jones build. On a Jones preview runtime, `t3 update` refuses a
+version-only release update.
 
 Publishing this workflow does not authorize a VPS service restart, installation,
 replacement of an active binary, or use of the real T3 home. Those steps need a
@@ -84,7 +92,7 @@ scratch use the exact workspace directory `.artifact-cli-mac-scratch`; scoped
 script cleanup and the always-run job cleanup own removal, with disposable-runner
 teardown covering forced termination.
 
-Download the successful run's seven-day artifact into a new empty directory and
+Download the successful run's 30-day artifact into a new empty directory and
 verify it on a Mac:
 
 ```bash
@@ -116,7 +124,7 @@ installation.
 
 The companion **Mac Desktop Artifact** workflow builds an Apple Silicon
 DMG on `macos-15`. It runs on main pushes and manual dispatch, and on matching pull requests whose
-base is `main` and whose head belongs to the same repository. Dependency-base
+base is `main` or `work/jones-rebuild/staging` and whose head belongs to the same repository. Other dependency-base
 pull requests do not trigger this workflow;
 use a separate manual run for DMG evidence when needed. It follows the same seven-day
 Actions download process, with artifact name

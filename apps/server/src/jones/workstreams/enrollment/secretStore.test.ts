@@ -12,7 +12,10 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "enrollment-key-synthetic-" });
+      const ownedBaseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "enrollment-key-synthetic-",
+      });
+      const baseDir = yield* fs.realPath(ownedBaseDir);
       const secretsDir = `${baseDir}/secrets`;
       const store = makeExistingEnrollmentSecretStore({ baseDir, secretsDir });
       assert.strictEqual(yield* fs.exists(secretsDir), false);
@@ -35,6 +38,17 @@ it.effect(
       yield* fs.writeFile(`${secretsDir}/server-signing-key.bin`, synthetic);
       yield* fs.chmod(`${secretsDir}/server-signing-key.bin`, 0o600);
       assert.deepEqual(Option.getOrNull(yield* store.get("server-signing-key")), synthetic);
+      const alias = `${baseDir}/alias`;
+      yield* Effect.tryPromise(() => NodeFSP.symlink(baseDir, alias)).pipe(Effect.orDie);
+      const aliased = makeExistingEnrollmentSecretStore({
+        baseDir: alias,
+        secretsDir: `${alias}/secrets`,
+      });
+      assert.strictEqual(
+        (yield* aliased.get("server-signing-key").pipe(Effect.flip))._tag,
+        "SecretStoreReadError",
+      );
+      assert.deepEqual(Option.getOrNull(yield* store.get("server-signing-key")), synthetic);
       assert.strictEqual(
         (yield* store.get("unrelated-secret").pipe(Effect.result))._tag,
         "Failure",
@@ -49,9 +63,10 @@ it.effect(
 it.effect("existing signing key adapter rejects wrong mode, wrong length and symlinks", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const baseDir = yield* fs.makeTempDirectoryScoped({
+    const ownedBaseDir = yield* fs.makeTempDirectoryScoped({
       prefix: "enrollment-key-invalid-synthetic-",
     });
+    const baseDir = yield* fs.realPath(ownedBaseDir);
     const secretsDir = `${baseDir}/secrets`;
     yield* fs.makeDirectory(secretsDir, { mode: 0o700 });
     const keyPath = `${secretsDir}/server-signing-key.bin`;

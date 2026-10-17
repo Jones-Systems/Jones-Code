@@ -7,6 +7,10 @@
   },
   "baseline": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4",
   "paths": {
+    "apps/web/src/jones/updates/clientUpdateBanner.tsx": "jones-owned",
+    "apps/web/src/jones/updates/clientUpdateBanner.test.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices-entry.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/client-update-notices.html": "jones-owned",
     "apps/server/src/persistence/DatabaseMaintenance.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx": "hook",
     "scripts/jones/boundary/fragments/provider-order.json": "jones-owned",
@@ -1033,7 +1037,15 @@
     "apps/server/src/jones/workstreams/enrollment/desktopOwner.ts": "jones-owned",
     "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned",
     "apps/server/src/bin.ts": "hook",
-    "apps/server/src/entrypoint.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/entrypoint.test.ts": "jones-tests-in-upstream",
+    "scripts/dev-runner.ts": "accepted-shared",
+    "apps/server/src/startupAccess.ts": "hook",
+    "apps/server/src/startupAccess.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/startupAccess.logging.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/cloud/serviceLog.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
+    "docs/internals/t3-connect.md": "accepted-shared",
+    "docs/operations/release.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
