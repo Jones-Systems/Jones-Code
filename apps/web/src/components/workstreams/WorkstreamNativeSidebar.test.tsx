@@ -4,7 +4,11 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamsRegistrationContextAcceptedResponse,
+} from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
 import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
@@ -16,6 +20,28 @@ import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFa
 import { buildThreadActionMenuItems } from "../threadActionMenu.logic";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
+
+import { assignNativeThread } from "../../jones/workstreams/nativeThreadAssignment";
+
+const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
+  protocol: "workstreams-registration-context/2.0.0",
+  state: "ready",
+  ...placements.context,
+  grant_id: "grant",
+  sources: [
+    {
+      provider: "t3",
+      source_instance_id: thread.environmentId,
+      authority_namespace: "authority",
+      store_generation: 1,
+      resource_kind: "thread",
+      id_kind: "internal",
+      account_provenance: { kind: "not_account_scoped" },
+      native_protocol: "workstreams-t3-provider/1.0.0",
+      build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+    },
+  ],
+};
 
 let root: Root;
 let container: HTMLDivElement;
@@ -51,9 +77,41 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const submit = vi.fn(async (_command: WorkstreamCommand) => committed);
+  const submit = vi.fn(async (command: WorkstreamCommand) => ({
+    ...committed,
+    command_id: command.command_id,
+    owner_id: "owner",
+    server_generation: 7,
+    operation: command.action.operation,
+  }));
   controller = {
     data,
+    registrationContext,
+    assignNativeThread: (selected, destination, options) =>
+      assignNativeThread({
+        ...options,
+        data: controller.data!,
+        thread: selected,
+        destination,
+        runBindingOperation: controller.runBindingOperation,
+        loadSnapshot: async () => {
+          const loaded = await controller.loadDetail(destination ?? "alpha", options);
+          return {
+            data: controller.data!,
+            registrationContext: controller.registrationContext!,
+            placements: controller.placements!,
+            reference: { context: loaded.detail.context, reference, latest_observation: null },
+            destinationMemberships:
+              destination === null
+                ? null
+                : {
+                    context: loaded.detail.context,
+                    items: loaded.memberships.items,
+                    next_cursor: null,
+                  },
+          };
+        },
+      }),
     placements,
     placementInventory: {
       coverage: "complete",
@@ -160,11 +218,11 @@ async function clickLabel(label: string) {
 }
 
 async function openAssignment(index = 0) {
-  await act(async () =>
-    nativeRow(index).dispatchEvent(
-      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
-    ),
-  );
+  await act(async () => {
+    const row = nativeRow(index);
+    row.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 2 }));
+    row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  });
   await act(async () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   });
@@ -289,6 +347,39 @@ describe("native Workstream sidebar interactions", () => {
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
+  it("refuses to reorder against a neighbor whose displayed membership has not been checked", async () => {
+    controller = {
+      ...controller,
+      placementInventory: {
+        ...controller.placementInventory,
+        coverage: "partial",
+        identities: controller.placementInventory.identities.filter(
+          (identity) => identity.native_thread_id === threads[0]!.id,
+        ),
+      },
+      placements: {
+        ...placements,
+        items: [
+          ...placements.items,
+          {
+            ...placements.items[0]!,
+            native_reference_id: "reference-two",
+            native_thread_id: "unassigned",
+            membership_id: "member-two",
+          },
+        ],
+      },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = nativeRow(1).closest("[data-native-workstream-thread]")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-position")).toBeNull();
+    await release();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
   it("starts group reordering only from the group grip and never submits membership changes", async () => {
     await render();
     const header = container.querySelector('[aria-label="Collapse alpha"]')!.parentElement!;
@@ -347,8 +438,8 @@ describe("native Workstream sidebar interactions", () => {
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
-  it("ignores external drags and refuses pointer drags without verified placements", async () => {
-    controller = { ...controller, placements: null };
+  it("ignores external drags and refuses row drags without an activated source", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
     expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(false);
@@ -359,14 +450,129 @@ describe("native Workstream sidebar interactions", () => {
     expect(reorder).not.toHaveBeenCalled();
   });
 
-  it("preserves all native conversations under partial or untrusted placement coverage", async () => {
+  it("allows choosing an assignment outside the initial placement inventory", async () => {
     controller = {
       ...controller,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    expect(container.querySelector('[aria-label="Other threads"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment not checked");
+    await clickMenu("beta");
+    await vi.waitFor(() =>
+      expect(controller.loadDetail).toHaveBeenCalledWith(
+        "beta",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it("checks an unchecked row before a same-group drop instead of reordering it", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse alpha"]')!.closest("li")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await release();
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "alpha",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("checks an unchecked row dropped on Other threads before removing primary membership", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
       placements: null,
       placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
     };
     await render();
-    const unassigned = container.querySelector('[aria-label="Unassigned threads"]');
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse Other threads"]')!.parentElement!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await release();
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("keeps unchecked primary and removal choices enabled without asserting stale memberships", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await openAssignment();
+    expect(document.body.textContent).toContain("Assignment not checked");
+    expect(document.body.textContent).not.toContain("alpha (primary)");
+    expect(document.body.textContent).not.toContain("beta (secondary)");
+    await clickMenu("alpha");
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "alpha",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await openAssignment(1);
+    await clickMenu("Unassigned (remove primary)");
+    expect(assignment).toHaveBeenLastCalledWith(
+      threads[1],
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("admits only one assignment while the chosen action is pending", async () => {
+    let complete!: () => void;
+    const assignment = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    controller = { ...controller, assignNativeThread: assignment };
+    await render();
+    await openAssignment();
+    const item = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent === "beta (secondary)",
+    )!;
+    await act(async () => {
+      item.click();
+      item.click();
+    });
+    expect(assignment).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Saving Workstream change");
+    await act(async () => complete());
+    expect(container.textContent).not.toContain("Saving Workstream change");
+  });
+
+  it("preserves all native conversations under partial or untrusted placement coverage", async () => {
+    controller = {
+      ...controller,
+      placements: null,
+      registrationContext: null,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    const unassigned = container.querySelector('[aria-label="Other threads"]');
     for (const item of threads) expect(unassigned?.textContent).toContain(item.title);
     expect(container.textContent).toContain("Thread assignments are unavailable");
     await openAssignment();
@@ -839,13 +1045,13 @@ describe("Workstream live thread summaries", () => {
     ).toBe("0/6");
   });
 
-  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unassigned", async () => {
-    controller = { ...controller, placements: null };
+  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unchecked", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render([statusThread("thread", "running")]);
     expect(
       container.querySelector('[aria-label="alpha: 0 of 0 known threads running"]')?.textContent,
     ).toBe("0/0");
-    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+    expect(container.querySelector('[aria-label="Other threads"]')?.textContent).toContain(
       "thread",
     );
     expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();

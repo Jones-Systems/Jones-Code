@@ -6,14 +6,27 @@ import {
   EnvironmentHttpConflictError,
   EnvironmentHttpUnauthorizedError,
   EnvironmentInternalError,
+  t3PlacementInventoryJson,
+  type T3PlacementIdentity,
+  type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
-import { data, thread } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
-import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
+import {
+  data,
+  thread,
+  placements,
+  reference,
+  now,
+} from "../../components/workstreams/nativeWorkstreamActions.fixtures";
+import {
+  useWorkstreams,
+  nativePlacementInventory,
+  type WorkstreamListView,
+} from "../../state/workstreams";
 
 const http = vi.hoisted(() => ({
   run: vi.fn<(effect: unknown, options?: { readonly signal?: AbortSignal }) => Promise<unknown>>(),
@@ -60,8 +73,14 @@ let registry: ReturnType<typeof AtomRegistry.make>;
 let renderer: ReactTestRenderer | undefined;
 let latest: WorkstreamListView;
 
-function MountedWorkstreams() {
-  const view = useWorkstreams(false, nativeThreads);
+function MountedWorkstreams({
+  enabled = false,
+  threads = nativeThreads,
+}: {
+  enabled?: boolean;
+  threads?: readonly { environmentId: string; id: string }[];
+}) {
+  const view = useWorkstreams(enabled, threads);
   useLayoutEffect(() => {
     latest = view;
   }, [view]);
@@ -81,6 +100,7 @@ afterEach(async () => {
   registry.dispose();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 it("recovers list and registration reads after CP outages without replacing the mounted RPC generation", async () => {
@@ -442,4 +462,255 @@ it("aborts an interrupted read and ignores its late failure after reconnect reco
   expect(latest.data).toEqual(data);
   expect(latest.registrationContext).toEqual(registration);
   expect(http.run).toHaveBeenCalledTimes(3);
+});
+
+it.each([11, 12])(
+  "assigns a chosen tail thread at fresh registry %s and retains its verified placement after refresh",
+  async (freshVersion) => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    vi.stubGlobal("window", globalThis);
+    const threads = Array.from({ length: 4501 }, (_, i) => ({
+      environmentId: thread.environmentId,
+      id: String(i).padStart(5, "0"),
+    }));
+    const chosen = threads[4500]!;
+    const chosenReference = {
+      ...reference,
+      identity: { ...reference.identity, native_id: chosen.id },
+      registration: {
+        ...reference.registration,
+        evidence: { ...reference.registration.evidence!, native_id: chosen.id },
+      },
+    };
+    const quarantined = {
+      ...chosenReference,
+      registration: {
+        state: "quarantined",
+        attestation_version: 0,
+        attested_at: null,
+        expires_at: null,
+        evidence: null,
+      },
+    };
+    const selected = [{ source_instance_id: chosen.environmentId, native_thread_id: chosen.id }];
+    const context = (version: number) => ({
+      ...registration,
+      registry_version: version,
+      sources: [
+        {
+          provider: "t3",
+          source_instance_id: chosen.environmentId,
+          authority_namespace: "authority",
+          store_generation: 1,
+          resource_kind: "thread",
+          id_kind: "internal",
+          account_provenance: { kind: "not_account_scoped" },
+          native_protocol: "workstreams-t3-provider/1.0.0",
+          build: {
+            repository: "Jones-Systems/Jones-Code",
+            sha: "a".repeat(40),
+            tree: "b".repeat(40),
+          },
+        },
+      ],
+    });
+    const list = (version: number) => ({
+      ...data,
+      binding: { ...data.binding, registryVersion: version },
+    });
+    const readContext = (version: number) => ({
+      owner_id: "owner",
+      server_generation: 7,
+      registry_version: version,
+    });
+    const projection = async (
+      version: number,
+      identities: readonly T3PlacementIdentity[],
+      assigned = false,
+    ) => ({
+      page: {
+        inventory_sha256: Array.from(
+          new Uint8Array(
+            await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(t3PlacementInventoryJson(identities)),
+            ),
+          ),
+          (value) => value.toString(16).padStart(2, "0"),
+        ).join(""),
+        context: { ...placements.context, registry_version: version },
+        next_cursor: null,
+        items: assigned
+          ? [{ ...placements.items[0]!, native_thread_id: chosen.id, workstream_id: "beta" }]
+          : [],
+      },
+      trustedEnvironments: placements.trustedEnvironments,
+      readiness: "ready",
+    });
+    const memberships = (version: number) => ({
+      context: readContext(version),
+      items: [],
+      next_cursor: null,
+    });
+    const receipt = (
+      version: number,
+      operation: "register_reference" | "verify_reference" | "attach_primary",
+    ): WorkstreamReceipt => ({
+      command_id: `command-${version - freshVersion}`,
+      owner_id: "owner",
+      actor: { principal_id: "principal" },
+      operation,
+      request_sha256: "c".repeat(64),
+      server_generation: 7,
+      accepted_at: new Date(now).toISOString(),
+      completed_at: new Date(now).toISOString(),
+      state: "committed",
+      registry_version: version,
+      changed: true,
+      effects: {
+        native_reference_id: "reference",
+        registration: null,
+        workstream_versions: [],
+        membership_ids: [],
+        declaration_id: null,
+        declaration_revision: null,
+        edge_id: null,
+        observation: null,
+        lifecycle_declaration: null,
+        coordination_disposition: null,
+        native_settlement: null,
+      },
+    });
+    const responses = [
+      list(11),
+      context(11),
+      await projection(11, nativePlacementInventory(threads).identities),
+      list(freshVersion),
+      context(freshVersion),
+      await projection(freshVersion, selected),
+      memberships(freshVersion),
+      receipt(freshVersion + 1, "register_reference"),
+      list(freshVersion + 1),
+      context(freshVersion + 1),
+      await projection(freshVersion + 1, selected),
+      { context: readContext(freshVersion + 1), reference: quarantined, latest_observation: null },
+      memberships(freshVersion + 1),
+      receipt(freshVersion + 2, "verify_reference"),
+      list(freshVersion + 2),
+      context(freshVersion + 2),
+      await projection(freshVersion + 2, selected),
+      {
+        context: readContext(freshVersion + 2),
+        reference: chosenReference,
+        latest_observation: null,
+      },
+      memberships(freshVersion + 2),
+      receipt(freshVersion + 3, "attach_primary"),
+      list(freshVersion + 3),
+      context(freshVersion + 3),
+      await projection(
+        freshVersion + 3,
+        nativePlacementInventory(threads, chosen).identities,
+        true,
+      ),
+    ];
+    const initialProjection = responses[2];
+    const refreshedProjection = responses.at(-1);
+    const completion = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    };
+    const initialRead = { requested: completion(), response: completion() };
+    const refreshedRead = { requested: completion(), response: completion() };
+    const completePlacementRead = async (read: typeof initialRead, assertCommitted: () => void) => {
+      await read.requested.promise;
+      // Waiting for rendered state inside act would block the commit being observed.
+      await act(async () => {
+        read.response.resolve();
+      });
+      assertCommitted();
+    };
+    http.run.mockImplementation(async () => {
+      const response = responses.shift();
+      if (!response) throw new Error("Unexpected additional HTTP request");
+      const read =
+        response === initialProjection
+          ? initialRead
+          : response === refreshedProjection
+            ? refreshedRead
+            : null;
+      if (read) {
+        read.requested.resolve();
+        await read.response.promise;
+      }
+      return response;
+    });
+    try {
+      await act(async () => {
+        renderer = create(
+          <RegistryContext.Provider value={registry}>
+            <MountedWorkstreams enabled threads={threads} />
+          </RegistryContext.Provider>,
+        );
+      });
+      await completePlacementRead(initialRead, () => expect(latest.loading).toBe(false));
+      expect(latest.placementInventory.identities).not.toContainEqual(selected[0]);
+      expect(latest.data?.binding.registryVersion).toBe(11);
+      const mountedConnection = registry.get(connection);
+      let nextId = 0;
+      await act(async () => {
+        await latest.assignNativeThread!(chosen, "beta", {
+          commandId: async () => `command-${++nextId}`,
+        });
+      });
+      await completePlacementRead(refreshedRead, () =>
+        expect(latest.placements?.items[0]?.native_thread_id).toBe(chosen.id),
+      );
+      expect(latest.placements?.items[0]?.workstream_id).toBe("beta");
+      expect(latest.placementInventory.identities).toHaveLength(1000);
+      expect(latest.placementInventory.identities).toContainEqual(selected[0]);
+      expect(latest.data?.binding.registryVersion).toBe(freshVersion + 3);
+      expect(nextId).toBe(3);
+      expect(registry.get(connection)).toBe(mountedConnection);
+      expect(responses).toHaveLength(0);
+    } finally {
+      initialRead.response.resolve();
+      refreshedRead.response.resolve();
+    }
+  },
+);
+
+it("keeps an explicit recovery path after a preflight refusal without submitting any command", async () => {
+  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(registration);
+  await act(async () => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  expect(latest.data).toEqual(data);
+  await act(async () => {
+    await expect(
+      latest.runBindingOperation(async () => {
+        throw new Error("preflight refused");
+      }),
+    ).rejects.toThrow("preflight refused");
+  });
+  expect(latest.data).toBeNull();
+  expect(latest.registrationContext).toBeNull();
+  expect(latest.placements).toBeNull();
+  expect(latest.error).toBeTruthy();
+  expect(http.run).toHaveBeenCalledTimes(2);
+  const fresh = { ...data, binding: { ...data.binding, registryVersion: 12 } };
+  http.run
+    .mockResolvedValueOnce(fresh)
+    .mockResolvedValueOnce({ ...registration, registry_version: 12 });
+  await act(async () => latest.refresh());
+  expect(latest.data).toEqual(fresh);
+  expect(latest.error).toBeNull();
+  expect(http.run).toHaveBeenCalledTimes(4);
 });

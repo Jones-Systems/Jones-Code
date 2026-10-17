@@ -6,7 +6,7 @@ Choose **New Workstream** in the sidebar toolbar, enter a name, then choose **Cr
 
 Collapse a group to save space; your choice is remembered in this browser. Drag a group's six-dot grip to reorder it, or use **Move up** and **Move down**. Within a group, drag a thread onto another thread to place it before or after that conversation. Thread ordering uses the connected environment's native active order.
 
-Workstreams need a connected owner registry with current access. Assignment also needs a registered, verified thread reference. If placements cannot be verified, refresh before moving a thread. Read-only access lets you inspect groups and their history. It does not enable registry changes.
+Workstreams need a connected owner registry with current access. On web and desktop, assigning a thread from the primary connected environment checks its current assignment and registers and verifies its reference when needed. A thread whose **Assign thread** submenu says **Assignment not checked** has not yet been confirmed as unassigned; choosing an assignment checks that thread on demand. Threads from another environment remain unavailable when the current connection cannot verify their native identity. If verification fails or access changes, refresh before trying again. Read-only access lets you inspect groups and their history. It does not enable registry changes.
 
 Choose **Color…** from a Workstream's menu to preview a preset or custom RGB border. **Save** shares the choice with your connected devices; **Cancel** keeps the saved color, and **Reset to automatic** restores the default after saving. On mobile, open the group's menu to choose its color. Color editing requires a registry that supports shared appearance and current write access.
 
