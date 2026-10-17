@@ -522,8 +522,11 @@
     },
     {
       "id": "composer-thread-query",
-      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
+        "packages/client-runtime/src/jones/composerThreadMatching.test.ts"
+      ],
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; thread titles match punctuation-normalized words in any order, rank stronger matches before weaker matches, then recent activity within equal relevance; preserves file matching, matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
