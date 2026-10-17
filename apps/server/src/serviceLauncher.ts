@@ -17,6 +17,12 @@ import {
   retractLauncherCapabilityReceipt,
 } from "./jones/cloud/launcherCapability.ts";
 import {
+  launcherDriftNotice,
+  QualifiedCommitFailure,
+  qualifiedRollbackRefusal,
+  type QualifiedCommitAttempt,
+} from "./jones/cloud/qualifiedCommitAttempt.ts";
+import {
   verifyStagedQualifiedRuntime,
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
@@ -731,7 +737,8 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
-  #qualifiedPointerCommitAttempted = false;
+  // Bound to one update: a commit attempt never blocks a later update's rollback.
+  #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
 
@@ -1096,6 +1103,11 @@ export class Launcher {
       });
     }
 
+    if (role === "active") {
+      const notice = launcherDriftNotice(packageJson.version, version);
+      if (notice !== undefined) process.stderr.write(notice);
+    }
+
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
@@ -1458,24 +1470,36 @@ export class Launcher {
     if (pending.qualified !== undefined) {
       this.#assertQualifiedChildLive(child);
       // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
-      this.#qualifiedPointerCommitAttempted = true;
+      this.#qualifiedCommitAttempt = { updateId: pending.id, step: "pointer-write" };
     }
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    if (pending.qualified !== undefined) this.#assertQualifiedChildLive(child);
-    child.role = "active";
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-    await sendMessage(child.process, {
-      type: "committed",
-      updateId: committed.id,
-      ...(startupReceipt === undefined
-        ? {}
-        : {
-            startupGateProtocol: 1 as const,
-            qualified: { ...startupReceipt, generation: committed.id },
-          }),
-    });
+    try {
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      if (pending.qualified !== undefined) {
+        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "post-write-liveness" };
+        this.#assertQualifiedChildLive(child);
+      }
+      child.role = "active";
+      const notice = launcherDriftNotice(packageJson.version, child.version);
+      if (notice !== undefined) process.stderr.write(notice);
+      if (pending.qualified === undefined)
+        await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
+      else this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
+      await sendMessage(child.process, {
+        type: "committed",
+        updateId: committed.id,
+        ...(startupReceipt === undefined
+          ? {}
+          : {
+              startupGateProtocol: 1 as const,
+              qualified: { ...startupReceipt, generation: committed.id },
+            }),
+      });
+    } catch (cause) {
+      const attempt = this.#qualifiedCommitAttempt;
+      if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
+      throw new QualifiedCommitFailure(attempt, cause);
+    }
   }
 
   #assertQualifiedChildLive(child: ManagedChild): void {
@@ -1570,10 +1594,11 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
-    if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
-      throw new Error(
-        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
-      );
+    const refusal =
+      pending.qualified === undefined
+        ? undefined
+        : qualifiedRollbackRefusal(this.#qualifiedCommitAttempt, pending.id, reason);
+    if (refusal !== undefined) throw new Error(refusal);
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);
