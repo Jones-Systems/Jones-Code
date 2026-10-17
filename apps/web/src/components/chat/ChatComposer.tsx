@@ -69,7 +69,6 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   memo,
-  useMemo,
   type ComponentProps,
   type ReactNode,
   useEffect,
@@ -6309,10 +6308,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     ],
   );
 
-  const shortcutRailsContentKey = useMemo(
-    () => [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
-    [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
-  );
+  const shortcutRailsContentKey = [
+    modelOptionsByInstance,
+    selectedInstanceId,
+    selectedModel,
+    effectiveTraitsOptions,
+  ];
   const shortcutRails = useComposerShortcutRails({
     host: shortcutControlsHost,
     workspace: shortcutWorkspaceElement,

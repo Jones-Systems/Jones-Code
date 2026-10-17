@@ -97,10 +97,8 @@ import {
 } from "lucide-react";
 import {
   memo,
-  useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useReducer,
   useRef,
   useState,
@@ -2922,9 +2920,13 @@ export default function Sidebar() {
     setPersistedProjectScopeKey,
   ]);
   // Hidden rows must never remain selected for bulk actions.
+  const selectionScopeKey = JSON.stringify([statusFilter, projectScopeKey, excludedEnvironmentKey]);
+  const clearedSelectionScopeRef = useRef<string | null>(null);
   useEffect(() => {
+    if (clearedSelectionScopeRef.current === selectionScopeKey) return;
+    clearedSelectionScopeRef.current = selectionScopeKey;
     clearSelection();
-  }, [statusFilter, clearSelection, projectScopeKey, excludedEnvironmentKey]);
+  }, [clearSelection, selectionScopeKey]);
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
     if (statusFilter !== "all") return 0;
@@ -2981,45 +2983,32 @@ export default function Sidebar() {
   const workstreamController = useWorkstreams(true, threads);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
-  const closeWorkstreamCreate = useCallback(() => setWorkstreamCreateOpen(false), []);
-  const workstreamGrouping = useMemo(
-    () =>
-      groupNativeThreadsByWorkstream({
-        workstreams: workstreamController.data?.items ?? [],
-        placements: workstreamController.placements?.items ?? [],
-        threads: activeThreads,
-        trustedNow: snoozeNow,
-        trustedEnvironments: new Map(
-          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-            value.environmentId,
-            value,
-          ]),
-        ),
-      }),
-    [activeThreads, snoozeNow, workstreamController.data?.items, workstreamController.placements],
-  );
+  const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
+  const workstreamGrouping = groupNativeThreadsByWorkstream({
+    workstreams: workstreamController.data?.items ?? [],
+    placements: workstreamController.placements?.items ?? [],
+    threads: activeThreads,
+    trustedNow: snoozeNow,
+    trustedEnvironments: new Map(
+      (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+        value.environmentId,
+        value,
+      ]),
+    ),
+  });
 
-  const workstreamSummaryGrouping = useMemo(
-    () =>
-      groupNativeThreadsByWorkstream({
-        workstreams: workstreamController.data?.items ?? [],
-        placements: workstreamController.placements?.items ?? [],
-        threads: environmentThreads,
-        trustedNow: snoozeNow,
-        trustedEnvironments: new Map(
-          (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
-            value.environmentId,
-            value,
-          ]),
-        ),
-      }),
-    [
-      environmentThreads,
-      snoozeNow,
-      workstreamController.data?.items,
-      workstreamController.placements,
-    ],
-  );
+  const workstreamSummaryGrouping = groupNativeThreadsByWorkstream({
+    workstreams: workstreamController.data?.items ?? [],
+    placements: workstreamController.placements?.items ?? [],
+    threads: environmentThreads,
+    trustedNow: snoozeNow,
+    trustedEnvironments: new Map(
+      (workstreamController.placements?.trustedEnvironments ?? []).map((value) => [
+        value.environmentId,
+        value,
+      ]),
+    ),
+  });
 
   const isSearchingThreads = threadSearchQuery.trim().length > 0;
   const threadSearchMatchByKey = new Map(
@@ -3639,7 +3628,7 @@ export default function Sidebar() {
     routeThreadKey,
     snoozedThreadCount: snoozedThreads.length,
   });
-  const reorderWorkstreamThread = useCallback(
+  const reorderWorkstreamThread = useStableCallback(
     async (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) => {
       const movedId = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       const neighborId = scopedThreadKey(scopeThreadRef(neighbor.environmentId, neighbor.id));
@@ -3664,7 +3653,6 @@ export default function Sidebar() {
           throw new Error("Active thread reorder did not complete. Refresh before retrying.");
       }
     },
-    [activeKeys, activeKeysById, activeReorderableThreadKeys, reorderActiveThread, threadByKey],
   );
   const draggedThreadKey = dragState?.activeKey;
   const draggedFromSection = dragState?.activeSection;
