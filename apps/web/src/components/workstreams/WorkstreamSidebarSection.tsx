@@ -438,6 +438,7 @@ export function WorkstreamSidebarSection(props: {
             className={`relative rounded-md border-l-2 ${workstreamTint(item.workstreamId)} ${props.threadDropTarget === item.workstreamId ? "ring-2 ring-primary bg-primary/10" : ""}`}
             data-drop-target={props.threadDropTarget === item.workstreamId ? "thread" : undefined}
             key={item.workstreamId}
+            data-native-workstream={JSON.stringify(item.workstreamId)}
             onDragLeave={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                 props.onThreadDragLeave?.();
@@ -614,6 +615,7 @@ export function WorkstreamSidebarSection(props: {
       {props.renderMembers ? (
         <div
           className={`mt-2 rounded-md border-l-2 border-sidebar-border ${props.threadDropTarget === null ? "ring-2 ring-primary bg-primary/10" : ""}`}
+          data-native-workstream="null"
           data-drop-target={props.threadDropTarget === null ? "thread" : undefined}
           onDragOver={(event) => props.onThreadDragOver?.(event, null)}
           onDragLeave={(event) => {

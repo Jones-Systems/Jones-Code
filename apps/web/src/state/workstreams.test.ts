@@ -17,6 +17,7 @@ import {
   reuseNativePlacementIdentitySnapshot,
   workstreamListErrorMessage,
   type WorkstreamDetailLoaders,
+  type NativePlacementThread,
 } from "./workstreams";
 
 const binding = {
@@ -137,6 +138,65 @@ describe("complete Workstream list loading", () => {
     expect(inventory.coverage).toBe("partial");
   });
 
+  it("prioritizes unsettled identities then recently settled conversations without changing canonical inventory order", () => {
+    const settled = Array.from({ length: 1_005 }, (_, index) => ({
+      environmentId: "env",
+      id: `old-${String(index).padStart(4, "0")}`,
+      settledOverride: "settled" as const,
+      settledAt: "2026-01-01T00:00:00Z",
+    }));
+    const recent = {
+      environmentId: "env",
+      id: "zzz-recent",
+      settledOverride: "settled" as const,
+      settledAt: "2026-10-17T12:00:00Z",
+    };
+    const active = {
+      environmentId: "env",
+      id: "zzz-active",
+      settledOverride: "active" as const,
+      settledAt: "2025-01-01T00:00:00Z",
+    };
+    const subagent = {
+      environmentId: "env",
+      id: "zzz-subagent",
+      lineage: { parentThreadId: "parent" },
+    };
+    const threads = [...settled, recent, active, subagent];
+    const inventory = nativePlacementInventory(threads);
+    const selected = inventory.identities.map((identity) => identity.native_thread_id);
+    expect(selected).toContain(active.id);
+    expect(selected).toContain(recent.id);
+    expect(selected).toContain(subagent.id);
+    expect(selected).not.toContain("old-1004");
+    expect(selected).toEqual([...selected].sort());
+    expect(inventory.coverage).toBe("partial");
+    expect(nativePlacementInventory(threads.toReversed())).toEqual(inventory);
+  });
+
+  it("refreshes priority when settlement changes and keeps irrelevant shell updates stable", () => {
+    const original: NativePlacementThread[] = [
+      {
+        environmentId: "env",
+        id: "thread",
+        settledOverride: "active" as const,
+        settledAt: null as string | null,
+      },
+    ];
+    expect(
+      reuseNativePlacementIdentitySnapshot(
+        original,
+        original.map((thread) => ({ ...thread, title: "new" })),
+      ),
+    ).toBe(original);
+    const settled = [
+      { ...original[0]!, settledOverride: "settled" as const, settledAt: "2026-10-17T12:00:00Z" },
+    ];
+    expect(reuseNativePlacementIdentitySnapshot(original, settled)).toBe(settled);
+    const recent = [{ ...settled[0]!, settledAt: "2026-10-17T13:00:00Z" }];
+    expect(reuseNativePlacementIdentitySnapshot(settled, recent)).toBe(recent);
+  });
+
   it("never sorts more placement candidates than the identity cap", () => {
     const originalSort = Array.prototype.sort;
     const sortedLengths: number[] = [];
@@ -158,7 +218,7 @@ describe("complete Workstream list loading", () => {
       );
       expect(inventory.totalIdentities).toBe(20_000);
       expect(inventory.identities).toHaveLength(1_000);
-      expect(sortedLengths).toEqual([1_000]);
+      expect(sortedLengths).toEqual([1_000, 1_000]);
     } finally {
       sort.mockRestore();
     }

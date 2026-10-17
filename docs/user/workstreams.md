@@ -2,9 +2,9 @@
 
 Use Workstreams to organize active conversations by an objective across repositories and connected environments. Repository projects still select where a conversation runs.
 
-Choose **New Workstream** in the sidebar toolbar, enter a name, then choose **Create**. Escape or clicking outside dismisses the entry. Assign an Unassigned thread from its **Workstream actions** menu, or drag its row into a group. The same menu moves a thread to another group or removes its primary membership. Existing secondary associations and membership history remain available when you open the group details.
+Choose **New Workstream** in the sidebar toolbar, enter a name, then choose **Create**. Escape or clicking outside dismisses the entry. Right-click a thread and open **Assign thread** below **Snooze** to choose a Workstream, or drag its row into a group. Choose **Unassigned (remove primary)** in the submenu to remove its primary membership; secondary associations remain and are labeled in the submenu. Existing secondary associations and membership history remain available when you open the group details.
 
-Collapse a group to save space; your choice is remembered in this browser. Drag a group's six-dot grip to reorder it, or use **Move up** and **Move down**. Within a group, drag a thread onto another thread, or use **Move thread up** and **Move thread down**. Thread ordering uses the connected environment's native active order.
+Collapse a group to save space; your choice is remembered in this browser. Drag a group's six-dot grip to reorder it, or use **Move up** and **Move down**. Within a group, drag a thread onto another thread to place it before or after that conversation. Thread ordering uses the connected environment's native active order.
 
 Workstreams need a connected owner registry with current access. Assignment also needs a registered, verified thread reference. If placements cannot be verified, refresh before moving a thread. Read-only access lets you inspect groups and their history. It does not enable registry changes.
 
