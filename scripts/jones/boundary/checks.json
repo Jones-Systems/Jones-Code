@@ -1251,6 +1251,19 @@
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck"
       ]
+    },
+    {
+      "id": "jones-launcher-commit-diagnostics",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts --maxWorkers=1"
+      ]
     }
   ]
 }
