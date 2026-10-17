@@ -34,6 +34,7 @@ import {
   type WorkstreamAssignmentIndexFetchers,
   workstreamBindingKey,
 } from "@t3tools/client-runtime/state/workstreams";
+import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -50,6 +51,14 @@ import {
   type NativeThreadAssignmentSnapshot,
 } from "../jones/workstreams/nativeThreadAssignment";
 
+import { requestEnvironmentWorkstreams } from "../jones/workstreams/environmentWorkstreamsRequest";
+import {
+  assignRemoteNativeThread,
+  environmentWorkstreamsRoutes,
+  ownerRegistryKey,
+  reconcileRemoteWorkstreamCommands,
+  type RemoteWorkstreamCommandLedger,
+} from "../jones/workstreams/remoteThreadAssignment";
 import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
 import {
   classifyWorkstreamReadFailure,
@@ -58,6 +67,7 @@ import {
 
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
 import { runPrimaryHttp } from "../lib/runtime";
+import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 
 type PrimaryClient = Effect.Success<typeof PrimaryEnvironmentHttpClient>;
 
@@ -295,6 +305,11 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  /**
+   * True for a thread whose own environment server, rather than the primary's, registers and
+   * assigns it. That server's fences still decide whether the change is possible.
+   */
+  readonly assignsThroughOwnEnvironment?: (environmentId: string) => boolean;
   readonly assignNativeThread?: (
     thread: { readonly environmentId: string; readonly id: string },
     destination: string | null,
@@ -595,6 +610,8 @@ export function useWorkstreams(
   const [registrationContext, setRegistrationContext] =
     useState<WorkstreamsRegistrationContextAcceptedResponse | null>(null);
   const unresolvedCommands = useRef(new Map<string, string>());
+  const remoteCommands = useRef<RemoteWorkstreamCommandLedger>(new Map());
+  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
   const [placementInventory, setPlacementInventory] =
@@ -1007,6 +1024,29 @@ export function useWorkstreams(
         )
           throw new WorkstreamActionError("stale");
       };
+      if (primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId) {
+        if ([...unresolvedCommands.current.values()].includes(authority))
+          throw new WorkstreamActionError("unknown");
+        // Only the thread's own server can register its native threads; the primary snapshot
+        // still has to stay current, live and unconflicted for the whole operation.
+        await assignRemoteNativeThread({
+          ...options,
+          primary: started,
+          thread,
+          destination,
+          stored,
+          routes: environmentWorkstreamsRoutes(thread.environmentId, requestEnvironmentWorkstreams),
+          check: () => {
+            check();
+            if (staleRef.current) throw new WorkstreamActionError("stale");
+          },
+          commands: remoteCommands.current,
+          loadCompleteList: (load) => loadCompleteWorkstreamList(load, options),
+          refreshPrimary: refresh,
+        });
+        options.signal?.throwIfAborted();
+        return;
+      }
       const loadSnapshot = async (
         referenceId?: string,
       ): Promise<NativeThreadAssignmentSnapshot> => {
@@ -1108,7 +1148,7 @@ export function useWorkstreams(
       options.signal?.throwIfAborted();
       setPreferredThread({ environmentId: thread.environmentId, id: thread.id });
     },
-    [placementsEnabled, runBindingOperation],
+    [placementsEnabled, primaryEnvironmentId, runBindingOperation, refresh],
   );
 
   const readFailed = useCallback(
@@ -1281,6 +1321,13 @@ export function useWorkstreams(
       },
       resolved: (id) => unresolvedCommands.current.delete(id),
     });
+    // Commands sent to another environment are observed on that environment only.
+    await reconcileRemoteWorkstreamCommands({
+      commands: remoteCommands.current,
+      ownerRegistry: ownerRegistryKey(started),
+      routesFor: (environmentId) =>
+        environmentWorkstreamsRoutes(environmentId, requestEnvironmentWorkstreams),
+    });
     const snapshot = await loadActionSnapshot();
     metadataCache.write(snapshot.data);
     setData(metadataCache.read(snapshot.data.binding));
@@ -1290,7 +1337,14 @@ export function useWorkstreams(
     if (placementsEnabled) refresh();
   }, [loadActionSnapshot, placementsEnabled, refresh]);
 
+  const assignsThroughOwnEnvironment = useCallback(
+    (environmentId: string) =>
+      primaryEnvironmentId !== null && environmentId !== primaryEnvironmentId,
+    [primaryEnvironmentId],
+  );
+
   return {
+    assignsThroughOwnEnvironment,
     assignNativeThread: assignThread,
     registrationContext,
     loadActionSnapshot,

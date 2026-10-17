@@ -1141,6 +1141,44 @@ describe("durable Workstream assignment display", () => {
     );
   });
 
+  // Keeps the second row's title so the shared row helpers find it.
+  const remoteThread = {
+    ...threads[1]!,
+    environmentId: "env:b",
+    id: "remote",
+  } as unknown as EnvironmentThreadShell;
+
+  it("offers another environment's thread when its own server handles the assignment", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+      assignsThroughOwnEnvironment: (environmentId) => environmentId !== thread.environmentId,
+    });
+    const visible = [threads[0]!, remoteThread];
+    await render(visible, visible, options);
+    await openAssignment(1);
+    expect(document.body.textContent).not.toContain("Assignment unavailable for this environment");
+    await clickMenu("beta");
+    expect(assignment).toHaveBeenCalledWith(
+      remoteThread,
+      "beta",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("keeps another environment's thread unavailable without its own assignment route", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+    });
+    const visible = [threads[0]!, remoteThread];
+    await render(visible, visible, options);
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment unavailable for this environment");
+    expect(menuButton("beta")?.disabled).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+  });
+
   it("never confirms Unassigned from an incomplete index", async () => {
     const options = useIndex(index([episode("membership", "alpha")], false));
     await render(threads, threads, options);
