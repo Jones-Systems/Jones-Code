@@ -1,3 +1,12 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
+import { ServerConfig } from "../config.ts";
+import { workstreamGatewayLayerLive, workstreamRegistrationContextLayerLive } from "./http.ts";
+import { vi } from "vite-plus/test";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   AuthOrchestrationOperateScope,
@@ -299,3 +308,87 @@ it.effect.each([
       reason,
     ),
 );
+
+it.effect("both live consumers share one file snapshot and keep it until the next startup", () =>
+  Effect.gen(function* () {
+    const base = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        NodeFS.mkdtempSync(
+          NodePath.join(NodeFS.realpathSync(NodeOS.tmpdir()), "jones-activation-http-"),
+        ),
+      ),
+      (path) =>
+        Effect.sync(() => {
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+          vi.unstubAllEnvs();
+          NodeFS.rmSync(path, { recursive: true, force: true });
+        }),
+    );
+    const environment = {
+      T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+      T3_WORKSTREAM_OWNER_ID: "owner-startup",
+      T3_WORKSTREAM_PRINCIPAL_ID: "principal-startup",
+      T3_WORKSTREAM_KEY_ID: "key-startup",
+      T3_WORKSTREAM_SIGNING_SECRET: Buffer.alloc(32, 7).toString("base64"),
+      T3_WORKSTREAM_AUTHORIZATION_REVISION: "3",
+    };
+    const directory = NodePath.join(base, "workstreams");
+    NodeFS.mkdirSync(directory, { mode: 0o700 });
+    const file = NodePath.join(directory, "activation.env");
+    const bytes = Object.entries(environment)
+      .map(([key, value]) => `${key}=${value}\n`)
+      .join("");
+    NodeFS.writeFileSync(file, bytes, { mode: 0o600 });
+    NodeFS.writeFileSync(NodePath.join(base, "environment-id"), "environment-startup\n");
+    for (const key of Object.keys(environment)) vi.stubEnv(key, undefined);
+    const opened = vi.spyOn(NodeFS, "openSync");
+    const requests: Headers[] = [];
+    vi.stubGlobal("fetch", async (_input: unknown, init: RequestInit) => {
+      requests.push(new Headers(init.headers));
+      throw new Error("synthetic-offline");
+    });
+    const live = Layer.mergeAll(
+      workstreamGatewayLayerLive,
+      workstreamRegistrationContextLayerLive,
+    ).pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(ServerConfig, {
+            baseDir: base,
+            authorityStateDir: NodePath.join(base, "authority"),
+            stateDir: base,
+            environmentIdPath: NodePath.join(base, "environment-id"),
+          } as ServerConfig["Service"]),
+          Layer.succeed(HostProcess.Environment, {}),
+          Layer.succeed(ServiceLauncherHostProcess, {
+            connected: false,
+            send: () => false,
+            on: () => {},
+            off: () => {},
+          }),
+          NodeServices.layer,
+        ),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const gateway = yield* WorkstreamGateway;
+      const registration = yield* WorkstreamsRegistrationContext;
+      expect(opened.mock.calls.filter(([path]) => path === file)).toHaveLength(1);
+      NodeFS.writeFileSync(file, bytes.replaceAll("principal-startup", "principal-replaced"));
+      vi.stubEnv("T3_WORKSTREAM_PRINCIPAL_ID", "principal-from-later-env");
+      yield* gateway.readMetadata({}).pipe(Effect.result);
+      yield* registration.read().pipe(Effect.result);
+      expect(requests).toHaveLength(2);
+      expect(requests.map((headers) => headers.get("x-control-principal-id"))).toEqual([
+        "principal-startup",
+        "principal-startup",
+      ]);
+      expect(process.env.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
+    }).pipe(Effect.provide(live));
+  }),
+);
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+}));

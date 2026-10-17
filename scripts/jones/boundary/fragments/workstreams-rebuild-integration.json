@@ -52,6 +52,7 @@
     "apps/web/src/jones/workstreamAppearance/useWorkstreamAppearance.ts",
     "apps/web/src/state/workstreams.test.ts",
     "apps/web/src/state/workstreams.ts",
+    "docs/operations/workstreams-activation.md",
     "docs/user/workstreams.md",
     "packages/client-runtime/src/state/workstreams/appearance.test.ts",
     "packages/client-runtime/src/state/workstreams/appearance.ts",

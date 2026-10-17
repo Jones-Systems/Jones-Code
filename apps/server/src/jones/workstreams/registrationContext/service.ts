@@ -35,6 +35,7 @@ export type RegistrationContextBinding = Pick<
 >;
 
 export interface RegistrationContextPorts {
+  readonly activationState?: "enabled" | "disabled" | "invalid";
   readonly readRegistrationContext: Effect.Effect<string, WorkstreamTransportError>;
   readonly configuredBinding: RegistrationContextBinding | null;
   readonly authority: Pick<NativeStoreAuthority["Service"], "readCurrent">;
@@ -149,6 +150,8 @@ export const makeWorkstreamsRegistrationContext = (
   });
 
   const read = Effect.fn("RegistrationContext.read")(function* () {
+    if (ports.activationState === "invalid")
+      return yield* new RegistrationContextError({ reason: "registry_unavailable" });
     const binding = ports.configuredBinding;
     if (binding === null) return yield* new RegistrationContextError({ reason: "unconfigured" });
     const text = yield* ports.readRegistrationContext.pipe(
