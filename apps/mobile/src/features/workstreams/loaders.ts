@@ -1,6 +1,11 @@
 import type { T3WorkstreamListResult } from "@t3tools/contracts";
 import { EnvironmentHttpConflictError } from "@t3tools/contracts";
-import { appendWorkstreamListResult } from "@t3tools/client-runtime/state/workstreams";
+import {
+  appendWorkstreamListResult,
+  loadWorkstreamAssignmentIndex,
+  type WorkstreamAssignmentIndex,
+  type WorkstreamAssignmentIndexFetchers,
+} from "@t3tools/client-runtime/state/workstreams";
 import * as Schema from "effect/Schema";
 
 const isCursorStale = Schema.is(EnvironmentHttpConflictError);
@@ -70,4 +75,84 @@ export async function loadCompleteWorkstreamList(
     }
     return result;
   }, options);
+}
+
+// The same classes the web registry treats as signed out; everything else is transient.
+const AUTHORIZATION_FAILURES = new Set([
+  "EnvironmentAuthInvalidError",
+  "EnvironmentAuthorizationError",
+  "EnvironmentHttpUnauthorizedError",
+  "EnvironmentHttpForbiddenError",
+  "EnvironmentScopeRequiredError",
+]);
+
+/**
+ * Only lost authorization hides loaded Workstreams. Transport, timeout and server failures,
+ * including a control-plane denial surfaced as an opaque internal error, keep the last good
+ * load as stale: none of them proves that an assignment is absent.
+ */
+export function classifyMobileWorkstreamFailure(cause: unknown): "authorization" | "transient" {
+  const value = cause && typeof cause === "object" ? (cause as Record<string, unknown>) : {};
+  if (typeof value._tag === "string" && AUTHORIZATION_FAILURES.has(value._tag))
+    return "authorization";
+  const response = value.response as { status?: unknown } | undefined;
+  const status = typeof value.status === "number" ? value.status : response?.status;
+  return status === 401 || status === 403 ? "authorization" : "transient";
+}
+
+export interface MobileWorkstreamRegistry {
+  readonly data: T3WorkstreamListResult;
+  readonly index: WorkstreamAssignmentIndex | null;
+}
+
+/**
+ * Reads the list and every stored assignment at one registry version. With `listOnly`
+ * fallback, a transient index failure still yields the list so an environment without a
+ * previous load can show and create Workstreams; its rows then stay unconfirmed.
+ */
+export async function loadMobileWorkstreamRegistry(
+  fetchers: WorkstreamAssignmentIndexFetchers,
+  options: { readonly signal: AbortSignal; readonly listOnlyFallback: boolean },
+): Promise<MobileWorkstreamRegistry> {
+  try {
+    const loaded = await loadWorkstreamAssignmentIndex(fetchers, { signal: options.signal });
+    return { data: loaded.list, index: loaded.index };
+  } catch (cause) {
+    throwIfAborted(options.signal);
+    if (!options.listOnlyFallback || classifyMobileWorkstreamFailure(cause) === "authorization")
+      throw cause;
+    const data = await loadCompleteWorkstreamList(
+      (cursor) => fetchers.listWorkstreams({ cursor, signal: options.signal }),
+      { signal: options.signal },
+    );
+    return { data, index: null };
+  }
+}
+
+export type MobileWorkstreamLoadOutcome<Snapshot> =
+  | { readonly kind: "loaded"; readonly snapshot: Snapshot }
+  | { readonly kind: "failed"; readonly cause: unknown };
+
+/**
+ * Applies one refresh round at once. A successful load replaces its environment's snapshot; a
+ * transient failure keeps the previous one marked stale; lost authorization removes it.
+ * Environments without an outcome keep their snapshot unless `retained` rejects them.
+ */
+export function settleMobileWorkstreamSnapshots<Key, Snapshot extends { readonly stale: boolean }>(
+  previous: ReadonlyMap<Key, Snapshot>,
+  outcomes: ReadonlyMap<Key, MobileWorkstreamLoadOutcome<Snapshot>>,
+  retained: (key: Key) => boolean = () => true,
+): ReadonlyMap<Key, Snapshot> {
+  const next = new Map<Key, Snapshot>();
+  for (const [key, snapshot] of previous) if (retained(key)) next.set(key, snapshot);
+  for (const [key, outcome] of outcomes) {
+    if (!retained(key)) continue;
+    if (outcome.kind === "loaded") next.set(key, outcome.snapshot);
+    else if (classifyMobileWorkstreamFailure(outcome.cause) === "authorization") next.delete(key);
+    else {
+      const last = next.get(key);
+      if (last !== undefined && !last.stale) next.set(key, { ...last, stale: true });
+    }
+  }
+  return next;
 }
