@@ -122,12 +122,15 @@ Serve port, distinct from 443 and their configured ports, and inspect drift.
 A failed endpoint probe alone never proves a mapping is free to overwrite.
 
 Desktop, web, and mobile still use ordinary pairing, saved connections, and the
-existing reconnect supervisor; there is no new client protocol. The SSH fallback
-retains its default `~/.t3` discovery and Node-free helper download from
-`pingdotgg/t3code`. It can install that helper before discovering a running
-server, without replacing the server. It does not provision a Jones service or
-discover a custom Jones base directory. Prefer direct private pairing for that
-base and do not start a second foreground or SSH-launched server against it.
+existing reconnect supervisor; there is no new client protocol. The Jones desktop's
+managed-runtime SSH route attaches to an already-running host service under
+`${T3CODE_HOME:-$HOME/.t3}`; it does not download or start a server. The alternate
+archive-based SSH route retains `~/.t3` discovery and can download a Node-free
+helper from `pingdotgg/t3code` by default before probing the running server. That
+route does not provision a Jones service or discover a custom Jones base directory.
+For a custom Jones base directory, use direct private pairing or make `T3CODE_HOME`
+available to the host's non-interactive SSH shell. Do not start a second foreground
+or SSH-launched server against a base directory already served by the host service.
 
 Host availability remains separate from client connectivity. Linux needs linger
 for startup at boot and survival after logout. The macOS user LaunchAgent starts
