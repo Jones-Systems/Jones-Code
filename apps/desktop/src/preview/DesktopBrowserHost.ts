@@ -1,12 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Names download files on the shared disk.
 /**
- * The desktop end of the desktop browser channel (see `DesktopBrowserEvent` in
- * contracts). The primary backend uses file descriptors; a companion uses a
- * filtered uplink. Each attached tab is reachable only through its `CdpRelay`.
- *
- * A tab is attached once its `<webview>` registers with a key the web app
- * gave it. The preview manager owns the tab's single debugger session and hands
- * it here; the relay shares it.
+ * The preview manager owns the tab's single debugger session and hands it here;
+ * the relay shares it.
  */
 import {
   DesktopBrowserCommand,
@@ -31,14 +26,13 @@ import {
 } from "../jones/previewCompanion/CompanionIsolation.ts";
 
 import { createCdpRelayConnection, type CdpRelayConnection } from "./CdpRelay.ts";
+import { sendPageCommand } from "./GuestInput.ts";
 
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(DesktopBrowserEvent));
 const decodeCommand = Schema.decodeUnknownOption(Schema.fromJsonString(DesktopBrowserCommand));
 const lineEncoder = new TextEncoder();
-/** CDP commands through which an agent clicks, types, or navigates the page. */
 const AGENT_INPUT_COMMAND =
   /"method":"(?:Input\.|Page\.navigate"|Runtime\.(?:evaluate|callFunctionOn)")/;
-/** How long after an agent's input a download still counts as the agent's. */
 const AGENT_DOWNLOAD_WINDOW_MS = 5_000;
 
 export interface DesktopBrowserTabKey {
@@ -46,7 +40,6 @@ export interface DesktopBrowserTabKey {
   readonly tabId: string;
 }
 
-/** A tab's debugger, as the preview manager lends it to the relay. */
 export interface DesktopBrowserTabDebugger {
   readonly webContents: Electron.WebContents;
   readonly debugger: Electron.Debugger;
@@ -58,12 +51,8 @@ interface AttachedTab {
   readonly key: DesktopBrowserTabKey;
   readonly debuggee: DesktopBrowserTabDebugger;
   relay: CdpRelayConnection | null;
-  readonly downloadPolicy: "shared-disk" | "deny";
-  /** Where the server wants this tab's downloads; null keeps Electron's own handling. */
   downloadDirectory: string | null;
-  /** The guid CDP gave the download that is about to start. */
   pendingDownloadGuid: string | null;
-  /** When the server last sent this page input, which only an agent does. */
   agentInputAt: number;
   readonly onMessage: (
     event: Electron.Event,
@@ -76,43 +65,12 @@ interface AttachedTab {
 export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
   {
-    /**
-     * Newline-delimited events for a backend's browser fd. Each run starts by
-     * announcing the tabs already attached, so a restarted backend hears them.
-     */
     readonly events: Stream.Stream<Uint8Array>;
-    readonly eventsMatching: (
-      predicate: (key: DesktopBrowserTabKey) => boolean,
-    ) => Stream.Stream<Uint8Array>;
-    /** One line from the backend's browser control fd. */
-    readonly handleCommandLine: (
-      line: string,
-      predicate?: (key: DesktopBrowserTabKey) => boolean,
-    ) => Effect.Effect<void>;
-    readonly replaceCompanionAssignments: (keys: ReadonlyArray<DesktopBrowserTabKey>) => void;
-    readonly isCompanionAssigned: (key: DesktopBrowserTabKey) => boolean;
-    readonly isCompanionOwned: (key: DesktopBrowserTabKey) => boolean;
-    readonly registerCompanionGuest: (
-      key: DesktopBrowserTabKey,
-      contents: Electron.WebContents,
-    ) => void;
-    readonly isCompanionGuest: (contents: Electron.WebContents | null) => boolean;
-    /** Offers a server tab's `<webview>` to the server. */
-    readonly attach: (
-      key: DesktopBrowserTabKey,
-      debuggee: DesktopBrowserTabDebugger,
-      downloadPolicy?: "shared-disk" | "deny",
-    ) => void;
-    /** Withdraws it: closed, swapped, crashed, or devtools needs the debugger. */
+    readonly handleCommandLine: (line: string) => Effect.Effect<void>;
+    readonly attach: (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => void;
     readonly detach: (key: DesktopBrowserTabKey) => void;
-    /**
-     * Whether a server tab's download came from the person at this desktop:
-     * the server sent the page no input just before it started.
-     */
     readonly humanStartedDownload: (source: Electron.WebContents) => boolean;
-    /** Cancels companion downloads or places local server downloads on the shared disk. */
     readonly placeDownload: (source: Electron.WebContents, item: Electron.DownloadItem) => boolean;
-    /** The agent's cursor positions for attached tabs, keyed by their server tab. */
     readonly pointers: Stream.Stream<{
       readonly key: DesktopBrowserTabKey;
       readonly phase: "move" | "click";
@@ -147,7 +105,7 @@ export const make = Effect.gen(function* () {
       {
         send: (method, params, sessionId) =>
           sessionId === undefined
-            ? debuggee.sendCommand(method, params)
+            ? sendPageCommand(webContents, debuggee, method, params)
             : debuggee.sendCommand(method, params, sessionId),
         targetId: () =>
           debuggee
@@ -160,7 +118,6 @@ export const make = Effect.gen(function* () {
           tab.downloadDirectory = directory;
         },
       },
-      // A released relay's late replies belong to a connection that is gone.
       (message) => {
         if (tab.relay === relay && tabs.get(keyOf(tab.key)) === tab) {
           emit({ type: "cdp", ...tab.key, message });
@@ -173,9 +130,8 @@ export const make = Effect.gen(function* () {
   };
 
   /**
-   * Companion guests cannot save to this host. A local server's Playwright
-   * shares the disk and expects the CDP guid as its download filename; without
-   * a path Electron would instead open its Save dialog over the app.
+   * Without a path Electron would open its Save dialog over the app for a file
+   * the agent asked for. CDP names the download just before this runs.
    */
   const placeDownload = (source: Electron.WebContents, item: Electron.DownloadItem) => {
     if (isCompanionGuest(source)) {
@@ -265,7 +221,6 @@ export const make = Effect.gen(function* () {
         return;
       }
       if (command.value.type === "release") {
-        // A new server connection starts with a fresh relay and fresh sessions.
         tab.relay = null;
         return;
       }
@@ -278,30 +233,16 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  // Read when a backend starts, not when the host is built.
-  const announceMatching = (predicate: (key: DesktopBrowserTabKey) => boolean) =>
-    Effect.suspend(() =>
-      Effect.forEach(
-        [...tabs.values()].filter((tab) => predicate(tab.key)),
-        (tab) => {
-          tab.relay = null;
-          return PubSub.publish(outbox, { type: "attached", ...tab.key, ...identityFields });
-        },
-        { discard: true },
-      ),
-    );
-
-  const eventsMatching = (predicate: (key: DesktopBrowserTabKey) => boolean) =>
-    Stream.unwrap(
-      Effect.gen(function* () {
-        const subscription = yield* PubSub.subscribe(outbox);
-        yield* announceMatching(predicate);
-        return Stream.fromSubscription(subscription);
-      }),
-    ).pipe(
-      Stream.filter(predicate),
-      Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`)),
-    );
+  const announceAll = Effect.suspend(() =>
+    Effect.forEach(
+      [...tabs.values()],
+      (tab) => {
+        tab.relay = null;
+        return PubSub.publish(outbox, { type: "attached", ...tab.key });
+      },
+      { discard: true },
+    ),
+  );
 
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),

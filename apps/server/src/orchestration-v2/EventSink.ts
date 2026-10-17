@@ -71,9 +71,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
-/**
- * ERRORS
- */
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
   {
@@ -104,53 +101,6 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
-
-function runtimeEvidenceMatches(
-  current: OrchestrationV2ProviderThread | null,
-  capture: ProviderRuntimeEvidenceCapture,
-): boolean {
-  if (
-    current === null ||
-    current.appThreadId !== capture.threadId ||
-    current.id !== capture.providerThreadId ||
-    current.providerSessionId !== capture.providerSessionId ||
-    current.providerInstanceId !== capture.providerInstanceId ||
-    current.driver !== capture.driver ||
-    current.nativeThreadRef?.driver !== capture.driver ||
-    current.nativeThreadRef.nativeId !== capture.nativeThreadId ||
-    current.runtimeIdentity === undefined
-  )
-    return false;
-  const identity = current.runtimeIdentity;
-  if (
-    capture.runtimeGeneration !== undefined &&
-    identity.runtimeGeneration !== capture.runtimeGeneration
-  )
-    return false;
-  if (capture.evidenceRevision !== undefined) {
-    const revision = identity.evidenceRevision;
-    if (
-      revision === undefined ||
-      (capture.runtimeGeneration === undefined
-        ? revision !== capture.evidenceRevision
-        : revision < capture.evidenceRevision)
-    )
-      return false;
-  }
-  return true;
-}
-
-/**
- * SERVICE DEFINITION
- */
-interface EventSinkStreamInput {
-  readonly threadId?: ThreadId;
-  readonly afterSequence?: number;
-  /** Filter before queuing so workers retain only the events they handle. */
-  readonly eventType?: OrchestrationV2DomainEvent["type"];
-  /** Bounded subscribers receive projected public events. Workers retain recorded values. */
-  readonly bounded?: boolean;
-}
 
 export interface EventSinkV2Shape {
   readonly readDeletionWorktreeRemovalStartForTarget?: (
@@ -349,10 +299,6 @@ export interface EventSinkV2Shape {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     };
   }) => Effect.Effect<CommandReceiptStore.CommandReceiptV2, EventSinkV2Error>;
-  /**
-   * Append a project event, fold it into its row and record the receipt in one
-   * transaction. A reused command id commits nothing and returns its receipt.
-   */
   readonly commitProjectCommand: (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -363,7 +309,6 @@ export interface EventSinkV2Shape {
     { readonly receipt: CommandReceiptStore.ProjectCommandReceiptV2; readonly committed: boolean },
     EventSinkV2Error
   >;
-  /** Record a rejected project command, or return the receipt its command id already has. */
   readonly commitRejectedProjectCommand: (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -371,17 +316,13 @@ export interface EventSinkV2Shape {
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
   }) => Effect.Effect<CommandReceiptStore.ProjectCommandReceiptV2, EventSinkV2Error>;
-  readonly stream: {
-    (
-      input: EventSinkStreamInput & { readonly bounded: true },
-    ): Stream.Stream<PublicStoredEvent, EventSinkV2Error>;
-    (
-      input?: EventSinkStreamInput & { readonly bounded?: false },
-    ): Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
-    (
-      input?: EventSinkStreamInput,
-    ): Stream.Stream<PublicStoredEvent | OrchestrationV2StoredEvent, EventSinkV2Error>;
-  };
+  readonly stream: (input?: {
+    readonly threadId?: ThreadId;
+    readonly afterSequence?: number;
+    readonly eventType?: OrchestrationV2DomainEvent["type"];
+    /** Bound RPC subscribers; internal workers must not drop their subscription under load. */
+    readonly bounded?: boolean;
+  }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
@@ -411,12 +352,6 @@ export interface EventSinkV2Shape {
 export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>()(
   "t3/orchestration-v2/EventSink/EventSinkV2",
 ) {}
-
-/**
- * IMPLEMENTATIONS
- */
-const isDispatchGuardRejected = (value: unknown): value is DispatchGuardRejected =>
-  Schema.is(DispatchGuardRejected)(value);
 
 const layerBase: Layer.Layer<
   EventSinkV2,
@@ -465,11 +400,7 @@ const layerBase: Layer.Layer<
     // Transactions commit one at a time, but each writer publishes after its
     // commit. If a writer is descheduled in between, a later commit reaches
     // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied. So a writer takes this lane as the last step
-    // of its transaction and holds it until it has published. Publishing never
-    // waits, so a writer that holds the transaction while it waits for the
-    // lane is not blocked for long.
-    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql);
+    // sequence they have applied.
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -725,12 +656,7 @@ const layerBase: Layer.Layer<
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
           return committed;
-        }).pipe(
-          // Every streamed agent event is a write, so its statements would
-          // dominate the trace file. This span and its sql.transaction span
-          // still time each write, including the commit.
-          Effect.withTracerEnabled(false),
-        ),
+        }).pipe(Effect.withTracerEnabled(false)),
         (storedEvents) =>
           Effect.gen(function* () {
             if (input.effects.length > 0) {
@@ -2045,10 +1971,8 @@ const layerBase: Layer.Layer<
 );
 
 /**
- * Event sink layer for application compositions that already own the
- * persistence services. Keeping the outbox instance shared with the worker is
- * important because enqueue notifications are in-memory wakeups backed by the
- * durable SQL queue.
+ * Keeping the outbox instance shared with the worker is important because enqueue notifications
+ * are in-memory wakeups backed by the durable SQL queue.
  */
 export const layerFromStores = layerBase;
 

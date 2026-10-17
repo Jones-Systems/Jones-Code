@@ -15,20 +15,94 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
 
-import {
-  enqueue as enqueueEffects,
-  EffectOutboxError,
-  NativeOrchestrationEffectPayloadV2,
-  OrchestrationEffectRequestV2,
-  type PendingOrchestrationEffectV2,
-} from "./EffectOutboxEnqueue.ts";
-
-export {
-  EffectOutboxError,
-  NativeOrchestrationEffectPayloadV2,
-  OrchestrationEffectRequestV2,
-  type PendingOrchestrationEffectV2,
-} from "./EffectOutboxEnqueue.ts";
+export const OrchestrationEffectRequestV2 = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("provider-runtime.continue"),
+    sourceRunId: RunId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-session.detach"),
+    providerSessionId: ProviderSessionId,
+    detail: Schema.optional(Schema.String),
+    revokeMcpCredential: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.start"),
+    runId: RunId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.interrupt"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.steer"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    messageId: MessageId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.restart"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    interruptedAttemptId: RunAttemptId,
+    runId: RunId,
+    sessionTransition: Schema.optional(
+      Schema.Union([
+        Schema.Struct({
+          type: Schema.Literal("replace"),
+          replacementProviderSessionId: ProviderSessionId,
+        }),
+        Schema.Struct({ type: Schema.Literal("detach") }),
+      ]),
+    ),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("runtime-request.respond"),
+    providerSessionId: ProviderSessionId,
+    requestId: RuntimeRequestId,
+    decision: Schema.optional(ProviderApprovalDecision),
+    answers: Schema.optional(ProviderUserInputAnswers),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("provider-thread.rollback"),
+    restoreFiles: Schema.optional(Schema.Boolean),
+    providerThreadId: ProviderThreadId,
+    checkpointId: CheckpointId,
+    scopeId: CheckpointScopeId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("checkpoint.capture"),
+    runId: RunId,
+    scopeId: CheckpointScopeId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("terminal.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("preview.cleanup"),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("attachment.cleanup"),
+    attachmentIds: Schema.Array(Schema.String),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("thread-title.generate"),
+    kind: Schema.Union([
+      Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
+      Schema.Struct({ type: Schema.Literal("regenerate") }),
+    ]),
+  }),
+  Schema.Struct({
+    type: Schema.Literal("delegated-tasks.stop"),
+    reason: Schema.optional(Schema.String),
+  }),
+]);
+export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
@@ -60,16 +134,10 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
 
 /**
- * How long a succeeded or cancelled effect row is kept after it completes.
- * Claiming, recovery, the orchestrator and storage cleanup only ask whether a
- * row is pending, running or failed, so a missing succeeded or cancelled row
- * reads the same as a present one. Its one other use is deduplication: `enqueue`
- * ignores an id that already exists, and ids are deterministic per command or
- * run. Command retries are deduplicated by their receipts first, and a run's
- * effects are re-enqueued only around one server restart, so a week is far
- * longer than either and leaves recent history for debugging.
- * Failed rows are kept: storage cleanup keeps a deleted thread's worktree while
- * any of its effects failed.
+ * Command retries are deduplicated by their receipts first, and a run's effects
+ * are re-enqueued only around one server restart, so a week is far longer than
+ * either and leaves recent history for debugging. Failed rows are kept: storage
+ * cleanup keeps a deleted thread's worktree while any of its effects failed.
  */
 export const SETTLED_EFFECT_RETENTION = Duration.days(7);
 const PRUNE_BATCH_SIZE = 500;
@@ -147,7 +215,6 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly error: string;
   }) => Effect.Effect<boolean, EffectOutboxError>;
-  /** Deletes succeeded and cancelled rows older than `SETTLED_EFFECT_RETENTION`. Returns the count. */
   readonly pruneSettled: Effect.Effect<number, EffectOutboxError>;
 }
 
@@ -215,9 +282,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   EffectOutboxV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // Availability is only a bounded latency hint; durable rows remain
-    // authoritative. Retaining a small burst lets multiple worker slots wake
-    // for distinct threads without allowing notifications to grow unbounded.
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
@@ -238,13 +302,8 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
-    // Each thread runs its effects one at a time, in enqueue (rowid) order. An earlier
-    // effect waiting out a retry backoff still blocks later ones, so a turn
-    // cannot start while a failed rollback is about to restore files. A claim
-    // that skips restart continuations is not blocked by them either.
-    // Title generation is correlated metadata work, so it has its own
-    // per-thread lane and cannot delay provider lifecycle effects.
-    // Automatic boundary steers follow receipt order; only successful predecessors release them.
+    // An earlier effect waiting out a retry backoff still blocks later ones, so
+    // a turn cannot start while a failed rollback is about to restore files.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -346,7 +405,42 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
 
     const service: EffectOutboxV2Shape = {
       enqueue: (effects) =>
-        enqueueEffects(effects).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        Effect.gen(function* () {
+          const now = yield* DateTime.now;
+          const nowIso = DateTime.formatIso(now);
+          yield* Effect.forEach(
+            effects,
+            (effect) => sql`
+              INSERT INTO orchestration_v2_effect_outbox (
+                effect_id,
+                command_id,
+                thread_id,
+                effect_type,
+                payload_json,
+                status,
+                attempt_count,
+                available_at,
+                created_at,
+                updated_at
+              )
+              VALUES (
+                ${effect.id},
+                ${effect.commandId},
+                ${effect.threadId},
+                ${effect.request.type},
+                ${encodeRequest(effect.request)},
+                'pending',
+                0,
+                ${DateTime.formatIso(effect.availableAt ?? now)},
+                ${nowIso},
+                ${nowIso}
+              )
+              ON CONFLICT(effect_id) DO NOTHING
+            `,
+            { concurrency: 1, discard: true },
+          );
+          // EventSink owns the corresponding post-commit notification.
+        }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *
@@ -459,9 +553,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             { discard: true },
           );
           yield* signalSettled(effectIds);
-          // Cancellation can unblock other pending work on the same thread.
-          // This method is deliberately post-commit, so it is also the safe
-          // place to wake claimers after the durable status change.
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
         }),
       awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
@@ -478,7 +569,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           if (Option.exists(effect, ({ status }) => status === "pending" || status === "running")) {
             return yield* Deferred.await(signal);
           }
-          // Settled already: release every waiter that shares this signal.
           yield* signalSettled([effectId]);
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
@@ -721,7 +811,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   }),
 );
 
-/** Prunes settled effect rows once the server is active, then every hour. */
 export const layerPruneWorker = Layer.effectDiscard(
   Effect.gen(function* () {
     const outbox = yield* EffectOutboxV2;

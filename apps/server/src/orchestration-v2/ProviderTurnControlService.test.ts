@@ -141,9 +141,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       const providerThread: OrchestrationV2ProviderThread = {
         id: providerThreadId,
         driver,
-        providerInstanceId: replacementInstanceId,
-        // The restart command has already projected this replacement binding
-        // before the process-bound restart effect executes.
+        providerInstanceId,
         providerSessionId: replacementSessionId,
         appThreadId: threadId,
         ownerNodeId: null,

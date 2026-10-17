@@ -1,11 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - Bridges Playwright's WebSocket transport to the desktop's fds.
 /**
- * The server end of the desktop browser channel (see `DesktopBrowserEvent`).
- *
  * Playwright connects over CDP only through a WebSocket URL, so each attached
  * desktop tab gets a loopback endpoint with an unguessable path. Its frames
  * cross the bootstrap file descriptors to the desktop's relay, which owns the
- * tab's `webContents.debugger`. The endpoint only bridges to that one tab.
+ * tab's `webContents.debugger`.
  */
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as NodeSocketServer from "@effect/platform-node/NodeSocketServer";
@@ -46,28 +44,20 @@ const keyOf = ({ threadId, tabId }: DesktopTabKey) => `${threadId}\u0000${tabId}
 export class DesktopBrowserChannel extends Context.Service<
   DesktopBrowserChannel,
   {
-    /** False when this server was not started by a desktop app. */
     readonly available: boolean;
     /**
-     * Waits for a tab to be attached. Subscribes before it checks, so an
-     * attach landing in between is never missed. False after `timeout`.
+     * Subscribes before it checks, so an attach landing in between is never
+     * missed.
      */
     readonly awaitAttached: (key: DesktopTabKey, timeout: Duration.Input) => Effect.Effect<boolean>;
-    /** Desktop tabs as they detach. */
     readonly detached: Stream.Stream<DesktopTabKey>;
-    /** Desktop tabs as they attach, including a tab coming back after its DevTools close. */
     readonly attached: Stream.Stream<DesktopTabKey>;
     readonly runtimeEvidence: (key: DesktopTabKey) => Effect.Effect<{
       readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
       readonly attachmentGeneration: number;
     } | null>;
     readonly isAttached: (key: DesktopTabKey) => Effect.Effect<boolean>;
-    /**
-     * A one-connection CDP endpoint for an attached tab. Closing the scope
-     * releases the tab on the desktop and stops the endpoint.
-     */
     readonly endpoint: (key: DesktopTabKey) => Effect.Effect<string, never, Scope.Scope>;
-    /** Draws the agent's cursor over a tab the desktop renders. */
     readonly pointer: (
       key: DesktopTabKey,
       pointer: { readonly phase: "move" | "click"; readonly x: number; readonly y: number },
@@ -150,15 +140,7 @@ const make = Effect.gen(function* () {
   const inputFd = config.desktopBrowserFd;
   const controlFd = config.desktopBrowserControlFd;
   const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
-  const attachedTabs = new Map<
-    string,
-    {
-      readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
-      readonly attachmentGeneration: number;
-    }
-  >();
-  let attachmentGeneration = 0;
-  /** CDP frames from the desktop, per tab, for the endpoint connected to it. */
+  const attachedTabs = new Set<string>();
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
 

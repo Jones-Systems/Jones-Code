@@ -22,11 +22,6 @@ import {
   type PinnedRuntimeProgress,
 } from "./pinnedRuntime.ts";
 
-// Explicit network installs fetch the release archive and check SHA256SUMS,
-// and unpacks it with tar. The fake client serves both files; the fake runner
-// stands in for tar and drops the executable where extraction would.
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
-const sourceCommit = "a".repeat(40);
 const version = "1.2.3";
 const archiveName = `t3-${version}-linux-x64.tar.gz`;
 const archiveBytes = new TextEncoder().encode("not really a tarball");

@@ -126,16 +126,11 @@ export class SessionControl {
     });
   }
 
-  /** Whether an agent may act here: its own tab, or a tab no agent opened. */
   agentMayAct(agentId: string) {
     return this.agentId === null || this.agentId === agentId;
   }
 
-  /**
-   * An agent action. It may act on its own tab or on one a human opened, but
-   * never while a human controls the tab; taking control interrupts it.
-   */
-  agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
+  agent<A>(agentId: string, run: () => Promise<A>) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(
         new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch"),
@@ -147,7 +142,6 @@ export class SessionControl {
     return this.action(() => this.agentMayAct(agentId) && this.owner === null, run, deadlineMs);
   }
 
-  /** Whether this agent's action would run now rather than be refused. */
   agentCanActNow(agentId: string) {
     return this.agentMayAct(agentId) && this.owner === null;
   }
@@ -161,10 +155,6 @@ export class SessionControl {
     return run();
   }
 
-  /**
-   * Work any client may ask for, such as a viewport or appearance change. It
-   * waits its turn behind running actions but needs no control.
-   */
   system<A>(run: () => Promise<A>) {
     this.assertOpen();
     return this.enqueue(async () => {

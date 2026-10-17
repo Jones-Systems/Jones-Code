@@ -47,7 +47,6 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 const HOST_RESPONSE_GRACE_MS = 1_000;
 
 export interface PreviewAutomationInvokeInput {
-  /** Preview tabs belong to a thread, so only thread callers reach the broker. */
   readonly scope: McpInvocationContext.McpThreadInvocationScope;
   readonly operation: PreviewAutomationOperation;
   readonly input: unknown;
@@ -55,8 +54,6 @@ export interface PreviewAutomationInvokeInput {
   readonly timeoutMs?: number;
   /** Background metadata reads must not change the agent's current tab. */
   readonly updateCurrentTab?: boolean;
-  readonly failurePolicy?: "check_liveness" | "request_only";
-  /** Capture the routed tab before another request changes the current assignment. */
   readonly onTargetTab?: (tabId: PreviewTabId | undefined) => void;
 }
 
@@ -66,15 +63,6 @@ export interface PreviewAutomationRuntimeEvidence {
 }
 
 export interface PreviewAutomationConnectOptions {
-  readonly resolveRuntimeEvidence?: (target: {
-    readonly threadId: string;
-    readonly tabId?: PreviewTabId;
-  }) => Effect.Effect<PreviewAutomationRuntimeEvidence | null>;
-  /**
-   * New agent work goes to a preferred host before any desktop. The server's
-   * own headless browser registers this way so a standalone environment keeps
-   * browsing when every desktop disconnects.
-   */
   readonly preferred?: boolean;
 }
 
@@ -124,8 +112,9 @@ interface PendingRequest {
 }
 
 /**
- * Live leases are independent of MCP credential expiry. Stream loss starts a
- * bounded affinity hold so reconnecting cannot silently migrate cookie/DOM state.
+ * It lives exactly as long as the connection it names: `connectionId`/`queue`
+ * identity is what makes a lease valid, so a disconnected or replaced host is
+ * dropped on the next lookup.
  */
 interface HostAssignment {
   readonly clientId: ClientConnection["clientId"];
@@ -282,7 +271,6 @@ function remoteDetailKind(detail: unknown): RemoteDetailKind {
   }
 }
 
-/** Enough for a browser's own error line, such as a refused connection and its URL. */
 const MAX_REASON_CHARS = 500;
 
 const classifyResponseError = (
@@ -413,7 +401,6 @@ const classifyResponseError = (
       return new PreviewAutomationExecutionError({
         ...context,
         ...remoteDiagnostics,
-        // The server's own browser writes these; other hosts' text stays out of the agent's context.
         ...(context.clientId === SERVER_BROWSER_AUTOMATION_CLIENT_ID
           ? { reason: error.message.slice(0, MAX_REASON_CHARS) }
           : {}),
@@ -471,12 +458,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ) {
     const now = yield* Clock.currentTimeMillis;
     yield* SynchronizedRef.modifyEffect(state, (current) => {
-      // Retired generations were already closed by their replacement or eviction.
-      if (
-        current.clients.get(clientId)?.queue !== queue ||
-        (replySequenceLimit !== undefined &&
-          current.clients.get(clientId)!.lastReplySequence > replySequenceLimit)
-      ) {
+      if (current.clients.get(clientId)?.queue !== queue) {
         return Effect.succeed([undefined, current] as const);
       }
       const removed = removeConnectionFromState(current, clientId, queue, now);
@@ -824,7 +806,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           ? candidate
           : undefined;
       const hasLiveAssignment = assignedConnection?.environmentId === input.scope.environmentId;
-      // Affinity prevents cookie and DOM state from silently migrating during reconnect.
+      // Keep one provider session on one physical desktop runtime so a
+      // multi-step browser interaction cannot jump between independent Electron
+      // cookie/DOM state.
       const ownsTargetTab = (host: ClientConnection, visibleOnly = false) =>
         host.liveTabs.some(
           (tab) =>
@@ -1052,27 +1036,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       return yield* Option.match(result, {
         onNone: () =>
           Effect.gen(function* () {
-            const expiredAt = yield* Clock.currentTimeMillis;
-            const expired = yield* SynchronizedRef.modify(state, (current) => {
-              const entry = current.pending.get(requestId);
-              if (!entry) return [undefined, current] as const;
-              const pending = new Map(current.pending);
-              pending.delete(requestId);
-              const tombstones = new Map(
-                Array.from(current.tombstones).filter(([, value]) => value.expiresAt > expiredAt),
-              );
-              tombstones.set(requestId, { ...entry, expiresAt: expiredAt + 60_000 });
-              while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
-              const quarantine = new Map(current.quarantine);
-              if (!readOnlyOperations.has(input.operation)) quarantine.set(requestId, entry);
-              return [entry, { ...current, pending, tombstones, quarantine }] as const;
-            });
-            if (expired && input.failurePolicy !== "request_only")
-              yield* checkLiveness(connection, expired).pipe(Effect.forkDetach);
-            return yield* new PreviewAutomationTimeoutError({
-              ...requestContext,
-              outcome: "unknown",
-            });
+            // Do not replay actions: the client may have applied them before
+            // becoming unreachable. A background metadata read has a short budget
+            // and changes nothing, so a slow one must not cut the host off from the
+            // agent's next call.
+            if (input.updateCurrentTab !== false) {
+              yield* disconnect(connection.clientId, connection.queue, true);
+            }
+            return yield* new PreviewAutomationTimeoutError(requestContext);
           }),
         onSome: (value) => Effect.succeed(value as A),
       });

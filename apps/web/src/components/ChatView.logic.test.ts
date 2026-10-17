@@ -1,5 +1,9 @@
-import { resolveComposerPickerModelSelection } from "./ChatView.logic";
-import { findRecordedWorktreeSetup, resolveVisibleWorktreeSetup } from "./ChatView.logic";
+import {
+  findRecordedWorktreeSetup,
+  isThreadWokeUnseen,
+  mergeDirectPreviewAnnotation,
+  resolveVisibleWorktreeSetup,
+} from "./ChatView.logic";
 import {
   recallCheckoutIsRepo,
   rememberCheckoutIsRepo,
@@ -18,6 +22,7 @@ import {
   EventId,
   MessageId,
   ProjectId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
   ThreadId,
   RunId,
@@ -631,8 +636,6 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
   });
 
   it("holds a first send while the thread shell still reports a preparing run", () => {
-    // The draft had no run. The server thread's shell shows the new run before
-    // the detail projection behind `phase` loads.
     const localDispatch = createLocalDispatchSnapshot(makeThread());
     const preparingRun = {
       ...completedTurn,
@@ -991,7 +994,6 @@ describe("draft hero submission transition", () => {
         hasWorktreeSetupCard: true,
       }),
     ).toBe(false);
-    // A background submission normally pins the hero, but never over the card.
     expect(
       resolveDraftHeroState({
         isLocalDraftThread: true,
@@ -1989,11 +1991,9 @@ describe("worktree setup visibility", () => {
       held: WorktreeSetupSnapshot | null = null,
     ) => resolveWorktreeSetupProgress({ threadId, localPreparing, runStatus, latest, held });
 
-    // The local send, its durable acknowledgement, and the stream arrive separately.
     expect(progress(true, undefined, null).isPreparingWorktree).toBe(true);
     expect(progress(false, "preparing", null).isPreparingWorktree).toBe(true);
     expect(progress(false, "preparing", base).snapshot).toBe(base);
-    // Releasing the prepared run precedes the tracker marking the agent started.
     expect(progress(false, "starting", base).isPreparingWorktree).toBe(true);
     const handedOff = {
       ...base,
@@ -2088,8 +2088,6 @@ describe("worktree setup visibility", () => {
     const cancelled = { ...settledDone, phase: "cancelled" as const };
     expect(visible(cancelled)).toEqual(cancelled);
 
-    // The setup belongs to the first turn. A follow-up send retires every
-    // settled outcome; only a script that is still running stays.
     expect(visible(scriptFailed, true)).toBeNull();
     expect(visible(failed, true)).toBeNull();
     expect(visible(cancelled, true)).toBeNull();
@@ -2183,72 +2181,84 @@ describe("waitForRevertedMessage", () => {
   });
 });
 
-describe("composer picker effort inheritance", () => {
-  const instanceId = ProviderInstanceId.make("codex-work");
-  const rememberedOptions = [
-    { id: "reasoningEffort", value: "high" },
-    { id: "serviceTier", value: "fast" },
-  ];
-  it("drops historical effort on a model switch and preserves other remembered options", () => {
-    expect(
-      resolveComposerPickerModelSelection({
-        instanceId,
-        model: "gpt-5.4",
-        rememberedOptions,
-        currentSelection: { instanceId, model: "gpt-6", options: rememberedOptions },
-      }).options,
-    ).toEqual([{ id: "serviceTier", value: "fast" }]);
+describe("mergeDirectPreviewAnnotation", () => {
+  const annotation = (id: string) =>
+    ({
+      id,
+      pageUrl: "http://localhost:5173/",
+      pageTitle: null,
+      comment: "tighten this",
+      elements: [],
+      regions: [],
+      strokes: [],
+      styleChanges: [],
+      screenshot: {
+        dataUrl: "data:image/png;base64,AAAA",
+        width: 10,
+        height: 10,
+        cropRect: { x: 0, y: 0, width: 10, height: 10 },
+      },
+      createdAt: "2026-10-16T00:00:00.000Z",
+    }) as const;
+  const image = (id: string) =>
+    ({ id, type: "image", name: `${id}.png`, mimeType: "image/png", sizeBytes: 1 }) as never;
+
+  it("appends the screenshot and claims the crop when the turn has room", () => {
+    const result = mergeDirectPreviewAnnotation({
+      images: [],
+      fileCount: 0,
+      previewAnnotations: [],
+      direct: { annotation: annotation("a"), image: image("crop") },
+    });
+    expect(result.images.map((entry) => entry.id)).toEqual(["crop"]);
+    expect(result.previewAnnotations[0]?.screenshot?.dataUrl).toBe("");
   });
-  it("keeps the same model's current explicit effort and leaves inherited effort absent", () => {
-    for (const options of [undefined, [{ id: "reasoningEffort", value: "low" }]]) {
-      expect(
-        resolveComposerPickerModelSelection({
-          instanceId,
-          model: "gpt-5.4",
-          rememberedOptions,
-          currentSelection: { instanceId, model: "gpt-5.4", ...(options ? { options } : {}) },
-        }).options,
-      ).toEqual([{ id: "serviceTier", value: "fast" }, ...(options ?? [])]);
-    }
+
+  it("drops the screenshot claim when the attachment cap is full", () => {
+    const result = mergeDirectPreviewAnnotation({
+      images: [],
+      fileCount: PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+      previewAnnotations: [],
+      direct: { annotation: annotation("a"), image: image("crop") },
+    });
+    expect(result.images).toEqual([]);
+    expect(result.previewAnnotations[0]?.screenshot).toBeNull();
+  });
+
+  it("keeps an annotation already in the draft as it is", () => {
+    const existing = [annotation("a")];
+    const result = mergeDirectPreviewAnnotation({
+      images: [],
+      fileCount: 0,
+      previewAnnotations: existing,
+      direct: { annotation: annotation("a"), image: null },
+    });
+    expect(result.previewAnnotations).toBe(existing);
   });
 });
 
-describe("resolveFirstSendWorktreePreparation", () => {
-  const automaticInput = {
-    isFirstMessage: true,
-    sendEnvMode: "worktree" as const,
-    worktreePath: null,
-    projectCwd: "/repo",
-    baseBranch: null,
-    startFromOrigin: true,
+describe("isThreadWokeUnseen", () => {
+  const base = {
+    wokeAt: "2026-10-16T10:00:00.000Z",
+    settled: false,
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
   };
 
-  it("prepares the first worktree send while base selection is still loading", () => {
-    expect(resolveFirstSendWorktreePreparation(automaticInput)).toEqual({
-      projectCwd: "/repo",
-      startFromOrigin: true,
-    });
+  it("shows a wake the user has not seen", () => {
+    expect(isThreadWokeUnseen({ ...base, lastVisitedAt: "2026-10-16T09:00:00.000Z" })).toBe(true);
+    expect(isThreadWokeUnseen(base)).toBe(true);
   });
 
-  it("preserves the captured explicit base and independent origin preference", () => {
-    expect(
-      resolveFirstSendWorktreePreparation({
-        ...automaticInput,
-        baseBranch: "upstream/release",
-        startFromOrigin: false,
-      }),
-    ).toEqual({ projectCwd: "/repo", baseBranch: "upstream/release" });
+  it("hides a wake seen by a later visit or a later completed run", () => {
+    expect(isThreadWokeUnseen({ ...base, lastVisitedAt: "2026-10-16T11:00:00.000Z" })).toBe(false);
+    expect(isThreadWokeUnseen({ ...base, latestRunCompletedAt: "2026-10-16T11:00:00.000Z" })).toBe(
+      false,
+    );
   });
 
-  it("does not prepare local, subsequent, or existing-worktree sends", () => {
-    expect(
-      resolveFirstSendWorktreePreparation({ ...automaticInput, sendEnvMode: "local" }),
-    ).toBeUndefined();
-    expect(
-      resolveFirstSendWorktreePreparation({ ...automaticInput, isFirstMessage: false }),
-    ).toBeUndefined();
-    expect(
-      resolveFirstSendWorktreePreparation({ ...automaticInput, worktreePath: "/repo/worktree" }),
-    ).toBeUndefined();
+  it("hides settled threads and unparseable wake times", () => {
+    expect(isThreadWokeUnseen({ ...base, settled: true })).toBe(false);
+    expect(isThreadWokeUnseen({ ...base, wokeAt: "not a date" })).toBe(false);
   });
 });
