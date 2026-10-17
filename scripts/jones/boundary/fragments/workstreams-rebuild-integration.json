@@ -155,7 +155,9 @@
     "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
     "packages/contracts/src/desktopBootstrap.ts",
     "apps/server/src/bin.ts",
-    "apps/server/src/entrypoint.test.ts"
+    "apps/server/src/entrypoint.test.ts",
+    "apps/web/src/components/Sidebar.pointer.ts",
+    "apps/web/src/components/threadActionMenu.logic.ts"
   ],
   "tombstones": [],
   "allowedImports": [

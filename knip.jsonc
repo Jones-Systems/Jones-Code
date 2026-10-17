@@ -31,13 +31,6 @@
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
         "jones/updates/native-startup-chromium.mjs",
-        // Typed companion for the native fixture loaded through a computed file URL.
-        "jones/updates/legacy-preparation-native-fixture.d.mts",
-        // Bundled by computed path for graph observation; never imported or executed.
-        "jones/updates/offline-preparation-producer-entry.ts",
-        // The native capture test and its typed companion are direct tooling entries.
-        "jones/updates/offline-preparation-producer-loader.node-test.mjs",
-        "jones/updates/offline-preparation-producer-loader.d.mts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",
@@ -117,6 +110,8 @@
         // Qualification invokes the config by CLI and the fixture entry through HTML.
         "vite.install-preview.config.ts",
         "src/jones/updates/fixtures/install-preview-entry.ts",
+        // The dev server serves this synthetic update-views fixture through its HTML page.
+        "src/jones/updates/fixtures/environment-updates-entry.tsx",
         // The standalone client-notice HTML fixture loads this module through a script tag.
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
       ],

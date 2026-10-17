@@ -347,8 +347,17 @@ export interface NativePlacementInventory {
   readonly totalIdentities: number;
 }
 
+export interface NativePlacementThread {
+  readonly environmentId: string;
+  readonly id: string;
+  readonly settledOverride?: "settled" | "active" | null;
+  readonly settledAt?: string | null;
+}
+
 interface PlacementCandidate {
   readonly key: string;
+  readonly settled: boolean;
+  readonly settledAt: number;
   readonly identity: T3PlacementIdentity;
 }
 
@@ -357,12 +366,17 @@ interface BindingOperationRequest {
   readonly acceptedBindingKeys: Set<string>;
 }
 
+const comparePlacementCandidates = (a: PlacementCandidate, b: PlacementCandidate): number =>
+  Number(a.settled) - Number(b.settled) ||
+  (a.settled ? b.settledAt - a.settledAt : 0) ||
+  (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
 const addBoundedPlacementCandidate = (
   heap: PlacementCandidate[],
   candidate: PlacementCandidate,
 ): void => {
   const replacingMaximum = heap.length === T3_PLACEMENT_MAX_IDENTITIES;
-  if (replacingMaximum && candidate.key >= heap[0]!.key) return;
+  if (replacingMaximum && comparePlacementCandidates(candidate, heap[0]!) >= 0) return;
   if (replacingMaximum) heap[0] = candidate;
   else heap.push(candidate);
 
@@ -370,7 +384,7 @@ const addBoundedPlacementCandidate = (
     let index = heap.length - 1;
     while (index > 0) {
       const parent = Math.floor((index - 1) / 2);
-      if (heap[parent]!.key >= heap[index]!.key) break;
+      if (comparePlacementCandidates(heap[parent]!, heap[index]!) >= 0) break;
       [heap[parent], heap[index]] = [heap[index]!, heap[parent]!];
       index = parent;
     }
@@ -382,58 +396,53 @@ const addBoundedPlacementCandidate = (
     const left = index * 2 + 1;
     if (left >= heap.length) return;
     const right = left + 1;
-    const child = right < heap.length && heap[right]!.key > heap[left]!.key ? right : left;
-    if (heap[index]!.key >= heap[child]!.key) return;
+    const child =
+      right < heap.length && comparePlacementCandidates(heap[right]!, heap[left]!) > 0
+        ? right
+        : left;
+    if (comparePlacementCandidates(heap[index]!, heap[child]!) >= 0) return;
     [heap[index], heap[child]] = [heap[child]!, heap[index]!];
     index = child;
   }
 };
 
 export function nativePlacementInventory(
-  nativeThreads: readonly { readonly environmentId: string; readonly id: string }[],
+  nativeThreads: readonly NativePlacementThread[],
   preferred?: { readonly environmentId: string; readonly id: string } | null,
 ): NativePlacementInventory {
-  const identityKeys = new Set<string>();
+  const identityCandidates = new Map<string, PlacementCandidate>();
   const candidates: PlacementCandidate[] = [];
   for (const thread of nativeThreads) {
     const key = JSON.stringify([thread.environmentId, thread.id]);
-    if (identityKeys.has(key)) continue;
-    identityKeys.add(key);
-    addBoundedPlacementCandidate(candidates, {
+    const candidate: PlacementCandidate = {
       key,
+      settled: thread.settledOverride === "settled",
+      settledAt: Date.parse(thread.settledAt ?? "") || 0,
       identity: {
         source_instance_id: thread.environmentId,
         native_thread_id: thread.id,
       },
-    });
+    };
+    const previous = identityCandidates.get(key);
+    if (!previous || comparePlacementCandidates(candidate, previous) < 0)
+      identityCandidates.set(key, candidate);
   }
-  const totalIdentities = identityKeys.size;
+  for (const candidate of identityCandidates.values())
+    addBoundedPlacementCandidate(candidates, candidate);
+  const totalIdentities = identityCandidates.size;
   const preferredKey = preferred ? JSON.stringify([preferred.environmentId, preferred.id]) : null;
-  if (
-    preferred &&
-    preferredKey &&
-    identityKeys.has(preferredKey) &&
-    !candidates.some((entry) => entry.key === preferredKey)
-  ) {
-    if (candidates.length === T3_PLACEMENT_MAX_IDENTITIES) candidates.shift();
-    candidates.push({
-      key: preferredKey,
-      identity: { source_instance_id: preferred.environmentId, native_thread_id: preferred.id },
-    });
+  const preferredCandidate = preferredKey ? identityCandidates.get(preferredKey) : undefined;
+  if (preferredCandidate && !candidates.some((entry) => entry.key === preferredKey)) {
+    if (candidates.length === T3_PLACEMENT_MAX_IDENTITIES) candidates[0] = preferredCandidate;
+    else candidates.push(preferredCandidate);
   }
   const selected: T3PlacementIdentity[] = [];
   const encoder = new TextEncoder();
   let requestBytes = encoder.encode(JSON.stringify({ identities: selected })).byteLength;
-  candidates.sort((a, b) =>
-    a.key === preferredKey
-      ? -1
-      : b.key === preferredKey
-        ? 1
-        : a.key < b.key
-          ? -1
-          : a.key > b.key
-            ? 1
-            : 0,
+  candidates.sort(
+    (a, b) =>
+      Number(b.key === preferredKey) - Number(a.key === preferredKey) ||
+      comparePlacementCandidates(a, b),
   );
   for (const { identity: value } of candidates) {
     const nextBytes =
@@ -444,12 +453,11 @@ export function nativePlacementInventory(
     selected.push(value);
     requestBytes = nextBytes;
   }
-  if (preferredKey)
-    selected.sort((a, b) => {
-      const left = JSON.stringify([a.source_instance_id, a.native_thread_id]);
-      const right = JSON.stringify([b.source_instance_id, b.native_thread_id]);
-      return left < right ? -1 : left > right ? 1 : 0;
-    });
+  selected.sort((a, b) => {
+    const left = JSON.stringify([a.source_instance_id, a.native_thread_id]);
+    const right = JSON.stringify([b.source_instance_id, b.native_thread_id]);
+    return left < right ? -1 : left > right ? 1 : 0;
+  });
   return {
     coverage: totalIdentities > selected.length ? "partial" : "complete",
     identities: selected,
@@ -459,21 +467,24 @@ export function nativePlacementInventory(
 }
 
 export function nativePlacementInventoryJson(
-  nativeThreads: readonly { readonly environmentId: string; readonly id: string }[],
+  nativeThreads: readonly NativePlacementThread[],
 ): string {
   return nativePlacementInventory(nativeThreads).json;
 }
 
-export function reuseNativePlacementIdentitySnapshot<
-  Thread extends { readonly environmentId: string; readonly id: string },
->(previous: readonly Thread[], next: readonly Thread[]): readonly Thread[] {
+export function reuseNativePlacementIdentitySnapshot<Thread extends NativePlacementThread>(
+  previous: readonly Thread[],
+  next: readonly Thread[],
+): readonly Thread[] {
   if (previous === next || previous.length !== next.length) return next;
   for (let index = 0; index < previous.length; index += 1) {
     const previousThread = previous[index]!;
     const nextThread = next[index]!;
     if (
       previousThread.environmentId !== nextThread.environmentId ||
-      previousThread.id !== nextThread.id
+      previousThread.id !== nextThread.id ||
+      previousThread.settledOverride !== nextThread.settledOverride ||
+      previousThread.settledAt !== nextThread.settledAt
     )
       return next;
   }
@@ -482,10 +493,7 @@ export function reuseNativePlacementIdentitySnapshot<
 
 export function useWorkstreams(
   placementsEnabled = true,
-  nativeThreads: readonly {
-    readonly environmentId: string;
-    readonly id: string;
-  }[] = EMPTY_NATIVE_THREADS,
+  nativeThreads: readonly NativePlacementThread[] = EMPTY_NATIVE_THREADS,
 ): WorkstreamListView {
   const nativeThreadsSnapshot = useRef(nativeThreads);
   nativeThreadsSnapshot.current = reuseNativePlacementIdentitySnapshot(

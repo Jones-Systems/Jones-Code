@@ -271,11 +271,6 @@ export function shortJonesSource(sha: string) {
   return sha.slice(0, 7);
 }
 
-/** Native update IDs can be full hashes; callers keep the full ID reachable. */
-export function shortJonesUpdateId(id: string) {
-  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
-}
-
 /** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
 export function jonesCandidatePresentation(state: JonesUpdateState) {
   const provenance = state.provenance;

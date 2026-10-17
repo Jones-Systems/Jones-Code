@@ -2,6 +2,27 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstream-thread-controls",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/components/threadActionMenu.logic.test.ts",
+        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts apps/web/src/components/Sidebar.pointer.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-client-update-notices",
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
@@ -227,10 +248,11 @@
       "tests": [
         "apps/server/src/jones/processPlacement/processPlacement.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
-        "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts"
+        "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts"
+        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
       ]
     },
     {
@@ -388,7 +410,6 @@
         "packages/shared/src/jones/jonesActions.test.ts",
         "apps/server/src/jones/cloud/qualifiedArchive.test.ts",
         "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
-        "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts",
         "apps/server/src/jones/cloud/qualifiedRuntime.test.ts",
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/qualification.test.ts",
@@ -428,74 +449,34 @@
         "apps/server/src/jones/updates/nativePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
         "scripts/jones/updates/native-startup-fixture.node-test.mjs",
-        "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
-        "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
-        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
-        "scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs",
-        "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts",
-        "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
-        "scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs",
         "scripts/jones/updates/install-preview-qualification.node-test.mjs",
-        "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
-        "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts",
-        "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
-        "apps/server/src/jones/updates/offlinePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
-        "scripts/jones/updates/offline-preparation-build.test.ts",
-        "scripts/jones/updates/functional-policy.test.ts",
-        "scripts/jones/updates/offline-preparation-qualification.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
-        "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs",
-        "scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
         "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
         "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
-        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
+        "scripts/jones/updates/native-fixture-support.node-test.mjs",
+        "apps/server/src/jones/cloud/capturedProcess.test.ts",
+        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
         "vp test run apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedQuiescence.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/server/src/jones/updates/nativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/server/src/jones/updates/nativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
         "node --test scripts/jones/updates/native-startup-fixture.node-test.mjs",
-        "vp test run apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
-        "node --test scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs",
-        "node --test scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs",
-        "vp test run apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts apps/server/src/jones/updates/offlinePreparation.test.ts",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
+        "vp test run apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
         "vp test run apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
-        "vp test run apps/server/src/jones/updates/offlinePreparationEntry.test.ts scripts/jones/updates/offline-preparation-build.test.ts scripts/jones/updates/functional-policy.test.ts scripts/jones/updates/offline-preparation-qualification.test.ts",
-        "vp test run apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
-        "vp test run apps/server/src/jones/updates/offlinePreparationCore.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
-        "vp test run apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-        "node --test --test-concurrency=1 scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs scripts/jones/updates/offline-preparation-producer-loader.node-test.mjs",
         "vp test run apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
-        "vp test run apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/backend/DesktopBackendConfiguration.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/desktop/src/jones/updates/jonesNativeStartup.test.ts --maxWorkers=1",
+        "vp test run apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/backend/DesktopBackendConfiguration.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/desktop/src/jones/updates/jonesNativeStartup.test.ts --maxWorkers=1",
         "vp test run apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
-        "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
+        "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
+        "node --test --test-concurrency=1 scripts/jones/updates/native-fixture-support.node-test.mjs",
+        "vp test run apps/server/src/jones/cloud/capturedProcess.test.ts apps/server/src/jones/cloud/stoppedServerOwnership.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -503,12 +484,14 @@
       "tests": [
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
         "apps/server/src/mcp/McpInvocationContext.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
         "apps/server/src/mcp/McpHttpServer.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
+        "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/jones/mcp/decisionSnapshot/access.test.ts apps/server/src/jones/mcp/decisionSnapshot/release.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts"
       ]
     },
     {
@@ -593,6 +576,8 @@
       "id": "jones-qualified-updates-clients",
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/jones/updates/buildVersion.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
         "apps/web/src/versionSkew.test.ts",
         "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
         "packages/client-runtime/src/state/server.test.ts",
@@ -602,7 +587,7 @@
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck"
@@ -1023,6 +1008,7 @@
         "apps/web/src/composer-logic.test.ts",
         "packages/shared/src/composerTrigger.test.ts",
         "packages/client-runtime/src/composerThreadItems.test.ts",
+        "packages/client-runtime/src/jones/composerThreadMatching.test.ts",
         "apps/web/src/composer-editor-mentions.test.ts",
         "packages/shared/src/composerInlineTokens.test.ts",
         "apps/web/src/composer-rich-text-doc.test.ts",
@@ -1031,7 +1017,7 @@
         "apps/mobile/src/features/threads/use-composer-command-menu.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/composer/threadMentionTrigger.test.ts apps/web/src/composer-logic.test.ts packages/shared/src/composerTrigger.test.ts packages/client-runtime/src/composerThreadItems.test.ts apps/web/src/composer-editor-mentions.test.ts packages/shared/src/composerInlineTokens.test.ts apps/web/src/composer-rich-text-doc.test.ts scripts/jones/check-boundary.test.ts apps/web/src/composer-rich-text.test.ts apps/mobile/src/features/threads/use-composer-command-menu.test.ts",
+        "vp test run apps/web/src/jones/composer/threadMentionTrigger.test.ts apps/web/src/composer-logic.test.ts packages/shared/src/composerTrigger.test.ts packages/client-runtime/src/composerThreadItems.test.ts packages/client-runtime/src/jones/composerThreadMatching.test.ts apps/web/src/composer-editor-mentions.test.ts packages/shared/src/composerInlineTokens.test.ts apps/web/src/composer-rich-text-doc.test.ts scripts/jones/check-boundary.test.ts apps/web/src/composer-rich-text.test.ts apps/mobile/src/features/threads/use-composer-command-menu.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },

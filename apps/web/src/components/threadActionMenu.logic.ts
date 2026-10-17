@@ -16,6 +16,8 @@ export type ThreadActionMenuId =
   | "snooze"
   | `snooze:${string}`
   | "unsnooze"
+  | "assign-thread"
+  | `assign-workstream:${string}`
   | "rename"
   | "regenerate-title"
   | "mark-unread"
@@ -65,6 +67,7 @@ export function buildDraftActionMenuItems(options: {
 }
 
 export interface ThreadActionMenuState {
+  readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
   readonly branch: string | null;
   readonly projectFilter: {
@@ -153,6 +156,16 @@ export function buildThreadActionMenuItems(
                   { id: "snooze:custom" as const, label: "Custom…", separatorBefore: true },
                 ],
               },
+        ]
+      : []),
+    ...(state.assignmentItems
+      ? [
+          {
+            id: "assign-thread" as const,
+            label: "Assign thread",
+            icon: "folder",
+            children: state.assignmentItems,
+          },
         ]
       : []),
     { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },

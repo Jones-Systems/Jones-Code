@@ -1,5 +1,7 @@
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 
+import { rankComposerThreadCandidates } from "./jones/composerThreadMatching.ts";
+
 const COMPOSER_THREAD_RESULT_LIMIT = 5;
 
 export interface ComposerThreadCandidate {
@@ -28,17 +30,15 @@ export function matchComposerThreadItems(input: {
   excludeThreadId: ThreadId | null;
   query: string;
 }): ComposerThreadItem[] {
-  const query = input.query.trim().toLowerCase();
-  if (query.length === 0) return [];
-  return input.shells
-    .filter(
+  return rankComposerThreadCandidates(
+    input.shells.filter(
       (shell) =>
         shell.environmentId === input.environmentId &&
         shell.id !== input.excludeThreadId &&
-        shell.archivedAt === null &&
-        shell.title.toLowerCase().includes(query),
-    )
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        shell.archivedAt === null,
+    ),
+    input.query,
+  )
     .slice(0, COMPOSER_THREAD_RESULT_LIMIT)
     .map((shell) => ({
       id: `thread:${shell.environmentId}:${shell.id}`,

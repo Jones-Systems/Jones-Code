@@ -18,7 +18,10 @@ import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
 import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
 import { groupNativeThreadsByWorkstream } from "./workstreams/nativeThreadGrouping";
-import { WorkstreamNativeSidebar } from "./workstreams/WorkstreamNativeSidebar";
+import {
+  WorkstreamNativeSidebar,
+  type NativeThreadAssignmentMenu,
+} from "./workstreams/WorkstreamNativeSidebar";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
@@ -244,7 +247,11 @@ import {
   createSidebarSortingStrategy,
   restrictBelowSidebarLabel,
 } from "./Sidebar.drag";
-import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
+import {
+  SIDEBAR_DRAG_DISTANCE,
+  SidebarDragLifecycle,
+  SidebarPointerSensor,
+} from "./Sidebar.pointer";
 import { createSidebarListMotion } from "./Sidebar.motion";
 import {
   ThreadPullRequestBadgeControl,
@@ -1194,8 +1201,6 @@ function SidebarSectionPlaceholder(props: {
     </SortableSidebarMarker>
   );
 }
-
-const SIDEBAR_DRAG_DISTANCE = 6;
 
 type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 
@@ -2981,6 +2986,9 @@ export default function Sidebar() {
   );
 
   const workstreamController = useWorkstreams(true, threads);
+  const workstreamAssignmentMenuRef = useRef<
+    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
+  >(null);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
@@ -4189,7 +4197,11 @@ export default function Sidebar() {
   );
 
   const handleThreadContextMenu = useStableCallback(
-    (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
+    (
+      threadRef: ScopedThreadRef,
+      position: { x: number; y: number },
+      assignment?: NativeThreadAssignmentMenu,
+    ) => {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
@@ -4201,6 +4213,7 @@ export default function Sidebar() {
         }
         const thread = threadByKeyRef.current.get(threadKey);
         if (!thread) return;
+        const assignmentMenu = assignment ?? workstreamAssignmentMenuRef.current?.(thread);
         const threadWorkspacePath =
           thread.worktreePath ??
           projectByKey.get(`${thread.environmentId}:${thread.projectId}`)?.workspaceRoot ??
@@ -4234,6 +4247,7 @@ export default function Sidebar() {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              assignmentItems: assignmentMenu?.items,
               canOperate: readEnvironmentScope(
                 threadRef.environmentId,
                 AuthOrchestrationOperateScope,
@@ -4266,6 +4280,10 @@ export default function Sidebar() {
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
+        if (clicked.value.startsWith("assign-workstream:")) {
+          assignmentMenu?.onAction(clicked.value);
+          return;
+        }
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"
@@ -4848,6 +4866,7 @@ export default function Sidebar() {
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
                         sortable?: SortableThreadRowBag,
+                        assignment?: NativeThreadAssignmentMenu,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -4935,7 +4954,9 @@ export default function Sidebar() {
                             onCancelRename={cancelThreadRename}
                             isRenaming={renamingThreadKey === threadKey}
                             renamingTitle={renamingThreadKey === threadKey ? renamingTitle : ""}
-                            onContextMenu={handleThreadContextMenu}
+                            onContextMenu={(ref, position) =>
+                              handleThreadContextMenu(ref, position, assignment)
+                            }
                             onSettle={attemptSettle}
                             onActionSweepStart={startActionSweep}
                             onUnsettle={attemptUnsettle}
@@ -4991,9 +5012,12 @@ export default function Sidebar() {
                           <li key="native-workstream-groups" className="list-none">
                             <WorkstreamNativeSidebar
                               controller={workstreamController}
+                              assignmentMenuRef={workstreamAssignmentMenuRef}
                               grouping={workstreamGrouping}
                               summaryGrouping={workstreamSummaryGrouping}
-                              renderThread={(thread) => renderThreadRowInner(thread, "active")}
+                              renderThread={(thread, assignment) =>
+                                renderThreadRowInner(thread, "active", undefined, assignment)
+                              }
                               canReorder={(thread) =>
                                 activeReorderableThreadKeys.has(
                                   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),

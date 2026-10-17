@@ -8,7 +8,7 @@ import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeTimersPromises from "node:timers/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- The existing owned fixture has no declarations.
-import * as IdentityFixture from "../../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
+import * as IdentityFixture from "../../../../../scripts/jones/updates/native-fixture-support.mjs";
 import * as NodeModule from "node:module";
 
 // Only this lexical test harness reaches the private constructor. There is no
@@ -115,7 +115,7 @@ async function runOwnedFixture(root: string, scenario: string, signal: AbortSign
   let failure: unknown;
   let result;
   try {
-    const command = IdentityFixture.runLegacyIdentityFixtureCommand(
+    const command = IdentityFixture.runNativeFixtureCommand(
       NodeProcess.execPath,
       [NodePath.join(root, "custody.mjs"), scenario, root],
       root,
@@ -199,7 +199,7 @@ let reads=0;
 coldHardenFixedDescriptors(fd=>reads++<3?original[fd-3]:expected[fd-3],()=>0)();
 assert.throws(()=>coldHardenFixedDescriptors(()=>0,()=>-1));
 `;
-    await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+    await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
       const source = await NodeFSP.readFile(
         new URL("./jonesColdBackendCustody.ts", import.meta.url),
         "utf8",
@@ -220,7 +220,7 @@ assert.throws(()=>coldHardenFixedDescriptors(()=>0,()=>-1));
             controls,
         ),
       );
-      const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+      const result = await IdentityFixture.runNativeFixtureCommand(
         NodeProcess.execPath,
         [entry],
         root,
@@ -248,7 +248,7 @@ assert.throws(()=>coldHardenFixedDescriptors(()=>0,()=>-1));
     "retains real child and pipe custody for %s",
     { timeout: 30000 },
     async (scenario, { signal }) => {
-      await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+      await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
         const entry = NodePath.join(root, "custody.mjs");
         const source = await NodeFSP.readFile(
           new URL("./jonesColdBackendCustody.ts", import.meta.url),
