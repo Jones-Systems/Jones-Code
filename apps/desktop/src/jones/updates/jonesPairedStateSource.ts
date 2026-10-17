@@ -189,7 +189,7 @@ def pair_state(expected, directory):
             'recovery': {'method': method, 'bytes': sum((directory / ('state.sqlite' + suffix)).stat().st_size for suffix in ('', '-wal', '-shm') if (directory / ('state.sqlite' + suffix)).exists()),
                          'startedAt': started, 'completedAt': time.time()}}, True)
 
-def restore_pair(expected, directory, advanced):
+def restore_pair(expected, directory, advanced, candidate):
     pair = read(directory / 'pair.json')
     if pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or not (directory / 'profile').is_dir():
         raise RuntimeError('Recovery pair no longer binds the previous app and state.')
@@ -199,6 +199,8 @@ def restore_pair(expected, directory, advanced):
     advanced.mkdir(mode=0o700)
     sync_parent(advanced)
     database = pathlib.Path(expected['databasePath'])
+    guard = native_authority_transition(expected, candidate, 'fence')
+    durable(advanced.with_name(advanced.name + '-authority-guard.json'), {'protocol': 1, 'guard': guard}, True)
     for name in (database.name, database.name + '-wal', database.name + '-shm') + SETTINGS:
         source = database.parent / name
         if source.exists():
@@ -226,7 +228,8 @@ def restore_pair(expected, directory, advanced):
         try: os.fsync(descriptor)
         finally: os.close(descriptor)
     sync_parent(database)
-    durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)`,
+    durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)
+    native_authority_transition(expected, candidate, 'advance', guard)`,
   syncParent: String.raw`def sync_parent(path):
     descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
     try: os.fsync(descriptor)

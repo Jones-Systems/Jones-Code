@@ -107,7 +107,11 @@
     "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
     "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts",
-    "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    "apps/desktop/src/jones/workstreams/shellActivation.ts",
+    "packages/shared/src/jones/desktopNativeOwner.ts",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -138,7 +142,10 @@
     "packages/contracts/src/auth.ts",
     "vite.config.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
-    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+    "packages/contracts/src/desktopBootstrap.ts",
+    "apps/server/src/bin.ts",
+    "apps/server/src/entrypoint.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -273,6 +280,26 @@
     {
       "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
       "to": "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

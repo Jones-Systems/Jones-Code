@@ -30,6 +30,7 @@ import {
   makeTrustedNativeEnrollmentCliContext,
   NativeEnrollmentCliContextError,
   type NativeEnrollmentCliLocation,
+  type NativeEnrollmentContextResolver,
 } from "./trustedCliContext.ts";
 
 export class WorkstreamProviderCliRequestError extends Schema.TaggedError<WorkstreamProviderCliRequestError>()(
@@ -166,7 +167,10 @@ const unavailableReceipt = (
  * identity, then publishes it no-clobber. It opens no database and reads no secret.
  */
 export const prepareWorkstreamProviderRequest = Effect.fn("prepareWorkstreamProviderRequest")(
-  function* (input: WorkstreamProviderPrepareInput) {
+  function* (
+    input: WorkstreamProviderPrepareInput,
+    resolveContext: NativeEnrollmentContextResolver = makeTrustedNativeEnrollmentCliContext,
+  ) {
     if (
       !Number.isInteger(input.lifetimeDays) ||
       input.lifetimeDays < 1 ||
@@ -177,10 +181,7 @@ export const prepareWorkstreamProviderRequest = Effect.fn("prepareWorkstreamProv
       return yield* new WorkstreamProviderCliRequestError({ code: "invalid_request" });
     // Operational inspection only selects metadata checks that tolerate a live WAL store;
     // no SQL client is constructed here.
-    const trusted = yield* makeTrustedNativeEnrollmentCliContext(
-      input,
-      "operational_inspection",
-    ).pipe(
+    const trusted = yield* resolveContext(input, "operational_inspection").pipe(
       Effect.mapError(
         () => new WorkstreamProviderCliRequestError({ code: "qualification_failed" }),
       ),
@@ -261,7 +262,10 @@ export const prepareWorkstreamProviderRequest = Effect.fn("prepareWorkstreamProv
 );
 
 export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProviderCliOperation")(
-  function* (input: WorkstreamProviderCliInput) {
+  function* (
+    input: WorkstreamProviderCliInput,
+    resolveContext: NativeEnrollmentContextResolver = makeTrustedNativeEnrollmentCliContext,
+  ) {
     const request = yield* readRequest(input.requestFile);
     if (
       (input.operation === "apply" &&
@@ -281,7 +285,7 @@ export const runWorkstreamProviderCliOperation = Effect.fn("runWorkstreamProvide
           : input.sqliteSidecarEffects === "allow"
             ? "operational_inspection"
             : "strict_inspection";
-      const trusted = yield* makeTrustedNativeEnrollmentCliContext(input, access);
+      const trusted = yield* resolveContext(input, access);
       const run = Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         const authority =

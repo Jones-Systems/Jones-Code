@@ -170,10 +170,11 @@
       "id": "jones-native-store-authority",
       "tests": [
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
-        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
+        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+        "vp test run apps/server/src/environment/NativeStoreAuthority.test.ts apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts"
       ]
     },
     {
@@ -1285,6 +1286,30 @@
       ],
       "commands": [
         "vp test run apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts --maxWorkers=1"
+      ]
+    },
+    {
+      "id": "jones-desktop-native-owner",
+      "tests": [
+        "packages/shared/src/jones/desktopNativeOwner.test.ts",
+        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/entrypoint.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/server/src/environment/NativeStoreAuthority.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs packages/contracts/src/jones/workstreamsNativeOwner.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts apps/server/src/entrypoint.test.ts",
+        "vp run --filter @t3tools/desktop --filter t3 --filter @t3tools/shared --filter @t3tools/contracts typecheck"
       ]
     }
   ]

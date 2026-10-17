@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/desktopNativeOwner": {
+      "types": "./src/jones/desktopNativeOwner.ts",
+      "import": "./src/jones/desktopNativeOwner.ts"
+    },
     "./jones/nativeWriterFence": {
       "types": "./src/jones/nativeWriterFence.ts",
       "import": "./src/jones/nativeWriterFence.ts"

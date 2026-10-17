@@ -1025,6 +1025,19 @@
     "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared",
     "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.ts": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "packages/contracts/src/desktopBootstrap.ts": "hook",
+    "packages/contracts/src/jones/workstreamsNativeOwner.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts": "jones-owned",
+    "apps/server/src/bin.ts": "hook",
+    "apps/server/src/entrypoint.test.ts": "jones-tests-in-upstream",
     "scripts/dev-runner.ts": "accepted-shared",
     "apps/server/src/startupAccess.ts": "hook",
     "apps/server/src/startupAccess.test.ts": "jones-tests-in-upstream",
@@ -1508,6 +1521,10 @@
     {
       "from": "apps/server/src/orchestration-v2/EffectOutboxEnqueue.ts",
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
     }
   ]
 }

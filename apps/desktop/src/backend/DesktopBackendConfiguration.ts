@@ -16,6 +16,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import serverPackageJson from "../../../server/package.json" with { type: "json" };
 
+import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts";
 import { resolveJonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
@@ -513,7 +514,11 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const backendExposure = yield* serverExposure.backendConfig;
 
+    const jonesDesktopOwner = currentJonesDesktopOwner();
     const bootstrap = {
+      ...(jonesDesktopOwner === undefined
+        ? {}
+        : { desktopNativeOwnerInputFd: 8, desktopNativeOwnerOutputFd: 9 }),
       mode: "desktop" as const,
       noBrowser: true,
       port: backendExposure.port,
@@ -539,6 +544,7 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const jonesColdBackendPermit = resolveJonesColdBackendPermit();
     return {
       ...(jonesColdBackendPermit === undefined ? {} : { jonesColdBackendPermit }),
+      ...(jonesDesktopOwner === undefined ? {} : { jonesDesktopOwner }),
       executablePath: process.execPath,
       // Packaged builds only, so a dev instance never shares the cache with the
       // prod app it is often run from. `--require` rather than NODE_COMPILE_CACHE,
