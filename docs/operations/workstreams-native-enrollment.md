@@ -177,6 +177,16 @@ replacement and proof, and make this procedure part of every source-changing
 update. This runbook does not install a renewal scheduler. With approval for
 the exact installation, private configuration and restart effects:
 
+Before a source-changing update or the selected source's descriptor/enrollment
+switch, prevent new work from entering the controlled transition window and
+prove there are no active jobs and zero outstanding native settlements for that
+source. Maintain both conditions through the transition. Reconcile known
+pending receipts through the existing receipt lookup while the old qualified
+descriptor and its original session/enrollment remain usable; do not resubmit
+settlements. Native attempts bind that original session/enrollment, while Control
+Plane recovery uses the currently configured descriptor. Unknown outcomes or an
+unproved drain hold only the selected transition until reconciled.
+
 1. Capture the complete provider configuration's exact bytes and hash
    privately, including all native descriptors and any GitHub descriptor.
    Select exactly one source by its owner, principal and `source_instance_id`,
@@ -200,7 +210,7 @@ the exact installation, private configuration and restart effects:
    source's credential privately for recovery. A mismatched guard stops the
    change; the enrollment and staging commands do not perform this switch.
 4. Restart Control Plane through its controlled service route only after
-   verifying there are no active jobs. Prove that the actual running adapter
+   rechecking both drained conditions above. Prove that the actual running adapter
    loaded the selected source's replacement descriptor and bearer using the
    checks below. Read back the shared grant and other sources' bindings,
    references and memberships to confirm preservation.
