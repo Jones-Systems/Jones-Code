@@ -4,6 +4,16 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeChildProcess from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import {
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+} from "@t3tools/contracts";
+import {
+  makeControlPlaneWorkstreamTransport,
+  signWorkstreamRequest,
+} from "../../workstreams/ControlPlaneWorkstreamTransport.ts";
 import { activationFromEnvironment, resolveWorkstreamActivation } from "./activation.ts";
 
 const environment = {
@@ -307,3 +317,113 @@ describe("Workstreams activation startup snapshot", () => {
 vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
 }));
+
+it("retains six-value compatibility and binds an optional version to the full activation group", () => {
+  const legacy = activationFromEnvironment(environment);
+  expect(legacy.state === "enabled" && legacy.value.registrationContextVersion).toBeUndefined();
+  for (const version of ["1.0.0", "2.0.0"] as const) {
+    const selected = activationFromEnvironment({
+      ...environment,
+      T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: version,
+    });
+    expect(selected.state === "enabled" && selected.value.registrationContextVersion).toBe(version);
+  }
+  for (const version of ["", "2", "3.0.0", " 2.0.0", "2.0.0\n"]) {
+    expect(
+      activationFromEnvironment({
+        ...environment,
+        T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: version,
+      }),
+    ).toEqual({ state: "invalid" });
+  }
+});
+
+effectIt.effect(
+  "reloads persistent v2 on ordinary restart and signs the selected contract through resolved activation",
+  () =>
+    Effect.gen(function* () {
+      const { base, file } = fixture();
+      const legacy = resolveWorkstreamActivation(base, {});
+      expect(
+        makeControlPlaneWorkstreamTransport(legacy).registrationContext.registrationContextVersion,
+      ).toBe("1.0.0");
+      expect(NodeFS.readFileSync(file, "utf8")).toBe(staged());
+      const bytes = staged() + "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n";
+      NodeFS.writeFileSync(file, bytes);
+      let calls = 0;
+      for (let startup = 0; startup < 2; startup += 1) {
+        const resolved = resolveWorkstreamActivation(base, {});
+        expect(resolved.state === "enabled" && resolved.value.registrationContextVersion).toBe(
+          "2.0.0",
+        );
+        const configured = makeControlPlaneWorkstreamTransport(resolved, async (url, init) => {
+          calls += 1;
+          const headers = new Headers(init?.headers);
+          expect(String(url)).toBe("http://127.0.0.1:8787/workstreams/v1/t3/registration-context");
+          expect(init?.method).toBe("GET");
+          expect(init?.body).toBeUndefined();
+          expect(headers.get("x-control-contract-version")).toBe(
+            WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+          );
+          expect(headers.get("x-control-contract-manifest")).toBe(
+            WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+          );
+          expect(headers.get("x-control-signature")).toBe(
+            signWorkstreamRequest({
+              contractVersion: WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+              requestId: headers.get("x-control-request-id")!,
+              sentAt: headers.get("x-control-timestamp")!,
+              nonce: headers.get("x-control-nonce")!,
+              principalId: environment.T3_WORKSTREAM_PRINCIPAL_ID,
+              keyId: environment.T3_WORKSTREAM_KEY_ID,
+              method: "GET",
+              target: "/workstreams/v1/t3/registration-context",
+              contentSha256: headers.get("x-control-content-sha256")!,
+              signingSecret: environment.T3_WORKSTREAM_SIGNING_SECRET,
+            }),
+          );
+          return new Response("{}", {
+            headers: {
+              "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+              "x-control-contract-manifest": WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+            },
+          });
+        });
+        expect(configured.registrationContext.registrationContextVersion).toBe("2.0.0");
+        yield* configured.registrationContext.readRegistrationContext;
+      }
+      expect(calls).toBe(2);
+      expect(NodeFS.readFileSync(file, "utf8")).toBe(bytes);
+    }),
+);
+
+it("rejects malformed staged versions and never overlays a standalone selector on a private file", () => {
+  const { base, file } = fixture();
+  for (const suffix of [
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=\n",
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=3.0.0\n",
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nT3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n",
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nUNKNOWN=value\n",
+  ]) {
+    NodeFS.writeFileSync(file, staged() + suffix);
+    expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "invalid" });
+  }
+  NodeFS.writeFileSync(file, staged() + "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n");
+  expect(
+    resolveWorkstreamActivation(base, { T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "1.0.0" }),
+  ).toEqual({ state: "invalid" });
+  expect(resolveWorkstreamActivation(base, environment)).toEqual(
+    activationFromEnvironment(environment),
+  );
+  expect(
+    resolveWorkstreamActivation(base, {
+      ...environment,
+      T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "1.0.0",
+    }),
+  ).toEqual(
+    activationFromEnvironment({
+      ...environment,
+      T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "1.0.0",
+    }),
+  );
+});

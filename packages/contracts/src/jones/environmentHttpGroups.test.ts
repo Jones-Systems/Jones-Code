@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
+import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
 import { JonesNativePrepareInput, JonesUpdateInstallInput } from "./jonesUpdates.ts";
 
 // The public API metadata is also consumed by independently upgraded clients.
@@ -109,4 +110,19 @@ it("requires an explicit native attempt without changing ordinary install reques
     transactionId: "b".repeat(64),
   });
   expect(Schema.decodeUnknownSync(JonesUpdateInstallInput)(base)).toEqual(base);
+});
+
+it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {
+  const responseSchema = [
+    ...EnvironmentHttpApi.groups.workstreams.endpoints.registrationContext.success,
+  ][0];
+  if (responseSchema === undefined) throw new Error("Missing registration response schema");
+  const accepts = Schema.is(responseSchema);
+  const v2 = v2Conformance.cases.find(
+    (fixture) => fixture.name === "legacy singleton shape with v2 protocol",
+  )?.value;
+  if (v2 === undefined) throw new Error("Missing singleton fixture");
+  expect(accepts(v2)).toBe(true);
+  expect(accepts({ ...v2, protocol: "workstreams-registration-context/1.0.0" })).toBe(true);
+  expect(accepts({ ...v2, protocol: "workstreams-registration-context/3.0.0" })).toBe(false);
 });

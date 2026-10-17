@@ -3,6 +3,8 @@ import * as Effect from "effect/Effect";
 
 import {
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
   WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
   T3_PLACEMENT_ROUTE,
   T3_PLACEMENT_CONTRACT,
@@ -21,6 +23,7 @@ import {
 
 import {
   response as registrationResponse,
+  v2Response,
   encodeFixtureJson,
 } from "../jones/workstreams/registrationContext/testFixtures.ts";
 
@@ -606,4 +609,105 @@ it.effect(
       }
       expect(requests).toBe(0);
     }),
+);
+
+it.effect(
+  "explicit v2 signs its exact empty GET and rejects another version or manifest without fallback",
+  () =>
+    Effect.gen(function* () {
+      const headers = {
+        "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+        "x-control-contract-manifest": WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+      };
+      let calls = 0;
+      const configured = makeControlPlaneWorkstreamTransport(
+        { ...activation, value: { ...activation.value, registrationContextVersion: "2.0.0" } },
+        async (url, init) => {
+          calls += 1;
+          const sent = new Headers(init?.headers);
+          expect(String(url)).toBe(
+            "https://control-plane.example/workstreams/v1/t3/registration-context",
+          );
+          expect(init?.method).toBe("GET");
+          expect(init?.body).toBeUndefined();
+          expect(sent.get("idempotency-key")).toBeNull();
+          expect(sent.get("x-control-contract-version")).toBe(
+            headers["x-control-contract-version"],
+          );
+          expect(sent.get("x-control-contract-manifest")).toBe(
+            headers["x-control-contract-manifest"],
+          );
+          expect(sent.get("x-control-signature")).toBe(
+            signWorkstreamRequest({
+              contractVersion: WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+              requestId: sent.get("x-control-request-id")!,
+              sentAt: sent.get("x-control-timestamp")!,
+              nonce: sent.get("x-control-nonce")!,
+              principalId: activation.value.principalId,
+              keyId: activation.value.keyId,
+              method: "GET",
+              target: "/workstreams/v1/t3/registration-context",
+              contentSha256: sent.get("x-control-content-sha256")!,
+              signingSecret: activation.value.signingSecret,
+            }),
+          );
+          return new Response(encodeFixtureJson(v2Response), { headers });
+        },
+      );
+      expect(configured.registrationContext.registrationContextVersion).toBe("2.0.0");
+      expect(yield* configured.registrationContext.readRegistrationContext).toBe(
+        encodeFixtureJson(v2Response),
+      );
+      expect(calls).toBe(1);
+      for (const wrongHeaders of [
+        registrationHeaders,
+        {
+          ...headers,
+          "x-control-contract-manifest": WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
+        },
+        { ...headers, "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL },
+      ]) {
+        let attempts = 0;
+        const wrong = makeControlPlaneWorkstreamTransport(
+          { ...activation, value: { ...activation.value, registrationContextVersion: "2.0.0" } },
+          async () => {
+            attempts += 1;
+            return new Response(encodeFixtureJson(v2Response), { headers: wrongHeaders });
+          },
+        );
+        expect(
+          (yield* wrong.registrationContext.readRegistrationContext.pipe(Effect.flip)).detail,
+        ).toBe("http_error");
+        expect(attempts).toBe(1);
+      }
+      const legacy = makeControlPlaneWorkstreamTransport(
+        activation,
+        async () => new Response(encodeFixtureJson(v2Response), { headers }),
+      );
+      expect(
+        (yield* legacy.registrationContext.readRegistrationContext.pipe(Effect.flip)).detail,
+      ).toBe("http_error");
+    }),
+);
+
+it.effect("invalid activation performs no registration or ordinary registry fetch", () =>
+  Effect.gen(function* () {
+    let calls = 0;
+    const configured = makeControlPlaneWorkstreamTransport({ state: "invalid" }, async () => {
+      calls += 1;
+      throw new Error("Invalid activation must not fetch");
+    });
+    expect(
+      (yield* configured.registrationContext.readRegistrationContext.pipe(Effect.flip)).effect,
+    ).toBe("no-effect");
+    expect(
+      (yield* configured.transport
+        .getCapabilities({
+          contractVersion: "workstreams/1.0.0",
+          contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+        })
+        .pipe(Effect.flip)).effect,
+    ).toBe("no-effect");
+    expect(calls).toBe(0);
+  }),
 );

@@ -111,7 +111,13 @@
     "packages/shared/src/jones/desktopNativeOwner.ts",
     "packages/shared/src/jones/desktopNativeOwner.test.ts",
     "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts",
-    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts"
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+    "packages/contracts/contracts/workstreams-registration-context/v2/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

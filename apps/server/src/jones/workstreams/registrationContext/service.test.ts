@@ -9,6 +9,9 @@ import {
 import { NativeStoreAuthorityPersistenceError } from "../../../environment/nativeStoreAuthorityPersistence.ts";
 import {
   makeRegistrationFixture,
+  makeV2RegistrationFixture,
+  v2Response,
+  remoteT3Source,
   build,
   response,
   t3Source,
@@ -24,7 +27,7 @@ it.effect("qualifies closed current T3 and independent GitHub registration descr
     const result = yield* fixture.service.read();
     assert.deepEqual(result.context, response);
     assert.deepEqual(result.t3Availability, { state: "ready" });
-    yield* Schema.decodeEffect(WorkstreamsRegistrationContextResponse)(result.context);
+    yield* Schema.decodeUnknownEffect(WorkstreamsRegistrationContextResponse)(result.context);
     assert.deepEqual(fixture.reads, { registry: 1, authority: 1, build: 1 });
   }),
 );
@@ -85,7 +88,7 @@ it.effect(
         const result = yield* fixture.service.read();
         assert.deepEqual(result.context, { ...response, sources: [githubSource] });
         assert.deepEqual(result.t3Availability, { state: "unavailable", reason: entry.reason });
-        yield* Schema.decodeEffect(WorkstreamsRegistrationContextResponse)(result.context);
+        yield* Schema.decodeUnknownEffect(WorkstreamsRegistrationContextResponse)(result.context);
       }
     }),
 );
@@ -139,7 +142,7 @@ it.effect(
         state: "unavailable",
         reason: "build_unavailable",
       });
-      assert.strictEqual(unstamped.reads.authority, 0);
+      assert.strictEqual(unstamped.reads.authority, 1);
     }),
 );
 
@@ -239,5 +242,117 @@ it.effect("invalid activation is unavailable rather than unconfigured and perfor
       "registry_unavailable",
     );
     assert.deepEqual(fixture.reads, { registry: 0, authority: 0, build: 0 });
+  }),
+);
+
+it.effect("v2 selects the actual local environment regardless of remote build and order", () =>
+  Effect.gen(function* () {
+    for (const sources of [v2Response.sources, [...v2Response.sources].reverse()]) {
+      const fixture = makeV2RegistrationFixture({
+        readRegistrationContext: Effect.succeed(encodeFixtureJson({ ...v2Response, sources })),
+      });
+      const result = yield* fixture.service.read();
+      assert.deepEqual(
+        result.context.sources.filter((source) => source.provider === "t3"),
+        [t3Source],
+      );
+      assert.deepEqual(
+        result.context.sources.filter((source) => source.provider !== "t3"),
+        [githubSource],
+      );
+      assert.strictEqual(result.context.protocol, v2Response.protocol);
+      assert.deepEqual(result.t3Availability, { state: "ready" });
+      assert.strictEqual(fixture.reads.authority, 1);
+      assert.strictEqual(fixture.reads.build, 1);
+    }
+  }),
+);
+
+it.effect(
+  "v2 never borrows a matching remote build when the local source is absent or mismatched",
+  () =>
+    Effect.gen(function* () {
+      const remote = { ...remoteT3Source, build };
+      const cases = [
+        { sources: [remote, githubSource], reason: "source_mismatch", buildReads: 0 },
+        {
+          sources: [remote, { ...t3Source, build: remoteT3Source.build }, githubSource],
+          reason: "contract_mismatch",
+          buildReads: 1,
+        },
+        {
+          sources: [remote, { ...t3Source, authority_namespace: "wrong-authority" }, githubSource],
+          reason: "authority_mismatch",
+          buildReads: 1,
+        },
+        {
+          sources: [remote, { ...t3Source, store_generation: 99 }, githubSource],
+          reason: "generation_mismatch",
+          buildReads: 1,
+        },
+      ] satisfies ReadonlyArray<{
+        readonly sources: typeof v2Response.sources;
+        readonly reason: Extract<T3RegistrationAvailability, { state: "unavailable" }>["reason"];
+        readonly buildReads: number;
+      }>;
+      for (const entry of cases) {
+        const fixture = makeV2RegistrationFixture({
+          readRegistrationContext: Effect.succeed(
+            encodeFixtureJson({ ...v2Response, sources: entry.sources }),
+          ),
+        });
+        const result = yield* fixture.service.read();
+        assert.deepEqual(result.context.sources, [githubSource]);
+        assert.deepEqual(result.t3Availability, { state: "unavailable", reason: entry.reason });
+        assert.strictEqual(fixture.reads.build, entry.buildReads);
+      }
+    }),
+);
+
+it.effect("v2 rejects ambiguous stable identity and never decodes an unselected version", () =>
+  Effect.gen(function* () {
+    for (const sources of [
+      [t3Source, { ...t3Source, store_generation: 99 }],
+      [t3Source, { ...t3Source, build: remoteT3Source.build }],
+    ]) {
+      const fixture = makeV2RegistrationFixture({
+        readRegistrationContext: Effect.succeed(encodeFixtureJson({ ...v2Response, sources })),
+      });
+      assert.strictEqual(
+        (yield* fixture.service.read().pipe(Effect.flip)).reason,
+        "invalid_response",
+      );
+      assert.strictEqual(fixture.reads.authority, 0);
+    }
+    const v1Body = makeV2RegistrationFixture({
+      readRegistrationContext: Effect.succeed(encodeFixtureJson(response)),
+    });
+    assert.strictEqual((yield* v1Body.service.read().pipe(Effect.flip)).reason, "invalid_response");
+    const v2Body = makeRegistrationFixture({
+      readRegistrationContext: Effect.succeed(encodeFixtureJson(v2Response)),
+    });
+    assert.strictEqual((yield* v2Body.service.read().pipe(Effect.flip)).reason, "invalid_response");
+    const invalid = makeRegistrationFixture({ registrationContextVersion: null });
+    assert.strictEqual(
+      (yield* invalid.service.read().pipe(Effect.flip)).reason,
+      "registry_unavailable",
+    );
+    assert.deepEqual(invalid.reads, { registry: 0, authority: 0, build: 0 });
+  }),
+);
+
+it.effect("v2 keeps independent non-native registration when local authority is unavailable", () =>
+  Effect.gen(function* () {
+    const fixture = makeV2RegistrationFixture({
+      authority: {
+        readCurrent: Effect.fail(
+          new NativeStoreAuthorityPersistenceError("fenced", "synthetic", "synthetic"),
+        ),
+      },
+    });
+    const result = yield* fixture.service.read();
+    assert.deepEqual(result.context.sources, [githubSource]);
+    assert.deepEqual(result.t3Availability, { state: "unavailable", reason: "authority_fenced" });
+    assert.strictEqual(fixture.reads.build, 0);
   }),
 );

@@ -11,7 +11,7 @@ import type {
   WorkstreamReferencePage,
   WorkstreamCommand,
   WorkstreamReceipt,
-  WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
@@ -251,7 +251,7 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
-  readonly registrationContext?: WorkstreamsRegistrationContextResponse | null;
+  readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
     readonly signal?: AbortSignal;
   }) => Promise<WorkstreamActionSnapshot>;
@@ -431,7 +431,7 @@ export function useWorkstreams(
     [inventory.json],
   );
   const [registrationContext, setRegistrationContext] =
-    useState<WorkstreamsRegistrationContextResponse | null>(null);
+    useState<WorkstreamsRegistrationContextAcceptedResponse | null>(null);
   const unresolvedCommands = useRef(new Map<string, string>());
   const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
