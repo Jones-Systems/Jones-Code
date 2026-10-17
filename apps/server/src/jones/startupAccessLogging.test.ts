@@ -1,7 +1,10 @@
 import { expect, it } from "@effect/vitest";
+import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Path from "effect/Path";
 import * as References from "effect/References";
 
 import * as ServerConfig from "../config.ts";
@@ -11,6 +14,45 @@ import {
   logStartupPairingIssued,
   maybeOpenBrowser,
 } from "./startupAccessLogging.ts";
+
+const browserConfigLayer = (noBrowser: boolean) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const baseDir = "/synthetic-startup-logging";
+      return ServerConfig.make({
+        ...(yield* ServerConfig.deriveServerPaths(baseDir, undefined)),
+        baseDir,
+        cwd: baseDir,
+        logLevel: "Info",
+        traceMinLevel: "Info",
+        traceTimingEnabled: false,
+        traceBatchWindowMs: 200,
+        traceMaxBytes: 1024,
+        traceMaxFiles: 1,
+        otlpTracesUrl: undefined,
+        otlpMetricsUrl: undefined,
+        otlpLogsUrl: undefined,
+        otlpTracesExport: DEFAULT_SIGNAL_EXPORT,
+        otlpMetricsExport: DEFAULT_SIGNAL_EXPORT,
+        otlpLogsExport: DEFAULT_SIGNAL_EXPORT,
+        otelEnvironment: OtelEnvironment.none,
+        staticDir: undefined,
+        devAllowedOrigins: [],
+        desktopBootstrapToken: undefined,
+        logWebSocketEvents: false,
+        tailscaleServeEnabled: false,
+        tailscaleServePort: 443,
+        mode: "web",
+        host: "localhost",
+        port: 3773,
+        devUrl: undefined,
+        noBrowser,
+        startupPresentation: "browser",
+        autoBootstrapProjectFromCwd: false,
+      });
+    }),
+  ).pipe(Layer.provide(Path.layer));
 
 it("prints only the origin when a connection URL contains credential-bearing components", () => {
   const output = formatHeadlessStartupOutput(
@@ -29,8 +71,9 @@ it("does not echo malformed connection input", () => {
   expect(formatHeadlessStartupOutput("SYNTHETIC_INVALID_TOKEN")).not.toContain("SYNTHETIC_");
 });
 
-for (const outcome of ["success", "failure", "disabled"] as const) {
-  it.effect(`keeps startup logs credential-free when browser launch is ${outcome}`, () => {
+it.effect.each(["success", "failure", "disabled"] as const)(
+  "keeps startup logs credential-free when browser launch is %s",
+  (outcome) => {
     const target = "http://localhost:3773/pair#token=SYNTHETIC_BROWSER_CREDENTIAL";
     const launched: string[] = [];
     const logs: unknown[] = [];
@@ -54,7 +97,7 @@ for (const outcome of ["success", "failure", "disabled"] as const) {
       Effect.provide(
         Layer.mergeAll(
           Logger.layer([logger], { mergeWithExisting: false }),
-          Layer.mock(ServerConfig.ServerConfig)({ noBrowser: outcome === "disabled" }),
+          browserConfigLayer(outcome === "disabled"),
           Layer.mock(ExternalLauncher.ExternalLauncher)({
             launchBrowser: (url) => {
               launched.push(url);
@@ -73,5 +116,5 @@ for (const outcome of ["success", "failure", "disabled"] as const) {
         ),
       ),
     );
-  });
-}
+  },
+);

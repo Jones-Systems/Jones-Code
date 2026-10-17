@@ -199,7 +199,9 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
       ) {
         const log = path.join(baseDir, "userdata", "logs", BootService.BOOT_SERVICE_LOG_FILE);
         logModesAtStart.push(
-          (yield* fs.exists(log)) ? (yield* fs.stat(log)).mode & 0o777 : undefined,
+          (yield* fs.exists(log).pipe(Effect.orDie))
+            ? (yield* fs.stat(log).pipe(Effect.orDie)).mode & 0o777
+            : undefined,
         );
       }
       commands.push(command);
