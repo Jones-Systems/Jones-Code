@@ -9,6 +9,13 @@ const colors = {
   done: "text-emerald-600 dark:text-emerald-300/90",
 };
 
+const backgrounds = {
+  all: "bg-muted/30 hover:bg-muted/60",
+  working: "bg-sky-600/20 ring-1 ring-sky-600/30 dark:bg-sky-300/20 dark:ring-sky-300/30",
+  input: "bg-indigo-600/20 ring-1 ring-indigo-600/30 dark:bg-indigo-300/20 dark:ring-indigo-300/30",
+  done: "bg-emerald-600/20 ring-1 ring-emerald-600/30 dark:bg-emerald-300/20 dark:ring-emerald-300/30",
+};
+
 export function ThreadStatusFilterPill({
   counts,
   filter,
@@ -27,16 +34,18 @@ export function ThreadStatusFilterPill({
             type="button"
             aria-label={label}
             onClick={onCycle}
-            className="relative z-10 inline-flex h-6 shrink-0 items-center gap-0.5 rounded-full bg-muted/30 px-1 text-xs font-medium outline-hidden ring-ring hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]"
+            className={cn(
+              "relative z-10 inline-flex h-6 shrink-0 items-center gap-0.5 rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
+              backgrounds[filter],
+            )}
           >
             {(["working", "input", "done"] as const).map((status, index) => (
               <span key={status} className="inline-flex items-center gap-0.5" aria-hidden="true">
                 {index > 0 ? <span className="text-muted-foreground/60">·</span> : null}
                 <span
                   className={cn(
-                    "rounded-full px-1.5 tabular-nums",
+                    "px-1.5 tabular-nums",
                     counts[status] > 0 ? colors[status] : "text-muted-foreground/60",
-                    filter === status && "bg-current/10 ring-1 ring-current/30",
                   )}
                 >
                   {counts[status]}
