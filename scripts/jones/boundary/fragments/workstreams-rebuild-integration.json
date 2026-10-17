@@ -63,6 +63,8 @@
     "packages/client-runtime/src/state/workstreams/cache.ts",
     "packages/client-runtime/src/state/workstreams/colors.test.ts",
     "packages/client-runtime/src/state/workstreams/colors.ts",
+    "packages/client-runtime/src/state/workstreams/environmentTrust.test.ts",
+    "packages/client-runtime/src/state/workstreams/environmentTrust.ts",
     "packages/client-runtime/src/state/workstreams/index.ts",
     "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
     "packages/client-runtime/src/state/workstreams/lifecycle.ts",
