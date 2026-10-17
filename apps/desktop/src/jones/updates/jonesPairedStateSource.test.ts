@@ -4,7 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import { describe, expect, it } from "vite-plus/test";
 // @ts-expect-error -- This standalone Node fixture has no declaration file; its output is checked against the typed source exports below.
-import * as ColdMaintenanceFixture from "../../../../../scripts/jones/updates/paired-executor-fixture.mjs";
+import * as PairedExecutorFixture from "../../../../../scripts/jones/updates/paired-executor-fixture.mjs";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";
 
@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
     authority_record.write_bytes(b'authority-generation-7')
     expected = {'home': str(root), 'databasePath': str(database), 'profile': str(profile)}
     pair, advanced = transaction / 'previous-pair', transaction / 'advanced-state'
-    baseline_bytes = len(b'previous-database')
+    baseline_bytes = len(b'previous-database') + len(b'previous-profile')
     if fault in ('symlink', 'directory'):
         identity.unlink()
         if fault == 'symlink': identity.symlink_to(authority_record)
@@ -91,7 +91,7 @@ with tempfile.TemporaryDirectory(prefix='paired-identity-') as scratch:
         else:
             restore_pair(expected, pair, advanced, {})
             assert database.read_bytes() == b'previous-database'
-            assert (profile / 'opaque').read_bytes() == b'candidate-profile'
+            assert (profile / 'opaque').read_bytes() == b'previous-profile'
             assert (advanced / 'environment-id').read_bytes() == changed_id
             assert not (advanced / 'native-store-authority').exists()
             assert authority_record.read_bytes() == b'authority-generation-10'
@@ -115,7 +115,7 @@ describe("shared paired-state Python source", () => {
     },
   );
 
-  it("composes each shared paired-state fragment exactly once", () => {
+  it("includes each paired-restore fragment exactly once", () => {
     for (const fragment of Object.values(jonesPairedStateSource)) {
       expect(jonesNativeHelperSource.split(fragment)).toHaveLength(2);
     }
@@ -123,10 +123,10 @@ describe("shared paired-state Python source", () => {
 
   it("materializes the same executor for native qualification and TypeScript packaging", async () => {
     const [executorText, pairedText] = await sourceTexts();
-    expect(ColdMaintenanceFixture.materializePairedExecutor(executorText, pairedText)).toBe(
+    expect(PairedExecutorFixture.materializePairedExecutor(executorText, pairedText)).toBe(
       jonesNativeHelperSource,
     );
-    expect(await ColdMaintenanceFixture.readPairedExecutorSource()).toBe(jonesNativeHelperSource);
+    expect(await PairedExecutorFixture.readPairedExecutorSource()).toBe(jonesNativeHelperSource);
   });
 
   it("refuses missing, duplicate, unknown, and nonliteral substitutions", async () => {
@@ -138,7 +138,7 @@ describe("shared paired-state Python source", () => {
       executorText.replace(reference, "${jonesPairedStateSource.unknown}"),
       executorText.replace(reference, () => reference + "${unbound}"),
     ])
-      expect(() => ColdMaintenanceFixture.materializePairedExecutor(changed, pairedText)).toThrow();
+      expect(() => PairedExecutorFixture.materializePairedExecutor(changed, pairedText)).toThrow();
     for (const changed of [
       pairedText.replace("syncTree: String.raw`", "syncTree: String.raw`${unbound}"),
       pairedText.replace("copyAndTopology: String.raw`", "unknown: String.raw`"),
@@ -146,7 +146,7 @@ describe("shared paired-state Python source", () => {
       pairedText.replace("} as const);", "} as const);\nunbound();"),
     ])
       expect(() =>
-        ColdMaintenanceFixture.materializePairedExecutor(executorText, changed),
+        PairedExecutorFixture.materializePairedExecutor(executorText, changed),
       ).toThrow();
   });
 });

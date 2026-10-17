@@ -136,6 +136,14 @@ shasum -a 256 -c T3-Code-VERSION-arm64.dmg.sha256
 hdiutil verify T3-Code-VERSION-arm64.dmg
 ```
 
+The build stamps the exact source commit and tree and checks the packaged
+`app.asar/package.json` for the matching version, source and startup-gate protocol.
+The app retains its native update helper and install-time startup handshake.
+Artifact production does not run the retired legacy bootstrap or offline
+preparation producer, and no source, worker or lockfile byte pin controls whether
+the DMG can be built. The workflow verifies the DMG container and writes its
+SHA-256 checksum; it does not launch the packaged app against user state.
+
 The DMG has no Developer ID signing or notarization. Container and checksum
 validation do not establish Gatekeeper acceptance or successful application
 launch. Installation, Gatekeeper changes, application launch against a real T3

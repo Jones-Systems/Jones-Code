@@ -687,6 +687,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["allow simulator emulator ios android drive tools sessions"],
   },
   {
+    id: "agent-decision-snapshot-access",
+    title: "Agent decision snapshot access",
+    to: "/settings/integrations",
+    scope: "project-defaults",
+    searchTerms: [
+      "allow mcp decision snapshot usage cpu memory claude allowance host project override",
+    ],
+  },
+  {
     id: "device-hub",
     title: "Device hub",
     to: "/settings/integrations",

@@ -6,17 +6,10 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import * as NodeStream from "node:stream";
 import {
-  legacyIdentityFailureReport,
-  legacyIdentityWorkerCases,
-  runLegacyIdentityFixtureCommand,
-  runLegacyIdentityNativeFixture,
-  runLegacyIdentityWorkerFixture,
-  validateLegacyIdentityObservation,
-  withLegacyIdentityScratch,
-} from "./legacy-identity-native-fixture.mjs";
-
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone native ABI tests require the actual host, without an application runtime dependency.
-const nativePlatform = process.platform;
+  nativeFixtureFailureReport,
+  runNativeFixtureCommand,
+  withNativeFixtureScratch,
+} from "./native-fixture-support.mjs";
 
 for (const scenario of [
   { name: "closed timeout", phase: "observer-compile", expected: "observer-compile", close: true },
@@ -49,10 +42,10 @@ for (const scenario of [
       context.mock.timers.enable({ apis: ["setTimeout"] });
       try {
         await NodeAssert.rejects(
-          withLegacyIdentityScratch(async (root) => {
+          withNativeFixtureScratch(async (root) => {
             allocated = root;
             let settled = false;
-            const observed = runLegacyIdentityFixtureCommand(
+            const observed = runNativeFixtureCommand(
               `/not-executed/${secret}`,
               ["--synthetic-input", secret],
               root,
@@ -89,7 +82,7 @@ for (const scenario of [
           primary.message,
           `Native identity command (${scenario.expected}) exceeded 30 seconds.`,
         );
-        const report = legacyIdentityFailureReport(captured);
+        const report = nativeFixtureFailureReport(captured);
         NodeAssert.deepEqual(report.commandPhases, [scenario.expected]);
         NodeAssert.equal(JSON.stringify(report).includes(secret), false);
         NodeAssert.equal(JSON.stringify(report).includes("synthetic-private-phase"), false);
@@ -132,61 +125,11 @@ for (const scenario of [
 }
 
 NodeTest.test(
-  "native discovery binds captured workers, distinguishes access and exposes excluded witnesses",
-  { skip: nativePlatform !== "darwin", timeout: 120000 },
-  async (context) => {
-    const result = await runLegacyIdentityWorkerFixture({ signal: context.signal });
-    NodeAssert.deepEqual(
-      result.cases,
-      legacyIdentityWorkerCases.map((name) => ({
-        case: name,
-        status: [
-          "native-descriptor",
-          "read-only-descriptor",
-          "owner-witness",
-          "witness-only",
-          "inherited-witness",
-          "pre-open-excluded",
-          "empty-worker",
-          "ambiguous-descriptors",
-          "family-descriptors",
-          "wrong-object",
-        ].includes(name)
-          ? "observed"
-          : "refused",
-      })),
-    );
-    NodeAssert.equal(result.cases.length, 26);
-    for (const name of ["changing-fd-list", "changing-nonvnode-fd-list"]) {
-      NodeAssert.deepEqual(
-        result.cases.find((item) => item.case === name),
-        {
-          case: name,
-          status: "refused",
-        },
-      );
-    }
-    NodeAssert.equal(result.observationOnly, true);
-    NodeAssert.equal(result.sqliteLifecycleQualified, false);
-    NodeAssert.equal(result.offlineAdmissionQualified, false);
-    NodeAssert.equal(result.cleanupProved, true);
-  },
-);
-
-NodeTest.test("pre-cancellation starts no worker observer resources", async () => {
-  const original = new Error("cancelled observer before allocation");
-  await NodeAssert.rejects(
-    runLegacyIdentityWorkerFixture({ signal: AbortSignal.abort(original) }),
-    (cause) => cause === original,
-  );
-});
-
-NodeTest.test(
   "repeated synchronous signal errors preserve cancellation through proved closure",
   { timeout: 10000 },
   async (context) => {
     let allocated;
-    await withLegacyIdentityScratch(async (root) => {
+    await withNativeFixtureScratch(async (root) => {
       allocated = root;
       const cancellation = new AbortController();
       const original = new Error("fixture command cancellation");
@@ -224,15 +167,10 @@ NodeTest.test(
       let originalFailure;
       try {
         await NodeAssert.rejects(
-          runLegacyIdentityFixtureCommand(
-            process.execPath,
-            ["-e", "setInterval(() => {}, 1000)"],
-            root,
-            {
-              signal: AbortSignal.any([context.signal, cancellation.signal]),
-              spawn,
-            },
-          ),
+          runNativeFixtureCommand(process.execPath, ["-e", "setInterval(() => {}, 1000)"], root, {
+            signal: AbortSignal.any([context.signal, cancellation.signal]),
+            spawn,
+          }),
           (cause) => {
             NodeAssert.ok(cause instanceof AggregateError);
             NodeAssert.equal(cause.cause, original);
@@ -241,7 +179,7 @@ NodeTest.test(
               cause.errors.slice(1).map((item) => item.code),
               ["EPERM", "EPERM", "EPERM"],
             );
-            NodeAssert.deepEqual(legacyIdentityFailureReport(cause).commandCustody, []);
+            NodeAssert.deepEqual(nativeFixtureFailureReport(cause).commandCustody, []);
             return true;
           },
         );
@@ -270,16 +208,16 @@ NodeTest.test(
   { timeout: 20000 },
   async (context) => {
     let allocated;
-    await withLegacyIdentityScratch(async (root) => {
+    await withNativeFixtureScratch(async (root) => {
       allocated = root;
-      const fixtureModule = new URL("./legacy-identity-native-fixture.mjs", import.meta.url).href;
+      const fixtureModule = new URL("./native-fixture-support.mjs", import.meta.url).href;
       const driver = NodePath.join(root, "custody-driver.mjs");
       await NodeFSP.writeFile(
         driver,
         `
 import * as fs from 'node:fs';
 import * as cp from 'node:child_process';
-import {withLegacyIdentityScratch,runLegacyIdentityFixtureCommand,legacyIdentityFailureReport} from ${JSON.stringify(fixtureModule)};
+import {withNativeFixtureScratch,runNativeFixtureCommand,nativeFixtureFailureReport} from ${JSON.stringify(fixtureModule)};
 let controller, ownedKill, controllerClosed = false, cleanupStarted = false;
 const write = (name, value) => fs.writeFileSync(name, JSON.stringify(value), {mode:0o600});
 const cleanup = (failure) => {
@@ -317,9 +255,9 @@ const spawn = (...args) => {
   return controller;
 };
 try {
-  await withLegacyIdentityScratch(async (childRoot) => {
+  await withNativeFixtureScratch(async (childRoot) => {
     try {
-      await runLegacyIdentityFixtureCommand(process.execPath, ['-e','setInterval(() => {}, 1000)'], childRoot, {signal:cancellation.signal,spawn});
+      await runNativeFixtureCommand(process.execPath, ['-e','setInterval(() => {}, 1000)'], childRoot, {signal:cancellation.signal,spawn});
     } catch (cause) {
       if (cause.cause !== original || cause.errors.length !== 4) throw new Error('Original failure or signal errors were lost.');
       throw new AggregateError([cause,new Error('fixture wrapper')], 'wrapped custody', {cause});
@@ -327,7 +265,7 @@ try {
   }, {temporaryDirectory:process.cwd()});
   cleanup(new Error('unresolved command unexpectedly succeeded'));
 } catch (cause) {
-  const report = legacyIdentityFailureReport(cause);
+  const report = nativeFixtureFailureReport(cause);
   write('driver-report.json', report);
   process.stdout.write(JSON.stringify(report)+'\\n');
   if (report.commandCustody.length !== 1 || !report.retainedScratch) cleanup(new Error('custody reference was lost'));
@@ -337,7 +275,7 @@ try {
       );
       let originalFailure;
       try {
-        const outcome = await runLegacyIdentityFixtureCommand(process.execPath, [driver], root, {
+        const outcome = await runNativeFixtureCommand(process.execPath, [driver], root, {
           signal: context.signal,
         });
         NodeAssert.equal(outcome.code, 0, outcome.stderr);
@@ -405,58 +343,17 @@ try {
 );
 
 NodeTest.test(
-  "native APFS identities survive one remount without rewriting mount observations",
-  { timeout: 120000 },
-  async (context) => {
-    const result = await runLegacyIdentityNativeFixture({ signal: context.signal });
-    NodeAssert.equal(result.activationAllowed, false);
-    NodeAssert.equal(result.observationOnly, true);
-    if (nativePlatform !== "darwin") {
-      NodeAssert.equal(result.status, "unsupported");
-      NodeAssert.equal(result.reason, "darwin-required");
-      return;
-    }
-    NodeAssert.equal(result.status, "passed");
-    NodeAssert.equal(result.cleanupProved, true);
-    NodeAssert.equal(result.productionMembershipQualified, false);
-    NodeAssert.equal(result.offlineAdmissionQualified, false);
-    NodeAssert.equal(result.sameKernelRemountOnly, true);
-    NodeAssert.deepEqual(result.before.persistent, result.after.persistent);
-    NodeAssert.equal(result.before.stat.birthtimeNs, result.after.stat.birthtimeNs);
-    NodeAssert.equal(result.after.stat.mode, 0o640);
-    NodeAssert.equal(result.unreadableEndpointRefused, true);
-    NodeAssert.equal(result.restored.stat.mode, 0o750);
-    NodeAssert.deepEqual(result.refusalReasons, [
-      "fd-path-alias",
-      "endpoint-type-links-or-ownership",
-      "endpoint-type-links-or-ownership",
-      "duplicate-inherited-fd",
-    ]);
-    NodeAssert.match(result.sourceSha256, /^[a-f0-9]{64}$/);
-    NodeAssert.match(result.binarySha256, /^[a-f0-9]{64}$/);
-  },
-);
-
-NodeTest.test("pre-cancellation starts no identity qualifier resources", async () => {
-  const original = new Error("already cancelled");
-  await NodeAssert.rejects(
-    runLegacyIdentityNativeFixture({ signal: AbortSignal.abort(original) }),
-    (cause) => cause === original,
-  );
-});
-
-NodeTest.test(
   "identity scratch owners clean success and failure, preserving the cause",
   async () => {
     let successful;
-    await withLegacyIdentityScratch(async (root) => {
+    await withNativeFixtureScratch(async (root) => {
       successful = root;
     });
     await NodeAssert.rejects(NodeFSP.lstat(successful), { code: "ENOENT" });
     let failed;
     const original = new Error("synthetic identity failure");
     await NodeAssert.rejects(
-      withLegacyIdentityScratch(async (root) => {
+      withNativeFixtureScratch(async (root) => {
         failed = root;
         throw original;
       }),
@@ -475,7 +372,7 @@ NodeTest.test(
     });
     try {
       await NodeAssert.rejects(
-        withLegacyIdentityScratch(async (root) => {
+        withNativeFixtureScratch(async (root) => {
           retained = root;
           throw unknown;
         }),
@@ -488,7 +385,7 @@ NodeTest.test(
     }
     const original = new Error("operation failed");
     await NodeAssert.rejects(
-      withLegacyIdentityScratch(async (root) => {
+      withNativeFixtureScratch(async (root) => {
         await NodeFSP.rmdir(root);
         throw original;
       }),
@@ -497,27 +394,3 @@ NodeTest.test(
     );
   },
 );
-
-NodeTest.test("schema validation never upgrades unavailable or malformed identity evidence", () => {
-  const boot = {
-    schema: 1,
-    operation: "boot",
-    status: "observed",
-    bootSessionUuid: "11111111-2222-3333-4444-555555555555",
-    ancestorPolicy: "nofollow-currentness-only",
-    objects: [],
-    observationOnly: true,
-    activationAllowed: false,
-  };
-  NodeAssert.equal(validateLegacyIdentityObservation(boot), boot);
-  for (const changed of [
-    { status: "unsupported" },
-    { activationAllowed: true },
-    { observationOnly: false },
-    { bootSessionUuid: "" },
-    { bootSessionUuid: "00000000-0000-0000-0000-000000000000" },
-    { ancestorPolicy: "exclusive" },
-    { objects: [{}] },
-  ])
-    NodeAssert.throws(() => validateLegacyIdentityObservation({ ...boot, ...changed }));
-});
