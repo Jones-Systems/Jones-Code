@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -33,6 +34,7 @@ import { assertStageNotRevoked } from "../updates/stageRevocation.ts";
 
 const baseline = "0.0.0-preview.20261002.100";
 const target = "0.0.0-preview.20261002.101.1";
+const laterTarget = "0.0.0-preview.20261002.102.1";
 // oxlint-disable-next-line t3code/no-global-process-runtime -- These controlled launcher executables must bind the actual native fixture host.
 const fixturePlatform = NodeOS.platform() === "darwin" ? "darwin" : "linux";
 const readMarker = (file: string) => {
@@ -45,7 +47,14 @@ const readMarker = (file: string) => {
 };
 
 async function runScenario(
-  mode: "commit" | "rollback" | "stale-child" | "missing-gate" | "wrong-gate" | "blocked-candidate",
+  mode:
+    | "commit"
+    | "commit-then-rollback"
+    | "rollback"
+    | "stale-child"
+    | "missing-gate"
+    | "wrong-gate"
+    | "blocked-candidate",
   body: (base: string, launcherFailure: unknown) => Promise<void>,
   quiescenceAdapter: QualifiedQuiescenceAdapter = { scan: async () => [] },
   onLauncher?: (launcher: Launcher) => void,
@@ -59,6 +68,7 @@ async function runScenario(
     readonly delayedGracefulClose?: boolean;
     readonly retirementRace?: "accept-first" | "retire-first";
     readonly now?: () => number;
+    readonly beforePointerWrite?: (base: string) => Promise<void>;
   } = {},
 ) {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-launcher-test-"));
@@ -82,6 +92,8 @@ import {
 } from "node:fs";
 
 import * as NodeNet from "node:net";
+import { currentQualifiedRuntimeBinding, stageQualifiedRuntime } from "${NodePath.join(import.meta.dirname, "qualifiedRuntime.ts")}";
+import { retainStagedSelection } from "${NodePath.join(import.meta.dirname, "../updates/stagedSelection.ts")}";
 import * as NodeSqlite from "node:sqlite";
 import { makeQualifiedTrialReceipt, reserveQualifiedResume, sameQualifiedTrialIdentity } from "${NodePath.join(import.meta.dirname, "qualifiedStartup.ts")}";
 if (process.argv.includes("__service-preflight")) {
@@ -120,7 +132,7 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
   db.exec("UPDATE marker SET value='after'"); db.close();
   writeFileSync(${JSON.stringify(NodePath.join(userdata, "settings.json"))}, "after-settings");
   writeFileSync(${JSON.stringify(NodePath.join(userdata, "keybindings.json"))}, "created-by-trial");
-  if (${JSON.stringify(mode)} === "rollback") process.exit(1);
+  if (${JSON.stringify(mode)} === "rollback" || (${JSON.stringify(mode)} === "commit-then-rollback" && context.update.fromVersion !== ${JSON.stringify(baseline)})) process.exit(1);
   const server = NodeNet.createServer();
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const socket = server.address();
@@ -145,7 +157,16 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
       receipt: JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "jones-launcher-capability.json"))}, "utf8")), childPid:process.pid,
     }));
     await reserveQualifiedResume({receipt});
-    process.exit(0);
+    if (${JSON.stringify(mode)} === "commit-then-rollback") {
+      const { protocol, payloadSha256, ...artifact } = JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "versions", target, QUALIFIED_RUNTIME_RECEIPT))}, "utf8"));
+      const staged = await stageQualifiedRuntime({
+        artifact: {...artifact, version:${JSON.stringify(laterTarget)}, sourceSha:${JSON.stringify("e".repeat(40))}, installedSourceSha:artifact.sourceSha, runId:102, payloadDirectory:${JSON.stringify(NodePath.join(base, "later-payload"))}},
+        binding: await currentQualifiedRuntimeBinding(process.env.T3CODE_HOME, context.childVersion),
+        validate: async () => {},
+      });
+      await retainStagedSelection(staged);
+      process.send({type:"request-update", targetVersion:${JSON.stringify(laterTarget)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:staged.stagedHandle});
+    } else process.exit(0);
   });
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
 } else if (context.update === undefined) {
@@ -188,6 +209,15 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     for (const directory of [active, payload]) {
       await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
       await NodeFSP.writeFile(NodePath.join(directory, "t3"), child, { mode: 0o755 });
+    }
+    if (mode === "commit-then-rollback") {
+      const laterPayload = NodePath.join(base, "later-payload");
+      await NodeFSP.mkdir(laterPayload, { mode: 0o700 });
+      await NodeFSP.writeFile(
+        NodePath.join(laterPayload, "t3"),
+        child.replaceAll(target, laterTarget).replaceAll("a".repeat(40), "e".repeat(40)),
+        { mode: 0o755 },
+      );
     }
     const metadata: Omit<QualifiedRuntimeReceipt, "payloadSha256"> = {
       protocol: 1,
@@ -236,7 +266,14 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     const launcher = new Launcher(base, await readServiceState(statePath), {
       // These controlled lifecycle fixtures isolate native process observation;
       // qualifiedQuiescence tests cover refusal and exact-file writer proof.
-      quiescenceAdapter,
+      quiescenceAdapter: {
+        ...quiescenceAdapter,
+        scan: async (input) => {
+          const writers = await quiescenceAdapter.scan(input);
+          if (input.allowedProcessIds.length > 0) await options.beforePointerWrite?.(base);
+          return writers;
+        },
+      },
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
       ...(options.operationFailure === undefined && options.afterOperationReserve === undefined
@@ -994,3 +1031,70 @@ it.each(["accept-first", "retire-first"] as const)(
     );
   },
 );
+
+it("names the pointer-write failure and retains the pending pair", async () => {
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      assert.match(String(failure), /Qualified pointer commit failed at step pointer-write/);
+      assert.match(String(failure), /EISDIR/);
+      const state = await readServiceState(NodePath.join(base, "runtime", "before-commit.json"));
+      assert.equal(state.activeVersion, baseline);
+      assert.equal(state.update?.status, "pending");
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
+      assert.equal(
+        readMarker(NodePath.join(base, "runtime", "db-backup", state.update!.id, "database")),
+        "before",
+      );
+    },
+    undefined,
+    undefined,
+    {
+      beforePointerWrite: async (base) => {
+        const statePath = NodePath.join(base, "runtime", "service-state.json");
+        await NodeFSP.rename(statePath, NodePath.join(base, "runtime", "before-commit.json"));
+        await NodeFSP.mkdir(statePath);
+      },
+    },
+  );
+});
+
+it("reports launcher drift when a qualified trial becomes active", async () => {
+  const output: string[] = [];
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    output.push(String(chunk));
+    return true;
+  });
+  try {
+    await runScenario("commit", async (base) => {
+      assert.equal(
+        (await readServiceState(NodePath.join(base, "runtime", "service-state.json")))
+          .activeVersion,
+        target,
+      );
+      assert.include(
+        output.join(""),
+        `Launcher ${packageJson.version} is supervising server ${target}.`,
+      );
+      assert.include(output.join(""), "planned restart");
+    });
+  } finally {
+    stderr.mockRestore();
+  }
+});
+
+it("rolls back a later failed trial in the launcher that committed its predecessor", async () => {
+  await runScenario("commit-then-rollback", async (base, failure) => {
+    const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+    assert.equal(state.activeVersion, target, String(failure));
+    assert.equal(state.update?.targetVersion, laterTarget);
+    assert.equal(state.update?.status, "rolled-back", String(failure));
+    assert.match(String(failure), /Active child exited unexpectedly/);
+    assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
+    const restarted = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(base, "runtime", "restart-context.json"), "utf8"),
+    );
+    assert.equal(restarted.childVersion, target);
+    assert.equal(restarted.update.status, "rolled-back");
+  });
+});
