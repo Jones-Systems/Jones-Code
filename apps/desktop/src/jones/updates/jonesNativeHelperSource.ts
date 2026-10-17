@@ -267,6 +267,68 @@ def bundle_identity(active, stable=True):
     if not os.access(app.parent, os.W_OK): raise RuntimeError('The stable app folder is not writable; native authorization is required.')
     return info['CFBundleIdentifier']
 
+def native_authority_transition(expected, candidate, operation, guard=None):
+    # Only the source-qualified candidate backend is executed; the stopped old
+    # bundle may predate this command. No shell or ordinary server startup runs.
+    bundle_identity(candidate, stable=False)
+    if app_digest(candidate['appPath']) != candidate['appDigest']:
+        raise RuntimeError('Native authority backend changed; restore held.')
+    app = pathlib.Path(candidate['appPath'])
+    executable = pathlib.Path(candidate['executablePath'])
+    resources = app / 'Contents/Resources'
+    for path in (app, app / 'Contents', app / 'Contents/MacOS', resources, executable, resources / 'app.asar'):
+        info = path.lstat()
+        if path.is_symlink() or path.resolve(strict=True) != path or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise RuntimeError('Native authority backend is not owner-controlled.')
+        if path in (executable, resources / 'app.asar'):
+            if not stat.S_ISREG(info.st_mode): raise RuntimeError('Native authority backend is not regular.')
+        elif not stat.S_ISDIR(info.st_mode): raise RuntimeError('Native authority backend directory changed.')
+    if not os.access(executable, os.X_OK): raise RuntimeError('Native authority backend is not executable.')
+    request = {'protocol': 1, 'operation': operation, 'baseDir': expected['home'],
+               'databasePath': expected['databasePath'], 'environmentId': expected['environmentId'],
+               'candidate': {key: candidate[key] for key in ('version', 'sourceSha', 'sourceTree')}}
+    if operation == 'advance': request['guard'] = guard
+    payload = json.dumps(request).encode('utf8')
+    if len(payload) > 16384: raise RuntimeError('Native authority request exceeds its bound.')
+    env = dict(os.environ, ELECTRON_RUN_AS_NODE='1')
+    for name in ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR'):
+        env.pop(name, None)
+    try:
+        result = subprocess.run([str(executable), str(resources / 'app.asar/apps/server/dist/bin.mjs'),
+                                 '__jones-native-authority-transition'], input=payload, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=env, timeout=30, check=False)
+        if result.returncode != 0 or len(result.stdout) > 16384: raise ValueError('unknown result')
+        response = json.loads(result.stdout.decode('utf8'))
+        if not isinstance(response, dict) or type(response.get('protocol')) is not int or response['protocol'] != 1 or response.get('operation') != operation:
+            raise ValueError('unknown result')
+        if operation == 'fence':
+            if set(response) != {'protocol', 'operation', 'guard'}: raise ValueError('unknown result')
+            observed = response['guard']
+            if not isinstance(observed, dict): raise ValueError('unknown guard')
+            if observed == {'kind': 'absent'}: return observed
+            fields = {'kind', 'environmentId', 'authorityNamespace', 'storeGeneration', 'transitionId', 'recordSha256'}
+            if set(observed) != fields or observed['kind'] != 'fenced' or observed['environmentId'] != expected['environmentId']:
+                raise ValueError('unknown guard')
+            if type(observed['storeGeneration']) is not int or not 1 <= observed['storeGeneration'] < 9007199254740991:
+                raise ValueError('unknown generation')
+            for value, prefix in ((observed['authorityNamespace'], 't3-native:'), (observed['transitionId'], '')):
+                if not isinstance(value, str) or not value.startswith(prefix): raise ValueError('unknown guard')
+                identity = uuid.UUID(value[len(prefix):])
+                if identity.version != 4 or str(identity) != value[len(prefix):]: raise ValueError('unknown guard')
+            digest_value = observed['recordSha256']
+            if not isinstance(digest_value, str) or len(digest_value) != 64 or any(char not in '0123456789abcdef' for char in digest_value):
+                raise ValueError('unknown guard')
+            return observed
+        if guard == {'kind': 'absent'}:
+            if response != {'protocol': 1, 'operation': 'advance', 'state': 'absent'}: raise ValueError('unknown result')
+        elif set(response) != {'protocol', 'operation', 'state', 'authorityNamespace', 'storeGeneration'} or response['state'] != 'advanced' or response['authorityNamespace'] != guard['authorityNamespace'] or type(response['storeGeneration']) is not int or response['storeGeneration'] != guard['storeGeneration'] + 1:
+            raise ValueError('unknown result')
+        return response
+    except Exception:
+        # A lost response can follow a committed transition. Never replay it or
+        # infer that the old generation is safe to launch.
+        raise RuntimeError('Native authority transition outcome is unknown; restore held.') from None
+
 def prepare_bundle(expected, staged, transaction_id):
     stable = pathlib.Path(expected['appPath'])
     incoming = stable.with_name(stable.name + '.jones-incoming-' + transaction_id)
@@ -805,7 +867,7 @@ def activate(intent_file):
             if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
             release_recovery_reserve(recovery_reserves)
             recovery_capacity_before_restore(expected, tx / 'previous-pair')
-            restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
+            restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state', staged)
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
             release_writer_exclusion(exclusive_writers)

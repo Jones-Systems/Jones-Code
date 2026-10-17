@@ -15,12 +15,12 @@ const sourceTexts = () =>
   ]);
 
 describe("shared paired-state Python source", () => {
-  it("matches the reviewed manual-install executor baseline", () => {
-    // Revision b068e7b1 adds the reviewed controlled manual-install entry;
-    // intentional future executor changes must review this byte contract.
-    expect(Buffer.byteLength(jonesNativeHelperSource)).toBe(79291);
+  it("pins the paired-restore authority transition executor", () => {
+    // Intentional executor changes update this byte contract together with the
+    // source-qualified producer pins and transaction safety tests.
+    expect(Buffer.byteLength(jonesNativeHelperSource)).toBe(84524);
     expect(NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex")).toBe(
-      "6a354259472cd591ccedabf56ef503547d729ef7c6747a0b99041137160652e4",
+      "fa740f485c6c6cc78835edf8fa163b439a85927e0b18ff1897473b6b82b2f5d1",
     );
     for (const fragment of Object.values(jonesPairedStateSource)) {
       expect(jonesNativeHelperSource.split(fragment)).toHaveLength(2);
