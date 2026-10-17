@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
@@ -86,12 +87,58 @@ export async function hashTree(root) {
   return output;
 }
 
+const trackedPatchFile = "install-preview-build.patch";
+const trackedPatchFormat = "git-diff-binary-full-index/v1";
+const trackedPatchMaxBytes = 16 * 1024 * 1024;
+const trackedPatchPath = (receiptPath) =>
+  NodePath.join(NodePath.dirname(receiptPath), trackedPatchFile);
+const readBinaryTrackedPatch = (source) =>
+  NodeChildProcess.execFileSync(
+    "git",
+    [
+      "-C",
+      source,
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--binary",
+      "--full-index",
+      "HEAD",
+      "--",
+      ".",
+    ],
+    { maxBuffer: trackedPatchMaxBytes },
+  );
+
+async function readPatchArtifact(file, bytes) {
+  const handle = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    NodeAssert.ok(stat.isFile(), "Tracked patch artifact must be a regular file");
+    NodeAssert.equal(stat.size, bytes, "Tracked patch artifact size differs");
+    const buffer = Buffer.alloc(bytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    NodeAssert.equal(length, bytes, "Tracked patch artifact changed while reading");
+    return buffer.subarray(0, length);
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function recordBuild(source, out, rendererDir) {
   const git = (...args) =>
     NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
   const sourceSha = git("rev-parse", "HEAD");
   const sourceTree = git("rev-parse", "HEAD^{tree}");
+  // Keep the v1 ordinary UTF-8/trim digest distinct from the replayable binary patch.
   const patch = git("diff", "HEAD", "--", ".");
+  const binaryPatch = readBinaryTrackedPatch(source);
   const rendererManifest = rendererDir
     ? await readRendererManifest(rendererDir, sourceSha, sourceTree)
     : undefined;
@@ -100,11 +147,18 @@ export async function recordBuild(source, out, rendererDir) {
     sourceSha,
     sourceTree,
     trackedPatchSha256: digest(patch),
+    trackedPatchArtifact: {
+      format: trackedPatchFormat,
+      file: trackedPatchFile,
+      sha256: digest(binaryPatch),
+      bytes: binaryPatch.length,
+    },
     cleanTrackedSource: patch.length === 0,
     server: await hashTree(NodePath.join(source, "apps/server/dist")),
     web: await hashTree(NodePath.join(source, "apps/web/dist")),
     ...(rendererDir ? { renderer: await hashTree(rendererDir), rendererManifest } : {}),
   };
+  await NodeFSP.writeFile(trackedPatchPath(out), binaryPatch, { flag: "wx", mode: 0o600 });
   await atomicJson(out, receipt);
   return receipt;
 }
@@ -1352,15 +1406,34 @@ export async function waitInactive(rpc, threadId) {
   }
 }
 
-export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
-  NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
-  await NodeFSP.mkdir(out, { recursive: false });
+export async function readBuildReceipt(source, buildReceipt, rendererDir) {
   const expected = JSON.parse(await NodeFSP.readFile(buildReceipt, "utf8"));
   const nativeGit = (...args) =>
     NodeChildProcess.execFileSync("git", ["-C", source, ...args], { encoding: "utf8" }).trim();
   NodeAssert.equal(expected.sourceSha, nativeGit("rev-parse", "HEAD"));
   NodeAssert.equal(expected.sourceTree, nativeGit("rev-parse", "HEAD^{tree}"));
   NodeAssert.equal(expected.trackedPatchSha256, digest(nativeGit("diff", "HEAD", "--", ".")));
+  const artifact = expected.trackedPatchArtifact;
+  NodeAssert.equal(
+    artifact?.format,
+    trackedPatchFormat,
+    "Tracked patch format is missing or invalid",
+  );
+  NodeAssert.equal(artifact.file, trackedPatchFile, "Tracked patch filename differs");
+  NodeAssert.match(artifact.sha256, /^[a-f0-9]{64}$/);
+  NodeAssert.ok(
+    Number.isSafeInteger(artifact.bytes) &&
+      artifact.bytes >= 0 &&
+      artifact.bytes <= trackedPatchMaxBytes,
+    "Tracked patch artifact exceeds its byte bound",
+  );
+  const binaryPatch = await readPatchArtifact(trackedPatchPath(buildReceipt), artifact.bytes);
+  NodeAssert.equal(digest(binaryPatch), artifact.sha256, "Tracked patch artifact digest differs");
+  NodeAssert.deepEqual(
+    readBinaryTrackedPatch(source),
+    binaryPatch,
+    "Tracked patch artifact differs from current source",
+  );
   NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/server/dist")), expected.server);
   NodeAssert.deepEqual(await hashTree(NodePath.join(source, "apps/web/dist")), expected.web);
   NodeAssert.equal(
@@ -1375,6 +1448,13 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
       expected.rendererManifest,
     );
   }
+  return expected;
+}
+
+export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
+  NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
+  await NodeFSP.mkdir(out, { recursive: false });
+  const expected = await readBuildReceipt(source, buildReceipt, rendererDir);
   const evidence = {
     schema: "jones-install-preview-qualification/v1",
     build: expected,
