@@ -314,6 +314,14 @@
     {
       "from": "apps/server/src/bin.ts",
       "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.ts"
+    },
+    {
+      "from": "packages/contracts/src/server.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
     }
   ]
 }
