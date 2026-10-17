@@ -261,7 +261,7 @@ try {
   await ownership.mkdir(userdata);
   const environmentId = "packaged-native-authority-qualification";
   await ownership.file(NodePath.join(userdata, "environment-id"), `${environmentId}\n`);
-  const databasePath = NodePath.join(userdata, "state.sqlite");
+  const databasePath = NodePath.join(userdata, "statev2.sqlite");
   const database = new NodeSqlite.DatabaseSync(databasePath);
   try {
     database.exec("CREATE TABLE qualification_sentinel (value INTEGER NOT NULL)");

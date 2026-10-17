@@ -153,7 +153,7 @@ export const executeNativeAuthorityTransition = (bytes: Uint8Array): unknown => 
   if (
     !NodePath.isAbsolute(baseDir) ||
     NodePath.resolve(baseDir) !== baseDir ||
-    databasePath !== NodePath.join(baseDir, "userdata/state.sqlite") ||
+    databasePath !== NodePath.join(baseDir, "userdata/statev2.sqlite") ||
     (process.env.T3CODE_NATIVE_AUTHORITY_STATE_DIR !== undefined &&
       process.env.T3CODE_NATIVE_AUTHORITY_STATE_DIR !== directory)
   )

@@ -45,7 +45,7 @@ const fixture = (run: (request: Record<string, unknown>, root: string) => void):
     NodeFS.writeFileSync(NodePath.join(baseDir, "userdata/environment-id"), "native-transition\n", {
       mode: 0o600,
     });
-    const databasePath = NodePath.join(baseDir, "userdata/state.sqlite");
+    const databasePath = NodePath.join(baseDir, "userdata/statev2.sqlite");
     NodeFS.writeFileSync(databasePath, "SQLite format 3\0", { mode: 0o600 });
     const contents = NodePath.join(root, "Jones.app/Contents");
     NodeFS.mkdirSync(NodePath.join(contents, "MacOS"), { recursive: true, mode: 0o700 });
@@ -84,7 +84,7 @@ const execute = (request: unknown) =>
   executeNativeAuthorityTransition(Buffer.from(JSON.stringify(request)));
 
 describe("bounded native authority command", () => {
-  it("uses the stamped backend and persisted identity to fence then advance", () =>
+  it("uses the production statev2.sqlite path and stamped backend to fence then advance", () =>
     fixture((request) => {
       const directory = NodePath.join(request.baseDir as string, "native-store-authority");
       const initial = initializeNativeStoreAuthority(directory, "native-transition");
@@ -98,6 +98,14 @@ describe("bounded native authority command", () => {
         storeGeneration: 2,
       });
       expect(() => execute({ ...request, operation: "advance", guard: result.guard })).toThrow();
+    }));
+
+  it("refuses the legacy state.sqlite path even when the owned file exists", () =>
+    fixture((request, root) => {
+      const databasePath = NodePath.join(root, "home/userdata/state.sqlite");
+      NodeFS.writeFileSync(databasePath, "SQLite format 3\0", { mode: 0o600 });
+      expect(() => execute({ ...request, databasePath })).toThrow();
+      expect(NodeFS.existsSync(NodePath.join(root, "home/native-store-authority"))).toBe(false);
     }));
 
   it("checks the raw archive when Electron exposes its virtual directory", () =>

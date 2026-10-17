@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Each test owns inherited pipes and retires its child before returning.
 // @effect-diagnostics globalTimers:off -- These timers are owned and cleared by the native inherited-pipe lifecycle.
 import * as NodeTimers from "node:timers";
-import * as ChildProcess from "node:child_process";
-import type * as Stream from "node:stream";
+import * as NodeChildProcess from "node:child_process";
+import type * as NodeStream from "node:stream";
 import { expect, it } from "vite-plus/test";
 
 const moduleUrl = new URL("./DesktopNativeOwner.ts", import.meta.url).href;
@@ -32,7 +32,7 @@ it.each(["current", "parent-eof", "replay", "wrong-path", "wrong-run"] as const)
       } catch { process.stdout.write('refused\\n'); }
       finally { channel.close(); process.stdin.destroy(); }
     `;
-    const child = ChildProcess.spawn(process.execPath, ["--input-type=module", "-e", script], {
+    const child = NodeChildProcess.spawn(process.execPath, ["--input-type=module", "-e", script], {
       stdio: [
         "pipe",
         "pipe",
@@ -47,10 +47,10 @@ it.each(["current", "parent-eof", "replay", "wrong-path", "wrong-run"] as const)
       ],
     });
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
-    const descriptors: readonly (Stream.Readable | Stream.Writable | null | undefined)[] =
+    const descriptors: readonly (NodeStream.Readable | NodeStream.Writable | null | undefined)[] =
       child.stdio;
-    const replies = descriptors[8] as Stream.Writable;
-    const requests = descriptors[9] as Stream.Readable;
+    const replies = descriptors[8] as NodeStream.Writable;
+    const requests = descriptors[9] as NodeStream.Readable;
     let stdout = "";
     let stderr = "";
     let requestBuffer = "";
@@ -127,9 +127,13 @@ it("permanently loses qualification when the actual channel parent exits", async
     "let buffer='';child.stdio[9].on('data',data=>{buffer+=String(data);const at=buffer.indexOf('\\n');if(at<0)return;",
     "const request=JSON.parse(buffer.slice(0,at));child.stdio[8].write(JSON.stringify({...request,parentPid:process.pid,runId:'d'.repeat(64)})+'\\n',()=>process.exit(0));});",
   ].join("\n");
-  const parent = ChildProcess.spawn(process.execPath, ["--input-type=module", "-e", parentScript], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const parent = NodeChildProcess.spawn(
+    process.execPath,
+    ["--input-type=module", "-e", parentScript],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   const closed = new Promise<void>((resolve) => parent.once("close", () => resolve()));
   let stdout = "";
   let stderr = "";
