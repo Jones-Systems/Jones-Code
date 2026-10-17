@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic diagnostic JSON goes to stdout; the caller owns retention outside the repository.
+import * as NodeConsole from "node:console";
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
@@ -10,7 +11,6 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
-import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -534,7 +534,8 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
     }
     const measurements = observations.flatMap(({ measurements }) => measurements);
     const queries = yield* queryEvidence(measurements);
-    yield* Console.log(
+    // @effect-diagnostics-next-line globalConsoleInEffect:off -- Raw diagnostic JSON must reach the invoking harness rather than Effect TestConsole.
+    NodeConsole.log(
       JSON.stringify({
         diagnostic: "v2-shell-cost",
         surface: "direct handler service-stream delivery",
