@@ -12,6 +12,7 @@ import {
   SERVICE_LAUNCHER_CONTEXT_ENV,
   SERVICE_LAUNCHER_PROTOCOL,
 } from "../cloud/serviceProtocol.ts";
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 import type { T3PlacementTrustProvider } from "./NativePlacementTrust.ts";
 import {
@@ -71,8 +72,22 @@ export const make = Effect.fn("NativeStoreAuthority.make")(function* () {
   const authorityStateDir = config.authorityStateDir;
   const environment = yield* HostProcess.Environment;
   const host = yield* ServiceLauncherHostProcess;
+  const desktopOwner = yield* DesktopNativeOwner.DesktopNativeOwner;
   const requireSafeLauncher = () => {
     validateNativeStoreAuthorityPath(config.baseDir, authorityStateDir);
+    if (config.mode === "desktop") {
+      desktopOwner.assertCurrent();
+      if (
+        desktopOwner.binding?.home !== config.baseDir ||
+        desktopOwner.binding.databasePath !== config.dbPath ||
+        desktopOwner.binding.environmentId !== environmentId
+      )
+        throw new NativeStoreAuthorityPersistenceError(
+          "environment_mismatch",
+          "Desktop owner binding changed.",
+        );
+      return;
+    }
     const rawContext = environment[SERVICE_LAUNCHER_CONTEXT_ENV];
     const context = rawContext === undefined ? undefined : decodeServiceLauncherContext(rawContext);
     if (!host.connected || context?.protocol !== SERVICE_LAUNCHER_PROTOCOL) {
@@ -91,13 +106,19 @@ export const make = Effect.fn("NativeStoreAuthority.make")(function* () {
   // Enrollment is explicit: a missing or rolled-back authority record is not
   // regenerated here, because doing so could reset the generation high-water
   // mark and accidentally trust a replaced native store.
-  const readCurrent: NativeStoreAuthority["Service"]["readCurrent"] = Effect.try({
-    try: () => {
-      requireSafeLauncher();
-      return tupleFromState(readNativeStoreAuthorityState(authorityStateDir), environmentId);
-    },
-    catch: asPersistenceError,
-  });
+  const readCurrent: NativeStoreAuthority["Service"]["readCurrent"] = (
+    config.mode === "desktop" ? desktopOwner.refresh : Effect.void
+  ).pipe(
+    Effect.andThen(
+      Effect.try({
+        try: () => {
+          requireSafeLauncher();
+          return tupleFromState(readNativeStoreAuthorityState(authorityStateDir), environmentId);
+        },
+        catch: asPersistenceError,
+      }),
+    ),
+  );
 
   const readTrustSnapshot: T3PlacementTrustProvider["readTrustSnapshot"] = () => {
     try {

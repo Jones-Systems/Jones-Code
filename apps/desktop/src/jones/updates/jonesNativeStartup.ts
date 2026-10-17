@@ -1,10 +1,21 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Runs synchronously in boot before profile configuration.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { holdJonesNativeWriterFence } from "@t3tools/shared/jones/nativeWriterFence";
+import {
+  holdJonesNativeWriterFence,
+  holdJonesDesktopOwner,
+  type JonesNativeWriterAdmission,
+} from "@t3tools/shared/jones/nativeWriterFence";
 import { isCompanionPackage } from "@t3tools/shared/jones/previewCompanionProduct";
 import { holdJonesColdStartup } from "./jonesColdBackendCustody.ts";
 import { resolveDesktopUserDataOverride } from "../../app/DesktopUserDataOverride.ts";
+
+let desktopOwner: JonesNativeWriterAdmission | undefined;
+
+export function currentJonesDesktopOwner(): JonesNativeWriterAdmission | undefined {
+  desktopOwner?.assertCurrent();
+  return desktopOwner;
+}
 
 export function holdJonesDesktopNativeWriterFence(input: {
   readonly platform: string;
@@ -14,6 +25,7 @@ export function holdJonesDesktopNativeWriterFence(input: {
   readonly version: string;
   readonly metadata: unknown;
 }): void {
+  desktopOwner = undefined;
   holdJonesColdStartup(input.env);
   if (input.platform !== "darwin" || isCompanionPackage(input.metadata)) return;
   const explicitHome = input.env.T3CODE_HOME?.trim();
@@ -25,7 +37,7 @@ export function holdJonesDesktopNativeWriterFence(input: {
     (development && NodeFS.existsSync(legacy)
       ? legacy
       : NodePath.join(input.appDataDirectory, development ? "t3code-dev" : "t3code-v2"));
-  holdJonesNativeWriterFence({
+  const admission = holdJonesNativeWriterFence({
     home,
     databasePath: NodePath.join(
       home,
@@ -37,4 +49,5 @@ export function holdJonesDesktopNativeWriterFence(input: {
     version: input.version,
     buildMetadata: input.metadata,
   });
+  if (admission !== undefined) desktopOwner = holdJonesDesktopOwner(admission);
 }

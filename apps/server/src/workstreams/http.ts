@@ -1,3 +1,4 @@
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -102,6 +103,7 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
     }),
   );
 export const workstreamNativeAuthorityLayerLive = NativeStoreAuthority.layer.pipe(
+  Layer.provideMerge(DesktopNativeOwner.layer),
   Layer.provide(ServerEnvironment.layerIdentity),
 );
 

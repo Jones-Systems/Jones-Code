@@ -100,7 +100,15 @@
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
-        "apps/mobile/src/features/workstreams/gateway.test.ts"
+        "apps/mobile/src/features/workstreams/gateway.test.ts",
+        "packages/shared/src/jones/desktopNativeOwner.test.ts",
+        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/scripts/main-process-bundle.test.mjs"
       ]
     },
     {

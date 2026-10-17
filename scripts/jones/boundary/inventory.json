@@ -1020,7 +1020,14 @@
     "apps/server/src/provider/providerMaintenanceRunner.ts": "hook",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared",
-    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned"
+    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.ts": "jones-owned",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts": "jones-owned",
+    "packages/contracts/src/desktopBootstrap.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
