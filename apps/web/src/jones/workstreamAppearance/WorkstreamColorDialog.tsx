@@ -16,6 +16,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from "../../components/ui/dialog";
+import { WorkstreamActionError } from "../workstreams/workstreamActionSnapshot";
 
 export function WorkstreamColorDialog(props: {
   readonly name: string;
@@ -38,6 +39,7 @@ export function WorkstreamColorDialog(props: {
     busyRef.current = true;
     setBusy(true);
     setError(null);
+    const pending = retry;
     try {
       const request = retry ?? {
         command_id: await props.createCommandId(),
@@ -49,10 +51,15 @@ export function WorkstreamColorDialog(props: {
       setRetry(request);
       await props.save(request);
       props.onClose();
-    } catch {
-      setError(
-        "Could not confirm the saved color. Retry the same save or refresh Workstreams to check the result.",
-      );
+    } catch (cause) {
+      if (cause instanceof WorkstreamActionError) {
+        // Refused before any request: nothing is uncertain, so no new retry is frozen.
+        setRetry(pending);
+        setError(cause.message);
+      } else
+        setError(
+          "Could not confirm the saved color. Retry the same save or refresh Workstreams to check the result.",
+        );
     } finally {
       busyRef.current = false;
       setBusy(false);
