@@ -1,4 +1,5 @@
 import { BrowserHostsSettings } from "../../jones/previewCompanion/BrowserHostsSettings";
+import { DecisionSnapshotAccessSettings } from "../../jones/settings/DecisionSnapshotAccessSettings";
 import { DeviceHostUpdates } from "../device/DeviceHostUpdates";
 import { DeviceToolVersions } from "../device/DeviceToolVersions";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
@@ -1496,6 +1497,7 @@ export function IntegrationsSettingsPanel() {
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
       <DeviceIntegrationSettings />
+      <DecisionSnapshotAccessSettings />
     </SettingsPageContainer>
   );
 }
