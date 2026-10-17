@@ -193,6 +193,11 @@
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     },
     {
+      "id": "mcp-pin-placement",
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
+      "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
+    },
+    {
       "id": "work-queue-metadata",
       "tests": [
         "apps/server/src/voiceReview/bridge.test.ts",
