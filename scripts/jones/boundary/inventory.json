@@ -21,6 +21,7 @@
     "apps/server/src/orchestration-v2/ProviderTurnControlService.ts": "accepted-shared",
     "scripts/jones/ci-test-progress-reporter.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellFanout.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts": "jones-owned",
     "apps/server/src/device/DeviceHubProxy.stream.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts": "jones-tests-in-upstream",
     "apps/server/src/persistence/OrchestrationEventStore.test.ts": "jones-tests-in-upstream",
