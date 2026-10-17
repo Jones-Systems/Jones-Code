@@ -9,6 +9,7 @@ import type {
   DeletionWorktreeRemovalStartV1,
 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
+import { captureNativeProviderSettlementProof } from "../jones/workstreams/nativeProvider/settlementProof.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
@@ -71,9 +72,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
-/**
- * ERRORS
- */
 export class EventSinkWriteError extends Schema.TaggedError<EventSinkWriteError>()(
   "EventSinkWriteError",
   {
@@ -349,10 +347,6 @@ export interface EventSinkV2Shape {
       readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     };
   }) => Effect.Effect<CommandReceiptStore.CommandReceiptV2, EventSinkV2Error>;
-  /**
-   * Append a project event, fold it into its row and record the receipt in one
-   * transaction. A reused command id commits nothing and returns its receipt.
-   */
   readonly commitProjectCommand: (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -363,7 +357,6 @@ export interface EventSinkV2Shape {
     { readonly receipt: CommandReceiptStore.ProjectCommandReceiptV2; readonly committed: boolean },
     EventSinkV2Error
   >;
-  /** Record a rejected project command, or return the receipt its command id already has. */
   readonly commitRejectedProjectCommand: (input: {
     readonly commandId: CommandId;
     readonly projectId: ProjectId;
@@ -436,6 +429,33 @@ const layerBase: Layer.Layer<
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
     );
+    const captureSettlementProof = (
+      receipt: CommandReceiptStore.CommandReceiptV2,
+      storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+    ) =>
+      receipt.commandType === "thread.settle" || receipt.commandType === "thread.unsettle"
+        ? captureNativeProviderSettlementProof({
+            receipt: {
+              commandId: receipt.commandId,
+              aggregateKind: "thread",
+              aggregateId: receipt.threadId,
+              commandType: receipt.commandType,
+              acceptedAt: DateTime.formatIso(receipt.acceptedAt),
+              resultSequence: receipt.resultSequence,
+              status: receipt.status,
+            },
+            events: storedEvents.map((stored) => ({
+              eventId: stored.event.id,
+              commandId: stored.commandId,
+              aggregateKind: "thread" as const,
+              aggregateId: stored.event.threadId,
+              sequence: stored.sequence,
+              type: stored.event.type,
+              occurredAt: DateTime.formatIso(stored.event.occurredAt),
+              applicationEventVersion: 2,
+            })),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+        : Effect.void;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -725,12 +745,7 @@ const layerBase: Layer.Layer<
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
           return committed;
-        }).pipe(
-          // Every streamed agent event is a write, so its statements would
-          // dominate the trace file. This span and its sql.transaction span
-          // still time each write, including the commit.
-          Effect.withTracerEnabled(false),
-        ),
+        }).pipe(Effect.withTracerEnabled(false)),
         (storedEvents) =>
           Effect.gen(function* () {
             if (input.effects.length > 0) {
@@ -1110,6 +1125,7 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          yield* captureSettlementProof(receipt, storedEvents);
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
           if (imported !== undefined && choice !== undefined) {
             if (choice.duplicate)
@@ -1627,6 +1643,7 @@ const layerBase: Layer.Layer<
               (yield* eventStore.latestSequence({ threadId: input.threadId })),
           };
           yield* commandReceipts.upsert(receipt);
+          yield* captureSettlementProof(receipt, storedEvents);
           return { receipt, storedEvents };
         }),
         (committed) => publishStoredEvents(committed.storedEvents),
@@ -2045,10 +2062,8 @@ const layerBase: Layer.Layer<
 );
 
 /**
- * Event sink layer for application compositions that already own the
- * persistence services. Keeping the outbox instance shared with the worker is
- * important because enqueue notifications are in-memory wakeups backed by the
- * durable SQL queue.
+ * Keeping the outbox instance shared with the worker is important because enqueue notifications
+ * are in-memory wakeups backed by the durable SQL queue.
  */
 export const layerFromStores = layerBase;
 

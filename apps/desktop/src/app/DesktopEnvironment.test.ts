@@ -52,7 +52,7 @@ describe("DesktopEnvironment", () => {
       appVersion: "0.0.22",
       isDevelopment: false,
       displayName: "Jones Code",
-      stageLabel: "Alpha",
+      stageLabel: "Beta",
     },
     {
       channel: "nightly",

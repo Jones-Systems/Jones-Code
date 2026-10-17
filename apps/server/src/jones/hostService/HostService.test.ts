@@ -175,6 +175,7 @@ function fixture(
         };
       }),
     restart: Effect.succeed(false),
+    withStopped: (operation) => operation,
     uninstall: Effect.succeed(false),
   });
   vi.spyOn(BootService, "layer").mockReturnValue(Layer.succeed(BootService.BootService, boot));
