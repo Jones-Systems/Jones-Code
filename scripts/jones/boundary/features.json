@@ -16,6 +16,25 @@
       "scope": "Captured initialized Codex client diagnostics with local OS incarnation and generation fences; sparse Jones-only history, restart noncurrentness, explicitly bound shared children, and observation without stop or creation authority. Synthetic qualification only; MCP connection incarnation and installed support remain unresolved."
     },
     {
+      "id": "client-update-notices",
+      "tests": [
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx"
+      ],
+      "scope": "Passive client guidance for ordered newer server versions and neutral unequal Jones preview sources. Full source identities scope per-environment dismissals; active and automatic eligible environments share the web/desktop renderer. ChatView adds only the notice hook and stack entries; versionSkew adapter tests stay shared to prove branded config forwarding. No server update action, source ancestry inference, connection block, or mobile version comparison. Synthetic renderer fixture exercises the production hook and stack with isolated descriptors."
+    },
+    {
+      "id": "thread-status-filter",
+      "tests": [
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+    },
+    {
       "id": "provider-order",
       "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
@@ -93,20 +112,39 @@
     {
       "id": "workstreams",
       "tests": [
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
-        "apps/mobile/src/features/workstreams/gateway.test.ts"
+        "apps/mobile/src/features/workstreams/gateway.test.ts",
+        "packages/shared/src/jones/desktopNativeOwner.test.ts",
+        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/entrypoint.test.ts"
       ]
     },
     {
       "id": "native-store-authority",
       "tests": [
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
-        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
+        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts"
       ]
     },
     {
@@ -227,6 +265,7 @@
     {
       "id": "direct-desktop-media",
       "tests": [
+        "apps/server/src/device/DeviceService.test.ts",
         "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/SshDeviceHost.test.ts",
@@ -486,6 +525,8 @@
     {
       "id": "persistence-upstream-isolation",
       "tests": [
+        "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+        "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
@@ -493,8 +534,11 @@
     },
     {
       "id": "composer-thread-query",
-      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
+        "packages/client-runtime/src/jones/composerThreadMatching.test.ts"
+      ],
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; thread titles match punctuation-normalized words in any order, rank stronger matches before weaker matches, then recent activity within equal relevance; preserves file matching, matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
@@ -562,9 +606,10 @@
       "id": "codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
-      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded. The original turn/start RPC remains owned by its exact producer after caller timeout. A bounded Jones ledger lifts admission only after matching late acknowledgement and terminal evidence, without replaying or reviving the failed attempt. Shared adapter hooks retain producer scope and admission ownership; integration tests stay in the upstream replay harness to prove real RPC correlation and new/resumed sibling admission."
     },
     {
       "id": "connection-diagnostics",
@@ -678,7 +723,8 @@
         "apps/desktop/scripts/main-process-bundle.test.mjs",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
-        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
+        "apps/server/src/entrypoint.test.ts"
       ],
       "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
     },
@@ -709,6 +755,39 @@
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
+    },
+    {
+      "id": "startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+    },
+    {
+      "id": "launcher-commit-diagnostics",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts"
+      ],
+      "scope": "Update-bound pointer uncertainty, bounded safe commit diagnostics and launcher/server drift notices. Shared launcher edits preserve its existing state machine and commit guards; focused synthetic lifecycle coverage exercises pointer failure, promotion and sequential updates."
+    },
+    {
+      "id": "decision-snapshot-access",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "packages/shared/src/projectSettings.test.ts"
+      ],
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
     }
   ]
 }

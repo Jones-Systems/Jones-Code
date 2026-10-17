@@ -1,5 +1,9 @@
 import { StrictMode, useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { EnvironmentId } from "@t3tools/contracts";
+import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
+import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
+import { useClientUpdateBanners, type ClientUpdateBannerInput } from "../clientUpdateBanner";
 import {
   createMemoryHistory,
   createRootRoute,
@@ -29,9 +33,138 @@ function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }
   );
 }
 
+type NoticePair = "different" | "changed" | "equal" | "missing" | "stable";
+
+function NoticeRenderer(input: ClientUpdateBannerInput) {
+  const banners = useClientUpdateBanners(input);
+  return (
+    <>
+      <output data-testid="notice-count" className="block">
+        Client notices: {banners.length}
+      </output>
+      <div data-testid="notice-banners" className="pt-6">
+        <ComposerBannerStack items={banners} />
+        <div className="rounded-b-lg border p-4 text-muted-foreground">Synthetic composer</div>
+      </div>
+    </>
+  );
+}
+
+function ClientNoticePreview({ runId }: { readonly runId: string }) {
+  const [selected, setSelected] = useState("Laptop");
+  const [automatic, setAutomatic] = useState(false);
+  const [pair, setPair] = useState<NoticePair>("different");
+  const [mount, setMount] = useState(1);
+  // Both synthetic sources differ from the client and share their displayed abbreviation.
+  const differentSource = (APP_SOURCE_SHA?.startsWith("a") ? "b" : "a").repeat(39) + "b";
+  const source =
+    pair === "equal"
+      ? APP_SOURCE_SHA
+      : pair === "missing"
+        ? undefined
+        : pair === "changed"
+          ? differentSource.slice(0, -1) + "c"
+          : differentSource;
+  const serverVersion = pair === "stable" ? "0.1.0" : APP_VERSION;
+  const environments = ["Laptop", "Remote", "Excluded"].map((label) => {
+    const environmentId = EnvironmentId.make(`client-notice-${runId}-${label}`);
+    return {
+      environmentId,
+      label,
+      serverConfig: {
+        environment: {
+          environmentId,
+          label,
+          platform: { os: "linux", arch: "x64" } as const,
+          capabilities: { repositoryIdentity: true },
+          serverVersion,
+          ...(source
+            ? {
+                jonesSource: {
+                  repository: "Jones-Systems/Jones-Code" as const,
+                  sha: source,
+                  tree: source,
+                },
+              }
+            : {}),
+        },
+      },
+    };
+  });
+  return (
+    <section aria-label="Client notice renderer fixture" className="space-y-3 border-t pt-4">
+      <h2 className="font-medium">Client notice renderer fixture</h2>
+      <p className="text-sm text-muted-foreground">
+        Synthetic older client version and environment descriptors; exact build source. These inputs
+        do not claim an official installed artifact version.
+      </p>
+      <p className="break-all font-mono text-xs" data-testid="notice-branding">
+        Synthetic client {APP_VERSION}; exact source {APP_SOURCE_SHA ?? "unknown"}
+      </p>
+      <p className="break-all font-mono text-xs" data-testid="notice-server">
+        Synthetic server {serverVersion}; source {source ?? "missing"}
+      </p>
+      <output className="block" data-testid="notice-inputs">
+        Selection: {automatic ? "automatic (Laptop, Remote eligible)" : selected}; pair: {pair};
+        mount: {mount}
+      </output>
+      <div className="flex flex-wrap gap-2">
+        {["Laptop", "Remote", "Excluded"].map((label) => (
+          <button
+            type="button"
+            className="rounded border px-2 py-1 text-xs"
+            key={label}
+            data-testid={`notice-select-${label.toLowerCase()}`}
+            onClick={() => {
+              setSelected(label);
+              setAutomatic(false);
+            }}
+          >
+            Select {label}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="rounded border px-2 py-1 text-xs"
+          data-testid="notice-automatic"
+          onClick={() => setAutomatic(true)}
+        >
+          Use automatic eligible environments
+        </button>
+        {(["different", "changed", "equal", "missing", "stable"] as const).map((value) => (
+          <button
+            type="button"
+            className="rounded border px-2 py-1 text-xs"
+            key={value}
+            data-testid={`notice-pair-${value}`}
+            onClick={() => setPair(value)}
+          >
+            Pair: {value}
+          </button>
+        ))}
+        <button
+          type="button"
+          className="rounded border px-2 py-1 text-xs"
+          data-testid="notice-remount"
+          onClick={() => setMount((previous) => previous + 1)}
+        >
+          Remount production notice hook and stack
+        </button>
+      </div>
+      <NoticeRenderer
+        key={mount}
+        activeEnvironment={environments.find((environment) => environment.label === selected)}
+        automaticEnvironment={automatic}
+        eligibleEnvironments={environments.slice(0, 2)}
+      />
+    </section>
+  );
+}
+
 function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture }) {
   const stored = useSyncExternalStore(fixture.subscribe, fixture.read, fixture.read);
   const [failure, setFailure] = useState<string | null>(null);
+  const [showClientNotices, setShowClientNotices] = useState(false);
   const control = (action: () => void) => {
     try {
       action();
@@ -160,6 +293,18 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                 </pre>
               </details>
             </section>
+            {showClientNotices ? (
+              <ClientNoticePreview runId={stored.runId} />
+            ) : (
+              <button
+                type="button"
+                className="rounded border px-2 py-1 text-xs"
+                data-testid="show-client-notices"
+                onClick={() => setShowClientNotices(true)}
+              >
+                Open client notice fixture
+              </button>
+            )}
           </main>
         </TooltipProvider>
       </AnchoredToastProvider>

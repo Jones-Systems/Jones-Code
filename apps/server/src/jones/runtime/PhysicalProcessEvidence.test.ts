@@ -178,8 +178,8 @@ describe("synthetic local OS evidence", () => {
       stat: () =>
         Effect.succeed({
           type: "File",
-          dev: 1,
-          ino: Option.some(2),
+          dev: 1n,
+          ino: Option.some(2n),
           size: ByteSize.bytes(300),
           mtime: Option.some(DateTime.toDateUtc(DateTime.makeUnsafe(400))),
           atime: Option.none(),

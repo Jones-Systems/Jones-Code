@@ -12,14 +12,19 @@ T3 hosted account or relay. First verify that the server running on the intended
 host and base directory is a Jones build and that the receiving device can
 reach its authorized endpoint.
 
-The default SSH download and service installer still resolve upstream
-`pingdotgg/t3code` archives. They do not automatically install Jones Code, even
-when invoked from a Jones source CLI. Provisioning Jones requires a verified
-Jones-built pinned artifact or mirror, or an approved exact Jones launcher.
-Use the pairing commands below with that verified installation and its existing
-base directory. For a custom base directory, use direct private pairing:
-desktop SSH discovery looks under `~/.t3`. Do not start another foreground or
-SSH-launched server for a base directory already served by the host service.
+The Jones Code desktop app's SSH option never downloads or launches a server.
+It attaches only to a Jones managed service that is already running in the
+host's `${T3CODE_HOME:-$HOME/.t3}`. If that service is missing, incomplete, or
+not ready, it stops with **Set up Jones Code on this host with its managed
+service before connecting**. The command-line download and service installer
+still resolve upstream `pingdotgg/t3code` archives. They do not install Jones
+Code, even when invoked from a Jones source CLI. Provisioning Jones requires a
+verified Jones-built pinned artifact or mirror, or an approved exact Jones
+launcher. Use the pairing commands below with that verified installation and
+its existing base directory. For a custom base directory, use direct private
+pairing: SSH attachment looks under `~/.t3` unless the host's non-interactive
+shell sets `T3CODE_HOME`. Do not start another foreground server for a base
+directory already served by the host service.
 
 Disconnecting a client leaves the host server and provider processes running.
 Restarting or uninstalling the host service is a separate action and interrupts
@@ -365,7 +370,9 @@ when SSH closes, see [background-service troubleshooting](./background-service.m
 | HTTP 408, 429, or 5xx                                     | Check network and relay availability. Startup retries temporary failures for up to ten minutes.                                             |
 
 After fixing a permanent rejection, restart the host's server. On Linux, use
-`systemctl --user restart t3code.service` for the background service. For a
+`systemctl --user restart t3code.service` for the background service. A Jones
+host service installed fresh uses `jones-code.service` instead; an adopted
+host keeps its original unit name. For a
 foreground server, stop it and run `t3 serve` again with your usual options.
 Include the diagnostic message and trace ID when reporting a persistent failure.
 

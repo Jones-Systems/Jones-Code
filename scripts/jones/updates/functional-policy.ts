@@ -77,8 +77,8 @@ const asyncHooksImport = workerImport(
 const workerPolicy = {
   schema: "jones.preparation-worker-policy/v2",
   entry: {
-    sha256: "b37d55a27607057a194ea2861f80740cb2673d42298cb74a1eaecaa5be551598",
-    size: 2965629,
+    sha256: "9d4bc796b7115b23807408985e6b6c05284fd6f6df9cec1a09964e405582b816",
+    size: 2919032,
   },
   // Exact syntax records in emitted order; each hash binds one reviewed source expression.
   imports: [

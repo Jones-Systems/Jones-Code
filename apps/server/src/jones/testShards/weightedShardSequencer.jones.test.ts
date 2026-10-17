@@ -36,10 +36,10 @@ async function partition(paths: readonly string[], count: number): Promise<strin
   );
 }
 
-/** The partition the sequencer produced before runtime weights existed, kept as the reference. */
-function legacyPartition(paths: readonly string[], count: number): string[][] {
+/** Upstream defaults use recorded wall seconds and 0.6 seconds for unrecorded files. */
+function upstreamPartition(paths: readonly string[], count: number): string[][] {
   const weighted = paths
-    .map((key) => ({ key, seconds: (recordedSeconds[key] ?? 0) + 0.25 }))
+    .map((key) => ({ key, seconds: recordedSeconds[key] ?? 0.6 }))
     .toSorted((a, b) => b.seconds - a.seconds || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const loads = Array.from({ length: count }, () => 0);
   const shards: string[][] = Array.from({ length: count }, () => []);
@@ -104,12 +104,12 @@ afterEach(() => {
 
 describe("WeightedShardSequencer weight sources", () => {
   it.each([1, 6, 8])("keeps the checked-in partition over %i shards", async (count) => {
-    expect(await partition(files, count)).toEqual(legacyPartition(files, count));
+    expect(await partition(files, count)).toEqual(upstreamPartition(files, count));
   });
 
   it("treats an empty weights path as unset", async () => {
     vi.stubEnv(WEIGHTS_PATH_ENV, "");
-    expect(await partition(files, 6)).toEqual(legacyPartition(files, 6));
+    expect(await partition(files, 6)).toEqual(upstreamPartition(files, 6));
   });
 
   it("reads runtime weights as wall seconds and charges unknown files 0.6s", () => {

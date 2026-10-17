@@ -85,8 +85,6 @@ globalThis.onStarted({ entry: "queue", renderedElement: Shared() });`,
         rolldownOptions: {
           experimental: { devMode: { lazy: false } },
           output: {
-            // Reproduce the shared chunks Vite creates after lazy routes load,
-            // without needing a browser to trigger the lazy compiler first.
             codeSplitting: {
               groups: [
                 { name: "vendor", test: /node_modules|@react-refresh/, priority: 10 },
@@ -105,9 +103,6 @@ globalThis.onStarted({ entry: "queue", renderedElement: Shared() });`,
       await NodeFSP.writeFile(target, code);
     }
 
-    // Execute both real bootstrap branches and their generated shared UI chunk.
-    // Fixtures replace the entry screens and hosted detection; the runner supplies
-    // browser and HMR transport stubs so import order and refresh checks still run.
     const runner = NodePath.join(output, "check.mjs");
     await NodeFSP.writeFile(
       runner,

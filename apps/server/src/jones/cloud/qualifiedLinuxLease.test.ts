@@ -16,7 +16,6 @@ import {
   assertQualifiedReadinessObservable,
   linuxNativeQualifiedQuiescenceAdapter,
   linuxQualifiedQuiescenceAdapter,
-  nativeQualifiedQuiescenceAdapter,
   proveQualifiedStateQuiescence,
   QualifiedQuiescenceError,
 } from "./qualifiedQuiescence.ts";
@@ -208,9 +207,14 @@ it.skipIf(!hiddenWriterHost)(
       await NodeFSP.writeFile(settings, "synthetic settings");
       const untrustedHelper = NodePath.join(base, "helper");
       await NodeFSP.writeFile(untrustedHelper, "");
-      // No helper is installed on the runner, so the native readiness observer
-      // falls back to the same-user scan; an untrusted helper blocks outright.
-      const native = nativeQualifiedQuiescenceAdapter("linux");
+      // Owned missing paths force the same-user fallback regardless of the
+      // runner's installed helper or socket; an untrusted helper blocks outright.
+      const native = linuxNativeQualifiedQuiescenceAdapter({
+        readiness: {
+          helperPath: NodePath.join(base, "missing-helper"),
+          socketPath: NodePath.join(base, "missing-observer.sock"),
+        },
+      });
       const unusableHelper = linuxNativeQualifiedQuiescenceAdapter({
         readiness: { helperPath: untrustedHelper },
       });

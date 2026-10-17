@@ -21,7 +21,9 @@ import JonesMigration0105 from "./Migrations/105_JonesUpstreamReferenceIsolation
 
 import JonesMigration0106 from "./Migrations/106_JonesPlannedUpdateContinuity.ts";
 
-import JonesMigration0107 from "./Migrations/107_JonesPhysicalProcessEvidence.ts";
+import JonesMigration0107 from "./Migrations/107_JonesWorkstreamsSettlementProofs.ts";
+
+import JonesMigration0108 from "./Migrations/108_JonesPhysicalProcessEvidence.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -37,7 +39,8 @@ export const jonesMigrationEntries = [
   [104, "DeletionAdmission", JonesMigration0104],
   [105, "UpstreamReferenceIsolation", JonesMigration0105],
   [106, "PlannedUpdateContinuity", JonesMigration0106],
-  [107, "PhysicalProcessEvidence", JonesMigration0107],
+  [107, "WorkstreamsSettlementProofs", JonesMigration0107],
+  [108, "PhysicalProcessEvidence", JonesMigration0108],
 ] as const;
 
 export const runMigrations = () =>

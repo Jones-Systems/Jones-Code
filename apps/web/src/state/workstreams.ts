@@ -11,10 +11,11 @@ import type {
   WorkstreamReferencePage,
   WorkstreamCommand,
   WorkstreamReceipt,
-  WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
+  EnvironmentInternalError,
   T3_PLACEMENT_MAX_IDENTITIES,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
@@ -38,6 +39,8 @@ import {
   type WorkstreamActionSnapshot,
 } from "../jones/workstreams/workstreamActionSnapshot";
 
+import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
+
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
 import { runPrimaryHttp } from "../lib/runtime";
 
@@ -47,12 +50,28 @@ const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, sign
   runPrimaryHttp(PrimaryEnvironmentHttpClient.pipe(Effect.flatMap(run)), { signal });
 
 const metadataCache = new LiveWorkstreamMetadataCache();
-const isCursorStale = Schema.is(EnvironmentHttpConflictError);
+const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
+const isInternalReadError = Schema.is(EnvironmentInternalError);
 const CURSOR_RESTART_ATTEMPTS = 3;
 const EMPTY_NATIVE_THREADS: readonly { readonly environmentId: string; readonly id: string }[] = [];
 
 const isRestartableCursorStale = (cause: unknown): boolean =>
-  isCursorStale(cause) && cause.message === "workstream_cursor_stale";
+  isHttpConflict(cause) && cause.message === "workstream_cursor_stale";
+
+/** A server without control-plane activation answers reads with this stable conflict. */
+export const isWorkstreamsNotConfigured = (cause: unknown): boolean =>
+  isHttpConflict(cause) && cause.message === "workstreams_not_configured";
+
+/**
+ * Error text for a failed list read, or null when Workstreams are simply not configured on the
+ * server: retrying cannot succeed, so the sidebar shows ungrouped threads without an error.
+ */
+export const workstreamListErrorMessage = (cause: unknown): string | null =>
+  isWorkstreamsNotConfigured(cause)
+    ? null
+    : cause instanceof Error
+      ? cause.message
+      : "Workstreams are unavailable.";
 
 export interface CursorRestartOptions {
   readonly signal?: AbortSignal;
@@ -74,6 +93,32 @@ const waitForRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
     }, delayMs);
     signal?.addEventListener("abort", abort, { once: true });
   });
+
+class WorkstreamRegistryVersionChanged extends Error {}
+
+async function withTransientReadRecovery<A>(
+  load: () => Promise<A>,
+  signal: AbortSignal,
+): Promise<A> {
+  for (let retry = 0; ; retry += 1) {
+    throwIfAborted(signal);
+    try {
+      const value = await load();
+      throwIfAborted(signal);
+      return value;
+    } catch (cause) {
+      throwIfAborted(signal);
+      // CP outages share the opaque internal-error response; never retry reads indefinitely.
+      if (
+        retry === 5 ||
+        (!(cause instanceof WorkstreamRegistryVersionChanged) &&
+          (!isInternalReadError(cause) || cause.reason !== "internal_error"))
+      )
+        throw cause;
+      await waitForRetry(1_000 * 2 ** retry, signal);
+    }
+  }
+}
 
 async function withCursorRestart<A>(
   load: () => Promise<A>,
@@ -236,7 +281,7 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
-  readonly registrationContext?: WorkstreamsRegistrationContextResponse | null;
+  readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
     readonly signal?: AbortSignal;
   }) => Promise<WorkstreamActionSnapshot>;
@@ -416,7 +461,7 @@ export function useWorkstreams(
     [inventory.json],
   );
   const [registrationContext, setRegistrationContext] =
-    useState<WorkstreamsRegistrationContextResponse | null>(null);
+    useState<WorkstreamsRegistrationContextAcceptedResponse | null>(null);
   const unresolvedCommands = useRef(new Map<string, string>());
   const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
@@ -438,6 +483,7 @@ export function useWorkstreams(
     setRegistrationContext(null);
     setRevision((value) => value + 1);
   }, []);
+  useWorkstreamsReconnectRefresh(refresh);
 
   useEffect(() => {
     for (const operation of commandRequests.current) {
@@ -465,30 +511,56 @@ export function useWorkstreams(
     setPlacements(null);
     setRegistrationContext(null);
     setLoading(true);
-    void loadCompleteWorkstreamList(
-      (cursor) =>
-        request(
-          (client) =>
-            client.workstreams.list({
-              headers: {},
-              payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-            }),
-          controller.signal,
-        ),
-      { signal: controller.signal },
-    )
+    const loadList = () =>
+      loadCompleteWorkstreamList(
+        (cursor) =>
+          request(
+            (client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            controller.signal,
+          ),
+        { signal: controller.signal },
+      );
+    void withTransientReadRecovery(loadList, controller.signal)
       .then(async (value) => {
         if (generation.current !== current) return;
-        const normalized = { ...value, items: [...orderWorkstreamMetadata(value.items)] };
+        let normalized = { ...value, items: [...orderWorkstreamMetadata(value.items)] };
         metadataCache.write(normalized);
         setData(metadataCache.read(normalized.binding));
         setError(null);
-        void request(
-          (client) => client.workstreams.registrationContext({ headers: {} }),
-          controller.signal,
-        ).then(
+        let reloadList = false;
+        await withTransientReadRecovery(async () => {
+          if (reloadList) {
+            const updated = await loadList();
+            if (generation.current !== current || controller.signal.aborted) return null;
+            normalized = { ...updated, items: [...orderWorkstreamMetadata(updated.items)] };
+            metadataCache.write(normalized);
+            setData(metadataCache.read(normalized.binding));
+            setPlacements(null);
+          }
+          const context = await request(
+            (client) => client.workstreams.registrationContext({ headers: {} }),
+            controller.signal,
+          );
+          if (
+            context.owner_id === normalized.binding.ownerId &&
+            context.principal_id === normalized.binding.principalId &&
+            context.authorization_revision === normalized.binding.authorizationRevision &&
+            context.server_generation === normalized.binding.serverGeneration &&
+            context.registry_version !== normalized.binding.registryVersion
+          ) {
+            // Refresh both reads within this budget; authority mismatches never trigger recovery.
+            reloadList = true;
+            throw new WorkstreamRegistryVersionChanged();
+          }
+          return context;
+        }, controller.signal).then(
           (context) => {
-            if (generation.current !== current || controller.signal.aborted) return;
+            if (context === null || generation.current !== current || controller.signal.aborted)
+              return;
             if (
               context.owner_id === normalized.binding.ownerId &&
               context.principal_id === normalized.binding.principalId &&
@@ -498,10 +570,12 @@ export function useWorkstreams(
             )
               setRegistrationContext(context);
           },
-          () => {
+          (cause: unknown) => {
             if (generation.current === current) setRegistrationContext(null);
+            if (reloadList && !(cause instanceof WorkstreamRegistryVersionChanged)) throw cause;
           },
         );
+        if (generation.current !== current || controller.signal.aborted) return;
         if (placementsEnabled) {
           try {
             const projection = await loadLiveT3Placements(normalized, identities, () =>
@@ -525,7 +599,7 @@ export function useWorkstreams(
         // Authorization/session lifecycle failures must hide previously authorized content.
         metadataCache.purgeAuthorization();
         setData(null);
-        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+        setError(workstreamListErrorMessage(cause));
       })
       .finally(() => {
         if (listRequest.current === controller) listRequest.current = null;

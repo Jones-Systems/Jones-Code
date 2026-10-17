@@ -18,11 +18,6 @@ export function formatDesktopSshTarget(target: DesktopSshEnvironmentTarget): str
   return target.port ? `${authority}:${target.port}` : authority;
 }
 
-/**
- * How this client reaches a machine, printed first in every environment row so
- * T3 Connect, SSH, WSL, and plain remote links are told apart without a legend.
- * A machine with several routes names the one in use, or how many it has.
- */
 export function environmentTransportLabel(
   environment: EnvironmentPresentation,
   activeTarget: ConnectionTarget | null = null,
@@ -56,7 +51,9 @@ export function environmentTransportLabel(
 /**
  * One machine in a grouped settings list: icon, name, a single subtitle line,
  * and controls on the right. Every environment list on the Connections page
- * uses this so the lists share one rhythm.
+ * uses this so the lists share one rhythm. A row with content `below` keeps
+ * its icon and controls on the name's line, as the header of a taller row,
+ * and gives the subtitle and that content the row's full width.
  */
 export function EnvironmentRow({
   kind,
@@ -71,14 +68,15 @@ export function EnvironmentRow({
   readonly kind: EnvironmentMachineKind;
   readonly label: string;
   readonly subtitle: ReactNode;
-  /** Extra content under the subtitle, such as update progress. */
   readonly below?: ReactNode;
-  /** Expanded content under the whole row, aligned with the label, such as its routes. */
   readonly detail?: ReactNode;
   readonly dimmed?: boolean;
   readonly className?: string;
   readonly children?: ReactNode;
 }) {
+  const header = below !== undefined;
+  const name = <p className="min-w-0 truncate text-sm font-medium text-foreground">{label}</p>;
+  const line = <div className="truncate text-xs text-muted-foreground">{subtitle}</div>;
   return (
     <div
       className={cn(
@@ -88,12 +86,22 @@ export function EnvironmentRow({
       )}
     >
       <EnvironmentMachineIcon aria-hidden kind={kind} className="size-4 text-muted-foreground" />
-      <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-foreground">{label}</p>
-        <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
-        {below}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">{children}</div>
+      {header ? (
+        name
+      ) : (
+        <div className="min-w-0">
+          {name}
+          {line}
+        </div>
+      )}
+      {/* In a header, this box is the name's line height; taller controls center on that line. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "h-5")}>{children}</div>
+      {header ? (
+        <div className="col-span-2 col-start-2 min-w-0">
+          {line}
+          {below}
+        </div>
+      ) : null}
       {detail ? <div className="col-span-2 col-start-2 min-w-0">{detail}</div> : null}
     </div>
   );

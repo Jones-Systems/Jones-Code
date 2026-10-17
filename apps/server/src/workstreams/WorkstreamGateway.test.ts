@@ -15,6 +15,7 @@ import {
   make,
 } from "./WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
+import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 
 const binding = {
   registryId: "fixture-registry",
@@ -94,6 +95,32 @@ it.effect("bounds metadata reads and falls back only to its metadata cache", () 
 
     const invalid = yield* gateway.readMetadata({ limit: 101 }).pipe(Effect.flip);
     expect(invalid.reason).toBe("invalid-response");
+  }),
+);
+
+it.effect("reports disabled activation as not configured rather than offline", () =>
+  Effect.gen(function* () {
+    const disabled = makeControlPlaneWorkstreamTransport({ state: "disabled" });
+    const gateway = yield* make(disabled.transport, { binding: disabled.binding });
+    expect((yield* gateway.readMetadata().pipe(Effect.flip)).reason).toBe("not-configured");
+    expect((yield* gateway.readSession().pipe(Effect.flip)).reason).toBe("not-configured");
+
+    const fixture = makeSyntheticWorkstreamTransport();
+    const unreachable = yield* make(
+      {
+        ...fixture,
+        getCapabilities: () =>
+          Effect.fail(
+            new WorkstreamTransportError({
+              operation: "capabilities",
+              effect: "no-effect",
+              detail: "http_error",
+            }),
+          ),
+      },
+      { binding },
+    );
+    expect((yield* unreachable.readMetadata().pipe(Effect.flip)).reason).toBe("offline");
   }),
 );
 

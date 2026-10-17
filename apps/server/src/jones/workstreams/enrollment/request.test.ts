@@ -53,6 +53,10 @@ it("closed enrollment rejects extra fields, noncanonical origins, changed identi
     { ...enrollmentRequest, enrollment_id: "different" },
     ...[
       "http://registry.invalid",
+      "http://localhost:8787",
+      "http://127.0.0.2:8787",
+      "http://127.0.0.1:8787/",
+      "http://[::1]:80",
       "https://registry.invalid/",
       "https://registry.invalid:443",
       "https://user@registry.invalid",
@@ -72,4 +76,14 @@ it("closed enrollment rejects extra fields, noncanonical origins, changed identi
     },
   ])
     expect(() => decode(candidate)).toThrow();
+});
+
+it("accepts only canonical HTTPS or IP-literal loopback HTTP registry origins", () => {
+  const decode = Schema.decodeUnknownSync(NativeEnrollmentRequest);
+  for (const registry_origin of [
+    "https://registry.invalid",
+    "http://127.0.0.1:8787",
+    "http://[::1]:8787",
+  ])
+    expect(decode({ ...enrollmentRequest, registry_origin }).registry_origin).toBe(registry_origin);
 });

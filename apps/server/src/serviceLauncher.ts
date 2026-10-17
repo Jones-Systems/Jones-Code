@@ -17,6 +17,12 @@ import {
   retractLauncherCapabilityReceipt,
 } from "./jones/cloud/launcherCapability.ts";
 import {
+  launcherDriftNotice,
+  QualifiedCommitFailure,
+  qualifiedRollbackRefusal,
+  type QualifiedCommitAttempt,
+} from "./jones/cloud/qualifiedCommitAttempt.ts";
+import {
   verifyStagedQualifiedRuntime,
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
@@ -88,12 +94,9 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 /**
- * How long a trial has to report prepared. Migrations and the open-time
- * `PRAGMA optimize` count toward it and scale with the database: tens of GB on
- * a cold page cache take minutes. They run synchronously on the child's main
- * thread, so it cannot report progress meanwhile. A missed window rolls back
- * the database, so the next attempt pays the same cost. Crashes are caught at
- * exit; this only bounds a trial that is alive but stuck.
+ * Migrations and the open-time `PRAGMA optimize` count toward it and scale with the database:
+ * tens of GB on a cold page cache take minutes. A missed window rolls back the database, so
+ * the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
@@ -114,9 +117,6 @@ interface ManagedChild {
   readonly process: NodeChildProcess.ChildProcess;
 }
 
-// Mirrors pinnedRuntimePaths: a runtime is an unpacked release archive whose
-// executable runs on its own. Kept inline so this file stays on Node
-// built-ins only.
 const runtimePaths = (baseDir: string, version: string) => {
   const versionDir = NodePath.join(baseDir, "runtime", "versions", version);
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -178,7 +178,6 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   args: ["serve"],
 });
 
-/** SQLite persists across the main file plus its WAL and shared-memory sidecars. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
 const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
@@ -241,12 +240,7 @@ function runCp(args: ReadonlyArray<string>): Promise<boolean> {
 }
 
 /**
- * Copies a database file as a copy-on-write clone where the filesystem has
- * them (APFS via `cp -c`, btrfs/XFS reflinks via `cp --reflink=auto`), which
- * takes no extra space and finishes instantly for a database of tens of GB.
- * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a
- * full copy. Anywhere cloning is unavailable, or `cp` fails, this is a
- * regular copy.
+ * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a full copy.
  */
 async function copyDatabaseFile(source: string, destination: string): Promise<void> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -273,10 +267,6 @@ const GIB = 1024 ** 3;
 const CLONED_BACKUP_MIN_HEADROOM_BYTES = GIB;
 const CLONED_BACKUP_HEADROOM_FRACTION = 0.1;
 
-/**
- * Stats of the database and its existing sidecars, following symlinks. A main
- * file that cannot be read is an error.
- */
 async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.Stats>> {
   const stats: Array<NodeFS.Stats> = [];
   for (const suffix of DB_FILE_SUFFIXES) {
@@ -290,16 +280,10 @@ async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.S
 }
 
 /**
- * Whether `copyDatabaseFile` will clone the database into the backup
- * directory rather than copy it.
  * - macOS: `cp -c` clones within one APFS volume and silently copies
  *   anywhere else, so every existing database file must share the backup
  *   directory's device, whose filesystem type must match the system volume's,
  *   which is always APFS.
- * - Linux: clone each existing database file with `cp --reflink=always`,
- *   which fails instead of copying when a file cannot be reflinked (another
- *   filesystem, or a btrfs file marked No_COW), then discard the clones.
- * - Elsewhere: never.
  */
 async function backupCanClone(dbPath: string, backupRoot: string): Promise<boolean> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -311,9 +295,6 @@ async function backupCanClone(dbPath: string, backupRoot: string): Promise<boole
       NodeFSP.statfs("/"),
     ]);
     if (backupFs.type !== systemFs.type) return false;
-    // A file linked from another volume is caught because `stat` follows
-    // symlinks. A hard-linked file is restored by a full copy, so it needs the
-    // full space.
     return (await statDatabaseFiles(dbPath)).every(
       (source) => source.dev === backupDirectory.dev && source.nlink === 1,
     );
@@ -348,10 +329,8 @@ const filesystemBackupSpaceProbe: BackupSpaceProbe = {
 };
 
 /**
- * Returns a client-visible reason when the pre-update database backup cannot
- * fit, or undefined when it can. Runs before the server is stopped so a full
- * disk refuses the update instead of causing an outage and a cold restart.
- * Throws when the database or the filesystem cannot be inspected.
+ * Runs before the server is stopped so a full disk refuses the update instead of causing an
+ * outage and a cold restart.
  */
 export async function databaseBackupBlocker(
   baseDir: string,
@@ -376,8 +355,7 @@ export async function databaseBackupBlocker(
 }
 
 /**
- * Snapshots the database once per update before the first trial. A completed
- * backup is never overwritten because a restarted launcher may be looking at
+ * A completed backup is never overwritten because a restarted launcher may be looking at
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(
@@ -566,7 +544,6 @@ async function restoreTarget(path: string): Promise<string> {
   throw new Error(`Too many symbolic links resolving ${path}.`);
 }
 
-/** Restore is retryable after any process crash while the backup directory remains. */
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
@@ -622,7 +599,6 @@ export async function readServiceState(filePath: string): Promise<ServiceState> 
   return state;
 }
 
-/** Durable same-directory replacement used for every runtime state transition. */
 export async function writeServiceState(filePath: string, state: ServiceState): Promise<void> {
   const directory = NodePath.dirname(filePath);
   await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -731,7 +707,8 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
-  #qualifiedPointerCommitAttempted = false;
+  // Bound to one update: a commit attempt never blocks a later update's rollback.
+  #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
 
@@ -1096,6 +1073,11 @@ export class Launcher {
       });
     }
 
+    if (role === "active") {
+      const notice = launcherDriftNotice(packageJson.version, version);
+      if (notice !== undefined) process.stderr.write(notice);
+    }
+
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
@@ -1290,8 +1272,6 @@ export class Launcher {
       (error: unknown) =>
         `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
     );
-    // The child may have exited during the check. Its queued exit transition
-    // reports that; answering it or recording a pending update would not.
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
@@ -1458,24 +1438,36 @@ export class Launcher {
     if (pending.qualified !== undefined) {
       this.#assertQualifiedChildLive(child);
       // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
-      this.#qualifiedPointerCommitAttempted = true;
+      this.#qualifiedCommitAttempt = { updateId: pending.id, step: "pointer-write" };
     }
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    if (pending.qualified !== undefined) this.#assertQualifiedChildLive(child);
-    child.role = "active";
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-    await sendMessage(child.process, {
-      type: "committed",
-      updateId: committed.id,
-      ...(startupReceipt === undefined
-        ? {}
-        : {
-            startupGateProtocol: 1 as const,
-            qualified: { ...startupReceipt, generation: committed.id },
-          }),
-    });
+    try {
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      if (pending.qualified !== undefined) {
+        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "post-write-liveness" };
+        this.#assertQualifiedChildLive(child);
+      }
+      child.role = "active";
+      const notice = launcherDriftNotice(packageJson.version, child.version);
+      if (notice !== undefined) process.stderr.write(notice);
+      if (pending.qualified === undefined)
+        await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
+      else this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
+      await sendMessage(child.process, {
+        type: "committed",
+        updateId: committed.id,
+        ...(startupReceipt === undefined
+          ? {}
+          : {
+              startupGateProtocol: 1 as const,
+              qualified: { ...startupReceipt, generation: committed.id },
+            }),
+      });
+    } catch (cause) {
+      const attempt = this.#qualifiedCommitAttempt;
+      if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
+      throw new QualifiedCommitFailure(attempt, cause);
+    }
   }
 
   #assertQualifiedChildLive(child: ManagedChild): void {
@@ -1539,10 +1531,9 @@ export class Launcher {
   }
 
   /**
-   * Another server owns the T3 home. Exiting would make systemd or launchd
-   * start another refused server, so stay idle until stopped or restarted.
-   * A pending update fails without restoring its backup: the other owner may
-   * have written to the database since.
+   * Exiting would make systemd or launchd start another refused server, so stay
+   * idle until stopped or restarted. A pending update fails without restoring
+   * its backup: the other owner may have written to the database since.
    */
   async #idleWhileStateDirOwned(): Promise<void> {
     this.#clearTimer();
@@ -1570,10 +1561,11 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
-    if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
-      throw new Error(
-        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
-      );
+    const refusal =
+      pending.qualified === undefined
+        ? undefined
+        : qualifiedRollbackRefusal(this.#qualifiedCommitAttempt, pending.id, reason);
+    if (refusal !== undefined) throw new Error(refusal);
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);

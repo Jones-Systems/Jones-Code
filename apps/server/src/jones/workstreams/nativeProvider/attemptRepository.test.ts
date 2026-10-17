@@ -8,7 +8,12 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import conformance from "../../../../../../packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/conformance.json" with { type: "json" };
-import migration from "../../persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts";
+import attemptsMigration from "../../persistence/Migrations/005_JonesWorkstreamsNativeAttempts.ts";
+import proofMigration from "../../persistence/Migrations/107_JonesWorkstreamsSettlementProofs.ts";
+const migration = Effect.gen(function* () {
+  yield* attemptsMigration;
+  yield* proofMigration;
+});
 import * as Attempts from "./attemptRepository.ts";
 import { NativeProviderEnrollmentBinding } from "./enrollment.ts";
 
@@ -50,7 +55,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* migration;
-      yield* migration;
+      yield* attemptsMigration;
       const repo = yield* Attempts.NativeProviderAttempts;
       assert.deepEqual(yield* repo.reserve(attempt), attempt);
       assert.deepEqual(
@@ -259,5 +264,18 @@ it.effect("storage failures return typed operations without database text", () =
     if (invalidEnrollment._tag === "Failure")
       assert.strictEqual(invalidEnrollment.failure.operation, "reserve");
     assert.strictEqual(Option.isNone(yield* repo.get(request)), true);
+  }).pipe(Effect.provide(memory)),
+);
+
+it.effect("proof reservation failure rolls back the immutable attempt reservation", () =>
+  Effect.gen(function* () {
+    yield* migration;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Attempts.NativeProviderAttempts;
+    yield* sql`CREATE TRIGGER fail_synthetic_reservation BEFORE INSERT ON jones_workstreams_settlement_proofs
+      BEGIN SELECT RAISE(ABORT, 'synthetic reservation failure'); END`;
+    assert.strictEqual((yield* repo.reserve(attempt).pipe(Effect.result))._tag, "Failure");
+    assert.deepEqual(yield* sql`SELECT * FROM workstreams_native_attempts`, []);
+    assert.deepEqual(yield* sql`SELECT * FROM jones_workstreams_settlement_proofs`, []);
   }).pipe(Effect.provide(memory)),
 );

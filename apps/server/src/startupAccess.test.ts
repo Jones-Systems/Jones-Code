@@ -65,7 +65,7 @@ it("renders terminal QR codes as a multi-line unicode block grid", () => {
   assert.isTrue(qrCode.split("\n").length > 10);
 });
 
-it("formats headless serve output with the connection string, token, pairing url, and qr code", () => {
+it("formats headless serve output with the connection string and a nonsecret issuance marker", () => {
   const output = formatHeadlessServeOutput({
     connectionString: "http://192.168.1.42:3773",
     token: "PAIRCODE",
@@ -73,7 +73,7 @@ it("formats headless serve output with the connection string, token, pairing url
   });
 
   expect(output).toContain("Connection string: http://192.168.1.42:3773");
-  expect(output).toContain("Token: PAIRCODE");
-  expect(output).toContain("Pairing URL: http://192.168.1.42:3773/pair#token=PAIRCODE");
-  assert.isTrue(output.includes("█") || output.includes("▀") || output.includes("▄"));
+  expect(output).toContain("Startup pairing credential issued");
+  expect(output).not.toContain("PAIRCODE");
+  expect(output).not.toMatch(/Token:|Pairing URL:|#token=|[█▀▄]/);
 });

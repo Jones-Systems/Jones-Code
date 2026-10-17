@@ -71,3 +71,78 @@ finally: connection.close()
     await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 });
+
+it("admits secondary forwarding before claiming the established primary owner", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-secondary-owner-"));
+  try {
+    const home = await NodeFSP.realpath(root);
+    const profile = NodePath.join(home, "profile");
+    const databasePath = NodePath.join(home, "userdata", "statev2.sqlite");
+    await NodeFSP.mkdir(profile);
+    await NodeFSP.mkdir(NodePath.dirname(databasePath));
+    await NodeFSP.mkdir(NodePath.join(home, "runtime"));
+    await NodeFSP.writeFile(databasePath, "opaque state");
+    const metadata = {
+      name: "t3code",
+      jonesSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: "a".repeat(40),
+        tree: "b".repeat(40),
+      },
+    };
+    await NodeFSP.writeFile(
+      NodePath.join(home, "runtime", "jones-active-install.json"),
+      JSON.stringify({
+        protocol: 1,
+        owner: "desktop",
+        home,
+        databasePath,
+        profile,
+        environmentId: "fixture",
+        version: "fixture",
+        sourceSha: metadata.jonesSource.sha,
+        sourceTree: metadata.jonesSource.tree,
+      }),
+      { mode: 0o600 },
+    );
+    const input = {
+      platform: "darwin",
+      env: { T3CODE_HOME: home, T3CODE_DESKTOP_USER_DATA_DIR: profile },
+      homeDirectory: home,
+      appDataDirectory: home,
+      version: "fixture",
+      metadata,
+    };
+    const moduleUrl = new URL("./jonesNativeStartup.ts", import.meta.url).href;
+    const secondary =
+      "const m = await import(" +
+      JSON.stringify(moduleUrl) +
+      "); m.holdJonesDesktopNativeWriterFence(" +
+      JSON.stringify(input) +
+      "); process.stdout.write('forwarding-admitted');";
+    const script = [
+      "const m = await import(" + JSON.stringify(moduleUrl) + ");",
+      "const cp = await import('node:child_process');",
+      "m.holdJonesDesktopNativeWriterFence(" + JSON.stringify(input) + ");",
+      "const owner = m.currentJonesDesktopOwner()(); owner.assertCurrent();",
+      "const secondary = cp.spawnSync(process.execPath, ['--input-type=module', '-e', " +
+        JSON.stringify(secondary) +
+        "], { encoding: 'utf8', timeout: 10000 });",
+      "if (secondary.status !== 0 || secondary.stdout !== 'forwarding-admitted') throw new Error(secondary.stderr);",
+      "const contender = cp.spawnSync(process.execPath, ['--input-type=module', '-e', " +
+        JSON.stringify(secondary + " m.currentJonesDesktopOwner()();") +
+        "], { encoding: 'utf8', timeout: 10000 });",
+      "if (contender.status === 0) throw new Error('Competing primary acquired ownership');",
+      "owner.assertCurrent();",
+    ].join("\n");
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      ["--input-type=module", "-e", script],
+      { encoding: "utf8", timeout: 25000, maxBuffer: 1024 * 1024 },
+    );
+    expect(result.status, result.stderr).toBe(0);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+});

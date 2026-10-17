@@ -207,14 +207,14 @@ function uncertainCustody(cause, seen = new Set()) {
   return nested.some((error) => uncertainCustody(error, seen));
 }
 
-// Reviewed 7a146f producer: import initializes in-memory Effect schemas/caches/prototypes,
+// Reviewed 3741dcc producer: import initializes in-memory Effect schemas/caches/prototypes,
 // Error stack detection, scheduler closures and the optional literal async_hooks lookup.
 // Its only import-time filesystem work resolves this unique captured code root and hashes
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "e4e88dd4b0f2baa0706cdf1c51911d4af4b163560815985d899eef09e4a1ab60",
-  size: 833722,
+  sha256: "1d33e30cd3a8886ef158d0d5d861fb381655ee26a516a056533706c94c37d9e5",
+  size: 851654,
 };
 const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesColdOwnerSource.ts":
@@ -230,9 +230,9 @@ const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts":
     "fcc87f71203dcc7d559dc082bba7cc495254871cced4daeffaee9376f5820804",
   "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts":
-    "2188d94da05859b0ed5ada4f0caf006ef9dc9a8b21ab1b08a0d86c63cb45d1b8",
+    "938368a8fbe4da2377a6f90a64f9a3fa57c1b7459d745330d30cac57df1f55fc",
   "apps/desktop/src/jones/updates/jonesPairedStateSource.ts":
-    "e70354b5dcbc141c1facf2e2fa3b09032ce095c1bb79fdf21ec87f43020c9810",
+    "362644e48e6f3f5fc31d753fbcb4954671ad296d8ac414ac351e40c03c0820a7",
   "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts":
     "5c2f2da19235042dd924121f68d33ec5e1b762eb56ae94cc52d9687f203e3fa7",
   "apps/server/src/jones/updates/offlinePreparation.ts":
@@ -247,12 +247,12 @@ const reviewedRawSources = {
     "ef9e17332a72236db597c1f30110b6092e5aef9127e2b14e5ae571d77d8831f7",
   "apps/server/src/jones/updates/offlinePreparationWorker.ts":
     "4f01c770a4fe2df67387c73c48465769f87d9df4317d65e987b72a9465c548c6",
-  "apps/server/vite.config.ts": "6c78469c642831d33b17db7e592aae2ba5be5ebdc74e494035a3b668a87466c8",
+  "apps/server/vite.config.ts": "5daa69483a678795fe458b1d34b7c3457aac4988be22e83804c65f50645ba944",
   "package.json": "79c403b31234443118e5207a8e8693af2c9e541b24f664d23fa4017d40ff2186",
-  "pnpm-lock.yaml": "2af9bc1d58000c848938eceaa9ec06dbbaa22985b73e65e5861d42794473bc6b",
-  "pnpm-workspace.yaml": "5b76c5adb82743bbb21822cbeb3a249f493c15c4c21196ffa039041f7de1ee07",
+  "pnpm-lock.yaml": "6017f11e0032db8fbbc84086cd4cc0ae6f312f4ae99384e91d733f7b3c7f43aa",
+  "pnpm-workspace.yaml": "3a93aa85c1edb088a14afba8659404a2a321817ce6590589bb055fa0ecf8d103",
   "scripts/jones/updates/functional-policy.ts":
-    "2e9ffa40a3d6dbb94fbd91807f0cc7a2bfbb909062708f3f64fc257e1fc38ec0",
+    "52af68445c7030f63eea1f9fb9d7e2697c6fc5ea204935ed088c69f9f9f897d7",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
@@ -268,7 +268,7 @@ const reviewedRawSources = {
   "scripts/jones/updates/offline-preparation-producer-entry.ts":
     "779e2bb0d298a04b17debed2de6088fec1aefcb52b57e47e0664e027b5bbd247",
   "scripts/package.json": "021407078841ca3f0fdb4d6347ba8989c826b80127268844ff2fd257647ba504",
-  "vite.config.ts": "a330a3bdd5871e6842b19a7d9dd817378d2404fec79df284d65397a1bb0a9ff7",
+  "vite.config.ts": "bb568554a5e566f8482ebd337cffbd1a76cab91f98f9d0796bb18a183eed0215",
 };
 const reviewedImports = [
   {
@@ -431,8 +431,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 159726,
-      end: 159784,
+      start: 163229,
+      end: 163287,
       endExclusive: true,
     },
   },
@@ -446,8 +446,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 816964,
-      end: 817092,
+      start: 834894,
+      end: 835022,
       endExclusive: true,
     },
   },
@@ -461,8 +461,8 @@ const reviewedImports = [
       file: "offlinePreparationProducer.mjs",
       unit: "utf16-code-units",
       origin: 0,
-      start: 817294,
-      end: 817420,
+      start: 835224,
+      end: 835350,
       endExclusive: true,
     },
   },

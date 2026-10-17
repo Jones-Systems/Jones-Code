@@ -429,6 +429,49 @@ Linux boot-without-login coverage separately from Mac GUI-login coverage.
 Host sleep, logout, reboot, updates, and service restart can still interrupt
 provider work. No source test establishes these operational postconditions.
 
+## Workstreams control-plane activation (Linux user service)
+
+The server enables Workstreams only when all six variables are present and
+canonical: `T3_WORKSTREAM_CONTROL_PLANE_URL`, `T3_WORKSTREAM_OWNER_ID`,
+`T3_WORKSTREAM_PRINCIPAL_ID`, `T3_WORKSTREAM_KEY_ID`,
+`T3_WORKSTREAM_SIGNING_SECRET` and `T3_WORKSTREAM_AUTHORIZATION_REVISION`.
+The control plane's provisioning tool, `ops/bin/provision-workstreams-principal.mjs`
+in chatgpt-control-plane, produces their values. Never put them in a drop-in,
+command line or log.
+
+On a Linux user service, store them in the private EnvironmentFile
+`%h/.config/t3code/secrets/jones-workstreams.env`, owned by the service user with
+mode `0600`. Reference it from
+`%h/.config/systemd/user/t3code.service.d/45-jones-workstreams.conf`, which
+contains only:
+
+```ini
+[Service]
+EnvironmentFile=%h/.config/t3code/secrets/jones-workstreams.env
+```
+
+The `45-` prefix sorts before the `50-` task drop-in and the owned
+`zzzz-jones-qualified-launcher.conf`. Adoption refuses drop-ins that sort after
+the owned launcher, and bound legacy or continuation adoption accepts an extra
+drop-in only through `--preserve-dropin` when it sorts before the task drop-in.
+Preservation observes metadata without opening the file. The qualified launcher
+passes its environment to the server child, so these variables reach the server.
+
+Choose the URL by where the control plane runs:
+
+- **Same host.** Use `http://127.0.0.1:8787/`. The server accepts plain HTTP only
+  for the IP literals `127.0.0.1` and `[::1]`, with no path, query or
+  credentials; `localhost` is refused. Request signing is unchanged.
+- **Different host.** Use the control plane's HTTPS tailnet origin, from a tagged
+  node only. Tailscale Serve adds Tailscale identity headers to requests from
+  untagged nodes, and the control plane answers `401` to a request that carries
+  those headers alongside a signature. That is also why a same-host server
+  cannot use the tailnet route.
+
+Writing either file and running `systemctl --user restart t3code.service` to
+apply them are operator effects that need host approval. Source changes do not
+configure or restart any service.
+
 ## Update and recovery
 
 After native updater adoption, use the connected server's Update button. The
