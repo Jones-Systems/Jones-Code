@@ -10,6 +10,7 @@
     "apps/mobile/src/features/workstreams/commands.ts",
     "apps/mobile/src/features/workstreams/gateway.test.ts",
     "apps/mobile/src/features/workstreams/gateway.ts",
+    "apps/mobile/src/features/workstreams/listProjection.test.ts",
     "apps/mobile/src/features/workstreams/listProjection.ts",
     "apps/mobile/src/features/workstreams/loaders.test.ts",
     "apps/mobile/src/features/workstreams/loaders.ts",

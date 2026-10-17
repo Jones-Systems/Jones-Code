@@ -8,6 +8,7 @@ import {
   loadLiveT3Placements,
   workstreamBindingKey,
   type LiveT3Placements,
+  type WorkstreamAssignmentIndexFetchers,
   type WorkstreamThreadLike,
   type WorkstreamDtoPage,
 } from "@t3tools/client-runtime/state/workstreams";
@@ -40,7 +41,11 @@ import {
   type WorkstreamUrlSelector,
 } from "./gateway";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
-import { loadCompleteWorkstreamList } from "./loaders";
+import {
+  loadMobileWorkstreamRegistry,
+  settleMobileWorkstreamSnapshots,
+  type MobileWorkstreamLoadOutcome,
+} from "./loaders";
 import { reconcileMobileWorkstreamCommand, waitForWorkstreamReceipt } from "./commands";
 import { canEditWorkstreams } from "./actions";
 import { MobileWorkstreamControls } from "./Controls";
@@ -54,6 +59,9 @@ import {
 } from "./projection";
 import type { MobileWorkstreams } from "./types";
 const COLLAPSE_KEY = "t3code.workstream-collapse.v1";
+const decodeEnvironmentIds = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Array(EnvironmentId)),
+);
 const refreshSubscribers = new Set<() => void>();
 const refreshMountedWorkstreams = () => {
   for (const refresh of refreshSubscribers) refresh();
@@ -65,9 +73,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   const connectionsAtom = useMemo(
     () =>
       Atom.make((get) =>
-        Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(EnvironmentId)))(
-          idsKey,
-        ).flatMap((id) => {
+        decodeEnvironmentIds(idsKey).flatMap((id) => {
           const prepared = get(environmentSession.preparedConnectionValueAtom(id));
           const state = get(environmentCatalog.stateAtom(id));
           const session = get(environmentSession.sessionStateAtom(id));
@@ -82,12 +88,35 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ),
     [idsKey],
   );
+  // Session loss, unlike a dropped transport, removes an environment's loaded Workstreams.
+  const signedOutAtom = useMemo(
+    () =>
+      Atom.make((get) =>
+        decodeEnvironmentIds(idsKey)
+          .filter((id) => {
+            const session = get(environmentSession.sessionStateAtom(id));
+            return AsyncResult.isSuccess(session) && !session.value.authenticated;
+          })
+          .join("\n"),
+      ),
+    [idsKey],
+  );
   const connections = useAtomValue(connectionsAtom);
+  const signedOutKey = useAtomValue(signedOutAtom);
   const context = useAtomValue(connectionAtomRuntime);
-  const [loaded, setLoaded] = useState<{
-    connections: typeof connections;
-    snapshots: readonly MobileWorkstreamSnapshot[];
-  }>({ connections, snapshots: [] });
+  const retained = useMemo(() => {
+    const enrolled = new Set<string>(decodeEnvironmentIds(idsKey));
+    const signedOut = new Set(signedOutKey.split("\n"));
+    return (id: EnvironmentId) => enrolled.has(id) && !signedOut.has(id);
+  }, [idsKey, signedOutKey]);
+  const retainedRef = useRef(retained);
+  retainedRef.current = retained;
+  // The last good load per environment. Refreshes and reconnects replace it only on success.
+  const [loaded, setLoaded] = useState<ReadonlyMap<EnvironmentId, MobileWorkstreamSnapshot>>(
+    () => new Map(),
+  );
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(new Set());
@@ -102,7 +131,21 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   const current = useRef(connections);
   current.current = connections;
   const inventory = JSON.stringify(mobilePlacementInventory(threads));
-  const snapshots = loaded.connections === connections ? loaded.snapshots : [];
+  const snapshots = useMemo(
+    () =>
+      [...loaded]
+        .filter(([environmentId]) => retained(environmentId))
+        .map(([, snapshot]) =>
+          snapshot.stale ||
+          connections.some(
+            (entry) =>
+              entry.prepared === snapshot.prepared && entry.generation === snapshot.generation,
+          )
+            ? snapshot
+            : { ...snapshot, stale: true },
+        ),
+    [loaded, connections, retained],
+  );
   const snapshotsRef = useRef(snapshots);
   snapshotsRef.current = snapshots;
   const request = useCallback(
@@ -122,10 +165,54 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     },
     [context],
   );
-  const refresh = useCallback(() => {
-    setLoaded({ connections: current.current, snapshots: [] });
-    setRevision((n) => n + 1);
-  }, []);
+  const refresh = useCallback(() => setRevision((n) => n + 1), []);
+  const registryFetchers = useCallback(
+    (prepared: PreparedConnection): WorkstreamAssignmentIndexFetchers => {
+      const page = (cursor: string | undefined, limit: number) => ({
+        limit,
+        ...(cursor ? { cursor } : {}),
+      });
+      return {
+        listWorkstreams: ({ cursor, signal }) =>
+          request(
+            prepared,
+            "GET",
+            (urls) => workstreamPageUrl(urls.list(), page(cursor, 50)),
+            (client, headers) => client.list({ headers, payload: page(cursor, 50) }),
+            signal,
+          ),
+        references: ({ cursor, signal }) =>
+          request(
+            prepared,
+            "GET",
+            (urls) => workstreamPageUrl(urls.references(), page(cursor, 100)),
+            (client, headers) => client.references({ headers, payload: page(cursor, 100) }),
+            signal,
+          ),
+        memberships: ({ workstreamId, cursor, signal }) =>
+          request(
+            prepared,
+            "GET",
+            (urls) =>
+              workstreamPageUrl(urls.memberships({ params: { workstreamId } }), page(cursor, 100)),
+            (client, headers) =>
+              client.memberships({
+                headers,
+                params: { workstreamId },
+                payload: page(cursor, 100),
+              }),
+            signal,
+          ),
+      };
+    },
+    [request],
+  );
+  useEffect(() => {
+    setLoaded((previous) => {
+      const next = settleMobileWorkstreamSnapshots(previous, new Map(), retained);
+      return next.size === previous.size ? previous : next;
+    });
+  }, [retained]);
   useEffect(() => {
     refreshSubscribers.add(refresh);
     return () => {
@@ -191,7 +278,6 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   useEffect(() => {
     const controller = new AbortController();
     controllers.current.add(controller);
-    setLoaded({ connections, snapshots: [] });
     setSelection(null);
     setError(null);
     if (pendingConnections.current !== connections) {
@@ -203,107 +289,106 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       Schema.fromJsonString(Schema.Array(T3PlacementIdentity)),
     )(inventory);
     void Promise.all(
-      connections.map(async (connection): Promise<MobileWorkstreamSnapshot | null> => {
-        try {
-          const data = await loadCompleteWorkstreamList(
-            (cursor) =>
-              request(
-                connection.prepared,
-                "GET",
-                (urls) =>
-                  workstreamPageUrl(urls.list(), { limit: 50, ...(cursor ? { cursor } : {}) }),
-                (client, headers) =>
-                  client.list({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
-                controller.signal,
-              ),
-            { signal: controller.signal },
-          );
-          let appearance: WorkstreamAppearancePage | null = null;
+      connections.map(
+        async (
+          connection,
+        ): Promise<
+          readonly [EnvironmentId, MobileWorkstreamLoadOutcome<MobileWorkstreamSnapshot>]
+        > => {
+          const environmentId = connection.prepared.environmentId;
           try {
-            const items: WorkstreamAppearancePage["items"][number][] = [];
-            const ids = data.items.map((item) => item.workstreamId);
-            for (let start = 0; start < Math.max(1, ids.length); start += 100) {
-              const batch = ids.slice(start, start + 100);
-              const result = await request(
-                connection.prepared,
-                "POST",
-                (urls) => urls.appearanceRead(),
-                (client, headers) =>
-                  client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
-                controller.signal,
-              );
-              if (!result.supported) {
-                appearance = null;
-                break;
-              }
-              validateAppearanceBinding(result.page, data.binding, batch);
-              items.push(...result.page.items);
-              appearance = { ...result.page, items };
-            }
-          } catch {
-            appearance = null;
-          }
-          let placements: LiveT3Placements | null = null;
-          try {
-            placements = await loadLiveT3Placements(
-              data,
-              identities,
-              () =>
-                request(
+            const previous = loadedRef.current.get(environmentId);
+            const { data, index } = await loadMobileWorkstreamRegistry(
+              registryFetchers(connection.prepared),
+              { signal: controller.signal, listOnlyFallback: !previous?.index },
+            );
+            let appearance: WorkstreamAppearancePage | null = null;
+            try {
+              const items: WorkstreamAppearancePage["items"][number][] = [];
+              const ids = data.items.map((item) => item.workstreamId);
+              for (let start = 0; start < Math.max(1, ids.length); start += 100) {
+                const batch = ids.slice(start, start + 100);
+                const result = await request(
                   connection.prepared,
                   "POST",
-                  (urls) => urls.threadPlacements(),
+                  (urls) => urls.appearanceRead(),
                   (client, headers) =>
-                    client.threadPlacements({ headers, payload: { identities } }),
+                    client.appearanceRead({ headers, payload: { workstream_ids: batch } }),
                   controller.signal,
-                ),
-              Date.now,
-              (bytes) =>
-                runtime.runPromise(
-                  Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
-                ),
-            );
-          } catch {
-            /* Unverified placements leave native rows unassigned. */
+                );
+                if (!result.supported) {
+                  appearance = null;
+                  break;
+                }
+                validateAppearanceBinding(result.page, data.binding, batch);
+                items.push(...result.page.items);
+                appearance = { ...result.page, items };
+              }
+            } catch {
+              appearance = null;
+            }
+            let placements: LiveT3Placements | null = null;
+            try {
+              placements = await loadLiveT3Placements(
+                data,
+                identities,
+                () =>
+                  request(
+                    connection.prepared,
+                    "POST",
+                    (urls) => urls.threadPlacements(),
+                    (client, headers) =>
+                      client.threadPlacements({ headers, payload: { identities } }),
+                    controller.signal,
+                  ),
+                Date.now,
+                (bytes) =>
+                  runtime.runPromise(
+                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
+                  ),
+              );
+            } catch {
+              /* Without current proof, stored assignments still group; changes stay blocked. */
+            }
+            return [
+              environmentId,
+              {
+                kind: "loaded",
+                snapshot: {
+                  ...connection,
+                  appearance,
+                  data,
+                  placements,
+                  index,
+                  stale: false,
+                  identityKeys: new Set(
+                    identities.map((identity) =>
+                      nativeWorkstreamThreadKey(
+                        identity.source_instance_id,
+                        identity.native_thread_id,
+                      ),
+                    ),
+                  ),
+                },
+              },
+            ] as const;
+          } catch (cause) {
+            return [environmentId, { kind: "failed", cause }] as const;
           }
-          return {
-            ...connection,
-            appearance,
-            data,
-            placements,
-            identityKeys: new Set(
-              identities.map((identity) =>
-                nativeWorkstreamThreadKey(identity.source_instance_id, identity.native_thread_id),
-              ),
-            ),
-          };
-        } catch {
-          return null;
-        }
-      }),
-    ).then((values) => {
+        },
+      ),
+    ).then((outcomes) => {
+      // One coherent swap per refresh round; an aborted or superseded round changes nothing.
       if (!controller.signal.aborted && current.current === connections)
-        setLoaded({
-          connections,
-          snapshots: values.filter((value): value is MobileWorkstreamSnapshot => value !== null),
-        });
+        setLoaded((previous) =>
+          settleMobileWorkstreamSnapshots(previous, new Map(outcomes), retainedRef.current),
+        );
     });
     return () => {
       for (const pending of controllers.current) pending.abort();
       controllers.current.clear();
     };
-  }, [connections, context, inventory, revision, request]);
-  useEffect(() => {
-    const expiries = snapshots.flatMap(
-      (snapshot) => snapshot.placements?.items.map((item) => Date.parse(item.expires_at)) ?? [],
-    );
-    if (!expiries.length) return;
-    const timer = setTimeout(
-      refresh,
-      Math.max(0, Math.min(2147483647, Math.min(...expiries) - Date.now())),
-    );
-    return () => clearTimeout(timer);
-  }, [snapshots, refresh]);
+  }, [connections, context, inventory, revision, request, registryFetchers]);
   const bindingRevision = snapshots
     .map((snapshot) =>
       JSON.stringify([
@@ -321,7 +406,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       loading = true;
       try {
         for (const snapshot of snapshotsRef.current) {
-          if (!snapshot.appearance) continue;
+          if (!snapshot.appearance || snapshot.stale) continue;
           const ids = snapshot.data.items.map((item) => item.workstreamId);
           let appearance = snapshot.appearance;
           const items: WorkstreamAppearancePage["items"][number][] = [];
@@ -341,15 +426,14 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             appearance = { ...result.page, items };
           }
           if (!abort.signal.aborted)
-            setLoaded((previous) =>
-              previous.connections !== connections
-                ? previous
-                : {
-                    ...previous,
-                    snapshots: previous.snapshots.map((item) =>
-                      item === snapshot ? { ...item, appearance } : item,
-                    ),
-                  },
+            setLoaded(
+              (previous) =>
+                new Map(
+                  [...previous].map(([id, item]) => [
+                    id,
+                    sameMobileWorkstreamAuthority(item, snapshot) ? { ...item, appearance } : item,
+                  ]),
+                ),
             );
         }
       } catch {
@@ -437,7 +521,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     actions: readonly WorkstreamCommand["action"][],
   ) => {
     assertCurrent(snapshot);
-    if (!canEditWorkstreams(snapshot.data) || snapshot.placements?.readiness !== "ready")
+    if (
+      snapshot.stale ||
+      !canEditWorkstreams(snapshot.data) ||
+      snapshot.placements?.readiness !== "ready"
+    )
       throw new Error("Workstreams are read-only.");
     const pending = pendingCommands.current.get(snapshot.prepared);
     if (pending) {
@@ -601,7 +689,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     ),
     sheet: createElement(MobileWorkstreamControls, {
       api,
-      selection: loaded.connections === connections ? selection : null,
+      selection,
       onSelect: setSelection,
       onClose: () => setSelection(null),
     }),

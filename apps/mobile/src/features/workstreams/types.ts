@@ -1,4 +1,7 @@
-import type { WorkstreamDtoPage } from "@t3tools/client-runtime/state/workstreams";
+import type {
+  NativeWorkstreamThreadAssurance,
+  WorkstreamDtoPage,
+} from "@t3tools/client-runtime/state/workstreams";
 import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
 import type {
   WorkstreamCommand,
@@ -17,6 +20,12 @@ export interface MobileWorkstreams {
   ) => Promise<WorkstreamAppearance>;
   readonly groups: readonly MobileWorkstreamGroup[];
   readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
+  readonly assuranceByKey: ReadonlyMap<string, NativeWorkstreamThreadAssurance>;
+  /** Only these rows may be labeled Unassigned; other ungrouped rows are unknown. */
+  readonly confirmedUnassignedKeys: ReadonlySet<string>;
+  readonly conflictingThreadKeys: ReadonlySet<string>;
+  /** Some shown Workstreams are a last good load that could not be refreshed. */
+  readonly stale: boolean;
   readonly snapshots: readonly MobileWorkstreamSnapshot[];
   readonly enabled: boolean;
   readonly toggleEnabled: () => void;

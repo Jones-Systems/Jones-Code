@@ -1,12 +1,20 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   canEditWorkstreams,
+  mobileMembershipBlock,
   moveNativeThreadOrder,
   planNativeMembership,
   workstreamTint,
 } from "./actions";
 
-import { data, input, placements, primary, reference } from "./actions.fixtures";
+import {
+  assignmentIndexFor,
+  data,
+  input,
+  placements,
+  primary,
+  reference,
+} from "./actions.fixtures";
 
 describe("native Workstream membership planning", () => {
   it("moves only primary membership across repositories and preserves native and secondary state", () => {
@@ -114,6 +122,45 @@ describe("native Workstream membership planning", () => {
       expect(canEditWorkstreams(candidate)).toBe(false);
       expect(() => planNativeMembership({ ...input, data: candidate })).toThrow("write access");
     }
+  });
+});
+
+describe("durable assignment change gating", () => {
+  const threadKey = '["env:a","thread"]';
+  const conflicting = assignmentIndexFor([
+    { environmentId: "env:a", threadId: "thread", workstreamId: "alpha" },
+    { environmentId: "env:a", threadId: "thread", workstreamId: "beta" },
+  ]);
+  it("blocks membership changes for a thread with conflicting stored assignments", () => {
+    const snapshot = { data, placements, stale: false };
+    expect(
+      mobileMembershipBlock({ snapshot, threadKey, conflictingThreadKeys: new Set() }),
+    ).toBeNull();
+    expect(
+      mobileMembershipBlock({ snapshot, threadKey, conflictingThreadKeys: new Set([threadKey]) }),
+    ).toContain("conflicting Workstream assignments");
+    expect(() => planNativeMembership({ ...input, index: conflicting })).toThrow("disagree");
+  });
+  it("keeps stale loads read-only", () => {
+    expect(
+      mobileMembershipBlock({
+        snapshot: { data, placements, stale: true },
+        threadKey,
+        conflictingThreadKeys: new Set(),
+      }),
+    ).toBe("Workstreams are read-only.");
+  });
+  it("never plans a first attach for a thread whose stored primary lacks current proof", () => {
+    expect(() =>
+      planNativeMembership({
+        ...input,
+        placements: { ...placements, items: [] },
+        index: assignmentIndexFor(),
+      }),
+    ).toThrow("disagree");
+    expect(planNativeMembership({ ...input, index: assignmentIndexFor() })?.operation).toBe(
+      "move_primary",
+    );
   });
 });
 
