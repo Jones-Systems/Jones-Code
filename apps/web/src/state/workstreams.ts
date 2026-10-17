@@ -47,12 +47,27 @@ const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, sign
   runPrimaryHttp(PrimaryEnvironmentHttpClient.pipe(Effect.flatMap(run)), { signal });
 
 const metadataCache = new LiveWorkstreamMetadataCache();
-const isCursorStale = Schema.is(EnvironmentHttpConflictError);
+const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
 const CURSOR_RESTART_ATTEMPTS = 3;
 const EMPTY_NATIVE_THREADS: readonly { readonly environmentId: string; readonly id: string }[] = [];
 
 const isRestartableCursorStale = (cause: unknown): boolean =>
-  isCursorStale(cause) && cause.message === "workstream_cursor_stale";
+  isHttpConflict(cause) && cause.message === "workstream_cursor_stale";
+
+/** A server without control-plane activation answers reads with this stable conflict. */
+export const isWorkstreamsNotConfigured = (cause: unknown): boolean =>
+  isHttpConflict(cause) && cause.message === "workstreams_not_configured";
+
+/**
+ * Error text for a failed list read, or null when Workstreams are simply not configured on the
+ * server: retrying cannot succeed, so the sidebar shows ungrouped threads without an error.
+ */
+export const workstreamListErrorMessage = (cause: unknown): string | null =>
+  isWorkstreamsNotConfigured(cause)
+    ? null
+    : cause instanceof Error
+      ? cause.message
+      : "Workstreams are unavailable.";
 
 export interface CursorRestartOptions {
   readonly signal?: AbortSignal;
@@ -525,7 +540,7 @@ export function useWorkstreams(
         // Authorization/session lifecycle failures must hide previously authorized content.
         metadataCache.purgeAuthorization();
         setData(null);
-        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+        setError(workstreamListErrorMessage(cause));
       })
       .finally(() => {
         if (listRequest.current === controller) listRequest.current = null;

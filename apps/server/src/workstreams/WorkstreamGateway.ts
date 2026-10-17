@@ -62,11 +62,16 @@ export class WorkstreamTransportError extends Schema.TaggedError<WorkstreamTrans
   },
 ) {}
 
+/** Transport detail for a server started without complete control-plane activation. */
+export const WORKSTREAM_ACTIVATION_DISABLED_DETAIL =
+  "Workstream control-plane activation is disabled.";
+
 export class WorkstreamGatewayError extends Schema.TaggedError<WorkstreamGatewayError>()(
   "WorkstreamGatewayError",
   {
     reason: Schema.Literals([
       "offline",
+      "not-configured",
       "stale",
       "contract-mismatch",
       "permission-denied",
@@ -231,7 +236,9 @@ const transportFailure = (error: WorkstreamTransportError) =>
         ? "cursor-stale"
         : error.effect === "unknown-effect"
           ? "unknown-effect"
-          : "offline",
+          : error.detail === WORKSTREAM_ACTIVATION_DISABLED_DETAIL
+            ? "not-configured"
+            : "offline",
     detail: error.detail,
   });
 
