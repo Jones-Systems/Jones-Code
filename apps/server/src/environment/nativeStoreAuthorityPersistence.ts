@@ -124,7 +124,7 @@ const verifyOwner = (stat: NodeFS.Stats, path: string): void => {
   }
 };
 
-const verifyAuthorityDirectory = (authorityStateDir: string): void => {
+const verifyAuthorityDirectory = (authorityStateDir: string, createIfMissing = true): void => {
   if (!NodePath.isAbsolute(authorityStateDir)) {
     throw persistenceError("source_unavailable", "Native authority directory must be absolute.");
   }
@@ -138,6 +138,9 @@ const verifyAuthorityDirectory = (authorityStateDir: string): void => {
         "Native authority directory is unavailable.",
         cause,
       );
+    }
+    if (!createIfMissing) {
+      throw persistenceError("missing", "Native authority directory is missing.");
     }
     try {
       NodeFS.mkdirSync(authorityStateDir, { recursive: true, mode: 0o700 });
@@ -235,14 +238,40 @@ export const decodeNativeStoreAuthorityState = (value: unknown): NativeStoreAuth
   };
 };
 
-const readStateUnlocked = (authorityStateDir: string): NativeStoreAuthorityState => {
+const MAX_EXISTING_STATE_BYTES = 8192;
+
+const readStateUnlocked = (
+  authorityStateDir: string,
+  createIfMissing = true,
+): NativeStoreAuthorityState => {
   const { statePath } = nativeStoreAuthorityPaths(authorityStateDir);
-  verifyAuthorityDirectory(authorityStateDir);
+  verifyAuthorityDirectory(authorityStateDir, createIfMissing);
   verifyRegularPrivateFile(statePath, "missing");
   let fd: number | undefined;
   try {
     fd = NodeFS.openSync(statePath, NodeFS.constants.O_RDONLY | NOFOLLOW);
-    const raw = NodeFS.readFileSync(fd, "utf8");
+    let raw: string;
+    if (createIfMissing) {
+      raw = NodeFS.readFileSync(fd, "utf8");
+    } else {
+      const stat = NodeFS.fstatSync(fd);
+      verifyOwner(stat, statePath);
+      if (!stat.isFile() || mode(stat) !== 0o600 || stat.size > MAX_EXISTING_STATE_BYTES) {
+        throw persistenceError(
+          "corrupt",
+          "Existing native authority state is not a bounded private file.",
+        );
+      }
+      const bytes = Buffer.alloc(MAX_EXISTING_STATE_BYTES + 1);
+      const count = NodeFS.readSync(fd, bytes, 0, bytes.length, 0);
+      if (count > MAX_EXISTING_STATE_BYTES) {
+        throw persistenceError(
+          "corrupt",
+          "Existing native authority state exceeds its byte bound.",
+        );
+      }
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count));
+    }
     return decodeNativeStoreAuthorityState(JSON.parse(raw) as unknown);
   } catch (cause) {
     if (cause instanceof NativeStoreAuthorityPersistenceError) throw cause;
@@ -501,6 +530,11 @@ const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => 
 export const readNativeStoreAuthorityState = (
   authorityStateDir: string,
 ): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir);
+
+// Standalone enrollment preflight must not create the authority directory or its writer lock.
+export const readExistingNativeStoreAuthorityState = (
+  authorityStateDir: string,
+): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir, false);
 
 /**
  * Explicit enrollment for a new native store. Normal startup never calls this:
