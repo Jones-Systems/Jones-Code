@@ -3,7 +3,9 @@
   "feature": "codex-provider",
   "jonesOwnedPaths": [
     "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts",
-    "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts"
+    "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
+    "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts",
+    "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
@@ -14,6 +16,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts",
       "to": "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts"
     }
   ]
 }
