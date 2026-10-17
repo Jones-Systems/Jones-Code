@@ -117,6 +117,8 @@
         // Qualification invokes the config by CLI and the fixture entry through HTML.
         "vite.install-preview.config.ts",
         "src/jones/updates/fixtures/install-preview-entry.ts",
+        // The standalone client-notice HTML fixture loads this module through a script tag.
+        "src/jones/updates/fixtures/client-update-notices-entry.tsx",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
