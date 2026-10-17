@@ -1,12 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import {
-  createJonesLegacyBootstrapPreparationBundle,
-  JONES_PREPARATION_SOURCE_INPUTS,
-  type JonesPreparationArtifactEvidence,
-} from "./jones/updates/legacy-bootstrap-bundle.ts";
-
 import { createPackageWithOptions, extractFile, statFile } from "@electron/asar";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -36,7 +30,6 @@ import {
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
-  JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   LINUX_FILE_EXCLUSIONS,
@@ -88,7 +81,6 @@ import {
   stageBrowserSecret,
   validateWindowsPackagedPayload,
   verifyJonesPackagedMacResources,
-  requireJonesPreparationProducer,
   WindowsPrimaryNativeProbeError,
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
@@ -814,78 +806,30 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }),
   );
 
-  it.effect("copies the standalone bootstrap only when the Mac bundle was staged", () =>
+  it.effect("packages Mac resources without the retired standalone bootstrap", () =>
     Effect.gen(function* () {
-      const mac = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-        false,
-        "arm64",
-        undefined,
-        true,
-      );
-      const ordinaryMac = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const linux = yield* createBuildConfig(
-        "linux",
-        "AppImage",
-        "1.2.3",
-        false,
-        false,
-        undefined,
-        undefined,
-        false,
-        "x64",
-        undefined,
-        true,
-      );
-      const companion = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "1.2.3-preview.20261011.1.1",
-        false,
-        false,
-        undefined,
-        undefined,
-        false,
-        "arm64",
-        "preview-companion",
-        true,
-      );
-      assert.deepStrictEqual(mac.extraResources, [
-        ...DESKTOP_EXTRA_RESOURCES,
-        JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE,
-      ]);
-      assert.deepStrictEqual(ordinaryMac.extraResources, DESKTOP_EXTRA_RESOURCES);
-      assert.deepStrictEqual(linux.extraResources, [
-        ...DESKTOP_EXTRA_RESOURCES,
-        ...LINUX_CAPTURE_EXTRA_RESOURCES,
-        ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
-      ]);
-      assert.isString(mac.afterPack);
-      assert.isTrue(NodePath.isAbsolute(mac.afterPack as string));
-      assert.equal(NodePath.basename(mac.afterPack as string), "legacy-bootstrap-after-pack.mjs");
-      assert.equal(JSON.parse(JSON.stringify(mac)).afterPack, mac.afterPack);
-      for (const config of [ordinaryMac, linux, companion]) assert.notProperty(config, "afterPack");
-      assert.deepStrictEqual(companion.extraResources, DESKTOP_EXTRA_RESOURCES);
+      for (const variant of [undefined, "preview-companion"] as const) {
+        const config = yield* createBuildConfig(
+          "mac",
+          "dmg",
+          "1.2.3-preview.20261011.1.1",
+          false,
+          false,
+          undefined,
+          undefined,
+          false,
+          "arm64",
+          variant,
+        );
+        assert.deepStrictEqual(config.extraResources, DESKTOP_EXTRA_RESOURCES);
+        assert.notProperty(config, "afterPack");
+      }
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it.effect.skipIf(
     !["linux", "darwin"].includes(Context.get(Context.empty(), HostProcess.Platform)),
-  )("identifies Mac startup metadata, bootstrap modes, bytes, and missing files separately", () =>
+  )("verifies the packaged Mac startup gate without legacy bootstrap resources", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -900,22 +844,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           tree: "b".repeat(40),
         };
         const version = "1.0.0-preview.20261011.1.1";
-        const file = {
-          relativePath: "jones-bootstrap/bootstrap.py",
-          content: "synthetic bootstrap bytes\n",
-          mode: 0o500,
-        };
-        const resource = path.join(resources, file.relativePath);
         yield* fs.makeDirectory(sourceDirectory);
-        yield* fs.makeDirectory(path.dirname(resource), { recursive: true });
+        yield* fs.makeDirectory(resources);
         yield* fs.writeFileString(
           path.join(sourceDirectory, "package.json"),
           JSON.stringify({ version, jonesSource: source, startupGateProtocol: 1 }),
         );
         yield* Effect.tryPromise(() => createPackageWithOptions(sourceDirectory, packagedAsar, {}));
-        yield* fs.writeFileString(resource, file.content);
-        yield* fs.chmod(resource, file.mode);
-        const input = { packagedAsar, source, version, bootstrapBundle: [file] };
+        const input = { packagedAsar, source, version };
         yield* verifyJonesPackagedMacResources(input);
 
         const metadataFailure = yield* verifyJonesPackagedMacResources({
@@ -926,175 +862,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.include(metadataFailure.output, "startup gate failed for app.asar/package.json");
         assert.include(metadataFailure.output, "does not prove its source-bound startup gate");
         assert.notInclude(metadataFailure.output, "UnknownError");
-
-        yield* fs.chmod(resource, 0o755);
-        const modeFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-        assert.include(
-          modeFailure.output,
-          `bootstrap file identity/mode failed for ${file.relativePath}`,
-        );
-        assert.include(modeFailure.output, "expected regular file mode 0o500");
-        assert.include(modeFailure.output, "observed regular file mode 0o755");
-
-        yield* fs.chmod(resource, 0o600);
-        yield* fs
-          .writeFileString(resource, "changed fixture bytes\n")
-          .pipe(Effect.ensuring(fs.chmod(resource, file.mode).pipe(Effect.orDie)));
-        const bytesFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-        assert.include(bytesFailure.output, `bootstrap file bytes failed for ${file.relativePath}`);
-        assert.include(bytesFailure.output, "expected SHA-256");
-        assert.include(bytesFailure.output, "observed");
-        assert.notInclude(bytesFailure.output, "changed fixture bytes");
-
-        yield* fs.remove(resource);
-        const missingFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
-        assert.include(
-          missingFailure.output,
-          `bootstrap file stat failed for ${file.relativePath}`,
-        );
-        assert.include(missingFailure.output, "ENOENT");
-        assert.notInclude(missingFailure.output, "UnknownError");
-
-        const native = Buffer.alloc(160);
-        [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
-          native.writeUInt32LE(value, index * 4),
-        );
-        native.writeUInt32LE(0x19, 32);
-        native.writeUInt32LE(72, 36);
-        native.write("__TEXT", 40, "ascii");
-        native.writeBigUInt64LE(160n, 80);
-        native.writeUInt32LE(0x80000028, 104);
-        native.writeUInt32LE(24, 108);
-        native.writeBigUInt64LE(128n, 112);
-        native[159] = 0xff;
-        const nativeFile = {
-          relativePath: "jones-bootstrap/identity-native",
-          content: native,
-          mode: 0o500,
-        };
-        const nativePath = path.join(resources, nativeFile.relativePath);
-        yield* fs.writeFile(nativePath, native);
-        yield* fs.chmod(nativePath, 0o500);
-        const nativeInput = { ...input, bootstrapBundle: [nativeFile] };
-        yield* verifyJonesPackagedMacResources(nativeInput);
-        const changed = Buffer.from(native);
-        changed[159] = 0xfe;
-        yield* fs.chmod(nativePath, 0o600);
-        yield* fs.writeFile(nativePath, changed);
-        yield* fs.chmod(nativePath, 0o500);
-        const changedFailure = yield* verifyJonesPackagedMacResources(nativeInput).pipe(
-          Effect.flip,
-        );
-        assert.include(changedFailure.output, "bootstrap file bytes");
-        changed.writeUInt32LE(0x01000007, 4);
-        yield* fs.chmod(nativePath, 0o600);
-        yield* fs.writeFile(nativePath, changed);
-        yield* fs.chmod(nativePath, 0o500);
-        const architectureFailure = yield* verifyJonesPackagedMacResources({
-          ...input,
-          bootstrapBundle: [{ ...nativeFile, content: changed }],
-        }).pipe(Effect.flip);
-        assert.include(architectureFailure.output, "native architecture");
-        // Synthetic runtime bytes prove final package binding, not worker execution.
-        const runtimeBytes = Buffer.from("inert preparation package fixture\n");
-        const digest = (value: string | Uint8Array) =>
-          NodeCrypto.createHash("sha256").update(value).digest("hex");
-        const seaConfig =
-          '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
-        const identity = {
-          repository: source.repository,
-          sourceSha: source.sha,
-          sourceTree: source.tree,
-          version,
-        };
-        const evidence: JonesPreparationArtifactEvidence = {
-          schema: 1,
-          observation: "complete",
-          classification: "cold-preparation-worker",
-          source: identity,
-          preparation: {
-            schema: 1,
-            protocol: 1,
-            provenanceSha256: "1".repeat(64),
-            sourceInputHashes: Object.fromEntries(
-              JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
-            ) as JonesPreparationArtifactEvidence["preparation"]["sourceInputHashes"],
-            entry: { sha256: "3".repeat(64), size: 4096 },
-            seaConfig: { sha256: digest(seaConfig), size: Buffer.byteLength(seaConfig) },
-            executable: {
-              name: "jones-offline-preparation",
-              sha256: digest(runtimeBytes),
-              size: runtimeBytes.length,
-            },
-            node: {
-              version: "26.8.2",
-              platform: "darwin",
-              architecture: "arm64",
-              archiveSha256: "4".repeat(64),
-              archiveBytes: 4096,
-              checksumsSha256: "5".repeat(64),
-              runtimeSha256: "6".repeat(64),
-              runtimeBytes: 4096,
-            },
-            sqlite: { version: "3.50.4", sourceId: "2025-07-30 19:33:53 " + "7".repeat(64) },
-          },
-        };
-        const preparation = createJonesLegacyBootstrapPreparationBundle(
-          identity,
-          {
-            identityNative: native,
-            identityNativeSourceSha256: "8".repeat(64),
-            maintenanceSource: "# inert maintenance\n",
-          },
-          evidence,
-        );
-        for (const member of preparation.files) {
-          const filename = path.join(resources, member.relativePath);
-          if (yield* fs.exists(filename)) yield* fs.chmod(filename, 0o600);
-          yield* fs.writeFile(
-            filename,
-            typeof member.content === "string" ? Buffer.from(member.content) : member.content,
-          );
-          yield* fs.chmod(filename, member.mode);
-        }
-        const runtimePath = path.join(resources, preparation.runtime.relativePath);
-        yield* fs.writeFile(runtimePath, runtimeBytes);
-        yield* fs.chmod(runtimePath, 0o500);
-        const preparationInput = {
-          ...input,
-          bootstrapBundle: preparation.files,
-          bootstrapRuntime: preparation.runtime,
-        };
-        // The native resource verifier deliberately requires canonical parent paths.
-        const canonicalResources = yield* fs.realPath(resources);
-        const canonicalInput = {
-          ...preparationInput,
-          packagedAsar: path.join(canonicalResources, "app.asar"),
-        };
-        yield* verifyJonesPackagedMacResources(canonicalInput);
-        const missingDescriptor = yield* verifyJonesPackagedMacResources({
-          ...input,
-          bootstrapBundle: preparation.files,
-        }).pipe(Effect.flip);
-        assert.include(missingDescriptor.output, "Missing independent runtime descriptor");
-        yield* fs.chmod(runtimePath, 0o600);
-        yield* fs.writeFile(runtimePath, Buffer.alloc(runtimeBytes.length));
-        yield* fs.chmod(runtimePath, 0o500);
-        const alteredRuntime = yield* verifyJonesPackagedMacResources(canonicalInput).pipe(
-          Effect.flip,
-        );
-        assert.include(alteredRuntime.output, "Preparation runtime digest differs");
       }),
     ),
   );
-
-  it("refuses an explicit preparation bundle request while the producer remains held", () => {
-    assert.doesNotThrow(() => requireJonesPreparationProducer(false));
-    assert.throws(
-      () => requireJonesPreparationProducer(true),
-      /qualified complete preparation producer/,
-    );
-  });
 
   it("excludes foreign node-pty prebuilds from macOS and Linux packages", () => {
     assert.deepStrictEqual(MAC_FILE_EXCLUSIONS, [

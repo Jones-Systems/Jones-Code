@@ -23,34 +23,13 @@ import {
   type LauncherCapabilityProcessGuard,
 } from "../cloud/launcherCapability.ts";
 import { extractQualifiedLinuxArchive } from "../cloud/qualifiedArchive.ts";
-import type { observeLinuxStateLeases } from "../cloud/qualifiedLinuxLease.ts";
-import {
-  assertLeaseProofFilesystems,
-  linuxLeaseQualifiedQuiescenceAdapter,
-  proveQualifiedStateQuiescence,
-  type FilesystemTypeReader,
-} from "../cloud/qualifiedQuiescence.ts";
+import { acquireStoppedServerOwnership } from "../cloud/stoppedServerOwnership.ts";
 import {
   enrollQualifiedRuntime,
   qualifiedPayloadDigest,
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
 } from "../cloud/qualifiedRuntime.ts";
-import {
-  evaluateWriterObservation,
-  parseWriterObserverResult,
-  QUALIFIED_WRITER_OBSERVER_FILES,
-  QUALIFIED_WRITER_OBSERVER_PATH,
-  QUALIFIED_WRITER_OBSERVER_SHA256,
-  type QualifiedWriterObservation,
-} from "../cloud/qualifiedWriterObserver.ts";
-import {
-  QUALIFIED_WRITER_OBSERVER_SOCKET,
-  readWriterObserverSocket,
-  writerObserverSocketInstallation,
-  writerObserverSocketResult,
-  type SocketPathMetadata,
-} from "../cloud/qualifiedWriterObserverSocket.ts";
 import {
   ADOPTION_RECEIPT,
   durableReplace,
@@ -131,16 +110,10 @@ export interface SystemAdoptionHost {
   readonly run: AdoptionRunner;
   readonly control: (request: SystemControlRequest) => Promise<SystemControlResult>;
   readonly rootFile: (path: string) => Promise<RootFileObservation>;
-  readonly observerSocket: () => Promise<"installed" | "absent" | "untrusted">;
   readonly descriptor: (
     port: number,
   ) => Promise<{ readonly serverVersion: string; readonly environmentId: string } | undefined>;
-  readonly readiness: (input: {
-    readonly baseDir: string;
-    readonly allowedProcessIds: readonly number[];
-  }) => Promise<QualifiedWriterObservation>;
-  /** Kernel-lease proof that no process holds the selected state open for writing. */
-  readonly stoppedWriterProof: (baseDir: string) => Promise<void>;
+  readonly acquireStateOwnership: (baseDir: string) => Promise<() => void>;
   readonly procRoot?: string;
   readonly systemdDirectory?: string;
   readonly readbackAttempts?: number;
@@ -188,7 +161,6 @@ export interface SystemAdoptionPlan {
   readonly ownedDropin: { readonly path: string; readonly sha256: string; readonly text: string };
   readonly bootstrap: {
     readonly workerSha256: string;
-    readonly observerSha256: string;
     readonly policySha256: string;
   };
   readonly attestation: "launcher-only";
@@ -204,8 +176,6 @@ export interface SystemAdoptionPlanResult {
   readonly bootstrap: {
     readonly worker: BootstrapAvailability;
     readonly policy: BootstrapAvailability;
-    readonly observer: BootstrapAvailability;
-    readonly socket: BootstrapAvailability;
   };
   readonly manifest: ReturnType<typeof renderSystemBootstrapManifest>;
 }
@@ -578,12 +548,11 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
     ownedDropin: { path: ownedPath, sha256: sha256(ownedText), text: ownedText },
     bootstrap: {
       workerSha256: SYSTEM_SERVICE_CONTROL_SHA256,
-      observerSha256: QUALIFIED_WRITER_OBSERVER_SHA256,
       policySha256: sha256(policyText),
     },
     attestation: "launcher-only",
     effects: [
-      `Require the installed root worker, policy, observer helper and socket to match this plan; adoption installs no root file.`,
+      `Require the installed root worker and policy to match this plan; adoption installs no root file.`,
       `Write ${NodePath.join(runtime, SYSTEM_ADOPTION_RECEIPT)} as pending intent first; an uncertain step leaves it partial or unknown and blocks retry.`,
       ...(runtimeMode === null
         ? []
@@ -593,9 +562,8 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
       `Enroll ${NodePath.join(versions, active.metadata.version)} from Actions run ${active.artifact.runId}/${active.artifact.runAttempt}; its full payload must equal ${NodePath.dirname(input.retainedExecutable)} (${payloadSha256}).`,
       `Enroll ${NodePath.join(versions, launcher.metadata.version)} from Actions run ${launcher.artifact.runId}/${launcher.artifact.runAttempt}, source ${launcher.metadata.source}.`,
       "Read pending migration IDs with the launcher's read-only preflight; no migration, database copy or hash runs.",
-      `Prove through the observer socket that only retained PID ${runtimeRecord.pid} writes the selected state.`,
       `Stop ${input.systemUnit} through the root worker after comparing unit digest ${preimage.digest}, no owned drop-in and PID ${runtimeRecord.pid} birth ${retainedProcess.birth}.`,
-      "Prove with kernel leases that nothing holds the selected state open for writing; on any doubt the unit stays stopped and nothing restarts automatically.",
+      "Acquire the server state-directory ownership lock after the retained process exits; a busy home stays stopped until its other owner is stopped.",
       `Create ${statePath} exclusively with protocol ${SERVICE_LAUNCHER_PROTOCOL} and active version ${active.metadata.version}.`,
       `Install only ${ownedPath} (${sha256(ownedText)}) through the root worker and reload systemd; every other unit file stays byte-identical.`,
       ...(serve.workingDirectory === undefined
@@ -607,7 +575,7 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
       `Preserve ${NodePath.dirname(input.retainedExecutable)} and the original unit files for separately approved recovery.`,
     ],
   };
-  const observerChecks = [
+  const bootstrapChecks = [
     rootFileStatus(
       host,
       SYSTEM_SERVICE_CONTROL_PATH,
@@ -618,18 +586,12 @@ async function inspectSystemAdoption(input: SystemAdoptInput, host: SystemAdopti
       SYSTEM_SERVICE_POLICY_PATH,
       (bytes) => bytes.toString("utf8") === policyText,
     ),
-    rootFileStatus(
-      host,
-      QUALIFIED_WRITER_OBSERVER_PATH,
-      (bytes) => sha256(bytes) === QUALIFIED_WRITER_OBSERVER_SHA256,
-    ),
-    host.observerSocket(),
   ] as const;
-  const [worker, policy, observer, socket] = await Promise.all(observerChecks);
+  const [worker, policy] = await Promise.all(bootstrapChecks);
   return {
     plan,
     planSha256: sha256(JSON.stringify(plan)),
-    bootstrap: { worker, policy, observer, socket },
+    bootstrap: { worker, policy },
     manifest: renderSystemBootstrapManifest({
       unit: input.systemUnit,
       user: host.user,
@@ -741,6 +703,7 @@ export async function adoptSystemHost(
     let phase = "prepared";
     let outcome: "partial" | "unknown" = "partial";
     let recorded = false;
+    let releaseStateOwnership: (() => void) | undefined;
     // Carried by every record once the plan includes the correction: `applied`
     // is false while it is known unattempted, absent while the change or its
     // readback is unsettled, and true once read back on the same directory.
@@ -869,9 +832,6 @@ export async function adoptSystemHost(
       await assertHomeIdentity();
       if (JSON.stringify(await migrationPreflight()) !== JSON.stringify(migrationPlan))
         refuse("Pending migration IDs changed; no migration effect was authorized.");
-      const ready = await host.readiness({ baseDir: plan.baseDir, allowedProcessIds: [childPid] });
-      if (ready.status !== "complete" || ready.writers.length !== 0)
-        refuse("The supervised child is not the only writer of the selected state.");
       return { launcherPid, childPid, childBirth: child.birth };
     };
     const migrationPreflight = async () =>
@@ -979,12 +939,6 @@ export async function adoptSystemHost(
       const migrationPlan = await migrationPreflight();
       await step("enrolled", false);
 
-      const readiness = await host.readiness({
-        baseDir: plan.baseDir,
-        allowedProcessIds: [plan.retained.processId],
-      });
-      if (readiness.status !== "complete" || readiness.writers.length !== 0)
-        refuse("The observer socket did not prove that only the retained server writes the state.");
       await assertUnchanged();
       expectInspection(
         await host.control({ operation: "inspect" }),
@@ -1015,10 +969,10 @@ export async function adoptSystemHost(
       if (old !== undefined && old.birth === plan.retained.processBirth)
         refuse("The retained server process still exists after the unit stopped.");
       try {
-        await host.stoppedWriterProof(plan.baseDir);
+        releaseStateOwnership = await host.acquireStateOwnership(plan.baseDir);
       } catch (cause) {
         refuse(
-          `Stopped-writer proof failed (${cause instanceof Error ? cause.message : "unknown"}); the unit stays stopped and nothing restarts automatically.`,
+          `State-directory ownership is unavailable (${cause instanceof Error ? cause.message : "unknown"}); the unit stays stopped and nothing restarts automatically.`,
         );
       }
       await assertHomeIdentity();
@@ -1054,6 +1008,8 @@ export async function adoptSystemHost(
       );
       await step("launcher-installed", false);
 
+      releaseStateOwnership?.();
+      releaseStateOwnership = undefined;
       await step("start-requested", true);
       const started = await host.control({
         operation: "start",
@@ -1110,110 +1066,9 @@ export async function adoptSystemHost(
       const reason = cause instanceof Error ? cause.message : "Adoption effect is unknown.";
       if (recorded) await record(outcome, { reason }).catch(() => undefined);
       throw cause instanceof HostAdoptionError ? cause : new HostAdoptionError(reason);
+    } finally {
+      releaseStateOwnership?.();
     }
-  });
-}
-
-/**
- * Readiness through the root socket with the captured process allowed. The
- * service user's own CLI has no NoNewPrivileges, so this composes the socket
- * transport directly rather than the launcher's route selection.
- */
-export async function observeSystemReadiness(
-  input: { readonly baseDir: string; readonly allowedProcessIds: readonly number[] },
-  options: {
-    readonly socketPath?: string;
-    readonly socketMetadata?: (path: string) => Promise<SocketPathMetadata>;
-    readonly procRoot?: string;
-    readonly owner?: number;
-    readonly deadlineMs?: number;
-  } = {},
-): Promise<QualifiedWriterObservation> {
-  const owner = options.owner ?? process.getuid?.();
-  const socketPath = options.socketPath ?? QUALIFIED_WRITER_OBSERVER_SOCKET;
-  const procRoot = options.procRoot ?? "/proc";
-  const before = await writerObserverSocketInstallation(socketPath, owner, options.socketMetadata);
-  if (before.status !== "installed") return { status: "unavailable" };
-  const files: { path: string; device: bigint; inode: bigint }[] = [];
-  for (const name of QUALIFIED_WRITER_OBSERVER_FILES) {
-    const path = NodePath.join(input.baseDir, "userdata", name);
-    const stat = await NodeFSP.lstat(path, { bigint: true }).catch(
-      (cause: NodeJS.ErrnoException) => {
-        if (cause.code === "ENOENT" && name !== "statev2.sqlite") return undefined;
-        throw cause;
-      },
-    );
-    if (stat === undefined) continue;
-    if (!stat.isFile() || stat.uid !== BigInt(owner ?? -1)) return { status: "unavailable" };
-    files.push({ path, device: stat.dev, inode: stat.ino });
-  }
-  // The helper reports the inodes it observed; the selected files must still
-  // be those inodes once the exchange ends, or its answer is about other state.
-  const unchangedFiles = async () => {
-    for (const file of files) {
-      const stat = await NodeFSP.lstat(file.path, { bigint: true }).catch(() => undefined);
-      if (stat?.dev !== file.device || stat.ino !== file.inode) return false;
-    }
-    for (const name of QUALIFIED_WRITER_OBSERVER_FILES) {
-      const path = NodePath.join(input.baseDir, "userdata", name);
-      if (!files.some((file) => file.path === path) && !(await absent(path).catch(() => false)))
-        return false;
-    }
-    return true;
-  };
-  const birth = async (pid: number) =>
-    (await processIdentity(procRoot, pid).catch(() => undefined))?.birth;
-  const allowed = new Map<number, string>();
-  for (const pid of input.allowedProcessIds) {
-    const value = await birth(pid);
-    if (value === undefined) return { status: "unavailable" };
-    allowed.set(pid, value);
-  }
-  const response = await readWriterObserverSocket({
-    path: socketPath,
-    deadlineMs: options.deadlineMs ?? 15_000,
-    outputLimit: 64 * 1024,
-  });
-  const after = await writerObserverSocketInstallation(socketPath, owner, options.socketMetadata);
-  if (
-    response.outcome !== "closed" ||
-    after.status !== "installed" ||
-    after.identity !== before.identity
-  )
-    return { status: "unavailable" };
-  const mapped = writerObserverSocketResult(response.stdout);
-  const result = mapped === undefined ? undefined : parseWriterObserverResult(mapped);
-  if (result === undefined) return { status: "unavailable" };
-  for (const [pid, value] of allowed)
-    if ((await birth(pid)) !== value) return { status: "unavailable" };
-  const observation = evaluateWriterObservation(result, files, allowed);
-  if (observation.status === "complete" && !(await unchangedFiles()))
-    return { status: "identity-changed" };
-  return observation;
-}
-
-/**
- * Stopped-writer proof for system adoption: the selected files must be on a
- * filesystem whose lease grant is a kernel proof before any lease is taken,
- * then the kernel lease scan answers. The shared quiescence proof still owns
- * the file selection and its before-and-after identity check.
- */
-export async function proveSystemStoppedWriters(
-  baseDir: string,
-  options: {
-    readonly filesystemType?: FilesystemTypeReader;
-    readonly leases?: Parameters<typeof observeLinuxStateLeases>[1];
-  } = {},
-): Promise<void> {
-  const leases = linuxLeaseQualifiedQuiescenceAdapter(options.leases);
-  await proveQualifiedStateQuiescence({
-    baseDir,
-    adapter: {
-      async scan(input) {
-        await assertLeaseProofFilesystems(input.files, options.filesystemType);
-        return leases.scan(input);
-      },
-    },
   });
 }
 
@@ -1250,10 +1105,6 @@ export function nativeSystemAdoptionHost(input: {
         return (cause as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unreadable";
       }
     },
-    observerSocket: async () =>
-      (await writerObserverSocketInstallation(QUALIFIED_WRITER_OBSERVER_SOCKET, account.uid))
-        .status,
-    readiness: (request) => observeSystemReadiness(request),
-    stoppedWriterProof: (baseDir) => proveSystemStoppedWriters(baseDir),
+    acquireStateOwnership: async (baseDir) => acquireStoppedServerOwnership(baseDir),
   };
 }

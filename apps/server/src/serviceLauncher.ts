@@ -30,19 +30,14 @@ import {
   type StagedQualifiedRuntime,
 } from "./jones/cloud/qualifiedRuntime.ts";
 
-import {
-  assertQualifiedReadinessObservable,
-  proveQualifiedStateQuiescence,
-  QUALIFIED_STARTUP_STATE_FILES,
-  QualifiedQuiescenceError,
-  type QualifiedQuiescenceAdapter,
-} from "./jones/cloud/qualifiedQuiescence.ts";
+import { withStoppedServerOwnership } from "./jones/cloud/stoppedServerOwnership.ts";
 import {
   assertQualifiedTrialBinding,
   readJonesStartupGateProtocol,
   type QualifiedTrialReceipt,
 } from "./jones/cloud/qualifiedStartup.ts";
 import {
+  QUALIFIED_STARTUP_STATE_FILES,
   copyQualifiedBackupFile,
   preflightQualifiedBackup,
   retainQualifiedAdvancedState,
@@ -585,11 +580,39 @@ async function restoreDatabaseBackup(
   advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
-async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
+async function discardDatabaseBackup(
+  baseDir: string,
+  updateId: string,
+  retainReceipts = false,
+): Promise<void> {
   const backupDir = databaseBackupDir(baseDir, updateId);
   if (!(await pathExists(backupDir))) return;
-  await NodeFSP.rm(backupDir, { recursive: true, force: true });
-  await syncDirectory(NodePath.dirname(backupDir));
+  if (retainReceipts) {
+    // Startup still reserves resume here, and update status reads the timing receipt.
+    // Remove only recovery payload; leave their directory and all metadata in place.
+    for (const name of ["database", "database-wal", "database-shm", ...PAIRED_SETTINGS]) {
+      await NodeFSP.rm(NodePath.join(backupDir, name), { force: true });
+    }
+    await NodeFSP.rm(NodePath.join(backupDir, "advanced-state"), { recursive: true, force: true });
+    await syncDirectory(backupDir);
+  } else {
+    await NodeFSP.rm(backupDir, { recursive: true, force: true });
+    await syncDirectory(NodePath.dirname(backupDir));
+  }
+}
+
+async function cleanupTerminalDatabaseBackup(
+  baseDir: string,
+  updateId: string,
+  retainReceipts: boolean,
+): Promise<void> {
+  try {
+    await discardDatabaseBackup(baseDir, updateId, retainReceipts);
+  } catch {
+    process.stderr.write(
+      "[service-launcher] Recovery payload cleanup did not finish; the durable update outcome is unchanged and remaining recovery files were retained.\n",
+    );
+  }
 }
 
 export async function readServiceState(filePath: string): Promise<ServiceState> {
@@ -692,8 +715,8 @@ const restartPendingPath = (baseDir: string) =>
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
-  readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
+  readonly #preparedTimeoutMs: number;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
   readonly #updateOperationIO: {
     readonly archive: typeof archiveUpdateOperation;
@@ -717,8 +740,8 @@ export class Launcher {
     state: ServiceState,
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
-      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
+      readonly preparedTimeoutMs?: number;
       readonly backupAdapter?: QualifiedBackupAdapter;
       readonly updateOperationIO?: {
         readonly archive: typeof archiveUpdateOperation;
@@ -732,8 +755,8 @@ export class Launcher {
     this.#backupSpaceProbe = options.backupSpaceProbe;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
-    this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
+    this.#preparedTimeoutMs = options.preparedTimeoutMs ?? PREPARED_TIMEOUT_MS;
     this.#backupAdapter = options.backupAdapter;
     this.#updateOperationIO = options.updateOperationIO ?? {
       archive: archiveUpdateOperation,
@@ -881,11 +904,12 @@ export class Launcher {
       return;
     }
     if (update.qualified !== undefined) {
-      // Terminal records start normally without replaying a trial grant. Pending
-      // restart recovery proves no writers remain before restoring the old pair.
+      // Pending restart recovery holds state ownership before changing the old pair.
       if (update.phase === "accepted") {
-        await this.#proveQuiescence();
-        await this.#finishWithoutTrial(update, "launcher-restarted");
+        await withStoppedServerOwnership(this.#baseDir, () =>
+          this.#finishWithoutTrial(update, "launcher-restarted", false),
+        );
+        await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
       } else await this.#returnToPrevious(update, "rolled-back", "launcher-restarted");
       return;
     }
@@ -912,14 +936,6 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
-  async #proveQuiescence(allowedProcessIds: readonly number[] = []): Promise<void> {
-    await proveQualifiedStateQuiescence({
-      baseDir: this.#baseDir,
-      allowedProcessIds,
-      ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
-    });
-  }
-
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     if (pending.qualified !== undefined) {
       const staged = await verifyStagedQualifiedRuntime(
@@ -930,13 +946,12 @@ export class Launcher {
       if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
         throw new Error("The qualified trial binding changed after handoff.");
     }
-    // Owned child exit alone does not prove another same-home writer stopped.
-    // Keep this proof outside backup failure recovery: uncertainty must retain
-    // pending state rather than restart a potentially competing old writer.
-    if (pending.qualified !== undefined) await this.#proveQuiescence();
     if (pending.phase === "accepted") {
       try {
-        await backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        const backup = () => backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        if (pending.qualified !== undefined)
+          await withStoppedServerOwnership(this.#baseDir, backup);
+        else await backup();
       } catch (cause) {
         if (pending.qualified !== undefined) throw cause;
         await this.#finishWithoutTrial(pending, "db-backup-failed");
@@ -961,7 +976,11 @@ export class Launcher {
     }
   }
 
-  async #finishWithoutTrial(pending: PendingServiceUpdate, reason: string): Promise<void> {
+  async #finishWithoutTrial(
+    pending: PendingServiceUpdate,
+    reason: string,
+    startChild = true,
+  ): Promise<void> {
     const outcome = terminalUpdate({ pending, status: "failed", reason });
     const next: ServiceState = {
       ...this.#state,
@@ -970,9 +989,8 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    await cleanupTerminalDatabaseBackup(this.#baseDir, pending.id, pending.qualified !== undefined);
+    if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
@@ -1081,7 +1099,7 @@ export class Launcher {
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
-        PREPARED_TIMEOUT_MS,
+        this.#preparedTimeoutMs,
       );
     }
   }
@@ -1237,27 +1255,18 @@ export class Launcher {
           throw new Error("Install target differs from its staged handle.");
         if (child.process.pid === undefined)
           throw new Error("The requesting child has no native process identity.");
-        // Refuse before acceptance when the readiness commit could never prove
-        // that its captured writer alone holds the state.
-        await assertQualifiedReadinessObservable({
-          baseDir: this.#baseDir,
-          allowedProcessIds: [child.process.pid],
-          ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
-        });
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)
           throw new Error("The requesting child stopped during candidate preflight.");
       } catch (cause) {
         await reject(
-          cause instanceof QualifiedQuiescenceError
-            ? `writer-proof-${cause.reason}: The readiness commit cannot prove exclusive state ownership on this host; Install was not admitted.`
-            : cause instanceof QualifiedCandidatePreflightError ||
-                (cause instanceof Error &&
-                  (cause.message.startsWith("startup-gate-unavailable:") ||
-                    cause.message.startsWith("recovery-capacity:")))
-              ? cause.message
-              : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
+          cause instanceof QualifiedCandidatePreflightError ||
+            (cause instanceof Error &&
+              (cause.message.startsWith("startup-gate-unavailable:") ||
+                cause.message.startsWith("recovery-capacity:")))
+            ? cause.message
+            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
         return;
       }
@@ -1413,8 +1422,6 @@ export class Launcher {
     }
     if (pending.qualified !== undefined) {
       if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
-      // Only the captured trial may own writable state at the pointer commit.
-      await this.#proveQuiescence([child.process.pid]);
       this.#assertQualifiedChildLive(child);
       if (this.#exchangeExpired(receivedAt)) {
         // The trial may have abandoned its prepared exchange and could never
@@ -1450,9 +1457,8 @@ export class Launcher {
       child.role = "active";
       const notice = launcherDriftNotice(packageJson.version, child.version);
       if (notice !== undefined) process.stderr.write(notice);
-      if (pending.qualified === undefined)
-        await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-      else this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
+      if (pending.qualified !== undefined)
+        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
       await sendMessage(child.process, {
         type: "committed",
         updateId: committed.id,
@@ -1463,6 +1469,11 @@ export class Launcher {
               qualified: { ...startupReceipt, generation: committed.id },
             }),
       });
+      await cleanupTerminalDatabaseBackup(
+        this.#baseDir,
+        committed.id,
+        pending.qualified !== undefined,
+      );
     } catch (cause) {
       const attempt = this.#qualifiedCommitAttempt;
       if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
@@ -1546,7 +1557,8 @@ export class Launcher {
       };
       await writeServiceState(this.#statePath, next);
       this.#state = next;
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+      if (pending.qualified === undefined)
+        await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     }
     // Signal listeners alone do not keep Node alive.
     this.#timer = setInterval(() => {}, 2_147_483_647);
@@ -1570,34 +1582,30 @@ export class Launcher {
       this.#child = null;
       await terminateChild(child.process);
       await this.#retractCapability(child.process);
-      if (
-        pending.qualified !== undefined &&
-        child.process.exitCode === null &&
-        child.process.signalCode === null
-      )
-        throw new Error("Qualified trial stop is unproved; paired state was retained.");
     }
-    if (pending.qualified !== undefined) {
-      await this.#proveQuiescence();
-    }
-    await restoreDatabaseBackup(this.#baseDir, pending);
-    const outcome = terminalUpdate({ pending, status, reason });
-    const next: ServiceState = {
-      ...this.#state,
-      activeVersion: pending.fromVersion,
-      update: outcome,
+    const restore = async () => {
+      await restoreDatabaseBackup(this.#baseDir, pending);
+      const outcome = terminalUpdate({ pending, status, reason });
+      const next: ServiceState = {
+        ...this.#state,
+        activeVersion: pending.fromVersion,
+        update: outcome,
+      };
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      await cleanupTerminalDatabaseBackup(
+        this.#baseDir,
+        pending.id,
+        pending.qualified !== undefined,
+      );
     };
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    if (pending.qualified !== undefined) await withStoppedServerOwnership(this.#baseDir, restore);
+    else await restore();
+    await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
   }
 }
 
-export async function main(
-  options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
-): Promise<void> {
+export async function main(): Promise<void> {
   const baseDir = process.env.T3CODE_HOME?.trim();
   if (baseDir === undefined || baseDir === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
@@ -1605,7 +1613,6 @@ export async function main(
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
   await new Launcher(baseDir, state, {
-    ...options,
     startupGateProtocol: readJonesStartupGateProtocol(),
   }).run();
 }

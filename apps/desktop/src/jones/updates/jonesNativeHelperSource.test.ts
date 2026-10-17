@@ -171,7 +171,7 @@ def synthetic_stop(proofs):
     native_stop(proofs)
     if 'candidate-launch' in events:
         assert (tx / 'recovery-reserve.bin').exists(), 'Bulk reserve released before candidate shutdown'
-    if fault == 'state-grew': (profile / 'growth').write_bytes(bytes(RECOVERY_HEADROOM))
+    if fault == 'state-grew': (home / 'desktop-settings.json').write_bytes(bytes(RECOVERY_HEADROOM))
     for proof in proofs:
         if proof.get('pid') == 654: alive(proof)
     if fault == 'candidate-stop' and proofs and proofs[0]['pid'] == 456:
@@ -304,7 +304,7 @@ else:
     if journal['phase'] == 'rolled-back':
         assert state == 'previous-state'
         assert (home / 'settings.json').read_text() == 'previous-settings'
-        assert (profile / 'opaque').read_text() == 'same-host-profile'
+        assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
         if fault not in ('snapshot-failed', 'state-grew'):
             with sqlite3.connect(tx / 'advanced-state' / 'state.sqlite') as db:
@@ -313,7 +313,7 @@ else:
             assert 'candidate-launch' not in events
     if journal['phase'] == 'blocked' and 'candidate-launch' in events:
         assert state == ('previous-state' if fault in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost') else 'advanced-state')
-        assert (tx / 'previous-pair' / 'state.sqlite').exists()
+        assert (tx / 'previous-pair' / 'state.sqlite').exists() == (fault not in ('authority-retention-sync', 'authority-advance-failed', 'authority-advance-lost'))
         assert 'restart-previous' not in events
         if fault != 'recovery-space-missing' and not fault.startswith('authority-'): assert (tx / 'recovery-reserve.bin').exists()
     if fault == 'recovery-space-missing':
@@ -340,6 +340,142 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("re-adopts a stale manifest from independently observed bundle metadata and preserves one preimage", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+app, state, profile = root / 'Jones.app', root / 'userdata', root / 'profile'
+(app / 'Contents/MacOS').mkdir(parents=True)
+(app / 'Contents/Resources').mkdir()
+state.mkdir(); profile.mkdir()
+(app / 'Contents/MacOS/Jones').write_text('synthetic app')
+with open(app / 'Contents/Info.plist', 'wb') as stream:
+    plistlib.dump({'CFBundleIdentifier': 'com.jones.code', 'CFBundleExecutable': 'Jones', 'CFBundleShortVersionString': '1.2.3'}, stream)
+payload = json.dumps({'version': '1.2.3', 'jonesSource': {'repository': 'Jones-Systems/Jones-Code', 'sha': 'a' * 40, 'tree': 'b' * 40}}).encode()
+header = json.dumps({'files': {'package.json': {'offset': '0', 'size': len(payload)}}}).encode()
+(app / 'Contents/Resources/app.asar').write_bytes(struct.pack('<IIII', 4, len(header) + 8, len(header) + 4, len(header)) + header + payload)
+(state / 'statev2.sqlite').write_bytes(b'synthetic state')
+(state / 'environment-id').write_text('same-environment')
+observed = {'protocol': 1, 'owner': 'desktop', 'generation': 'observed', 'transactionId': 'bootstrap',
+            'home': str(root), 'databasePath': str(state / 'statev2.sqlite'), 'profile': str(profile),
+            'environmentId': 'same-environment', 'appPath': str(app), 'executablePath': str(app / 'Contents/MacOS/Jones'),
+            'version': '1.2.3', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'bundleIdentifier': 'com.jones.code'}
+manifest_path = root / 'runtime' / 'jones-active-install.json'
+stale = dict(observed, sourceSha='c' * 40)
+durable(manifest_path, stale, True)
+request = manifest_path.parent / 'running.json'
+durable(request, {'manifestSha256': digest(manifest_path), 'observed': observed}, True)
+result = reconcile_running(request, digest(request))
+assert result['status'] == 'reconciled', result
+assert read(manifest_path) == observed
+assert read(manifest_path.with_name(manifest_path.name + '.superseded')) == stale
+assert (state / 'statev2.sqlite').read_bytes() == b'synthetic state'
+assert reconcile_running(request, digest(request)) == {'protocol': 1, 'status': 'refused', 'reason': 'running-changed'}
+`;
+      NodeChildProcess.execFileSync("python3", ["-c", definitions + "\n" + scenario, f.directory], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "old",
+    "target",
+    "busy",
+    "restore",
+    "changed",
+    "uncommitted-target",
+    "trial-old",
+    "restored",
+    "fenced",
+  ])(
+    "resolves an abandoned activation from the observed %s app under the helper lock",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const setup = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const parser =
+          "parser = argparse.ArgumentParser()" +
+          jonesNativeHelperSource.split("parser = argparse.ArgumentParser()")[1];
+        const scenario = String.raw`
+import contextlib, io
+mode = sys.argv[3]
+observed = expected
+if mode in ('target', 'uncommitted-target'):
+    incoming, previous = prepare_bundle(expected, staged, transaction_id)
+    swap_bundle(expected, incoming, previous)
+    observed = dict(expected, generation=transaction_id, transactionId=transaction_id,
+                    **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')})
+if mode == 'target':
+    native_durable(manifest_path, observed)
+    durable(tx / 'journal.json', {'intent': intent, 'phase': 'committed'}, True)
+if mode == 'trial-old': durable(tx / 'journal.json', {'intent': intent, 'phase': 'trial'}, True)
+if mode == 'restore': durable(tx / 'advanced-state-authority-guard.json', {'protocol': 1}, True)
+if mode in ('restored', 'fenced'):
+    namespace = 't3-native:11111111-1111-4111-8111-111111111111'
+    guard = {'kind': 'fenced', 'environmentId': expected['environmentId'], 'authorityNamespace': namespace, 'storeGeneration': 3}
+    native_durable(tx / 'advanced-state-authority-guard.json', {'protocol': 1, 'guard': guard}, True)
+    native_durable(tx / 'advanced-state' / 'retained.json', {'protocol': 1, 'previous': expected}, True)
+    native_durable(tx / 'journal.json', {'intent': intent, 'phase': 'rollback-intent'}, True)
+    authority = root / 'authority-override'
+    os.environ['T3CODE_NATIVE_AUTHORITY_STATE_DIR'] = '  ' + str(authority) + '  '
+    native_durable(authority / 'native-store-authority-v1.json', {'state': 'active' if mode == 'restored' else 'fenced', 'transition_id': None,
+                    'authority_namespace': namespace, 'store_generation': 4 if mode == 'restored' else 3}, True)
+if mode == 'changed': (previous_app / 'Contents/MacOS/Jones').write_text('unrecognized-app')
+request_path = manifest_path.parent / 'running.json'
+durable(request_path, {'manifestSha256': digest(manifest_path), 'observed': observed}, True)
+request_digest = digest(request_path)
+(home / 'environment-id').write_text(expected['environmentId'])
+before = manifest_path.read_bytes()
+bundle_identity = lambda active: None
+sys.platform = 'darwin'
+sys.argv = ['helper', '--manifest', str(manifest_path), '--reconcile-running', str(request_path), '--plan-sha256', request_digest]
+held = None
+if mode == 'busy':
+    held = open(manifest_path.with_name('jones-activation.lock'), 'w+')
+    held.write('jones-activation-lock-v1\n'); held.flush()
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+output = io.StringIO()
+try:
+    with contextlib.redirect_stdout(output):
+        try: exec(${JSON.stringify(parser)})
+        except SystemExit as error: assert error.code == 0
+finally:
+    if held is not None: held.close()
+result = json.loads(output.getvalue())
+if mode in ('old', 'target', 'restored'):
+    assert result['status'] == 'reconciled', result
+    journal = read(tx / 'journal.json')
+    assert journal['intent'] == intent
+    assert journal['phase'] == ('resumed' if mode == 'target' else 'rolled-back')
+    assert read(manifest_path) == observed
+    assert not (tx / 'commit-grant.json').exists(), 'Recovery must not replay the startup handshake'
+    assert reconcile_running(request_path, request_digest)['status'] == 'reconciled'
+else:
+    assert result['status'] == 'refused', result
+    assert result['reason'] == {'busy': 'busy', 'restore': 'restore-incomplete', 'changed': 'running-changed', 'uncommitted-target': 'activation-incomplete', 'trial-old': 'activation-incomplete', 'fenced': 'restore-incomplete'}[mode]
+    assert manifest_path.read_bytes() == before
+    assert (tx / 'journal.json').exists() == (mode in ('trial-old', 'fenced'))
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", definitions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
+          { encoding: "utf8", timeout: 10000 },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it.each([
     "fenced",
     "absent",
@@ -524,7 +660,8 @@ def manual_launch(active, descriptor=None):
     assert active['sourceSha'] == candidate['sourceSha']
     pair = next((manifest_path.parent / 'jones-manual-installs').glob('*/previous-pair'))
     assert (pair / 'state.sqlite').read_bytes() == database.read_bytes()
-    assert (pair / 'profile/opaque').read_text() == 'same-host-profile'
+    assert not (pair / 'profile').exists()
+    assert (profile / 'opaque').read_text() == 'same-host-profile'
     assert (pair / 'settings.json').read_text() == 'previous-settings'
     events.append('launched')
     if manual_fault == 'launch-unknown':
@@ -604,6 +741,13 @@ print(json.dumps({'case': manual_fault, 'passed': True}))
 boundary_fault = sys.argv[3]
 activate(tx / 'intent.json')
 assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+# Retirement still supports previously retained pairs with an Electron profile.
+legacy_pair = tx / 'previous-pair'
+shutil.copy2(database, legacy_pair / 'state.sqlite')
+clone_tree(profile, legacy_pair / 'profile', profile=True)
+legacy_marker = read(legacy_pair / 'pair.json')
+del legacy_marker['stateScope']; del legacy_marker['files']
+durable(legacy_pair / 'pair.json', legacy_marker)
 acquire_writer_exclusion = native_exclusion
 selection_path.unlink()
 profile_payload = tx / 'previous-pair' / 'profile'
@@ -695,7 +839,7 @@ else:
     finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
 if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'same-host-profile'
+assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
         NodeChildProcess.execFileSync(
           "python3",
@@ -749,6 +893,13 @@ assert database.exists() and (profile / 'opaque').read_text() == 'same-host-prof
 retirement_fault = sys.argv[3]
 activate(tx / 'intent.json')
 assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+# Retirement still supports previously retained pairs with an Electron profile.
+legacy_pair = tx / 'previous-pair'
+shutil.copy2(database, legacy_pair / 'state.sqlite')
+clone_tree(profile, legacy_pair / 'profile', profile=True)
+legacy_marker = read(legacy_pair / 'pair.json')
+del legacy_marker['stateScope']; del legacy_marker['files']
+durable(legacy_pair / 'pair.json', legacy_marker)
 acquire_writer_exclusion = native_exclusion
 if retirement_fault != 'stage': selection_path.unlink()
 journal = read(tx / 'journal.json')
@@ -859,7 +1010,7 @@ else:
         assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
         assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
 assert {str(path): path.read_bytes() for path in metadata} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'same-host-profile'
+assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
@@ -878,7 +1029,7 @@ if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').r
     }
   });
 
-  it("takes a fresh SQLite and profile snapshot on a second attempt while preserving the rolled-back attempt", async () => {
+  it("takes a fresh SQLite and settings snapshot on a second attempt while preserving the rolled-back attempt", async () => {
     const f = await fixture();
     try {
       const nativeFunctions = jonesNativeHelperSource.split(
@@ -916,7 +1067,8 @@ assert read(tx / 'journal.json')['phase'] == 'resumed'
 with sqlite3.connect(tx / 'previous-pair' / 'state.sqlite') as db:
     assert db.execute('SELECT value FROM identity').fetchone()[0] == 'intervening-state'
 assert (tx / 'previous-pair' / 'settings.json').read_text() == 'intervening-settings'
-assert (tx / 'previous-pair' / 'profile' / 'opaque').read_text() == 'intervening-profile'
+assert not (tx / 'previous-pair' / 'profile').exists()
+assert (profile / 'opaque').read_text() == 'advanced-profile'
 assert {str(path): digest(path) for path in first.rglob('*') if path.is_file()} == retained
 assert read(staged['receiptPath'])['app'] == staged
 `;
@@ -1517,6 +1669,8 @@ digest = forbidden
 app_digest = forbidden
 pair_state(expected, root / 'pair')
 assert read(root / 'pair' / 'pair.json')['recovery']['method'] in ('clone', 'copy')
+assert not (root / 'pair' / 'profile').exists()
+assert (profile / 'opaque').read_text() == 'profile'
 prove_quiescence = lambda active: None
 native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
 restore_pair(expected, root / 'pair', root / 'advanced', expected)
@@ -1555,9 +1709,14 @@ staged = {'appPath': str(candidate)}
 space = type('Space', (), {'f_bavail': 1 << 50, 'f_frsize': 1})()
 os.statvfs = lambda path: space
 plan = storage_preflight(expected, staged, tx)
-assert plan['stateBytes'] == 29
+assert plan['stateBytes'] == 22
 assert plan['candidateBytes'] == 9
-assert plan['requiredBytes'] == 2 * 29 + 9 + RECOVERY_HEADROOM
+assert plan['requiredBytes'] == 22 + 9 + RECOVERY_HEADROOM
+RECOVERY_HEADROOM = 16384
+reserves = reserve_recovery_capacity(expected, tx, plan)
+assert sum(reserve['bytes'] for reserve in reserves) == RECOVERY_HEADROOM
+release_recovery_reserve(reserves)
+RECOVERY_HEADROOM = plan['headroomBytesPerVolume']
 space.f_bavail = plan['requiredBytes'] - 1
 try: storage_preflight(expected, staged, tx)
 except RuntimeError as error: assert 'Insufficient free space' in str(error)
@@ -1567,7 +1726,7 @@ storage_preflight(expected, staged, tx)
 original_stat = pathlib.Path.stat
 def other_volume(path, *args, **kwargs):
     info = original_stat(path, *args, **kwargs)
-    if path == profile:
+    if path == tx:
         values = list(info); values[2] += 1
         return os.stat_result(values)
     return info
@@ -1577,14 +1736,12 @@ try:
     except RuntimeError as error: assert 'same-volume recovery' in str(error)
     else: raise AssertionError('Cross-volume rollback was accepted')
 finally: pathlib.Path.stat = original_stat
-for unsafe in (dict(expected, profile=str(state)), dict(expected, profile=str(root))):
-    try: storage_preflight(unsafe, staged, tx)
-    except RuntimeError as error: assert 'overlap' in str(error)
-    else: raise AssertionError('Overlapping recovery roots were accepted')
-recursive = profile / 'transaction'; recursive.mkdir()
+for unused_profile in (str(state), str(root)):
+    storage_preflight(dict(expected, profile=unused_profile), staged, tx)
+recursive = state / 'transaction'; recursive.mkdir()
 try: storage_preflight(expected, staged, recursive)
 except RuntimeError as error: assert 'own destination' in str(error)
-else: raise AssertionError('Recursive profile snapshot was accepted')
+else: raise AssertionError('Recursive database snapshot was accepted')
 `;
       NodeChildProcess.execFileSync(
         "python3",
@@ -1633,7 +1790,7 @@ prove_quiescence = lambda active: None
 native_authority_transition = lambda active, candidate, operation, guard=None: {'kind': 'absent'}
 restore_pair(expected, tx / 'pair', tx / 'advanced', expected)
 retained = events.index(('retained', str(tx / 'advanced' / 'retained.json')))
-for path in (database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), state, profile.parent, tx, tx / 'advanced'):
+for path in (database, pathlib.Path(str(database) + '-wal'), pathlib.Path(str(database) + '-shm'), state, tx / 'pair', tx, tx / 'advanced'):
     assert ('sync', str(path)) in events[:retained], (str(path), events)
 for suffix in ('', '-wal', '-shm'):
     assert pathlib.Path(str(database) + suffix).read_bytes() == ('old' + suffix).encode()
@@ -1914,13 +2071,15 @@ for key, bad in (('sourceSha', 'c' * 40), ('sourceTree', 'd' * 40), ('version', 
     ).toBe("");
   });
 
-  it("retains advanced SQLite, exact startup settings, and same-host profile before paired restore", async () => {
-    const f = await fixture();
-    try {
-      const nativeFunctions = jonesNativeHelperSource.split(
-        "\nparser = argparse.ArgumentParser()",
-      )[0];
-      const scenario = String.raw`
+  it.each([false, true])(
+    "retains advanced SQLite and restores exact settings (legacy profile: %s)",
+    async (legacy) => {
+      const f = await fixture();
+      try {
+        const nativeFunctions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const scenario = String.raw`
 root = pathlib.Path(sys.argv[1])
 home, profile = root / 'userdata', root / 'profile'
 home.mkdir(); profile.mkdir()
@@ -1933,6 +2092,14 @@ with sqlite3.connect(database) as db:
 expected = {'databasePath': str(database), 'profile': str(profile), 'appPath': 'previous.app', 'environmentId': 'original-environment'}
 pair = root / 'previous-pair'
 pair_state(expected, pair)
+legacy = sys.argv[2] == 'true'
+if legacy:
+    clone_tree(profile, pair / 'profile', profile=True)
+    marker = read(pair / 'pair.json'); del marker['stateScope']; del marker['files']
+    durable(pair / 'pair.json', marker)
+else:
+    assert read(pair / 'pair.json')['files'] == {'': True, '-wal': False, '-shm': False}
+    assert not (pair / 'profile').exists()
 with sqlite3.connect(database) as db:
     db.execute("UPDATE identity SET value='advanced-state'")
 (home / 'settings.json').write_text('candidate-startup-settings')
@@ -1948,19 +2115,93 @@ with sqlite3.connect(root / 'advanced-state' / 'state.sqlite') as db:
 assert (home / 'settings.json').read_text() == 'previous-settings'
 assert not (home / 'client-settings.json').exists()
 assert (root / 'advanced-state' / 'client-settings.json').read_text() == 'new-setting-created-by-startup'
-assert (profile / 'opaque-profile').read_text() == 'same-host-profile'
-assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
-assert (pair / 'state.sqlite').exists()
+assert (profile / 'opaque-profile').read_text() == ('same-host-profile' if legacy else 'advanced-profile')
+assert (root / 'advanced-state' / 'profile').exists() == legacy
+if legacy: assert (root / 'advanced-state' / 'profile' / 'opaque-profile').read_text() == 'advanced-profile'
+assert (pair / 'state.sqlite').exists() == legacy
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${scenario}`, f.directory],
-        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
-      );
-    } finally {
-      await f.cleanup();
-    }
-  });
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", `${nativeFunctions}\n${scenario}`, f.directory, String(legacy)],
+          { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
+  it.each(["inventory", "device", "rename-order"])(
+    "validates the new recovery pair before mutation and preserves two rename phases: %s",
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
+        const scenario = String.raw`
+root = pathlib.Path(sys.argv[1])
+state, profile, tx = root / 'state', root / 'profile', root / 'transaction'
+for path in (state, profile, tx): path.mkdir()
+database = state / 'state.sqlite'
+for suffix in ('', '-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('old' + suffix).encode())
+(state / 'settings.json').write_bytes(b'old-settings')
+(profile / 'opaque').write_bytes(b'profile')
+expected = {'databasePath': str(database), 'profile': str(profile)}
+pair, advanced = tx / 'previous-pair', tx / 'advanced-state'
+pair_state(expected, pair)
+for suffix in ('', '-wal', '-shm'): pathlib.Path(str(database) + suffix).write_bytes(('new' + suffix).encode())
+(state / 'settings.json').write_bytes(b'new-settings')
+before = {str(path): path.read_bytes() for path in state.iterdir()}
+mode = sys.argv[2]
+if mode == 'inventory': (pair / 'state.sqlite-wal').unlink()
+if mode == 'device':
+    original = pathlib.Path.lstat
+    def changed_device(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if path == pair / 'state.sqlite':
+            fields = list(info); fields[2] += 1
+            return os.stat_result(fields)
+        return info
+    pathlib.Path.lstat = changed_device
+transitions, renamed = [], []
+def transition(active, candidate, operation, guard=None):
+    transitions.append(operation)
+    return {'kind': 'absent'}
+native_authority_transition = transition
+prove_quiescence = lambda active: None
+original_rename = os.rename
+def observed_rename(source, target):
+    assert (tx / 'advanced-state-authority-guard.json').exists()
+    renamed.append((pathlib.Path(source), pathlib.Path(target)))
+    return original_rename(source, target)
+os.rename = observed_rename
+try: restore_pair(expected, pair, advanced, {})
+except RuntimeError:
+    assert mode in ('inventory', 'device')
+    assert not advanced.exists()
+    assert transitions == [] and renamed == []
+    assert {str(path): path.read_bytes() for path in state.iterdir()} == before
+else:
+    assert mode == 'rename-order'
+    assert len(renamed) == 8
+    assert all(source.parent == state and target.parent == advanced for source, target in renamed[:4])
+    assert all(source.parent == pair and target.parent == state for source, target in renamed[4:])
+    assert transitions == ['fence', 'advance']
+    assert database.read_bytes() == b'old'
+    assert (profile / 'opaque').read_bytes() == b'profile'
+    assert not (advanced / 'profile').exists()
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", definitions + "\n" + scenario, f.directory, fault],
+          { encoding: "utf8", timeout: 10000 },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
 
   it("uses the same app-layout digest in the native helper and staged receipt", async () => {
     const f = await fixture();
