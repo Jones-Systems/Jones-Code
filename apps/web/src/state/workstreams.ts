@@ -36,7 +36,7 @@ import {
 } from "@t3tools/client-runtime/state/workstreams";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   assertWorkstreamActionSnapshot,
@@ -73,8 +73,6 @@ const EMPTY_NATIVE_THREADS: readonly { readonly environmentId: string; readonly 
 
 const isRestartableCursorStale = (cause: unknown): boolean =>
   isHttpConflict(cause) && cause.message === "workstream_cursor_stale";
-
-export { isWorkstreamsNotConfigured };
 
 /**
  * Error text for a failed list read, or null when Workstreams are simply not configured on the
@@ -313,7 +311,10 @@ export interface WorkstreamListView {
    * only: proofs in `placements` still gate every change.
    */
   readonly assignmentIndex?: WorkstreamAssignmentIndex | null;
-  /** The last good `data` and `assignmentIndex` are shown because a later read failed. */
+  /**
+   * The last good `data` and `assignmentIndex` are shown because a later read failed. `data` is
+   * then marked stale and every write refuses until a reload succeeds.
+   */
   readonly stale?: boolean;
   /** Clock for proof assurance; advances when a loaded proof or attestation expires. */
   readonly verificationNow?: string;
@@ -639,6 +640,13 @@ export function useWorkstreams(
     setStale(false);
   }, []);
 
+  /** Keeps the last good snapshot visible and read-only; writes refuse until a reload succeeds. */
+  const markStale = useCallback(() => {
+    if (dataRef.current === null) return;
+    staleRef.current = true;
+    setStale(true);
+  }, []);
+
   useEffect(() => {
     for (const operation of commandRequests.current) {
       if (
@@ -742,10 +750,16 @@ export function useWorkstreams(
       let reloadList = false;
       const context = await withTransientReadRecovery(async () => {
         if (reloadList) core = await loadCore();
+        // A server without the endpoint keeps its pre-context behavior: no context, no error.
+        // Every other failure rejects this load, so no snapshot publishes without its context.
         const loaded = await request(
           (client) => client.workstreams.registrationContext({ headers: {} }),
           controller.signal,
-        );
+        ).catch((cause: unknown) => {
+          if (classifyWorkstreamReadFailure(cause) === "unsupported") return null;
+          throw cause;
+        });
+        if (loaded === null) return null;
         if (
           sameContextAuthority(loaded, core.list.binding) &&
           loaded.registry_version !== core.list.binding.registryVersion
@@ -757,13 +771,15 @@ export function useWorkstreams(
         return loaded;
       }, controller.signal).then(
         (loaded) =>
+          loaded !== null &&
           sameContextAuthority(loaded, core.list.binding) &&
           loaded.registry_version === core.list.binding.registryVersion
             ? loaded
             : null,
         (cause: unknown) => {
-          if (reloadList && !(cause instanceof WorkstreamRegistryVersionChanged)) throw cause;
-          return null;
+          // An exhausted registry-version recovery budget publishes the list without a context.
+          if (cause instanceof WorkstreamRegistryVersionChanged) return null;
+          throw cause;
         },
       );
       if (superseded()) return;
@@ -799,7 +815,7 @@ export function useWorkstreams(
         if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") {
           // Only lost access hides groups; outages, opaque control-plane failures and an
           // unconfigured or missing API keep the last good snapshot as stale.
-          if (dataRef.current !== null) setStale(true);
+          markStale();
         } else purgeAuthorizedState();
         setError(workstreamListErrorMessage(cause));
       })
@@ -812,7 +828,14 @@ export function useWorkstreams(
       if (listRequest.current === controller) listRequest.current = null;
       generation.current += 1;
     };
-  }, [revision, placementsEnabled, proofBatches, purgeAuthorizedState, requestPlacements]);
+  }, [
+    revision,
+    placementsEnabled,
+    markStale,
+    proofBatches,
+    purgeAuthorizedState,
+    requestPlacements,
+  ]);
 
   // Native identity changes only refresh proofs for the committed snapshot; they never clear it.
   useEffect(() => {
@@ -845,11 +868,16 @@ export function useWorkstreams(
         setPlacementInventory(proofs.inventory);
         setVerificationNow(new Date().toISOString());
       },
-      () => {
-        // An authorization failure surfaces through the coherent reload, which classifies it.
+      (cause: unknown) => {
         if (!current()) return;
         settled = true;
-        refresh();
+        // Lost access hides groups at once, whatever a later read returns; any other failure
+        // reloads the coherent snapshot, which classifies it.
+        if (classifyWorkstreamReadFailure(cause) === "unauthenticated") {
+          generation.current += 1;
+          purgeAuthorizedState();
+          setError(workstreamListErrorMessage(cause));
+        } else refresh();
       },
     );
     return () => {
@@ -865,6 +893,7 @@ export function useWorkstreams(
     stableNativeThreads,
     preferredThread,
     proofBatches,
+    purgeAuthorizedState,
     requestPlacements,
     refresh,
   ]);
@@ -894,6 +923,8 @@ export function useWorkstreams(
     ) => {
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
+      // A stale snapshot is display evidence only; every write refuses before any request.
+      if (staleRef.current) throw new WorkstreamActionError("stale");
       const authority = actionAuthorityKey(startedBinding);
       const startedGeneration = generation.current;
       if ([...unresolvedCommands.current.values()].includes(authority))
@@ -926,6 +957,7 @@ export function useWorkstreams(
       };
       const submitCommand = async (command: WorkstreamCommand) => {
         assertCurrentBinding();
+        if (staleRef.current) throw new WorkstreamActionError("stale");
         commandAttempted = true;
         unresolvedCommands.current.set(command.command_id, authority);
         let receipt = await request(
@@ -965,7 +997,11 @@ export function useWorkstreams(
       } catch (cause) {
         if (!controller.signal.aborted && currentBindingIsAccepted()) {
           generation.current += 1;
-          purgeAuthorizedState();
+          // Only lost access hides groups. A failed read, refusal or unknown effect keeps the
+          // last good snapshot stale and read-only; unresolved commands stay fenced until a
+          // retry reconciles them by reading their receipts.
+          if (classifyWorkstreamReadFailure(cause) === "unauthenticated") purgeAuthorizedState();
+          else markStale();
           setError("Workstreams changed or are unavailable. Retry to reload current access.");
           refreshAfterOperation = commandAttempted;
         }
@@ -976,7 +1012,7 @@ export function useWorkstreams(
           refresh();
       }
     },
-    [data?.binding, purgeAuthorizedState, refresh],
+    [data?.binding, markStale, purgeAuthorizedState, refresh],
   );
   const submit = useCallback(
     (command: WorkstreamCommand) => runBindingOperation((submitCommand) => submitCommand(command)),
@@ -1113,15 +1149,14 @@ export function useWorkstreams(
 
   const readFailed = useCallback(
     (cause: unknown) => {
-      if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") {
-        if (dataRef.current !== null) setStale(true);
-      } else {
+      if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") markStale();
+      else {
         generation.current += 1;
         purgeAuthorizedState();
       }
       setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
     },
-    [purgeAuthorizedState],
+    [markStale, purgeAuthorizedState],
   );
 
   const loadDetail = useCallback(
@@ -1281,14 +1316,15 @@ export function useWorkstreams(
       },
       resolved: (id) => unresolvedCommands.current.delete(id),
     });
-    const snapshot = await loadActionSnapshot();
-    metadataCache.write(snapshot.data);
-    setData(metadataCache.read(snapshot.data.binding));
-    setRegistrationContext(snapshot.registrationContext);
-    setError(null);
-    // The action snapshot omits stored assignments; reload them at the list's new version.
-    if (placementsEnabled) refresh();
-  }, [loadActionSnapshot, placementsEnabled, refresh]);
+    // Reload through the coherent path so list, context, index and proofs install together.
+    refresh();
+  }, [loadActionSnapshot, refresh]);
+
+  // Edit gates read `data`; a stale snapshot must not look current to them.
+  const view = useMemo(
+    () => (data !== null && stale && !data.stale ? { ...data, stale: true } : data),
+    [data, stale],
+  );
 
   return {
     assignNativeThread: assignThread,
@@ -1300,7 +1336,7 @@ export function useWorkstreams(
     assignmentIndex,
     stale,
     verificationNow,
-    data,
+    data: view,
     error,
     loading,
     refresh,
