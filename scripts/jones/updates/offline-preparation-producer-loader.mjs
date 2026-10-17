@@ -230,9 +230,9 @@ const reviewedRawSources = {
   "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts":
     "fcc87f71203dcc7d559dc082bba7cc495254871cced4daeffaee9376f5820804",
   "apps/desktop/src/jones/updates/jonesNativeHelperSource.ts":
-    "2188d94da05859b0ed5ada4f0caf006ef9dc9a8b21ab1b08a0d86c63cb45d1b8",
+    "0f890f466878dc55267ef005d2cf6d9534af81082e747294d52820d69f8446f3",
   "apps/desktop/src/jones/updates/jonesPairedStateSource.ts":
-    "e70354b5dcbc141c1facf2e2fa3b09032ce095c1bb79fdf21ec87f43020c9810",
+    "362644e48e6f3f5fc31d753fbcb4954671ad296d8ac414ac351e40c03c0820a7",
   "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts":
     "5c2f2da19235042dd924121f68d33ec5e1b762eb56ae94cc52d9687f203e3fa7",
   "apps/server/src/jones/updates/offlinePreparation.ts":
