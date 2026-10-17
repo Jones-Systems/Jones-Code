@@ -439,6 +439,7 @@ function ThreadNavigationSidebarPane(
       groups: workstreams.groups,
       collapsedKeys: workstreams.collapsedKeys,
       secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+      confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
       searching: props.searchQuery.trim().length > 0,
       selectedThreadKey: props.selectedThreadKey,
     });
@@ -455,6 +456,7 @@ function ThreadNavigationSidebarPane(
     workstreams.groups,
     workstreams.collapsedKeys,
     workstreams.secondaryLabelsByKey,
+    workstreams.confirmedUnassignedKeys,
     props.selectedThreadKey,
     nowMinute,
     options.selectedEnvironmentId,
