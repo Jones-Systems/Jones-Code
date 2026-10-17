@@ -196,6 +196,7 @@ export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
+  readonly unassignedLabel?: string;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
   readonly onThreadDragLeave?: () => void;
@@ -627,7 +628,7 @@ export function WorkstreamSidebarSection(props: {
           <button
             type="button"
             className="flex items-center gap-1 px-2 py-1 text-xs font-medium focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-            aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} Unassigned`}
+            aria-label={`${collapsed.includes("__unassigned__") ? "Expand" : "Collapse"} ${props.unassignedLabel ?? "Unassigned"}`}
             aria-expanded={!collapsed.includes("__unassigned__")}
             onClick={() =>
               setCollapsed((values) =>
@@ -641,7 +642,7 @@ export function WorkstreamSidebarSection(props: {
               aria-hidden
               className={`size-3.5 ${collapsed.includes("__unassigned__") ? "-rotate-90" : ""}`}
             />{" "}
-            Unassigned
+            {props.unassignedLabel ?? "Unassigned"}
           </button>
           {!collapsed.includes("__unassigned__") ? props.renderMembers(null) : null}
         </div>

@@ -35,9 +35,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   assertWorkstreamActionSnapshot,
+  assertWorkstreamReadContext,
   WorkstreamActionError,
   type WorkstreamActionSnapshot,
 } from "../jones/workstreams/workstreamActionSnapshot";
+import {
+  assignNativeThread,
+  type NativeThreadAssignmentOptions,
+  type NativeThreadAssignmentSnapshot,
+} from "../jones/workstreams/nativeThreadAssignment";
 
 import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
 
@@ -281,6 +287,11 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly assignNativeThread?: (
+    thread: { readonly environmentId: string; readonly id: string },
+    destination: string | null,
+    options: NativeThreadAssignmentOptions,
+  ) => Promise<void>;
   readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
     readonly signal?: AbortSignal;
@@ -380,6 +391,7 @@ const addBoundedPlacementCandidate = (
 
 export function nativePlacementInventory(
   nativeThreads: readonly { readonly environmentId: string; readonly id: string }[],
+  preferred?: { readonly environmentId: string; readonly id: string } | null,
 ): NativePlacementInventory {
   const identityKeys = new Set<string>();
   const candidates: PlacementCandidate[] = [];
@@ -396,10 +408,33 @@ export function nativePlacementInventory(
     });
   }
   const totalIdentities = identityKeys.size;
+  const preferredKey = preferred ? JSON.stringify([preferred.environmentId, preferred.id]) : null;
+  if (
+    preferred &&
+    preferredKey &&
+    identityKeys.has(preferredKey) &&
+    !candidates.some((entry) => entry.key === preferredKey)
+  ) {
+    if (candidates.length === T3_PLACEMENT_MAX_IDENTITIES) candidates.shift();
+    candidates.push({
+      key: preferredKey,
+      identity: { source_instance_id: preferred.environmentId, native_thread_id: preferred.id },
+    });
+  }
   const selected: T3PlacementIdentity[] = [];
   const encoder = new TextEncoder();
   let requestBytes = encoder.encode(JSON.stringify({ identities: selected })).byteLength;
-  candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  candidates.sort((a, b) =>
+    a.key === preferredKey
+      ? -1
+      : b.key === preferredKey
+        ? 1
+        : a.key < b.key
+          ? -1
+          : a.key > b.key
+            ? 1
+            : 0,
+  );
   for (const { identity: value } of candidates) {
     const nextBytes =
       requestBytes +
@@ -409,6 +444,12 @@ export function nativePlacementInventory(
     selected.push(value);
     requestBytes = nextBytes;
   }
+  if (preferredKey)
+    selected.sort((a, b) => {
+      const left = JSON.stringify([a.source_instance_id, a.native_thread_id]);
+      const right = JSON.stringify([b.source_instance_id, b.native_thread_id]);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
   return {
     coverage: totalIdentities > selected.length ? "partial" : "complete",
     identities: selected,
@@ -452,9 +493,17 @@ export function useWorkstreams(
     nativeThreads,
   );
   const stableNativeThreads = nativeThreadsSnapshot.current;
+  const [preferredThread, setPreferredThread] = useState<{
+    readonly environmentId: string;
+    readonly id: string;
+  } | null>(null);
   const inventory = useMemo(
-    () => nativePlacementInventory(placementsEnabled ? stableNativeThreads : EMPTY_NATIVE_THREADS),
-    [placementsEnabled, stableNativeThreads],
+    () =>
+      nativePlacementInventory(
+        placementsEnabled ? stableNativeThreads : EMPTY_NATIVE_THREADS,
+        preferredThread,
+      ),
+    [placementsEnabled, stableNativeThreads, preferredThread],
   );
   const identities = useMemo(
     () => JSON.parse(inventory.json) as readonly T3PlacementIdentity[],
@@ -478,6 +527,7 @@ export function useWorkstreams(
   dataRef.current = data;
   const refresh = useCallback(() => {
     listRequest.current?.abort();
+    for (const operation of commandRequests.current) operation.controller.abort();
     generation.current += 1;
     setPlacements(null);
     setRegistrationContext(null);
@@ -629,6 +679,7 @@ export function useWorkstreams(
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
       const authority = actionAuthorityKey(startedBinding);
+      const startedGeneration = generation.current;
       if ([...unresolvedCommands.current.values()].includes(authority))
         throw new WorkstreamActionError("unknown");
       const controller = new AbortController();
@@ -644,7 +695,11 @@ export function useWorkstreams(
         return key !== null && operationRequest.acceptedBindingKeys.has(key);
       };
       const assertCurrentBinding = () => {
-        if (!currentBindingIsAccepted() && !controller.signal.aborted) controller.abort();
+        if (
+          (!currentBindingIsAccepted() || generation.current !== startedGeneration) &&
+          !controller.signal.aborted
+        )
+          controller.abort();
         controller.signal.throwIfAborted();
       };
       const acceptReceiptBinding = (receipt: WorkstreamReceipt) => {
@@ -712,6 +767,115 @@ export function useWorkstreams(
   const submit = useCallback(
     (command: WorkstreamCommand) => runBindingOperation((submitCommand) => submitCommand(command)),
     [runBindingOperation],
+  );
+
+  const assignThread = useCallback(
+    async (
+      thread: { readonly environmentId: string; readonly id: string },
+      destination: string | null,
+      options: NativeThreadAssignmentOptions,
+    ) => {
+      const started = dataRef.current;
+      if (!started || !placementsEnabled) throw new WorkstreamActionError("stale");
+      const authority = actionAuthorityKey(started.binding);
+      const startedGeneration = generation.current;
+      const check = () => {
+        options.signal?.throwIfAborted();
+        if (
+          generation.current !== startedGeneration ||
+          !dataRef.current ||
+          actionAuthorityKey(dataRef.current.binding) !== authority
+        )
+          throw new WorkstreamActionError("stale");
+      };
+      const loadSnapshot = async (
+        referenceId?: string,
+      ): Promise<NativeThreadAssignmentSnapshot> => {
+        check();
+        const load = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) =>
+          request(run, options.signal);
+        const live = await loadCompleteWorkstreamList(
+          (cursor) =>
+            load((client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            ),
+          options,
+        );
+        check();
+        if (actionAuthorityKey(live.binding) !== authority)
+          throw new WorkstreamActionError("stale");
+        const context = await load((client) =>
+          client.workstreams.registrationContext({ headers: {} }),
+        );
+        check();
+        const selected = [
+          { source_instance_id: thread.environmentId, native_thread_id: thread.id },
+        ];
+        const projection = await loadLiveT3Placements(live, selected, () =>
+          load((client) =>
+            client.workstreams.threadPlacements({
+              headers: {},
+              payload: { identities: selected },
+            }),
+          ),
+        );
+        check();
+        const referenceIds = new Set(projection.items.map((item) => item.native_reference_id));
+        if (
+          referenceIds.size > 1 ||
+          (referenceId !== undefined && [...referenceIds].some((id) => id !== referenceId))
+        )
+          throw new WorkstreamActionError("ambiguous");
+        const selectedReference = referenceId ?? [...referenceIds][0];
+        const reference =
+          selectedReference === undefined
+            ? null
+            : await load((client) =>
+                client.workstreams.reference({
+                  headers: {},
+                  params: { nativeReferenceId: selectedReference },
+                }),
+              );
+        check();
+        const destinationMemberships =
+          destination === null
+            ? null
+            : await loadAllPages(
+                (cursor) =>
+                  load((client) =>
+                    client.workstreams.memberships({
+                      headers: {},
+                      params: { workstreamId: destination },
+                      payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+                    }),
+                  ),
+                options.signal,
+              );
+        check();
+        assertWorkstreamReadContext(live, context);
+        return {
+          data: live,
+          registrationContext: context,
+          placements: projection,
+          reference,
+          destinationMemberships,
+        };
+      };
+      await assignNativeThread({
+        data: started,
+        thread,
+        destination,
+        loadSnapshot,
+        runBindingOperation,
+        ...options,
+      });
+      options.signal?.throwIfAborted();
+      setPreferredThread({ environmentId: thread.environmentId, id: thread.id });
+    },
+    [placementsEnabled, runBindingOperation],
   );
 
   const loadDetail = useCallback(
@@ -887,6 +1051,7 @@ export function useWorkstreams(
   }, [loadActionSnapshot]);
 
   return {
+    assignNativeThread: assignThread,
     registrationContext,
     loadActionSnapshot,
     retry,

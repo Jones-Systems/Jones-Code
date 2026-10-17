@@ -4,7 +4,11 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamsRegistrationContextAcceptedResponse,
+} from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
 import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
@@ -14,6 +18,28 @@ import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
+
+import { assignNativeThread } from "../../jones/workstreams/nativeThreadAssignment";
+
+const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
+  protocol: "workstreams-registration-context/2.0.0",
+  state: "ready",
+  ...placements.context,
+  grant_id: "grant",
+  sources: [
+    {
+      provider: "t3",
+      source_instance_id: thread.environmentId,
+      authority_namespace: "authority",
+      store_generation: 1,
+      resource_kind: "thread",
+      id_kind: "internal",
+      account_provenance: { kind: "not_account_scoped" },
+      native_protocol: "workstreams-t3-provider/1.0.0",
+      build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+    },
+  ],
+};
 
 let root: Root;
 let container: HTMLDivElement;
@@ -49,9 +75,41 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const submit = vi.fn(async (_command: WorkstreamCommand) => committed);
+  const submit = vi.fn(async (command: WorkstreamCommand) => ({
+    ...committed,
+    command_id: command.command_id,
+    owner_id: "owner",
+    server_generation: 7,
+    operation: command.action.operation,
+  }));
   controller = {
     data,
+    registrationContext,
+    assignNativeThread: (selected, destination, options) =>
+      assignNativeThread({
+        ...options,
+        data: controller.data!,
+        thread: selected,
+        destination,
+        runBindingOperation: controller.runBindingOperation,
+        loadSnapshot: async () => {
+          const loaded = await controller.loadDetail(destination ?? "alpha", options);
+          return {
+            data: controller.data!,
+            registrationContext: controller.registrationContext!,
+            placements: controller.placements!,
+            reference: { context: loaded.detail.context, reference, latest_observation: null },
+            destinationMemberships:
+              destination === null
+                ? null
+                : {
+                    context: loaded.detail.context,
+                    items: loaded.memberships.items,
+                    next_cursor: null,
+                  },
+          };
+        },
+      }),
     placements,
     placementInventory: {
       coverage: "complete",
@@ -269,8 +327,8 @@ describe("native Workstream sidebar interactions", () => {
     selection.removeAllRanges();
   });
 
-  it("ignores external drags and refuses row drags without verified placements", async () => {
-    controller = { ...controller, placements: null };
+  it("ignores external drags and refuses row drags without an activated source", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
     expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(false);
@@ -280,14 +338,53 @@ describe("native Workstream sidebar interactions", () => {
     expect(reorder).not.toHaveBeenCalled();
   });
 
+  it("allows choosing an assignment outside the initial placement inventory", async () => {
+    controller = {
+      ...controller,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await clickLabel("Workstream actions for Unassigned native conversation");
+    const assignment = [...document.querySelectorAll('[role="menuitem"]')].find(
+      (entry) => entry.textContent === "Assign to beta",
+    );
+    expect(assignment?.getAttribute("aria-disabled")).not.toBe("true");
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("admits only one assignment while the chosen action is pending", async () => {
+    let complete!: () => void;
+    const assignment = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    controller = { ...controller, assignNativeThread: assignment };
+    await render();
+    await clickLabel("Workstream actions for First native conversation");
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (entry) => entry.textContent === "Move to beta",
+    )!;
+    await act(async () => {
+      item.click();
+      item.click();
+    });
+    expect(assignment).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Saving Workstream change");
+    await act(async () => complete());
+    expect(container.textContent).not.toContain("Saving Workstream change");
+  });
+
   it("preserves all native conversations under partial or untrusted placement coverage", async () => {
     controller = {
       ...controller,
       placements: null,
+      registrationContext: null,
       placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
     };
     await render();
-    const unassigned = container.querySelector('[aria-label="Unassigned threads"]');
+    const unassigned = container.querySelector('[aria-label="Other threads"]');
     for (const item of threads) expect(unassigned?.textContent).toContain(item.title);
     expect(container.textContent).toContain("Thread assignments are unavailable");
     await clickLabel("Workstream actions for First native conversation");
@@ -746,13 +843,13 @@ describe("Workstream live thread summaries", () => {
     ).toBe("0/6");
   });
 
-  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unassigned", async () => {
-    controller = { ...controller, placements: null };
+  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unchecked", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render([statusThread("thread", "running")]);
     expect(
       container.querySelector('[aria-label="alpha: 0 of 0 known threads running"]')?.textContent,
     ).toBe("0/0");
-    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+    expect(container.querySelector('[aria-label="Other threads"]')?.textContent).toContain(
       "thread",
     );
     expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();

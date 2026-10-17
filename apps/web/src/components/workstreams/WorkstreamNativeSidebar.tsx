@@ -6,12 +6,15 @@ import type { WorkstreamListView } from "../../state/workstreams";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { WorkstreamSidebarSection, workstreamCommandId } from "./WorkstreamSidebarSection";
-import { canEditWorkstreams, planNativeMembership } from "./nativeWorkstreamActions";
+import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import {
   nativeWorkstreamThreadKey,
   secondaryNativeWorkstreamLabels,
   type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
+
+import { nativeThreadSourceAvailable } from "../../jones/workstreams/nativeThreadAssignment";
+import { workstreamFailureMessage } from "../../jones/workstreams/workstreamActionSnapshot";
 
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 
@@ -62,10 +65,17 @@ export function WorkstreamNativeSidebar(props: {
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
     ),
   );
+  const assignmentChecked = (thread: EnvironmentThreadShell) =>
+    controller.placements?.readiness === "ready" &&
+    controller.placements.trustedEnvironments.some(
+      (entry) => entry.environmentId === thread.environmentId,
+    ) &&
+    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
-    controller.placements !== null &&
-    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+    controller.assignNativeThread !== undefined &&
+    nativeThreadSourceAvailable(controller.registrationContext, thread);
+  const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
   const run = (operation: () => Promise<void>) => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -74,8 +84,7 @@ export function WorkstreamNativeSidebar(props: {
     const startedBinding = binding;
     void operation()
       .catch((cause: unknown) => {
-        if (bindingRef.current === startedBinding)
-          setError(cause instanceof Error ? cause.message : "Workstream action failed.");
+        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
       })
       .finally(() => {
         if (bindingRef.current === startedBinding) {
@@ -85,53 +94,15 @@ export function WorkstreamNativeSidebar(props: {
       });
   };
   const move = async (thread: EnvironmentThreadShell, destination: string | null) => {
-    const data = controller.data;
-    const placements = controller.placements;
-    if (!data || !placements || !canMove(thread))
-      throw new Error("Refresh thread placements before changing membership.");
-    const current =
-      grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
-      null;
-    if (current === destination) return;
-    const detailId = destination ?? current;
-    if (!detailId) return;
+    if (!canMove(thread) || !controller.assignNativeThread)
+      throw new Error("This environment is unavailable for Workstream assignment.");
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
-    const startedBinding = binding;
-    const detail = await controller.loadDetail(detailId, { signal: abort.signal });
-    abort.signal.throwIfAborted();
-    if (bindingRef.current !== startedBinding)
-      throw new Error("Workstream access changed. Refresh before retrying.");
-    const context = detail.detail.context;
-    if (
-      context.owner_id !== data.binding.ownerId ||
-      context.server_generation !== data.binding.serverGeneration ||
-      context.registry_version !== data.binding.registryVersion
-    )
-      throw new Error("Workstreams changed. Refresh before retrying.");
-    const action = planNativeMembership({
-      data,
-      placements,
-      references: detail.references.items,
-      destinationMemberships: detail.memberships.items,
-      thread,
-      destination,
-      now: Date.now(),
+    await controller.assignNativeThread(thread, destination, {
+      signal: abort.signal,
+      commandId: workstreamCommandId,
     });
-    if (!action) return;
-    const commandId = await workstreamCommandId();
-    abort.signal.throwIfAborted();
-    if (bindingRef.current !== startedBinding)
-      throw new Error("Workstream access changed. Refresh before retrying.");
-    const receipt = await controller.submit({
-      command_id: commandId,
-      expected_server_generation: data.binding.serverGeneration,
-      expected_registry_version: data.binding.registryVersion,
-      action,
-    });
-    if (receipt.state !== "committed")
-      throw new Error(`Membership change ${receipt.state}. Refresh before retrying.`);
   };
   const currentWorkstream = (thread: EnvironmentThreadShell) =>
     grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
@@ -139,7 +110,8 @@ export function WorkstreamNativeSidebar(props: {
   const acceptsDrop = (destination: string | null, neighbor?: EnvironmentThreadShell) =>
     dragged !== null &&
     canMove(dragged) &&
-    (currentWorkstream(dragged) !== destination ||
+    (!assignmentChecked(dragged) ||
+      currentWorkstream(dragged) !== destination ||
       (!!neighbor &&
         neighbor !== dragged &&
         props.canReorder(dragged) &&
@@ -189,7 +161,7 @@ export function WorkstreamNativeSidebar(props: {
       grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
       null;
     run(async () => {
-      if (current !== destination) await move(thread, destination);
+      if (!assignmentChecked(thread) || current !== destination) await move(thread, destination);
       else if (
         neighbor &&
         neighbor !== thread &&
@@ -208,7 +180,13 @@ export function WorkstreamNativeSidebar(props: {
             ?.threads ?? []);
     return (
       <ul
-        aria-label={workstreamId === null ? "Unassigned threads" : "Workstream threads"}
+        aria-label={
+          workstreamId === null
+            ? hasUnchecked
+              ? "Other threads"
+              : "Unassigned threads"
+            : "Workstream threads"
+        }
         className="space-y-px px-1 pb-1"
       >
         {threads.map((thread, index) => {
@@ -272,7 +250,13 @@ export function WorkstreamNativeSidebar(props: {
                   <GripVerticalIcon aria-hidden className="size-3" />
                 </button>
                 <span className="min-w-0 flex-1 truncate">
-                  {secondary.length ? `Also in ${secondary.join(", ")}` : ""}
+                  {!nativeThreadSourceAvailable(controller.registrationContext, thread)
+                    ? "Assignment unavailable for this environment"
+                    : !assignmentChecked(thread)
+                      ? "Assignment not checked"
+                      : secondary.length
+                        ? `Also in ${secondary.join(", ")}`
+                        : ""}
                 </span>
                 <Menu onOpenChange={(open) => setMenuThread(open ? key : null)}>
                   <MenuTrigger
@@ -285,7 +269,10 @@ export function WorkstreamNativeSidebar(props: {
                     {(menuThread === key ? (controller.data?.items ?? []) : []).map((item) => (
                       <MenuItem
                         key={item.workstreamId}
-                        disabled={!canMove(thread) || item.workstreamId === workstreamId}
+                        disabled={
+                          !canMove(thread) ||
+                          (assignmentChecked(thread) && item.workstreamId === workstreamId)
+                        }
                         onClick={() => run(() => move(thread, item.workstreamId))}
                       >
                         {workstreamId === null ? "Assign to" : "Move to"} {item.name}
@@ -336,7 +323,15 @@ export function WorkstreamNativeSidebar(props: {
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
-          <button type="button" onClick={controller.refresh}>
+          <button
+            type="button"
+            onClick={() =>
+              run(async () => {
+                if (controller.retry) await controller.retry();
+                else controller.refresh();
+              })
+            }
+          >
             Refresh
           </button>
         </p>
@@ -354,6 +349,7 @@ export function WorkstreamNativeSidebar(props: {
       <WorkstreamSidebarSection
         controller={controller}
         renderMembers={renderMembers}
+        unassignedLabel={hasUnchecked ? "Other threads" : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}
         onThreadDrop={drop}
         onThreadDragOver={dragOver}

@@ -119,7 +119,9 @@
     "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/negative-cases.json",
     "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json",
     "packages/contracts/contracts/workstreams-registration-context/v2/manifest.json",
-    "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json"
+    "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json",
+    "apps/web/src/jones/workstreams/nativeThreadAssignment.ts",
+    "apps/web/src/jones/workstreams/nativeThreadAssignment.test.ts"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

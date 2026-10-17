@@ -123,6 +123,32 @@ describe("complete Workstream list loading", () => {
     ).toBeGreaterThan(T3_PLACEMENT_MAX_REQUEST_BYTES);
   });
 
+  it("retains the chosen tail identity within the cap without admitting absent identities", () => {
+    const threads = Array.from({ length: 4501 }, (_, i) => ({
+      environmentId: "env",
+      id: String(i).padStart(5, "0"),
+    }));
+    const chosen = threads[4500]!;
+    const initial = nativePlacementInventory(threads);
+    expect(initial.identities.some((identity) => identity.native_thread_id === chosen.id)).toBe(
+      false,
+    );
+    const retained = nativePlacementInventory(threads, chosen);
+    expect(retained.identities).toHaveLength(1000);
+    expect(
+      retained.identities.filter((identity) => identity.native_thread_id === chosen.id),
+    ).toHaveLength(1);
+    expect(retained.coverage).toBe("partial");
+    expect(retained.totalIdentities).toBe(4501);
+    expect(nativePlacementInventory(threads.toReversed(), chosen)).toEqual(retained);
+    expect(
+      nativePlacementInventory(threads, { ...chosen, environmentId: "remote" }).identities,
+    ).toEqual(initial.identities);
+    expect(
+      new TextEncoder().encode(JSON.stringify({ identities: retained.identities })).byteLength,
+    ).toBeLessThanOrEqual(T3_PLACEMENT_MAX_REQUEST_BYTES);
+  });
+
   it("keeps a deterministic 1,000-identity selection for a large reversed inventory", () => {
     const threads = Array.from({ length: 100_001 }, (_, index) => ({
       environmentId: `environment-${String(index % 7).padStart(2, "0")}`,
