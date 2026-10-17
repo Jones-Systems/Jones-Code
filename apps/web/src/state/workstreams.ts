@@ -796,8 +796,9 @@ export function useWorkstreams(
     })()
       .catch((cause: unknown) => {
         if (superseded()) return;
-        if (classifyWorkstreamReadFailure(cause) === "error") {
-          // Transport and opaque control-plane failures keep the last good snapshot.
+        if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") {
+          // Only lost access hides groups; outages, opaque control-plane failures and an
+          // unconfigured or missing API keep the last good snapshot as stale.
           if (dataRef.current !== null) setStale(true);
         } else purgeAuthorizedState();
         setError(workstreamListErrorMessage(cause));
@@ -1112,7 +1113,7 @@ export function useWorkstreams(
 
   const readFailed = useCallback(
     (cause: unknown) => {
-      if (classifyWorkstreamReadFailure(cause) === "error") {
+      if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") {
         if (dataRef.current !== null) setStale(true);
       } else {
         generation.current += 1;

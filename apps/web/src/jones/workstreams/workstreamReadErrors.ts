@@ -8,10 +8,10 @@ export const isWorkstreamsNotConfigured = (cause: unknown): boolean =>
   isHttpConflict(cause) && cause.message === "workstreams_not_configured";
 
 /**
- * `unauthenticated` and `unsupported` are definite answers about access or availability, so
- * readers hide previously loaded Workstreams. Every other failure, including an opaque
- * control-plane permission denial that shares the outage response, is `error`: readers keep
- * their last good data and report it as stale.
+ * Only `unauthenticated` is a definite loss of access, so only it hides previously loaded
+ * Workstreams. `unsupported` (a missing or unconfigured API) and every other failure,
+ * including an opaque control-plane permission denial that shares the outage response, keep
+ * the last good data as stale and read-only.
  */
 export type WorkstreamReadFailure = "unsupported" | "unauthenticated" | "error";
 

@@ -7,6 +7,7 @@ import {
   type NativeWorkstreamThreadGrouping,
 } from "@t3tools/client-runtime/state/workstreams";
 import {
+  EnvironmentHttpConflictError,
   EnvironmentHttpUnauthorizedError,
   EnvironmentInternalError,
   T3_PLACEMENT_MAX_IDENTITIES,
@@ -360,6 +361,37 @@ describe("durable Workstream assignment display", () => {
     expect(latest.view.stale).toBe(false);
     expect(latest.view.error).toBe(denied.message);
   });
+
+  it.each([
+    ["not configured", new EnvironmentHttpConflictError({ message: "workstreams_not_configured" })],
+    [
+      "not found",
+      Object.assign(new Error("Not Found"), { _tag: "ResponseError", response: { status: 404 } }),
+    ],
+  ])(
+    "keeps the last good groups as stale and read-only when the server answers %s",
+    async (_label, failure) => {
+      const threads = nativeThreads(2);
+      const server = syntheticWorkstreams({
+        now: () => Date.now(),
+        assignments: [assign(threads[0]!, "beta")],
+      });
+      http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+      await mount(threads);
+      await settle(() => loaded());
+      const index = latest.view.assignmentIndex;
+      server.state.intercept = (call) => {
+        if (call.route === "list") throw failure;
+        return undefined;
+      };
+      await act(async () => latest.view.refresh());
+      await settle(() => expect(latest.view.loading).toBe(false));
+      expect(latest.view.stale).toBe(true);
+      expect(latest.view.data).not.toBeNull();
+      expect(latest.view.assignmentIndex).toBe(index);
+      expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+    },
+  );
 
   it("keeps other proof batches and every stored group when one batch fails", async () => {
     const threads = nativeThreads(1_500);
