@@ -608,6 +608,65 @@ jobs:
       - name: Lint mobile native sources
         run: vp run lint:mobile
 
+  native_enrollment_qualification:
+    name: Native Enrollment (${{ matrix.os }}, Node 26.8.2)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+          - os: macos-15
+            platform: darwin
+            architecture: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Install dependencies on the supported development runtime
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Setup the standalone CLI runtime
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26.8.2
+
+      - name: Qualify native enrollment and store authority on the actual runtime
+        env:
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: 26.8.2
+          QUALIFICATION_PLATFORM: ${{ matrix.platform }}
+          QUALIFICATION_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          qualification_node="$(command -v node)"
+          "$qualification_node" --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { realpathSync } from 'node:fs';
+          assert.equal(process.versions.node, '26.8.2');
+          assert.equal(process.versions.sqlite, '3.53.4');
+          assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
+          assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
+          console.log({ node: process.versions.node, sqlite: process.versions.sqlite, executable: realpathSync(process.execPath), platform: process.platform, architecture: process.arch });
+          NODE
+          # Invoke the installed JS runner directly so vp cannot select the development Node version.
+          qualification_runner="$("$qualification_node" -e 'const r = require("node:module").createRequire(require.resolve("vite-plus/package.json")); const p = r.resolve("vitest/package.json"); console.log(require("node:path").resolve(require("node:path").dirname(p), r(p).bin.vitest));')"
+          "$qualification_node" "$qualification_runner" run \
+            apps/server/src/jones/workstreams/enrollment/ \
+            apps/server/src/environment/NativeStoreAuthority.test.ts \
+            apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts \
+            packages/shared/src/nodeSqliteClient.test.ts
+
   release_smoke:
     name: Release Smoke
     runs-on: ubuntu-24.04
@@ -656,6 +715,7 @@ jobs:
         mobile_native_changes,
         mobile_native_static_analysis,
         release_smoke,
+        native_enrollment_qualification,
       ]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

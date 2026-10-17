@@ -16,35 +16,79 @@ import {
   NativeEnrollmentSqliteQualificationError,
 } from "./sqliteConnection.ts";
 
+const runtimeIdentity = () => {
+  const sqlite = process.versions.sqlite;
+  if (sqlite === undefined)
+    throw new Error("Native SQLite runtime identity requires its bundled SQLite version.");
+  return {
+    node: process.versions.node,
+    sqlite,
+    executable: NodeFS.realpathSync(process.execPath),
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Qualification receipts must observe the actual host executing the SQLite fixture.
+    platform: process.platform,
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Qualification receipts must observe the actual architecture executing the SQLite fixture.
+    architecture: process.arch,
+  };
+};
+const RuntimeIdentity = Schema.Struct({
+  node: Schema.String,
+  sqlite: Schema.String,
+  executable: Schema.String,
+  platform: Schema.String,
+  architecture: Schema.String,
+});
+const FixtureResult = Schema.Struct({ runtime: RuntimeIdentity, value: Schema.Unknown });
+const decodeFixtureResult = Schema.decodeUnknownEffect(Schema.fromJsonString(FixtureResult));
+const decodeSqliteVersion = Schema.decodeUnknownEffect(
+  Schema.Struct({ version: Schema.String, sourceId: Schema.String }),
+);
+
 const helperUrl = new URL("./sqliteConnection.ts", import.meta.url).href;
 const childSource = `
   import * as NodeFS from 'node:fs';
   import * as NodeSqlite from 'node:sqlite';
   const [helperUrl, dbPath, action] = process.argv.slice(1);
+  const result = (value) => JSON.stringify({
+    runtime: {
+      node: process.versions.node, sqlite: process.versions.sqlite,
+      executable: NodeFS.realpathSync(process.execPath),
+      platform: process.platform, architecture: process.arch,
+    },
+    value,
+  });
   if (action === 'failure') throw new Error('synthetic fixture failure');
   if (action === 'hold') { setInterval(() => {}, 1000); }
-  else {
+  else if (action === 'runtime') {
+    const db = new NodeSqlite.DatabaseSync(':memory:', { allowExtension: false });
+    let observed;
+    try { observed = db.prepare('SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId').get(); }
+    finally { db.close(); }
+    process.stdout.write(result(observed));
+  } else {
     const { makeNativeEnrollmentSqliteConfig } = await import(helperUrl);
     const config = makeNativeEnrollmentSqliteConfig(dbPath, action === 'wal' || action === 'missing' ? 'apply' : 'operational_inspection');
     if (action === 'missing') {
       try { const db = new NodeSqlite.DatabaseSync(config.filename, { readOnly: config.readonly, allowExtension: config.allowExtension }); db.close();
-        process.stdout.write(JSON.stringify({ failed: false, exists: NodeFS.existsSync(dbPath) })); }
-      catch { process.stdout.write(JSON.stringify({ failed: true, exists: NodeFS.existsSync(dbPath) })); }
+        process.stdout.write(result({ failed: false, exists: NodeFS.existsSync(dbPath) })); }
+      catch { process.stdout.write(result({ failed: true, exists: NodeFS.existsSync(dbPath) })); }
     } else {
       const db = new NodeSqlite.DatabaseSync(config.filename, { readOnly: config.readonly, allowExtension: config.allowExtension });
       if (action === 'wal') {
         db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO workstreams_native_enrollments VALUES ('wal-only', 'committed-in-wal')");
         // Exit without closing this fixture writer so committed WAL frames cannot be checkpointed on close.
-        process.stdout.write(JSON.stringify({ committed: true }), () => process.exit(0));
+        process.stdout.write(result({ committed: true }), () => process.exit(0));
       } else {
-        try { process.stdout.write(JSON.stringify(db.prepare('SELECT * FROM workstreams_native_enrollments ORDER BY enrollment_id').all())); }
+        try { process.stdout.write(result(db.prepare('SELECT * FROM workstreams_native_enrollments ORDER BY enrollment_id').all())); }
         finally { db.close(); }
       }
     }
   }
 `;
 
-const fixtureProcess = (dbPath: string, action: "wal" | "read" | "missing" | "failure" | "hold") =>
+const fixtureProcess = (
+  dbPath: string,
+  action: "wal" | "read" | "missing" | "failure" | "hold" | "runtime",
+) =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const child = NodeChildProcess.spawn(
@@ -87,7 +131,10 @@ const fixtureProcess = (dbPath: string, action: "wal" | "read" | "missing" | "fa
         await owned.completed;
       }),
   );
-const runFixtureProcess = (dbPath: string, action: "wal" | "read" | "missing" | "failure") =>
+const runFixtureProcess = (
+  dbPath: string,
+  action: "wal" | "read" | "missing" | "failure" | "runtime",
+) =>
   Effect.gen(function* () {
     const owned = yield* fixtureProcess(dbPath, action);
     const stdout = yield* Effect.tryPromise(async () => {
@@ -96,7 +143,13 @@ const runFixtureProcess = (dbPath: string, action: "wal" | "read" | "missing" | 
       if (result.code !== 0) throw new Error("Synthetic SQLite child failed.");
       return result.stdout;
     }).pipe(Effect.timeout("10 seconds"), TestClock.withLive);
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(stdout);
+    const result = yield* decodeFixtureResult(stdout);
+    assert.deepEqual(result.runtime, runtimeIdentity());
+    if (action === "runtime")
+      process.stdout.write(
+        `[native-enrollment-runtime] ${JSON.stringify({ parent: runtimeIdentity(), child: result.runtime })}\n`,
+      );
+    return result.value;
   });
 const fixture = Effect.acquireRelease(
   Effect.sync(() => {
@@ -129,6 +182,7 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.19.0", "3.53.3"],
     ["24.21.0", "3.53.4"],
     ["24.22.0", "3.53.4"],
+    ["26.8.2", "3.53.4"],
   ])
     assert.strictEqual(isQualifiedNativeEnrollmentSqliteRuntime(node, sqlite), true);
   for (const [node, sqlite] of [
@@ -143,6 +197,12 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.21.0", "3.53.5"],
     ["24.22.0", "3.53.3"],
     ["24.22.1", "3.53.4"],
+    ["26.8.1", "3.53.4"],
+    ["26.8.3", "3.53.4"],
+    ["26.9.0", "3.53.4"],
+    ["26.8.2", "3.53.3"],
+    ["26.8.2", "3.53.5"],
+    ["26.8.2", undefined],
     ["24.19.0", undefined],
     [undefined, "3.53.3"],
   ])
@@ -164,6 +224,62 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     NativeEnrollmentSqliteQualificationError,
   );
 });
+
+it.effect("records the actual parent and child runtime used for qualification", () =>
+  Effect.gen(function* () {
+    const requiredNode = process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE;
+    if (requiredNode !== undefined) {
+      assert.strictEqual(requiredNode, "26.8.2");
+      assert.strictEqual(process.versions.node, requiredNode);
+      assert.strictEqual(process.versions.sqlite, "3.53.4");
+    }
+    const f = yield* fixture;
+    const observed = yield* runFixtureProcess(f.dbPath, "runtime");
+    assert.strictEqual(
+      isQualifiedNativeEnrollmentSqliteRuntime(process.versions.node, process.versions.sqlite),
+      true,
+    );
+    const sqlite = yield* decodeSqliteVersion(observed);
+    assert.strictEqual(sqlite.version, process.versions.sqlite);
+  }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "the actual URI connection denies writes and extension loading without changing main bytes",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const before = NodeFS.readFileSync(f.dbPath);
+      const config = makeNativeEnrollmentSqliteConfig(f.dbPath, "operational_inspection");
+      const db = new NodeSqlite.DatabaseSync(config.filename, {
+        readOnly: config.readonly,
+        allowExtension: config.allowExtension,
+      });
+      try {
+        assert.strictEqual(
+          db.prepare("SELECT count(*) AS count FROM workstreams_native_enrollments").get()?.count,
+          1,
+        );
+        assert.throws(
+          () => db.exec("INSERT INTO workstreams_native_enrollments VALUES ('forbidden', 'write')"),
+          /readonly/,
+        );
+        assert.propertyVal(
+          assert.throws(() => db.enableLoadExtension(true)),
+          "code",
+          "ERR_INVALID_STATE",
+        );
+        assert.propertyVal(
+          assert.throws(() => db.loadExtension("/synthetic-must-not-load")),
+          "code",
+          "ERR_INVALID_STATE",
+        );
+      } finally {
+        db.close();
+      }
+      assert.deepEqual(NodeFS.readFileSync(f.dbPath), before);
+    }).pipe(Effect.scoped),
+);
 
 it.effect(
   "uses fixed escaped ro/rw file URIs with private unix cache and disabled extensions",
