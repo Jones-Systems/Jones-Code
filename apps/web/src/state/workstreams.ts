@@ -1146,10 +1146,13 @@ export function useWorkstreams(
           (referenceId !== undefined && [...referenceIds].some((id) => id !== referenceId))
         )
           throw new WorkstreamActionError("ambiguous");
-        // An expired proof drops out of the projection; fall back to the exact recorded reference
-        // so the plan re-verifies it instead of silently treating the thread as unassigned.
+        // An expired proof drops out of the projection. Unassigning then falls back to the exact
+        // recorded reference, so the plan re-verifies it instead of silently succeeding; a move
+        // re-registers the reference idempotently instead.
         const selectedReference =
-          referenceId ?? [...referenceIds][0] ?? stored?.primary?.referenceId;
+          referenceId ??
+          [...referenceIds][0] ??
+          (destination === null ? stored?.primary?.referenceId : undefined);
         const reference =
           selectedReference === undefined
             ? null
