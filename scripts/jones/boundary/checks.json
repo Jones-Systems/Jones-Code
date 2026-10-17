@@ -2,6 +2,30 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-physical-process-evidence",
+      "tests": [
+        "apps/server/src/jones/runtime/PhysicalProcessEvidence.test.ts",
+        "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.test.ts",
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/runtime/PhysicalProcessEvidence.test.ts apps/server/src/jones/runtime/PhysicalRuntimeEvidence.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts -t \"physical diagnostics|registerCodexAppServerProcess|observes actual resident background activity|producer|runtime boundary|native threads.*separate\" --maxWorkers=1",
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/provider-core typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workstream-thread-controls",
       "tests": [
         "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",

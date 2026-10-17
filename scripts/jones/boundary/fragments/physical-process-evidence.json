@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "physical-process-evidence",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/PhysicalProcessEvidence.ts",
+    "apps/server/src/jones/runtime/PhysicalProcessEvidence.test.ts",
+    "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.ts",
+    "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/runtime/PhysicalProcessEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "packages/provider-core/src/server/jones/runtimeTypes.ts"
+    }
+  ]
+}

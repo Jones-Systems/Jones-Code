@@ -1,3 +1,5 @@
+import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
+import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
@@ -1581,6 +1583,7 @@ export const layerAppServerClientFactory: Layer.Layer<
   | ChildProcessSpawner.ChildProcessSpawner
   | ProviderEventLoggers.ProviderEventLoggers
   | ProcessAttribution.ProcessAttribution
+  | FileSystem.FileSystem
 > = Layer.effect(
   CodexAppServerClientFactory,
   Effect.gen(function* () {
@@ -1588,6 +1591,7 @@ export const layerAppServerClientFactory: Layer.Layer<
     const { native: nativeEventLogger } = yield* ProviderEventLoggers.ProviderEventLoggers;
     const agentScope = yield* AgentScope;
     const processAttribution = yield* ProcessAttribution.ProcessAttribution;
+    const processFileSystem = yield* FileSystem.FileSystem;
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
@@ -1616,6 +1620,9 @@ export const layerAppServerClientFactory: Layer.Layer<
                 }),
             ),
           );
+          const launcherRead = yield* PhysicalProcess.readLocalProcess(Number(handle.pid)).pipe(
+            Effect.provideService(FileSystem.FileSystem, processFileSystem),
+          );
           yield* registerCodexAppServerProcess({
             pid: Number(handle.pid),
             threadId: input.threadId,
@@ -1635,9 +1642,14 @@ export const layerAppServerClientFactory: Layer.Layer<
                   logger: protocolLogger,
                 };
           const context = yield* Layer.build(CodexClient.layerChildProcess(handle, clientOptions));
-          return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+          const actualClient = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
             Effect.provide(context),
           );
+          yield* processAttribution.bindLauncher(
+            actualClient,
+            launcherRead.status === "observed" ? launcherRead.identity : null,
+          );
+          return actualClient;
         }),
     });
   }),
@@ -1658,6 +1670,7 @@ export const createCodexAdapterV2 = (
 ) =>
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const processAttribution = yield* Effect.serviceOption(ProcessAttribution.ProcessAttribution);
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1690,6 +1703,9 @@ export const createCodexAdapterV2 = (
       settings,
       environment: yield* mergeProviderInstanceEnvironment(environment, hostEnvironment),
       clientFactory,
+      ...(Option.isSome(processAttribution)
+        ? { processAttribution: processAttribution.value }
+        : {}),
       crypto,
       fileSystem,
       idAllocator,
@@ -1719,6 +1735,7 @@ const layer: Layer.Layer<
   ProviderAdapter.ProviderAdapterV2,
   Effect.gen(function* () {
     const clientFactory = yield* CodexAppServerClientFactory;
+    const processAttribution = yield* Effect.serviceOption(ProcessAttribution.ProcessAttribution);
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -1731,6 +1748,9 @@ const layer: Layer.Layer<
       settings: DEFAULT_CODEX_SETTINGS,
       environment: hostEnvironment,
       clientFactory,
+      ...(Option.isSome(processAttribution)
+        ? { processAttribution: processAttribution.value }
+        : {}),
       crypto,
       fileSystem,
       idAllocator,
@@ -1746,6 +1766,7 @@ export interface CodexAdapterV2Options {
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly clientFactory: CodexAppServerClientFactoryShape;
+  readonly processAttribution?: ProcessAttribution.ProcessAttribution["Service"];
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   readonly crypto: Crypto.Crypto;
@@ -1781,6 +1802,7 @@ interface CodexRuntimeProducer {
   readonly bindings: Map<string, OrchestrationV2ProviderThread>;
   readonly pendingReroutes: Map<string, ReadonlyArray<string>>;
   active: boolean;
+  physicalProcess?: PhysicalProcessLease;
 }
 
 class CodexProducerContext extends Context.Reference<CodexRuntimeProducer | undefined>(
@@ -2052,6 +2074,22 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               );
             yield* client.notify("initialized", undefined);
             yield* Ref.set(initialized, true);
+            const producer = currentProducer;
+            const launcher =
+              adapterOptions.processAttribution === undefined
+                ? null
+                : yield* adapterOptions.processAttribution.launcherFor(producer.client);
+            producer.physicalProcess = PhysicalProcess.makePhysicalProcessLease({
+              runtimeGeneration: producer.generation,
+              launcher,
+              enabled: CODEX_CLIENT_CAPABILITIES.experimentalApi,
+              isCurrent: () => producer.active && producer === currentProducer,
+              request: () => producer.client.raw.request("server/diagnostics", {}),
+              readProcess: (pid) =>
+                PhysicalProcess.readLocalProcess(pid).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                ),
+            });
           }),
         );
         const now = yield* DateTime.now;
@@ -2290,6 +2328,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     providerThread: thread,
                     runtimeGeneration: producer.generation,
                     producerOrigin: producer.eventProducer.origin,
+                    physicalProcess: producer.physicalProcess,
                     requested,
                     observed,
                   });
@@ -9233,6 +9272,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     providerThread: updated,
                     runtimeGeneration: currentProducer.generation,
                     producerOrigin: currentProducer.eventProducer.origin,
+                    physicalProcess: currentProducer.physicalProcess,
                     requested: next.requested,
                     observed: unobservedRuntimeIdentity(),
                   });
