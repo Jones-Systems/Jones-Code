@@ -4,15 +4,13 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
-      "id": "startup-access-logging",
+      "id": "thread-status-filter",
       "tests": [
-        "apps/server/src/startupAccess.logging.test.ts",
-        "apps/server/src/startupAccess.test.ts",
-        "apps/server/src/jones/startupAccessLogging.test.ts",
-        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
-        "apps/server/src/cli/pair.test.ts"
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
-      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
     },
     {
       "id": "provider-order",
@@ -561,9 +559,10 @@
       "id": "codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
-      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded. The original turn/start RPC remains owned by its exact producer after caller timeout. A bounded Jones ledger lifts admission only after matching late acknowledgement and terminal evidence, without replaying or reviving the failed attempt. Shared adapter hooks retain producer scope and admission ownership; integration tests stay in the upstream replay harness to prove real RPC correlation and new/resumed sibling admission."
     },
     {
       "id": "connection-diagnostics",
@@ -708,6 +707,17 @@
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
+    },
+    {
+      "id": "startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
     }
   ]
 }

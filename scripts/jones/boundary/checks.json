@@ -2,17 +2,15 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
-      "id": "jones-startup-access-logging",
+      "id": "jones-thread-status-filter",
       "tests": [
-        "apps/server/src/startupAccess.logging.test.ts",
-        "apps/server/src/startupAccess.test.ts",
-        "apps/server/src/jones/startupAccessLogging.test.ts",
-        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
-        "apps/server/src/cli/pair.test.ts"
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/startupAccess.logging.test.ts apps/server/src/startupAccess.test.ts apps/server/src/jones/startupAccessLogging.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts apps/server/src/cli/pair.test.ts --maxWorkers 1",
-        "vp run --filter t3 typecheck"
+        "vp test run apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "vp run --filter @t3tools/web typecheck"
       ]
     },
     {
@@ -1091,10 +1089,11 @@
       "id": "jones-codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -1233,6 +1232,20 @@
         "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
+        "vp run --filter t3 typecheck"
+      ]
+    },
+    {
+      "id": "jones-startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/startupAccess.logging.test.ts apps/server/src/startupAccess.test.ts apps/server/src/jones/startupAccessLogging.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts apps/server/src/cli/pair.test.ts --maxWorkers 1",
         "vp run --filter t3 typecheck"
       ]
     }

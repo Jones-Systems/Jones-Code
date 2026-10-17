@@ -1,3 +1,5 @@
+import { nextThreadStatusWakeAt } from "../jones/threadStatusFilter/model";
+import { useThreadStatusFilter } from "../jones/threadStatusFilter/useThreadStatusFilter";
 import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
 import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
@@ -201,8 +203,6 @@ import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   filterSidebarV2VisibleThreads,
-  filterSidebarOperatingThreads,
-  isSidebarThreadOperating,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   deleteSelectedThreadEntries,
@@ -2604,10 +2604,9 @@ export default function Sidebar() {
   const changeRequestSnapshotByKey = useAtomValue(threadChangeRequestSnapshotsAtom);
   // Snooze wake times are second-precise, so classifying with the quantized
   // minute would hold a woken thread on the shelf for up to a minute. The
-  // tick is a plain counter bumped exactly at the next wake boundary (armed
-  // below, after the partition knows the boundary); the partition reads a
-  // fresh clock whenever it recomputes.
-  const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
+  // wake timestamp updates at the next scoped wake boundary, including rows
+  // hidden by the status filter so their counts also update on time.
+  const [snoozeWakeAt, setSnoozeWakeAt] = useState(() => new Date().toISOString());
 
   // Project scope: one menu above the list. Scoping filters the list without
   // making the header width depend on the number or length of project names.
@@ -2706,8 +2705,6 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
-  const [activeOnly, setActiveOnly] = useState(false);
-  const toggleActiveOnly = useCallback(() => setActiveOnly((value) => !value), []);
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const environmentThreads = useMemo(
     () => filterSidebarEnvironmentThreads(threads, excludedEnvironmentIds),
@@ -2717,13 +2714,15 @@ export default function Sidebar() {
     () => filterSidebarV2VisibleThreads(environmentThreads, scopedProjectKeys),
     [environmentThreads, scopedProjectKeys],
   );
-  const activeThreadCount = useMemo(
-    () => scopedThreads.filter(isSidebarThreadOperating).length,
-    [scopedThreads],
-  );
-  const filteredThreads = useMemo(
-    () => filterSidebarOperatingThreads(scopedThreads, activeOnly, isSidebarThreadOperating),
-    [scopedThreads, activeOnly],
+  const {
+    statusFilter,
+    cycleStatusFilter,
+    counts: statusCounts,
+    threads: filteredThreads,
+  } = useThreadStatusFilter(
+    scopedThreads,
+    "current",
+    nowMinute > snoozeWakeAt ? nowMinute : snoozeWakeAt,
   );
   // Configs identify scratch projects, so both they and live project snapshots
   // must arrive before a persisted scope can be considered missing.
@@ -2755,7 +2754,7 @@ export default function Sidebar() {
   // an open never-left draft, which only softens the empty state.
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
   const visibleDraftSessionCount = useComposerDraftStore((store) => {
-    if (activeOnly) return 0;
+    if (statusFilter !== "all") return 0;
     let count = 0;
     for (const [draftKey, session] of Object.entries(store.draftThreadsByThreadKey)) {
       if (session.promotedTo != null || excludedEnvironmentIds.has(session.environmentId)) {
@@ -2774,12 +2773,12 @@ export default function Sidebar() {
     }
     return count;
   });
-  // Scope, environment, or activity filter flips drop the selection:
+  // Scope, environment, or status filter flips drop the selection:
   // previously selected rows may be hidden, and bulk actions must never
   // touch invisible rows.
   useEffect(() => {
     clearSelection();
-  }, [activeOnly, clearSelection, projectScopeKey, excludedEnvironmentKey]);
+  }, [statusFilter, clearSelection, projectScopeKey, excludedEnvironmentKey]);
 
   const openProjectSettings = useStableCallback(
     (projectGroup: SidebarProjectSnapshot, projectRef?: ScopedProjectRef) => {
@@ -2847,9 +2846,9 @@ export default function Sidebar() {
   } = useMemo(() => {
     // Snooze classification uses a REAL clock, not the quantized minute:
     // wake times are second-precise and a woken thread must not linger on
-    // the shelf for the rest of the minute. snoozeWakeTick re-runs this
+    // the shelf for the rest of the minute. snoozeWakeAt re-runs this
     // memo exactly at the next wake boundary.
-    void snoozeWakeTick;
+    void snoozeWakeAt;
     const preciseNow = new Date().toISOString();
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
@@ -2958,7 +2957,7 @@ export default function Sidebar() {
     nowMinute,
     optimisticDrop,
     serverConfigs,
-    snoozeWakeTick,
+    snoozeWakeAt,
     threads,
     workingShelfEnabled,
   ]);
@@ -3056,23 +3055,20 @@ export default function Sidebar() {
       ?.scrollIntoView({ block: "nearest" });
   }, [activeSearchResultIndex, isSearchingThreads, threadSearchResultOrderKey]);
 
-  // Arm a timeout for the earliest upcoming wake so the shelf empties the
-  // moment a snooze expires instead of on the next minute tick. Sorted
-  // soonest-first, so entry 0 is the boundary.
+  // Counts include filtered-out threads, so wake the scoped roster's next
+  // boundary even when its row is currently hidden by the status filter.
   useEffect(() => {
-    const nextWakeAtMs =
-      snoozedThreads.length > 0 && snoozedThreads[0]?.snoozedUntil != null
-        ? Date.parse(snoozedThreads[0].snoozedUntil)
-        : Number.NaN;
-    if (Number.isNaN(nextWakeAtMs)) return;
+    const now = Math.max(Date.now(), Date.parse(snoozeWakeAt));
+    const nextWakeAtMs = nextThreadStatusWakeAt(scopedThreads, now);
+    if (nextWakeAtMs === null) return;
     // setTimeout delays are signed 32-bit: anything larger overflows and
     // fires immediately, turning a far-future wake (event-condition snoozes
     // synced from elsewhere) into a tight re-arm loop. Clamped, the timer
     // just re-arms every ~24.8 days until the wake is in range.
     const delayMs = Math.min(Math.max(0, nextWakeAtMs - Date.now()) + 50, 2_147_483_647);
-    const id = window.setTimeout(() => bumpSnoozeWakeTick((tick) => tick + 1), delayMs);
+    const id = window.setTimeout(() => setSnoozeWakeAt(new Date().toISOString()), delayMs);
     return () => window.clearTimeout(id);
-  }, [snoozedThreads]);
+  }, [scopedThreads, snoozeWakeAt]);
 
   // The settled tail renders in pages: history shouldn't dominate the
   // sidebar, and the common lookups are recent. Expansion resets when the
@@ -5114,9 +5110,9 @@ export default function Sidebar() {
       <ThreadContextDragGhost />
       <SidebarChromeHeader
         isElectron={isElectron}
-        activeThreadCount={activeThreadCount}
-        activeOnly={activeOnly}
-        onToggleActiveOnly={toggleActiveOnly}
+        statusCounts={statusCounts}
+        statusFilter={statusFilter}
+        onCycleStatusFilter={cycleStatusFilter}
       />
       <SidebarContent
         className="min-h-full"
@@ -5554,7 +5550,7 @@ export default function Sidebar() {
                       };
                       const from = isContextDrag ? null : (dragState?.activeSection ?? null);
                       const items: ReactNode[] = [
-                        !activeOnly ? (
+                        statusFilter === "all" ? (
                           <SidebarDraftBlock
                             key="draft-sessions"
                             projectByKey={projectByKey}

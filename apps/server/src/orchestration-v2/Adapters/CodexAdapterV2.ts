@@ -1,3 +1,7 @@
+import {
+  makeCodexLateStartRecovery,
+  type CodexStartDispatch,
+} from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -1884,7 +1888,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
           Effect.suspend(() =>
-            nativeStartUnknown || !producer.active || producer !== currentProducer
+            hasUnknownNativeStart() || !producer.active || producer !== currentProducer
               ? Effect.fail(
                   new ProviderRuntimeBindingError({
                     driver: CODEX_PROVIDER,
@@ -2147,6 +2151,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           logicalContext?: ActiveCodexTurnContext;
           readonly nativeContexts: Array<ActiveCodexTurnContext>;
           startDispatched: boolean;
+          lateStartDispatch?: CodexStartDispatch | undefined;
           timer?: Fiber.Fiber<void> | undefined;
           recoveryEnabled: boolean;
           logicalTerminalEmitted: boolean;
@@ -2179,6 +2184,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const capacityByTurn = new Map<string, CapacityRequest>();
         let capacityScopeClosed = false;
         let nativeStartUnknown = false;
+        const lateStarts = makeCodexLateStartRecovery();
+        const hasUnknownNativeStart = () => nativeStartUnknown || lateStarts.blocked;
         type CapacitySignalWithoutBinding<T> = T extends { readonly binding: unknown }
           ? Omit<T, "binding">
           : never;
@@ -5089,7 +5096,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
             const pendingRootTurn = (yield* Ref.get(pendingRootTurns)).get(payload.threadId);
-            if (nativeStartUnknown && pendingRootTurn !== undefined) return;
+            if (hasUnknownNativeStart() && pendingRootTurn !== undefined) return;
             if (pendingRootTurn !== undefined) {
               yield* registerRootTurn({
                 turnInput: pendingRootTurn,
@@ -5111,7 +5118,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               (goalHold.capacityContinuation === undefined ||
                 goalHold.capacityContinuation.runtimeGeneration === currentProducer.generation) &&
               !capacityScopeClosed &&
-              !nativeStartUnknown &&
+              !hasUnknownNativeStart() &&
               !goalStops.has(payload.threadId)
             ) {
               goalHolds.delete(payload.threadId);
@@ -6814,6 +6821,24 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           payload: CodexSchema.V2TurnCompletedNotification,
         ): Effect.Effect<void> =>
           Effect.gen(function* () {
+            const producer = yield* CodexProducerContext;
+            const terminalStatus = mapCodexTurnStatus(payload.turn.status);
+            if (
+              producer !== undefined &&
+              producer.active &&
+              producer === currentProducer &&
+              (terminalStatus === "completed" ||
+                terminalStatus === "failed" ||
+                terminalStatus === "interrupted")
+            ) {
+              lateStarts.complete(
+                {
+                  runtimeGeneration: producer.generation,
+                  nativeThreadId: payload.threadId,
+                },
+                payload.turn.id,
+              );
+            }
             const request =
               capacityByTurn.get(payload.turn.id) ?? capacityByThread.get(payload.threadId);
             if (
@@ -6933,7 +6958,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
         const finishUnknownCapacityStart = (request: CapacityRequest) =>
           Effect.gen(function* () {
-            nativeStartUnknown = true;
+            if (request.lateStartDispatch === undefined) nativeStartUnknown = true;
+            else lateStarts.markUnknown(request.lateStartDispatch);
             request.recoveryEnabled = false;
             reduceCapacity(request, {
               type: "startUnknown",
@@ -7016,7 +7042,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           });
         const sendCapacityTurn = (request: CapacityRequest, retryOrdinal: number) =>
           Effect.gen(function* () {
-            if (nativeStartUnknown || !currentCapacityBinding(request)) {
+            if (hasUnknownNativeStart() || !currentCapacityBinding(request)) {
               return yield* toProtocolError(
                 "Codex continuation does not match the current session and native binding.",
               );
@@ -7037,17 +7063,35 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (!currentCapacityBinding(request))
               return yield* toProtocolError("Native physical binding changed before send.");
             request.startDispatched = true;
-            const started = yield* client
+            const producer = currentProducer;
+            const dispatch = lateStarts.begin(request.state.binding, [
+              ...request.state.retiredNativeTurnIds,
+              ...(yield* Ref.get(activeTurns)).keys(),
+              ...(yield* Ref.get(settledTurns)).keys(),
+            ]);
+            request.lateStartDispatch = dispatch;
+            // Keep the original RPC waiter in its producer's scope after the caller
+            // times out. A replacement producer cannot acknowledge this dispatch.
+            const pendingStart = yield* producer.client
               .request(
                 "turn/start",
                 retryOrdinal === 0 ? request.params : { ...request.params, input: [] },
               )
-              .pipe(Effect.timeout("30 seconds"));
+              .pipe(
+                Effect.tap((started) =>
+                  Effect.sync(() => {
+                    if (producer.active && producer === currentProducer)
+                      lateStarts.acknowledge(dispatch, producer.generation, started.turn.id);
+                  }),
+                ),
+                Effect.forkIn(producer.scope, { startImmediately: true }),
+              );
+            const started = yield* Fiber.join(pendingStart).pipe(Effect.timeout("30 seconds"));
             if (
               request.state.phase !== "awaiting_start" ||
               request.state.retryOrdinal !== retryOrdinal ||
               !currentCapacityBinding(request) ||
-              nativeStartUnknown ||
+              hasUnknownNativeStart() ||
               request.state.retiredNativeTurnIds.includes(started.turn.id) ||
               (retryOrdinal > 0 &&
                 ((yield* Ref.get(activeTurns)).has(started.turn.id) ||
@@ -7099,6 +7143,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               yield* Deferred.succeed(context.nativeStartReady, undefined);
             if (earlyError !== undefined) yield* handleNativeError(earlyError);
             if (earlyCompletion !== undefined) yield* handleNativeCompletion(earlyCompletion);
+            lateStarts.release(dispatch);
+            request.lateStartDispatch = undefined;
             yield* Ref.update(pendingRootTurns, (current) => {
               if (current.get(request.state.binding.nativeThreadId) !== request.input)
                 return current;
@@ -7323,7 +7369,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             let request: CapacityRequest | undefined;
             return Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
-              if (nativeStartUnknown || capacityScopeClosed)
+              if (hasUnknownNativeStart() || capacityScopeClosed)
                 return yield* toProtocolError(
                   "Codex has an unconfirmed or closed native session and cannot send another turn.",
                 );
@@ -7635,7 +7681,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             });
             if (
               capacityScopeClosed ||
-              nativeStartUnknown ||
+              hasUnknownNativeStart() ||
               currentProducer.bindings.get(turnInput.providerThread.nativeThreadRef?.nativeId ?? "")
                 ?.id !== turnInput.providerThread.id
             )
@@ -9075,7 +9121,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           forkThread: (threadInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
-              if (nativeStartUnknown || capacityScopeClosed)
+              if (hasUnknownNativeStart() || capacityScopeClosed)
                 return yield* toProtocolError("Cannot fork an unconfirmed Codex runtime.");
               const issuer = currentProducer;
               const boundary = yield* resolveCodexForkBoundary(threadInput);
@@ -9191,7 +9237,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const lifecyclePermit = yield* Semaphore.make(1);
         const prepareProducer = (turnInput: ProviderAdapterV2TurnInput) =>
           Effect.gen(function* () {
-            if (nativeStartUnknown || capacityScopeClosed)
+            if (hasUnknownNativeStart() || capacityScopeClosed)
               return yield* toProtocolError(
                 "Codex has an unconfirmed native effect; another prompt is not safe.",
               );
@@ -9364,7 +9410,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ensureThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
-                nativeStartUnknown
+                hasUnknownNativeStart()
                   ? Effect.fail(
                       new ProviderRuntimeBindingError({
                         driver: CODEX_PROVIDER,
@@ -9378,7 +9424,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           resumeThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
-                nativeStartUnknown
+                hasUnknownNativeStart()
                   ? Effect.fail(
                       new ProviderRuntimeBindingError({
                         driver: CODEX_PROVIDER,
@@ -9392,7 +9438,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           forkThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
-                nativeStartUnknown
+                hasUnknownNativeStart()
                   ? toProtocolError(
                       "Codex has an unconfirmed native effect; reforking is not safe.",
                     )
@@ -9407,13 +9453,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           startTurn: (value) =>
             Effect.suspend(() =>
-              nativeStartUnknown || capacityScopeClosed
+              hasUnknownNativeStart() || capacityScopeClosed
                 ? toProtocolError(
                     "Codex has an unconfirmed native effect; another prompt is not safe.",
                   )
                 : lifecyclePermit.withPermits(1)(
                     Effect.gen(function* () {
-                      if (nativeStartUnknown || capacityScopeClosed)
+                      if (hasUnknownNativeStart() || capacityScopeClosed)
                         return yield* toProtocolError(
                           "Codex has an unconfirmed native effect; another prompt is not safe.",
                         );
@@ -9480,7 +9526,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           rollbackThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>
-                nativeStartUnknown
+                hasUnknownNativeStart()
                   ? toProtocolError("Codex has an unconfirmed native effect; rollback is not safe.")
                   : withProducer(runtime.rollbackThread(value)),
               ),
