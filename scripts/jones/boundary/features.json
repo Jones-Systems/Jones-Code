@@ -725,6 +725,17 @@
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
     },
     {
+      "id": "startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+    },
+    {
       "id": "launcher-commit-diagnostics",
       "tests": [
         "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",

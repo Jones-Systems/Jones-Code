@@ -1024,7 +1024,15 @@
     "apps/server/src/provider/providerMaintenanceRunner.ts": "hook",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/sidebar/useUpdateEverything.ts": "accepted-shared",
-    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned"
+    "scripts/jones/boundary/fragments/thread-status-filter.json": "jones-owned",
+    "scripts/dev-runner.ts": "accepted-shared",
+    "apps/server/src/startupAccess.ts": "hook",
+    "apps/server/src/startupAccess.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/startupAccess.logging.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/cloud/serviceLog.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
+    "docs/internals/t3-connect.md": "accepted-shared",
+    "docs/operations/release.md": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -10,6 +10,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/serviceLog.ts"
+    },
+    {
       "from": "apps/server/src/cloud/pinnedRuntime.ts",
       "to": "apps/server/src/jones/hostService/artifactVerification.ts"
     },
