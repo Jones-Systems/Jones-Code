@@ -227,3 +227,17 @@ it.effect(
       assert.deepEqual(fixture.reads, { registry: 2, authority: 2, build: 2 });
     }),
 );
+
+it.effect("invalid activation is unavailable rather than unconfigured and performs no reads", () =>
+  Effect.gen(function* () {
+    const fixture = makeRegistrationFixture({
+      activationState: "invalid",
+      configuredBinding: null,
+    });
+    assert.strictEqual(
+      (yield* fixture.service.read().pipe(Effect.flip)).reason,
+      "registry_unavailable",
+    );
+    assert.deepEqual(fixture.reads, { registry: 0, authority: 0, build: 0 });
+  }),
+);

@@ -9,7 +9,11 @@ import * as Effect from "effect/Effect";
 
 import { PrimaryEnvironmentHttpClient } from "../../environments/primary/httpClient";
 import { runPrimaryHttp } from "../../lib/runtime";
-import { loadCompleteWorkstreamList, nativePlacementInventory } from "../../state/workstreams";
+import {
+  isWorkstreamsNotConfigured,
+  loadCompleteWorkstreamList,
+  nativePlacementInventory,
+} from "../../state/workstreams";
 
 export interface DesignRequestRegistrySnapshot {
   readonly status: DesignRequestRegistryStatus;
@@ -25,8 +29,12 @@ const UNAUTHENTICATED = new Set([
   "EnvironmentScopeRequiredError",
 ]);
 
-/** A server without the workstreams API answers 404; authentication failures hold as not-authenticated. */
+/**
+ * A server without the workstreams API answers 404, and one without control-plane activation
+ * answers a not-configured conflict; authentication failures hold as not-authenticated.
+ */
 export function registryStatusFromError(cause: unknown): DesignRequestRegistryStatus {
+  if (isWorkstreamsNotConfigured(cause)) return "unsupported";
   const value = cause && typeof cause === "object" ? (cause as Record<string, unknown>) : {};
   const tag = typeof value._tag === "string" ? value._tag : "";
   if (UNAUTHENTICATED.has(tag)) return "unauthenticated";

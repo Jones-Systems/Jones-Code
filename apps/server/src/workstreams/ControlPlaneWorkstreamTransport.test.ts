@@ -579,3 +579,31 @@ it.effect("bounds registration response bytes before parsing and rejects another
     ).toBe("no-effect");
   }),
 );
+
+it.effect(
+  "distinguishes invalid and absent startup activation without outbound requests or private diagnostics",
+  () =>
+    Effect.gen(function* () {
+      let requests = 0;
+      for (const state of ["invalid", "disabled"] as const) {
+        const configured = makeControlPlaneWorkstreamTransport({ state }, async () => {
+          requests += 1;
+          return new Response("{}");
+        });
+        expect(configured.activationState).toBe(state);
+        expect(configured.registrationContext.activationState).toBe(state);
+        const failure = yield* configured.transport
+          .getCapabilities({
+            contractVersion: "workstreams/1.0.0",
+            contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+          })
+          .pipe(Effect.flip);
+        expect(failure.detail).toBe(`Workstream control-plane activation is ${state}.`);
+        expect(failure.cause).toBeUndefined();
+        expect(
+          (yield* configured.registrationContext.readRegistrationContext.pipe(Effect.flip)).detail,
+        ).toBe(failure.detail);
+      }
+      expect(requests).toBe(0);
+    }),
+);

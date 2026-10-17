@@ -318,15 +318,17 @@ export class JonesActionsClient {
             ),
             "workflow_runs",
           );
-          const ci = ciRuns.find(
+          const sourceCi = ciRuns.filter(
             (item) =>
-              canonicalRun(item, ".github/workflows/ci.yml") &&
-              item.head_sha === candidateSource &&
-              item.status === "completed" &&
-              item.conclusion === "success",
+              canonicalRun(item, ".github/workflows/ci.yml") && item.head_sha === candidateSource,
+          );
+          const ci = sourceCi.find(
+            (item) => item.status === "completed" && item.conclusion === "success",
           );
           if (!ci) {
-            building = true;
+            // Unlisted or unfinished main CI can still qualify this build; a completed failure cannot.
+            if (sourceCi.length === 0 || sourceCi.some((item) => item.status !== "completed"))
+              building = true;
             continue;
           }
           const runId = positive(run.id),

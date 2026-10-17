@@ -1,3 +1,12 @@
+import {
+  activationFromEnvironment,
+  decodeSigningSecret,
+  hasCanonicalActivation,
+  type ControlPlaneWorkstreamActivation,
+  type WorkstreamActivation,
+} from "../jones/workstreams/activation.ts";
+export type { WorkstreamActivation } from "../jones/workstreams/activation.ts";
+
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 
@@ -33,7 +42,11 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { WorkstreamTransportError, type WorkstreamTransport } from "./WorkstreamGateway.ts";
+import {
+  WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
+  WorkstreamTransportError,
+  type WorkstreamTransport,
+} from "./WorkstreamGateway.ts";
 
 import {
   WORKSTREAM_APPEARANCE_CONTRACT,
@@ -49,6 +62,7 @@ const TIMEOUT_MS = 15_000;
 const REGISTRATION_CONTEXT_ROUTE = "/workstreams/v1/t3/registration-context";
 
 export interface WorkstreamRegistrationTransport {
+  readonly activationState?: WorkstreamActivation["state"];
   readonly configuredBinding: Pick<
     T3WorkstreamBinding,
     "ownerId" | "principalId" | "authorizationRevision"
@@ -77,107 +91,18 @@ class BoundedTransportFailure extends Error {
   }
 }
 
-export interface ControlPlaneWorkstreamActivation {
-  readonly baseUrl: URL;
-  readonly ownerId: string;
-  readonly principalId: string;
-  readonly authorizationRevision: number;
-  readonly keyId: string;
-  readonly signingSecret: string;
-}
-
-export type WorkstreamActivation =
-  | { readonly state: "disabled" }
-  | { readonly state: "enabled"; readonly value: ControlPlaneWorkstreamActivation };
-
 export type WorkstreamFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
 
-// Plain HTTP is accepted only for an IP-literal loopback control plane on the
-// same host. Reaching it through the tailnet HTTPS route would pass Tailscale
-// Serve, which adds Tailscale identity headers to requests from untagged nodes;
-// the control plane refuses those alongside signed requests. HMAC request
-// signing is identical on both origins. `localhost` and other hostnames stay
-// HTTPS-only because name resolution could leave the host.
-function hasCanonicalOrigin(baseUrl: URL): boolean {
-  return (
-    baseUrl.protocol === "https:" ||
-    (baseUrl.protocol === "http:" &&
-      (baseUrl.hostname === "127.0.0.1" || baseUrl.hostname === "[::1]"))
-  );
-}
-
-function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation): boolean {
-  const headerValues = [config.ownerId, config.principalId, config.keyId, config.signingSecret];
-  return (
-    hasCanonicalOrigin(config.baseUrl) &&
-    !config.baseUrl.username &&
-    !config.baseUrl.password &&
-    !config.baseUrl.hash &&
-    !config.baseUrl.search &&
-    (config.baseUrl.pathname === "/" || config.baseUrl.pathname === "") &&
-    Number.isSafeInteger(config.authorizationRevision) &&
-    config.authorizationRevision > 0 &&
-    headerValues.every((value) => value.length > 0 && !/[\r\n]/.test(value)) &&
-    decodeSigningSecret(config.signingSecret) !== null
-  );
-}
-
-function decodeSigningSecret(value: string): Buffer | null {
-  if (!/^[A-Za-z0-9+/]{43}=$/.test(value)) return null;
-  const key = Buffer.from(value, "base64");
-  return key.length === 32 && key.toString("base64") === value ? key : null;
-}
-
-function activationFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): WorkstreamActivation {
-  const raw = environment.T3_WORKSTREAM_CONTROL_PLANE_URL;
-  const ownerId = environment.T3_WORKSTREAM_OWNER_ID;
-  const principalId = environment.T3_WORKSTREAM_PRINCIPAL_ID;
-  const keyId = environment.T3_WORKSTREAM_KEY_ID;
-  const signingSecret = environment.T3_WORKSTREAM_SIGNING_SECRET;
-  const revision = Number(environment.T3_WORKSTREAM_AUTHORIZATION_REVISION);
-  if (!raw && !ownerId && !principalId && !keyId && !signingSecret) return { state: "disabled" };
-  if (
-    !raw ||
-    !ownerId ||
-    !principalId ||
-    !keyId ||
-    !signingSecret ||
-    !Number.isSafeInteger(revision) ||
-    revision < 1
-  ) {
-    return { state: "disabled" };
-  }
-  try {
-    const baseUrl = new URL(raw);
-    const activation = {
-      state: "enabled",
-      value: {
-        baseUrl,
-        ownerId,
-        principalId,
-        authorizationRevision: revision,
-        keyId,
-        signingSecret,
-      },
-    } as const;
-    return hasCanonicalActivation(activation.value) ? activation : { state: "disabled" };
-  } catch {
-    return { state: "disabled" };
-  }
-}
-
-const disabled = (): WorkstreamTransport => {
+const disabled = (detail: string): WorkstreamTransport => {
   const unavailable = (operation: string) =>
     Effect.fail(
       new WorkstreamTransportError({
         operation,
         effect: "no-effect",
-        detail: "Workstream control-plane activation is disabled.",
+        detail,
       }),
     );
   return {
@@ -414,6 +339,7 @@ export function makeControlPlaneWorkstreamTransport(
   activation: WorkstreamActivation = activationFromEnvironment(),
   fetchPort: WorkstreamFetch = globalThis.fetch.bind(globalThis),
 ): {
+  readonly activationState: WorkstreamActivation["state"];
   readonly transport: WorkstreamTransport;
   readonly registrationContext: WorkstreamRegistrationTransport;
   readonly binding: Pick<
@@ -421,16 +347,23 @@ export function makeControlPlaneWorkstreamTransport(
     "registryId" | "ownerId" | "principalId" | "authorizationRevision"
   >;
 } {
-  if (activation.state === "disabled" || !hasCanonicalActivation(activation.value)) {
+  if (activation.state !== "enabled" || !hasCanonicalActivation(activation.value)) {
+    const activationState = activation.state === "disabled" ? "disabled" : "invalid";
+    const detail =
+      activationState === "disabled"
+        ? WORKSTREAM_ACTIVATION_DISABLED_DETAIL
+        : "Workstream control-plane activation is invalid.";
     return {
-      transport: disabled(),
+      activationState,
+      transport: disabled(detail),
       registrationContext: {
+        activationState,
         configuredBinding: null,
         readRegistrationContext: Effect.fail(
           new WorkstreamTransportError({
             operation: "registration_context",
             effect: "no-effect",
-            detail: "Workstream control-plane activation is disabled.",
+            detail,
           }),
         ),
       },
@@ -514,7 +447,9 @@ export function makeControlPlaneWorkstreamTransport(
       );
     });
   return {
+    activationState: "enabled",
     registrationContext: {
+      activationState: "enabled",
       configuredBinding: {
         ownerId: config.ownerId,
         principalId: config.principalId,
