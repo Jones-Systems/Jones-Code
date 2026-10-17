@@ -40,7 +40,70 @@ afterEach(() => {
   }
 });
 
+function withoutOwnershipApi(run: () => void): void {
+  const original = Object.getOwnPropertyDescriptor(process, "getuid");
+  try {
+    Object.defineProperty(process, "getuid", { configurable: true, value: undefined });
+    run();
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(process, "getuid");
+    else Object.defineProperty(process, "getuid", original);
+  }
+}
+
 describe("Workstreams activation startup snapshot", () => {
+  it("without an ownership API, absence is unconfigured and a present file is invalid without reading", () => {
+    const { base, file, directory } = fixture();
+    const open = vi.spyOn(NodeFS, "openSync");
+    const read = vi.spyOn(NodeFS, "readSync");
+    withoutOwnershipApi(() => {
+      expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "invalid" });
+      NodeFS.unlinkSync(file);
+      expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "disabled" });
+      NodeFS.rmdirSync(directory);
+      expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "disabled" });
+      expect(open).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    });
+  });
+
+  it("without an ownership API, unsafe components and ambiguous filesystem errors remain invalid", () => {
+    const { base, directory, file } = fixture();
+    withoutOwnershipApi(() => {
+      NodeFS.unlinkSync(file);
+      NodeFS.rmdirSync(directory);
+      NodeFS.symlinkSync(NodePath.join(base, "missing-target"), directory);
+      expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "invalid" });
+      NodeFS.unlinkSync(directory);
+      NodeFS.writeFileSync(directory, "synthetic-not-directory", { mode: 0o600 });
+      expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "invalid" });
+      const lstat = NodeFS.lstatSync;
+      for (const code of ["EACCES", "EIO", "ENOTDIR"]) {
+        const failed = vi.spyOn(NodeFS, "lstatSync").mockImplementation((path) => {
+          if (path === base) throw Object.assign(new Error("PRIVATE-MARKER"), { code });
+          return lstat(path);
+        });
+        expect(resolveWorkstreamActivation(base, {})).toEqual({ state: "invalid" });
+        failed.mockRestore();
+      }
+    });
+  });
+
+  it("without an ownership API, complete environment activation still wins and partial groups do not fall back", () => {
+    const { base } = fixture();
+    const stat = vi.spyOn(NodeFS, "lstatSync");
+    withoutOwnershipApi(() => {
+      expect(resolveWorkstreamActivation(base, environment)).toEqual(
+        activationFromEnvironment(environment),
+      );
+      for (const [key, value] of Object.entries(environment)) {
+        expect(resolveWorkstreamActivation(base, { [key]: value })).toEqual({ state: "invalid" });
+        expect(resolveWorkstreamActivation(base, { [key]: "" })).toEqual({ state: "invalid" });
+      }
+      expect(stat).not.toHaveBeenCalled();
+    });
+  });
+
   it("reads CP staging bytes without exporting secrets and reuses persistent files on restart", () => {
     const { base, file } = fixture();
     const before = { ...process.env };

@@ -127,7 +127,7 @@ const sameIdentity = (left: NodeFS.Stats, right: NodeFS.Stats): boolean =>
   left.uid === right.uid &&
   left.mode === right.mode;
 
-function directoryChain(baseDir: string, uid: number): DirectoryIdentity[] {
+function directoryChain(baseDir: string, uid: number | undefined): DirectoryIdentity[] {
   if (!NodePath.isAbsolute(baseDir) || NodePath.resolve(baseDir) !== baseDir)
     throw new Error("invalid_path");
   const directories: DirectoryIdentity[] = [];
@@ -145,10 +145,11 @@ function directoryChain(baseDir: string, uid: number): DirectoryIdentity[] {
       !privateDirectory && !installationDirectory && stat.uid === 0 && (stat.mode & 0o1000) !== 0;
     if (
       !stat.isDirectory() ||
-      (stat.uid !== uid && stat.uid !== 0) ||
-      ((privateDirectory || installationDirectory) && stat.uid !== uid) ||
-      (!stickyRootAncestor && (stat.mode & 0o022) !== 0) ||
-      (privateDirectory && (stat.mode & 0o7777) !== 0o700)
+      (uid !== undefined &&
+        ((stat.uid !== uid && stat.uid !== 0) ||
+          ((privateDirectory || installationDirectory) && stat.uid !== uid) ||
+          (!stickyRootAncestor && (stat.mode & 0o022) !== 0) ||
+          (privateDirectory && (stat.mode & 0o7777) !== 0o700)))
     )
       throw new Error("unsafe_directory");
     directories.push({ path: current, stat });
@@ -166,9 +167,13 @@ export function resolveWorkstreamActivation(
   let descriptor: number | undefined;
   try {
     const uid = process.getuid?.();
-    if (uid === undefined) return invalid();
     const directories = directoryChain(baseDir, uid);
     const file = NodePath.join(baseDir, "workstreams", "activation.env");
+    if (uid === undefined) {
+      // Unsupported ownership APIs may establish absence, but never authorize reading a present file.
+      NodeFS.lstatSync(file);
+      return invalid();
+    }
     descriptor = NodeFS.openSync(
       file,
       NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
