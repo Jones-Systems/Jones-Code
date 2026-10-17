@@ -139,6 +139,11 @@ const restartable = <A>(
           return Effect.fail(
             new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
           );
+        // Unconfigured activation is a stable server state, not an outage clients should retry.
+        if (error.reason === "not-configured")
+          return Effect.fail(
+            new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
+          );
         return failEnvironmentInternal("internal_error", { operation, reason: error.reason });
       },
     ),
