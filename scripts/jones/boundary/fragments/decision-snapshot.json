@@ -10,7 +10,11 @@
     "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
     "apps/server/src/jones/mcp/decisionSnapshot/fixtures/claude-account-usage.py.fixture",
     "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision-snapshot.py.fixture",
-    "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision_snapshot.py.fixture"
+    "apps/server/src/jones/mcp/decisionSnapshot/fixtures/decision_snapshot.py.fixture",
+    "apps/server/src/jones/mcp/decisionSnapshot/access.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
+    "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx"
   ],
   "hookPaths": [
     "apps/server/src/mcp/McpInvocationContext.ts",
@@ -42,6 +46,18 @@
     {
       "from": "apps/server/src/mcp/McpSessionRegistry.test.ts",
       "to": "apps/server/src/jones/mcp/decisionSnapshot/tools.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/mcp/decisionSnapshot/access.ts"
+    },
+    {
+      "from": "packages/contracts/src/settings.ts",
+      "to": "packages/contracts/src/jones/decisionSnapshotAccess.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/IntegrationsSettings.tsx",
+      "to": "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx"
     }
   ]
 }
