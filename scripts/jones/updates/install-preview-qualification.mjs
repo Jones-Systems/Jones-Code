@@ -112,7 +112,10 @@ const readBinaryTrackedPatch = (source) =>
   );
 
 async function readPatchArtifact(file, bytes) {
-  const handle = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+  const handle = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW | NodeFS.constants.O_NONBLOCK,
+  );
   try {
     const stat = await handle.stat();
     NodeAssert.ok(stat.isFile(), "Tracked patch artifact must be a regular file");

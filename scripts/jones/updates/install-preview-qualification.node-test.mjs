@@ -1087,6 +1087,7 @@ async function withBuildReceiptFixture(use) {
     await use({
       checkout,
       git,
+      env,
       receipt: NodePath.join(evidence, "install-preview-build.json"),
       patch: NodePath.join(evidence, "install-preview-build.patch"),
     });
@@ -1152,6 +1153,47 @@ NodeTest.test(
       NodeAssert.equal(receipt.trackedPatchArtifact.sha256, patchDigest(Buffer.alloc(0)));
       NodeAssert.deepEqual(await NodeFSP.readFile(fixture.patch), Buffer.alloc(0));
       NodeAssert.deepEqual(await readBuildReceipt(fixture.checkout, fixture.receipt), receipt);
+    });
+  },
+);
+
+NodeTest.test(
+  "build receipt refuses a FIFO without a writer before qualification",
+  { skip: NodeOS.platform() === "win32" ? "Named FIFOs require POSIX mkfifo" : false },
+  async () => {
+    await withBuildReceiptFixture(async (fixture) => {
+      await recordBuild(fixture.checkout, fixture.receipt);
+      await NodeFSP.unlink(fixture.patch);
+      NodeChildProcess.execFileSync("mkfifo", [fixture.patch], {
+        env: fixture.env,
+        timeout: 5_000,
+        killSignal: "SIGKILL",
+        maxBuffer: 64 * 1024,
+      });
+      NodeAssert.ok((await NodeFSP.lstat(fixture.patch)).isFIFO());
+      const moduleUrl = new URL("./install-preview-qualification.mjs", import.meta.url).href;
+      // A blocking-open regression is killed and reaped before the owned FIFO is removed.
+      NodeChildProcess.execFileSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `import * as NodeAssert from "node:assert/strict";
+           import { readBuildReceipt } from ${JSON.stringify(moduleUrl)};
+           await NodeAssert.rejects(
+             readBuildReceipt(process.argv[1], process.argv[2]),
+             /Tracked patch artifact must be a regular file/,
+           );`,
+          fixture.checkout,
+          fixture.receipt,
+        ],
+        {
+          env: fixture.env,
+          timeout: 10_000,
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024,
+        },
+      );
     });
   },
 );
