@@ -1,3 +1,5 @@
+import * as PhysicalRuntimeEvidence from "../jones/runtime/PhysicalRuntimeEvidence.ts";
+import { PhysicalProcessObservation } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
@@ -372,6 +374,7 @@ export const layerWithOptions = (
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const physicalEvidence = yield* PhysicalRuntimeEvidence.make;
       const agentScope = yield* AgentScope;
       const makeRuntimeLifecycle = (
         providerSessionId: ProviderSessionId,
@@ -549,12 +552,19 @@ export const layerWithOptions = (
                   );
                 yield* NativeProvider.bindNativeProviderGuard(nativeCreationGuard, captured);
               }
+              const physicalBinding = runtimeBinding(
+                committedThread ?? boundaryThread,
+                binding.runtimeGeneration,
+              );
+              if (physicalBinding !== undefined)
+                yield* physicalEvidence.bind(physicalBinding, binding.physicalProcess);
               return committedThread ?? boundaryThread;
             }).pipe(Effect.mapError(protocolError)),
           abandon: (generation) =>
             Effect.gen(function* () {
               const reservation = reservations.get(generation);
               reservations.delete(generation);
+              yield* physicalEvidence.abandon(generation);
               if (reservation === undefined) return;
               for (const [id, threadId] of reservation.bindings) {
                 const current = yield* readThread(threadId, id);
@@ -581,6 +591,7 @@ export const layerWithOptions = (
             }).pipe(Effect.mapError(protocolError)),
           invalidate: (binding) =>
             Effect.gen(function* () {
+              yield* physicalEvidence.invalidate(binding);
               const current = yield* readThread(binding.threadId, binding.providerThreadId);
               if (
                 current?.runtimeIdentity?.runtimeGeneration !== binding.runtimeGeneration ||
@@ -2479,6 +2490,7 @@ export const layerWithOptions = (
       );
 
       const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
+      const equivalentPhysicalObservation = Schema.toEquivalence(PhysicalProcessObservation);
       const readCurrentThreadRuntimeAttachment = Effect.fn(
         "ProviderSessionManager.readCurrentThreadRuntimeAttachment",
       )(function* (threadId: ThreadId) {
@@ -2552,16 +2564,24 @@ export const layerWithOptions = (
             );
           }).pipe(Effect.catchCause(() => Effect.succeed(false)));
           if (!(yield* isCurrent)) return unknown("runtime_binding_changed");
+          const physicalIncarnation = yield* physicalEvidence.read(binding);
+          if (!(yield* isCurrent)) return unknown("runtime_binding_changed");
           return {
             status: "attached",
             binding: Object.freeze({ ...binding }),
             evidenceRevision,
             observedAt,
             isCurrent,
-            physicalIncarnation: {
-              status: "unknown",
-              reason: "physical_incarnation_capture_unavailable",
-            },
+            physicalIncarnation,
+            physicalIsCurrent: Effect.gen(function* () {
+              if (!(yield* isCurrent) || physicalIncarnation.status !== "observed") return false;
+              const fresh = yield* physicalEvidence.read(binding);
+              return (
+                fresh.status === "observed" &&
+                equivalentPhysicalObservation(fresh, physicalIncarnation) &&
+                (yield* isCurrent)
+              );
+            }),
           } as const;
         }).pipe(Effect.catchCause(() => Effect.succeed(unknown("runtime_binding_unavailable"))));
       });

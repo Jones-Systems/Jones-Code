@@ -43,6 +43,7 @@ import * as NodeFSP from "node:fs/promises";
 import {
   voiceReviewConfigFromEnv,
   voiceReviewNativeBindingFromEnv,
+  isVoiceReviewPrincipalEnrolled,
   type VoiceReviewConfig,
   type VoiceReviewNativeBinding,
 } from "./config.ts";
@@ -165,7 +166,7 @@ export const makeVoiceReviewBridge = (
   const authorize = (principal: EnvironmentSessionPrincipalShape, mutation: boolean) => {
     if (config === null) throw new VoiceReviewNotConfiguredError({});
     if (
-      !config.allowed_session_ids.has(principal.sessionId) ||
+      !isVoiceReviewPrincipalEnrolled(config, principal) ||
       !principal.scopes.has(mutation ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope)
     ) {
       throw new VoiceReviewForbiddenError({});

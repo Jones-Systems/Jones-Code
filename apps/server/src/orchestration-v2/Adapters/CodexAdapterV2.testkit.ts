@@ -3,7 +3,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { type ProviderReplayTranscript } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
-import type * as CodexError from "effect-codex-app-server/errors";
+import * as CodexError from "effect-codex-app-server/errors";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -73,13 +73,22 @@ export function withCodexReplayChildMetadata(
     raw: {
       ...client.raw,
       request: (method, params) =>
-        (method === "thread/read" || method === "thread/resume") &&
-        Predicate.isObject(params) &&
-        (method === "thread/read" ? params.includeTurns === false : params.excludeTurns === true) &&
-        typeof params.threadId === "string" &&
-        childThreadIds.has(params.threadId)
-          ? readMetadata(params.threadId, method)
-          : client.raw.request(method, params),
+        method === "server/diagnostics"
+          ? Effect.fail(
+              new CodexError.CodexAppServerRequestError({
+                code: -32601,
+                errorMessage: "Synthetic diagnostics unsupported",
+              }),
+            )
+          : (method === "thread/read" || method === "thread/resume") &&
+              Predicate.isObject(params) &&
+              (method === "thread/read"
+                ? params.includeTurns === false
+                : params.excludeTurns === true) &&
+              typeof params.threadId === "string" &&
+              childThreadIds.has(params.threadId)
+            ? readMetadata(params.threadId, method)
+            : client.raw.request(method, params),
     },
   };
 }

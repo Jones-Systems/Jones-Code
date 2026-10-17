@@ -32,4 +32,37 @@ describe("ProcessAttribution", () => {
       }),
     ),
   );
+  it.effect("keeps exact-client launcher evidence distinct and fences delayed finalizers", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const owner = yield* ProcessAttribution.make();
+        const client = {};
+        const first = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+          Scope.close(scope, Exit.void),
+        );
+        const second = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+          Scope.close(scope, Exit.void),
+        );
+        const identity = {
+          platform: "linux" as const,
+          bootId: "boot",
+          pidNamespace: "pid:[1]",
+          pid: 42,
+          startTime: "1",
+          startTimeUnit: "linux-clock-ticks-since-boot" as const,
+          executableIdentity: "1:2:3:4",
+          build: "unknown" as const,
+        };
+        yield* owner.bindLauncher(client, null).pipe(Effect.provideService(Scope.Scope, first));
+        yield* owner
+          .bindLauncher(client, identity)
+          .pipe(Effect.provideService(Scope.Scope, second));
+        yield* Scope.close(first, Exit.void);
+        expect(yield* owner.launcherFor(client)).toEqual(identity);
+        expect(yield* owner.launcherFor({})).toBeNull();
+        yield* Scope.close(second, Exit.void);
+        expect(yield* owner.launcherFor(client)).toBeNull();
+      }),
+    ),
+  );
 });

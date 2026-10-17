@@ -459,7 +459,6 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
               !Number.isFinite(Date.parse(item.attested_at)) ||
               !Number.isFinite(Date.parse(item.expires_at)) ||
               Date.parse(item.attested_at) > now() ||
-              Date.parse(item.expires_at) <= now() ||
               Date.parse(item.expires_at) <= Date.parse(item.attested_at),
           )
         )
@@ -509,8 +508,11 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         cursor = page.next_cursor;
       }
       if (!finalPage) return yield* invalid("Placement page workload exceeded.");
-      if (items.some((item) => Date.parse(item.expires_at) <= now()))
-        return yield* invalid("Placement expired while loading.");
+      // Every item above passed identity, order, and reference checks; an item
+      // past its lifetime on this gateway's clock is dropped, not fatal, so
+      // clock skew cannot blank the whole load.
+      const loadedAt = now();
+      const current = items.filter((item) => Date.parse(item.expires_at) > loadedAt);
       const trustSnapshot = yield* Effect.try({
         try: () =>
           options.placementTrustProvider?.readTrustSnapshot() ?? {
@@ -534,7 +536,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         });
       }
       const result = {
-        page: { ...finalPage, items, next_cursor: null },
+        page: { ...finalPage, items: current, next_cursor: null },
         trustedEnvironments,
         readiness,
       };
