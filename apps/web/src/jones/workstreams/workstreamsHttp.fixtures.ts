@@ -50,7 +50,7 @@ export const routeWorkstreamsHttp =
     return handle(call, options?.signal);
   };
 
-export const sha256Hex = async (text: string): Promise<string> =>
+const sha256Hex = async (text: string): Promise<string> =>
   Array.from(
     new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))),
     (value) => value.toString(16).padStart(2, "0"),
