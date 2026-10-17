@@ -182,6 +182,7 @@ These facts hold for the DMG above and affect any install or update plan:
   ```
 
   Never edit the admission record or transaction files to get past the fence.
+
 - A successful activation keeps the replaced bundle beside the stable app as
   `Jones Code.app.jones-previous-GENERATION`. Staging can also leave
   `Jones Code.app.jones-incoming-GENERATION`. These siblings are recovery
