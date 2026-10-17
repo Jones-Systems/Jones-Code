@@ -3,7 +3,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import { View } from "react-native";
 
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";
 import { SettingsSwitchRow } from "../../features/settings/components/SettingsSwitchRow";
 import { useEnvironmentPresentation } from "../../state/presentation";

@@ -1,4 +1,4 @@
-import { FolderPlusIcon, SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
+import { FolderPlusIcon, ListPlusIcon, SearchIcon, SquarePenIcon, XIcon } from "lucide-react";
 import {
   type ComponentProps,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -17,6 +17,8 @@ export interface SidebarThreadHeaderProps {
   hasProjects: boolean;
   projectScope: ReactNode;
   onNewProject: () => void;
+  onNewWorkstream?: () => void;
+  newWorkstreamDisabled?: boolean;
   onNewThread: (event: ReactMouseEvent) => void;
   newThreadDisabled: boolean;
   newThreadShortcutLabel: string | null | undefined;

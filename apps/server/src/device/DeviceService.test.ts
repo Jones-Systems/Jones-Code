@@ -33,6 +33,7 @@ import * as DeviceHost from "./DeviceHost.ts";
 import { NodeRuntimeUnavailableError } from "@t3tools/shared/nodeRuntime";
 
 import * as DeviceService from "./DeviceService.ts";
+import * as DeviceDirectGrants from "../jones/device/DeviceDirectGrants.ts";
 
 const decodeJson = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -809,6 +810,10 @@ it.effect("reconciles SSH host settings without publishing no-op changes", () =>
       stopAgent: Effect.void,
     };
     const service = yield* DeviceService.make.pipe(
+      Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+        issue: () => Effect.die("Unexpected direct device grant request"),
+        admit: () => Effect.die("Unexpected direct device admission request"),
+      }),
       Effect.provideService(DeviceHost.DeviceHost, localHost),
       Effect.provideService(ServerSettings.ServerSettingsService, {
         ...settings,

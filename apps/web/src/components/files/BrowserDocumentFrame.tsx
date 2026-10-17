@@ -43,7 +43,7 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
-const PDF_VIEWER_FRAGMENT = "#toolbar=0&view=FitH";
+const PdfPreview = lazy(() => import("./PdfPreview"));
 
 /**
  * The page reports the keys, and a page script can report any key it likes,
@@ -74,14 +74,14 @@ export const isPdfPreviewFile = (path: string): boolean =>
 
 /**
  * HTML runs in a sandboxed frame with an opaque origin, so a page cannot reach
- * the app's session or storage. The built-in PDF viewer needs an unsandboxed
- * frame; a PDF runs no scripts.
+ * the app's session or storage. PDFs use the app PDF viewer with retry support.
  */
 export function BrowserDocumentFrame(props: {
   readonly src: string;
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
+  readonly onRetry?: () => void | Promise<void>;
   readonly threadRef?: ScopedThreadRef | undefined;
 }) {
   const className = "min-h-0 flex-1 border-0 bg-white";

@@ -1,3 +1,5 @@
+import * as NodeSink from "@effect/platform-node/NodeSink";
+import * as NodeStream from "@effect/platform-node/NodeStream";
 import * as Brand from "effect/Brand";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
@@ -699,6 +701,19 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
       ).pipe(Effect.forkScoped),
     );
   }
+  if (coldOwner !== undefined) {
+    yield* Effect.tryPromise({
+      try: () => coldOwner.ready(),
+      catch: (cause) =>
+        new BackendProcessSpawnError({
+          executablePath: options.executablePath,
+          entryPath: options.entryPath,
+          cwd: options.cwd,
+          httpBaseUrl: options.httpBaseUrl,
+          cause,
+        }),
+    });
+  }
   // Probe readiness in a loop while the backend process is still alive instead
   // of giving up after the first budget. A slow cold boot (the WSL bundle
   // loading across /mnt/c, or a first launch right after an update) can exceed
@@ -1129,40 +1144,25 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
                   return;
                 }
 
-        const program = runBackendProcess({
-          ...config.value,
-          desktopTelemetryStream: desktopTelemetryPublisher.encoded,
-          desktopBrowserStream: desktopBrowserHost.events,
-          onDesktopBrowserCommand: desktopBrowserHost.handleCommandLine,
-          onDesktopTelemetryControl: (message) =>
-            desktopTelemetryPublisher.handleControlForSource(spec.id, message),
-          onStarted: Effect.fn("desktop.backendInstance.onStarted")(function* (pid) {
-            yield* updateActiveRun(runId, (run) => ({
-              ...run,
-              pid: Option.some(pid),
-            }));
-            yield* backendOutputLog.beginSession({
-              details: `pid=${pid} port=${config.value.bootstrap.port} cwd=${config.value.cwd}`,
-            });
-          }),
-          onExitObserved: () =>
-            updateActiveRun(runId, (run) => ({
-              ...run,
-              exitObserved: true,
-            })),
-          onReady: Effect.fn("desktop.backendInstance.onReady")(function* () {
-            const isCurrentRun = yield* Ref.modify(state, (latest) => {
-              const activeRun = Option.getOrUndefined(latest.active);
-              if (activeRun?.id !== runId) {
-                return [false, latest] as const;
-              }
-
-              return [
-                true,
-                {
-                  ...latest,
-                  restartAttempt: 0,
-                  ready: true,
+                yield* spec.onReady?.(config.value.httpBaseUrl) ?? Effect.void;
+                if (
+                  config.value.runningDistro !== undefined &&
+                  config.value.wslRuntimeId !== undefined
+                ) {
+                  yield* wslEnvironment.pruneRuntimes(
+                    config.value.runningDistro,
+                    config.value.wslRuntimeId,
+                  );
+                }
+              }),
+              onReadinessFailure: Effect.fn("desktop.backendInstance.onReadinessFailure")(
+                function* (error) {
+                  yield* logInstanceWarning("backend readiness check failed during bootstrap", {
+                    error: error.message,
+                  });
+                  yield* backendOutputLog.persistFailureSnapshot({
+                    details: error.message,
+                  });
                 },
               ),
               onOutput: (streamName, chunk) => backendOutputLog.writeOutputChunk(streamName, chunk),

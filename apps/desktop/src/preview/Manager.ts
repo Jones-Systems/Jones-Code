@@ -1062,139 +1062,50 @@ const makeNativeOperations = Effect.fn("PreviewManager.makeOperations")(function
   const ensureControlSession = Effect.fn("PreviewManager.ensureControlSession")(function* (
     wc: Electron.WebContents,
   ) {
-    return yield* SynchronizedRef.modifyEffect(
-      controlSessionsRef,
-      (
-        sessions,
-      ): Effect.Effect<
-        readonly [BrowserControlSession, ReadonlyMap<number, BrowserControlSession>],
-        PreviewManagerError
-      > => {
-        const existing = sessions.get(wc.id);
-        if (existing) return Effect.succeed([existing, sessions] as const);
-        if (wc.isDestroyed()) {
-          return Effect.fail(
-            new PreviewOperationError({
-              operation: "ensureControlSession",
-              webContentsId: wc.id,
-              cause: new Error("WebContents was destroyed"),
-            }),
-          );
-        }
-        if (wc.isDevToolsOpened()) {
-          return Effect.fail(
-            new PreviewAutomationDevToolsOpenError({
-              webContentsId: wc.id,
-            }),
-          );
-        }
-        if (wc.debugger.isAttached()) {
-          return Effect.fail(
-            new PreviewAutomationDebuggerAttachedError({
-              webContentsId: wc.id,
-            }),
-          );
-        }
-        const createControlSession = Effect.fn("PreviewManager.createControlSession")(function* () {
-          const semaphore = yield* Semaphore.make(1);
-          const scope = yield* Scope.fork(parentScope, "sequential");
-          const wcDebugger = wc.debugger;
-          const consoleReleases = yield* Queue.sliding<void>(1);
-          // Console message eviction does not release the debugger's strong object handles. We
-          // keep text only, so release the whole group, including its object-id bookkeeping.
-          yield* Effect.forkIn(
-            Effect.forever(
-              Queue.take(consoleReleases).pipe(
-                Effect.andThen(
-                  attemptPromise({ operation: "releaseConsoleObjects", webContentsId: wc.id }, () =>
-                    wcDebugger.sendCommand("Runtime.releaseObjectGroup", {
-                      objectGroup: "console",
-                    }),
-                  ).pipe(Effect.ignore),
-                ),
-              ),
-            ),
-            scope,
-          );
-          const handleDebuggerMessage = Effect.fnUntraced(function* (
-            method: string,
-            params: Record<string, unknown>,
-          ) {
-            if (method === "Page.screencastFrame") {
-              const sessionId = params["sessionId"];
-              if (typeof sessionId === "number") {
-                yield* attemptPromise(
-                  {
-                    operation: "ackScreencastFrame",
-                    webContentsId: wc.id,
-                  },
-                  () => wcDebugger.sendCommand("Page.screencastFrameAck", { sessionId }),
-                ).pipe(Effect.ignore);
-              }
-              const tabId = yield* tabIdForWebContents(wc.id);
-              const metadata =
-                typeof params["metadata"] === "object" && params["metadata"] !== null
-                  ? (params["metadata"] as Record<string, unknown>)
-                  : {};
-              if (tabId && typeof params["data"] === "string") {
-                const captureSession = (yield* SynchronizedRef.get(frameCaptureSessionsRef)).get(
-                  tabId,
-                );
-                if (captureSession?.consumers.has("recording")) {
-                  const receivedAt = yield* currentIso;
-                  const listeners = yield* Ref.get(recordingFrameListenersRef);
-                  const frame: DesktopPreviewRecordingFrame = {
-                    tabId,
-                    data: params["data"],
-                    width:
-                      typeof metadata["deviceWidth"] === "number" ? metadata["deviceWidth"] : 0,
-                    height:
-                      typeof metadata["deviceHeight"] === "number" ? metadata["deviceHeight"] : 0,
-                    receivedAt,
-                  };
-                  yield* Effect.forEach(
-                    listeners,
-                    (listener) =>
-                      deliverEvent("recording-frame", frame.tabId, () => listener(frame)),
-                    { discard: true },
-                  );
-                }
-              }
-            }
-            if (method === "Runtime.consoleAPICalled" || method === "Runtime.exceptionThrown") {
-              yield* Queue.offer(consoleReleases, undefined);
-            }
-          });
-          const onMessage: BrowserControlSession["onMessage"] = (_event, method, params) => {
-            runFork(handleDebuggerMessage(method, params));
-          };
-          yield* Scope.addFinalizer(
-            scope,
-            attempt({ operation: "detachControlSession", webContentsId: wc.id }, () => {
-              wcDebugger.off("message", onMessage);
-              if (wcDebugger.isAttached()) wcDebugger.detach();
-            }).pipe(Effect.ignore),
-          );
-          const control: BrowserControlSession = {
-            webContentsId: wc.id,
-            debugger: wcDebugger,
-            semaphore,
-            scope,
-            onMessage,
-          };
-          const initialize = Effect.fn("PreviewManager.initializeControlSession")(function* () {
-            yield* attempt({ operation: "attachDebuggerListeners", webContentsId: wc.id }, () => {
-              wcDebugger.on("message", onMessage);
-              wcDebugger.attach("1.3");
-            });
-            // Without this, dark-scheme pages with no background of their own (text/plain, e.g.
-            // .md files) render white text on white. Sent first because a document that paints
-            // before it arrives keeps the transparent base until its next load.
-            yield* attemptPromise(
-              { operation: "initializeDebugger.defaultBackground", webContentsId: wc.id },
-              () =>
-                wcDebugger.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
-                  color: { r: 255, g: 255, b: 255, a: 1 },
+    const existing = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
+    if (existing) return existing;
+    const pending = controlInitializations.get(wc.id);
+    if (pending) return yield* Deferred.await(pending.result);
+    if (wc.isDestroyed()) {
+      return yield* new PreviewOperationError({
+        operation: "ensureControlSession",
+        webContentsId: wc.id,
+        cause: new Error("WebContents was destroyed"),
+      });
+    }
+    if (wc.isDevToolsOpened())
+      return yield* new PreviewAutomationDevToolsOpenError({ webContentsId: wc.id });
+    if (wc.debugger.isAttached())
+      return yield* new PreviewAutomationDebuggerAttachedError({ webContentsId: wc.id });
+    const scope = yield* Scope.fork(parentScope, "sequential");
+    const result = yield* Deferred.make<BrowserControlSession, PreviewManagerError>();
+    const ready = (yield* SynchronizedRef.get(controlSessionsRef)).get(wc.id);
+    const winner = controlInitializations.get(wc.id);
+    if (ready || winner) {
+      yield* Scope.close(scope, Exit.void);
+      return ready ?? (yield* Deferred.await(winner!.result));
+    }
+    const slot: { result: typeof result; scope: typeof scope; fiber?: Fiber.Fiber<void, never> } = {
+      result,
+      scope,
+    };
+    controlInitializations.set(wc.id, slot);
+    const createControlSession = Effect.fn("PreviewManager.createControlSession")(function* () {
+      const semaphore = yield* Semaphore.make(1);
+      const wcDebugger = wc.debugger;
+      controlScopeOwners.set(wc.id, scope);
+      const consoleReleases = yield* Queue.sliding<void>(1);
+      // Console message eviction does not release the debugger's strong
+      // object handles. We keep text only, so release the whole group,
+      // including its object-id bookkeeping. Coalesce bursts behind one
+      // command rather than queueing a command for every logged object.
+      yield* Effect.forkIn(
+        Effect.forever(
+          Queue.take(consoleReleases).pipe(
+            Effect.andThen(
+              attemptPromise({ operation: "releaseConsoleObjects", webContentsId: wc.id }, () =>
+                wcDebugger.sendCommand("Runtime.releaseObjectGroup", {
+                  objectGroup: "console",
                 }),
               ).pipe(Effect.ignore),
             ),

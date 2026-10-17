@@ -166,6 +166,17 @@ export function taskToDraft(task: ScheduledTask): DraftState {
   };
 }
 
+export function worktreeStrategyFromDraft(
+  draft: Pick<DraftState, "baseRef" | "startFromOrigin">,
+): Extract<OrchestrationV2ThreadLaunchWorkspaceStrategy, { type: "worktree" }> {
+  const baseRef = draft.baseRef.trim();
+  return {
+    type: "worktree",
+    ...(baseRef ? { baseRef } : {}),
+    startFromOrigin: draft.startFromOrigin,
+  };
+}
+
 export function scheduledTaskDefaultModel(
   settings: ServerSettings,
   project: (LegacyProjectSettingsFields & { readonly id: ProjectId }) | null,

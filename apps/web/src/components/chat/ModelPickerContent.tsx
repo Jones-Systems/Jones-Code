@@ -232,16 +232,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     ) &&
     !isProviderInstancePickerReady(activeEntry);
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
-    () => {
-      if (
-        props.lockedProvider !== null ||
-        activeInstanceHasSelectableUnavailableModel ||
-        activeInstanceNeedsSetup
-      ) {
-        return props.activeInstanceId;
-      }
-      return favorites.length > 0 ? "favorites" : props.activeInstanceId;
-    },
+    "favorites",
   );
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>

@@ -927,7 +927,7 @@ export const make = Effect.gen(function* () {
           allowInsecure: allowInsecureRoutes,
         });
         if (routes === null) return Option.none<ConnectionCatalogEntry>();
-        const next = entryWithRoutes(entry, routes);
+        const next = withRoutes(entry, routes).entry;
         const previousProfiles = new Map(
           connectionRoutes(entry).map((route) => [
             connectionRouteId(route.target),

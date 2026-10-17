@@ -1,3 +1,8 @@
+import {
+  getMobileImportedHistoryChoice,
+  mobileImportedHistoryCommands,
+} from "../jones/importedHistory/runtime";
+import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
 import * as Dialog from "../components/ui/Dialog";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { readEnvironmentScope } from "./session";
@@ -236,6 +241,8 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const currentImportedThreadKeyRef = useRef(selectedThreadKey);
+  currentImportedThreadKeyRef.current = selectedThreadKey;
   const selectedThreadQueuedMessages = useMemo(
     () =>
       selectedThreadKey
@@ -758,7 +765,7 @@ export function useThreadComposerState() {
             },
           });
           if (prepared._tag !== "Success") {
-            Alert.alert(
+            Dialog.alert(
               "Imported history unavailable",
               "The message could not be prepared. Your draft is unchanged.",
             );
@@ -770,7 +777,7 @@ export function useThreadComposerState() {
             unchanged,
           );
         } catch {
-          Alert.alert(
+          Dialog.alert(
             "Imported history unavailable",
             "Review or persistence is unavailable. Your draft is unchanged.",
           );

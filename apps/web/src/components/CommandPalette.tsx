@@ -1936,26 +1936,22 @@ function OpenCommandPaletteDialog(props: {
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         const { environmentId } = thread;
-        if (thread.runtime !== null) {
-          const stopped = await stopThreadSession({
-            environmentId,
-            input: { threadId: thread.id },
-          });
-          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
-        }
-        toastManager.add({
-          type: "success",
-          title: "Agent session will restart",
-          description: "Your next message starts a fresh session.",
-        });
-        const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
-        if (!project) return;
-        const refreshed = await refreshProviders({
-          environmentId,
-          input: {
-            instanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
-            cwd: thread.worktreePath ?? project.workspaceRoot,
-            fresh: true,
+        const result = await restartCurrentRuntime(
+          scopeThreadRef(environmentId, thread.id),
+          activeThreadServerConfig?.environment.capabilities.currentRuntimeStop,
+          async (target) => {
+            const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
+            if (!project)
+              throw new Error("The thread project is unavailable for provider refresh.");
+            const refreshed = await refreshProviders({
+              environmentId,
+              input: {
+                instanceId: target.binding.providerInstanceId,
+                cwd: thread.worktreePath ?? project.workspaceRoot,
+                fresh: true,
+              },
+            });
+            if (refreshed._tag === "Failure") throw squashAtomCommandFailure(refreshed);
           },
         );
         toastManager.add({

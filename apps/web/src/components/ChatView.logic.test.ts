@@ -1,3 +1,4 @@
+import { resolveComposerPickerModelSelection } from "./ChatView.logic";
 import {
   findRecordedWorktreeSetup,
   isThreadWokeUnseen,
@@ -2260,5 +2261,75 @@ describe("isThreadWokeUnseen", () => {
   it("hides settled threads and unparseable wake times", () => {
     expect(isThreadWokeUnseen({ ...base, settled: true })).toBe(false);
     expect(isThreadWokeUnseen({ ...base, wokeAt: "not a date" })).toBe(false);
+  });
+});
+
+describe("composer picker effort inheritance", () => {
+  const instanceId = ProviderInstanceId.make("codex-work");
+  const rememberedOptions = [
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "fast" },
+  ];
+  it("drops historical effort on a model switch and preserves other remembered options", () => {
+    expect(
+      resolveComposerPickerModelSelection({
+        instanceId,
+        model: "gpt-5.4",
+        rememberedOptions,
+        currentSelection: { instanceId, model: "gpt-6", options: rememberedOptions },
+      }).options,
+    ).toEqual([{ id: "serviceTier", value: "fast" }]);
+  });
+  it("keeps the same model's current explicit effort and leaves inherited effort absent", () => {
+    for (const options of [undefined, [{ id: "reasoningEffort", value: "low" }]]) {
+      expect(
+        resolveComposerPickerModelSelection({
+          instanceId,
+          model: "gpt-5.4",
+          rememberedOptions,
+          currentSelection: { instanceId, model: "gpt-5.4", ...(options ? { options } : {}) },
+        }).options,
+      ).toEqual([{ id: "serviceTier", value: "fast" }, ...(options ?? [])]);
+    }
+  });
+});
+
+describe("resolveFirstSendWorktreePreparation", () => {
+  const automaticInput = {
+    isFirstMessage: true,
+    sendEnvMode: "worktree" as const,
+    worktreePath: null,
+    projectCwd: "/repo",
+    baseBranch: null,
+    startFromOrigin: true,
+  };
+
+  it("prepares the first worktree send while base selection is still loading", () => {
+    expect(resolveFirstSendWorktreePreparation(automaticInput)).toEqual({
+      projectCwd: "/repo",
+      startFromOrigin: true,
+    });
+  });
+
+  it("preserves the captured explicit base and independent origin preference", () => {
+    expect(
+      resolveFirstSendWorktreePreparation({
+        ...automaticInput,
+        baseBranch: "upstream/release",
+        startFromOrigin: false,
+      }),
+    ).toEqual({ projectCwd: "/repo", baseBranch: "upstream/release" });
+  });
+
+  it("does not prepare local, subsequent, or existing-worktree sends", () => {
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, sendEnvMode: "local" }),
+    ).toBeUndefined();
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, isFirstMessage: false }),
+    ).toBeUndefined();
+    expect(
+      resolveFirstSendWorktreePreparation({ ...automaticInput, worktreePath: "/repo/worktree" }),
+    ).toBeUndefined();
   });
 });

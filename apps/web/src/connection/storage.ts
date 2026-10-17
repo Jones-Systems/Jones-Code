@@ -216,7 +216,9 @@ interface DatabaseHandle {
   readonly invalidate: (database: IDBDatabase) => Effect.Effect<void>;
 }
 
-const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* () {
+const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* (
+  open: () => Effect.Effect<IDBDatabase, ConnectionTransientError> = openDatabase,
+) {
   const lock = yield* Semaphore.make(1);
   let current: IDBDatabase | null = null;
   const forget = (database: IDBDatabase) => {

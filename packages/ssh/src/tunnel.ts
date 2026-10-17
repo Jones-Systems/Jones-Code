@@ -75,6 +75,8 @@ const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 
 export interface RemoteT3RunnerOptions {
+  /** Jones clients attach to the host's managed active runtime. */
+  readonly hostManagedRuntime?: boolean;
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
   readonly archiveVersion?: string | null;

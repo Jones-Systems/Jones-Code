@@ -29,6 +29,8 @@ vi.mock("~/jones/device/useDeviceStreamRoute", () => ({
     retryAccess: refreshRoute,
   }),
 }));
+const reportRoute = () => {};
+const refreshRoute = () => accessStore.refresh();
 let viewerMounts = 0;
 let viewerUnmounts = 0;
 vi.mock("./DevicePhoneViewport", () => ({

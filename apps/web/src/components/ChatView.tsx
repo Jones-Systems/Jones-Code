@@ -1427,6 +1427,11 @@ export default function ChatView(props: ChatViewProps) {
   const getTimelineScrollableNode = () => legendListRef.current?.getScrollableNode() ?? null;
   const getTimelineScrollableNodeStable = useStableCallback(getTimelineScrollableNode);
   const [composerOverlayElement, setComposerOverlayElement] = useState<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    setShortcutWorkspaceElement(
+      composerOverlayElement?.closest<HTMLDivElement>("[data-chat-workspace-drop-target]") ?? null,
+    );
+  }, [composerOverlayElement]);
   const [composerTimelineInset, setComposerTimelineInset] = useState(0);
   const composerTimelineInsetRef = useRef(0);
   const composerRestingRef = useRef(false);
@@ -1447,6 +1452,7 @@ export default function ChatView(props: ChatViewProps) {
   );
   const isResuming = resumingThreadKeys.has(routeThreadKey);
   const composerSendGenerationRef = useRef(0);
+  const composerRecoveryGenerationRef = useRef(new Map<string, number>());
   const multipleModelSelections = useAtomValue(fanoutSelectionsAtom);
   const setMultipleModelSelections = (
     selections: SetStateAction<ReadonlyArray<ModelSelection> | null>,
@@ -2629,17 +2635,18 @@ export default function ChatView(props: ChatViewProps) {
     [providerStatuses, settings, activeProject?.id],
   );
   const activeThreadModelInstanceId = activeThread?.modelSelection.instanceId;
-  const { selectedProviderEntry, requestedDriverKind } = resolveComposerProviderSelection({
-    entries: providerInstanceEntries,
-    candidateInstanceIds: [
-      selectedProviderByThreadId,
-      activeRuntime?.providerInstanceId,
-      activeThreadModelInstanceId,
-      activeProjectDefaultModelSelection?.instanceId,
-    ],
-    lockedProvider,
-    lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
-  });
+  const { selectedProviderEntry, requestedDriverKind, lockedContinuationGroupKey } =
+    resolveComposerProviderSelection({
+      entries: providerInstanceEntries,
+      candidateInstanceIds: [
+        selectedProviderByThreadId,
+        activeRuntime?.providerInstanceId,
+        activeThreadModelInstanceId,
+        activeProjectDefaultModelSelection?.instanceId,
+      ],
+      lockedProvider,
+      lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
+    });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
@@ -3624,6 +3631,10 @@ export default function ChatView(props: ChatViewProps) {
   };
   const sendAppMessageStable = useStableCallback(sendAppMessage);
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
+  const onSteerNextQueuedMessage = useCallback(() => {
+    if (sendInFlightRef.current) return false;
+    return queuedRunsControlRef.current?.steerNext(false) ?? false;
+  }, [sendInFlightRef]);
   const addTerminalContextToDraft = (selection: TerminalContextSelection) => {
     composerRef.current?.addTerminalContext(selection);
   };
@@ -6871,14 +6882,14 @@ export default function ChatView(props: ChatViewProps) {
       setSetupQueueSendThreadKey(activeThreadKey);
     } else {
       beginLocalDispatch({
-        preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
+        preparingWorktree: multipleModelSelections !== null || shouldCreateWorktree,
         submissionIntent:
           submissionIntent === "background" && !isLocalDraftThread
             ? "foreground"
             : submissionIntent,
       });
       beginWorktreeSetup(
-        multipleModelSelections === null && baseBranchForWorktree
+        multipleModelSelections === null && shouldCreateWorktree
           ? { environmentId: activeThread.environmentId, threadId: threadIdForSend }
           : null,
       );
@@ -7049,6 +7060,9 @@ export default function ChatView(props: ChatViewProps) {
                   environmentId,
                   input: {
                     threadId: targetThreadId,
+                    serverResolvesWorktreeBase:
+                      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                        ?.environment.capabilities.worktreeDefaultBase === true,
                     message: {
                       messageId: newMessageId(),
                       role: "user",
@@ -7079,7 +7093,7 @@ export default function ChatView(props: ChatViewProps) {
                       },
                       prepareWorktree: {
                         projectCwd: activeProject.workspaceRoot,
-                        baseBranch: activeThreadBranch!,
+                        ...(activeThreadBranch === null ? {} : { baseBranch: activeThreadBranch }),
                         requireWorktree: true,
                         ...(startFromOrigin ? { startFromOrigin: true } : {}),
                       },
@@ -7879,31 +7893,8 @@ export default function ChatView(props: ChatViewProps) {
     ],
   );
 
-  const onProviderModelSelect = (
-    instanceId: ProviderInstanceId,
-    model: string,
-    options?: { focusComposer?: boolean },
-  ) => {
-    if (!activeThread) return;
-    const entry = providerStatuses.find((snapshot) => snapshot.instanceId === instanceId);
-    const resolvedDriverKind = entry?.driver ?? null;
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      resolvedDriverKind !== null &&
-      resolvedDriverKind !== lockedProvider
-    ) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    if (
-      !supportsProviderSwitchingViaHandoff &&
-      lockedProvider !== null &&
-      activeRuntime?.providerInstanceId
-    ) {
-      const currentEntry = providerStatuses.find(
-        (snapshot) => snapshot.instanceId === activeRuntime.providerInstanceId,
-      );
+  const onProviderModelSelect = useCallback(
+    (instanceId: ProviderInstanceId, model: string, options?: ComposerModelSelectOptions) => {
       if (
         !activeThread ||
         isEnvironmentChanging ||
@@ -7932,36 +7923,40 @@ export default function ChatView(props: ChatViewProps) {
         if (options?.focusComposer !== false) scheduleComposerFocus();
         return;
       }
-    }
-    const resolvedModel = resolveAppModelSelectionForInstance(
-      instanceId,
-      settings,
-      providerStatuses,
-      model,
-    );
-    if (!resolvedModel) {
-      if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    const rememberedOptions =
-      useComposerDraftStore.getState().stickyOptionsByModelByProvider[instanceId]?.[resolvedModel];
-    const nextModelSelection: ModelSelection =
-      rememberedOptions !== undefined && rememberedOptions.length > 0
-        ? { instanceId, model: resolvedModel, options: [...rememberedOptions] }
-        : { instanceId, model: resolvedModel };
-    const modelChangeBlockReason = getStartedThreadModelChangeBlockReason({
-      providers: providerStatuses,
-      hasStartedSession: activeRuntime !== null,
-      supportsProviderSwitchingViaHandoff,
-      currentModelSelection: activeThread.modelSelection,
-      currentProviderInstanceId: activeRuntime?.providerInstanceId ?? null,
-      nextModelSelection,
-    });
-    if (modelChangeBlockReason) {
-      toastManager.add({
-        type: "warning",
-        title: modelChangeBlockReason.title,
-        description: modelChangeBlockReason.description,
+      if (
+        !supportsProviderSwitchingViaHandoff &&
+        !matchesProviderModelLock(
+          configuredEntry,
+          lockedProvider,
+          lockedContinuationGroupKey,
+          activeRuntime?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+        )
+      ) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      const resolvedModel = resolveAppModelSelectionForInstance(
+        instanceId,
+        settings,
+        providerStatuses,
+        model,
+      );
+      if (!resolvedModel) {
+        if (options?.focusComposer !== false) scheduleComposerFocus();
+        return;
+      }
+      // Resolve remembered traits first; a shortcut supplies its explicit effort
+      // before the complete model selection is persisted.
+      const store = useComposerDraftStore.getState();
+      const draft = store.getComposerDraft(composerDraftTarget);
+      const currentInstance = draft?.activeProvider ?? activeThread.modelSelection.instanceId;
+      const currentSelection =
+        draft?.modelSelectionByProvider?.[currentInstance] ?? activeThread.modelSelection;
+      const pickerSelection = resolveComposerPickerModelSelection({
+        instanceId,
+        model: resolvedModel,
+        currentSelection,
+        rememberedOptions: store.stickyOptionsByModelByProvider[instanceId]?.[resolvedModel],
       });
       const nextModelSelection = options?.effort
         ? withShortcutEffort(pickerSelection, model, entry.models, options.effort)
@@ -7993,16 +7988,25 @@ export default function ChatView(props: ChatViewProps) {
       );
       setStickyComposerModelSelection(nextModelSelection);
       if (options?.focusComposer !== false) scheduleComposerFocus();
-      return;
-    }
-    setComposerDraftModelSelection(
-      scopeThreadRef(activeThread.environmentId, activeThread.id),
-      nextModelSelection,
-      { explicit: true, replaceOptions: true },
-    );
-    setStickyComposerModelSelection(nextModelSelection);
-    if (options?.focusComposer !== false) scheduleComposerFocus();
-  };
+    },
+    [
+      activeThread,
+      activeRuntime,
+      lockedProvider,
+      supportsProviderSwitchingViaHandoff,
+      lockedContinuationGroupKey,
+      providerInstanceEntries,
+      composerDraftTarget,
+      isEnvironmentChanging,
+      activeEnvironmentUnavailable,
+      isRevertingCheckpoint,
+      scheduleComposerFocus,
+      setComposerDraftModelSelection,
+      setStickyComposerModelSelection,
+      providerStatuses,
+      settings,
+    ],
+  );
   const onProviderModelSelectStable = useStableCallback(onProviderModelSelect);
   const onEnvModeChange = (mode: DraftThreadEnvMode) => {
     if (multipleModelSelections !== null) return;

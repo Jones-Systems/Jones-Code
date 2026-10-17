@@ -66,6 +66,7 @@ export function HostedBrowserWebview(props: {
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
   readonly serverDriven?: boolean;
+  readonly companion?: boolean;
   readonly serverRendering?: {
     readonly colorScheme: DesktopPreviewColorScheme;
     readonly zoomFactor: number;
@@ -195,7 +196,11 @@ export function HostedBrowserWebview(props: {
             await lease.ready;
             if (isCurrent()) await registerWebview();
           }
-        } catch {}
+        } catch {
+          // did-attach/dom-ready will retry if the guest was not ready yet.
+        } finally {
+          registering = false;
+        }
       })();
     };
     const recoverGuest = () => {

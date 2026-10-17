@@ -22,6 +22,8 @@ import {
   type PinnedRuntimeProgress,
 } from "./pinnedRuntime.ts";
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const sourceCommit = "a".repeat(40);
 const version = "1.2.3";
 const archiveName = `t3-${version}-linux-x64.tar.gz`;
 const archiveBytes = new TextEncoder().encode("not really a tarball");

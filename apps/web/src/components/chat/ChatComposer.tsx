@@ -69,6 +69,7 @@ import { createModelSelection, normalizeModelSlug } from "@t3tools/shared/model"
 import { USAGE_LIMITS_COMMAND } from "@t3tools/shared/usageLimits";
 import {
   memo,
+  useMemo,
   type ComponentProps,
   type ReactNode,
   useEffect,
@@ -2847,6 +2848,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const setPromptFromTraitsStable = useStableCallback(setPromptFromTraits);
 
+  const configuredDefaultDriverKind = providerInstanceEntries.find(
+    (entry) => entry.instanceId === activeProjectDefaultModelSelection?.instanceId,
+  )?.driverKind;
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
@@ -6317,6 +6321,35 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       setIsComposerScrollCollapsed,
     ],
   );
+
+  const shortcutRailsContentKey = useMemo(
+    () => [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+    [modelOptionsByInstance, selectedInstanceId, selectedModel, effectiveTraitsOptions],
+  );
+  const shortcutRails = useComposerShortcutRails({
+    host: shortcutControlsHost,
+    workspace: shortcutWorkspaceElement,
+    formRef: composerFormRef,
+    bandRef: shortcutBandRef,
+    accountGroupRef: accountShortcutGroupRef,
+    effortGroupRef: effortShortcutGroupRef,
+    contentKey: shortcutRailsContentKey,
+    eligible:
+      !isMobileViewport &&
+      !isComposerApprovalState &&
+      pendingUserInputs.length === 0 &&
+      multipleModelSelections === null &&
+      environmentUnavailable === null &&
+      !providerCatalogPending &&
+      !noProviderAvailable &&
+      !isConnecting &&
+      !isSendBusy &&
+      !isPreparingWorktree &&
+      externalSendDisabledReason === null &&
+      !props.isRevertingCheckpoint &&
+      !projectSelectionRequired,
+    hasWideActions: composerFooterHasWideActions,
+  });
 
   return (
     <form

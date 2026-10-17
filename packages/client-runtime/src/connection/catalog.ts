@@ -53,6 +53,8 @@ export interface ConnectionCatalogEntry {
   readonly profile: Option.Option<ConnectionProfile>;
   readonly alternateRoutes?: ReadonlyArray<ConnectionRoute>;
   readonly enabled: boolean;
+  /** Historical update-management hint for these saved routes; never live connection state. */
+  readonly compatibilityHint?: { readonly routeBinding: string; readonly kind: "outdated-update" };
   readonly unsupportedReason?: string;
   readonly serverUpdateRequired?: boolean;
 }

@@ -376,6 +376,15 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
+                {importedThread ? (
+                  <Button
+                    label="Review imported history"
+                    disabled={importedState.busy || busyRunId !== null}
+                    onPress={() => {
+                      void reviewImportedQueued(run.id);
+                    }}
+                  />
+                ) : null}
                 <Menu
                   accessibilityLabel={`Actions for queued message ${index + 1}`}
                   shouldOpenOnLongPress

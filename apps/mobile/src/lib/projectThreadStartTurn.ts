@@ -31,6 +31,7 @@ export interface ProjectThreadStartTurnSpec {
   readonly branch: string | null;
   readonly worktreePath: string | null;
   readonly startFromOrigin: boolean;
+  readonly serverResolvesWorktreeBase?: boolean;
   readonly worktreeBranchName: string;
 }
 

@@ -441,7 +441,11 @@ export function subscribe<TTag extends EnvironmentSubscriptionRpcTag>(
   return subscribeDynamic(tag, () => Effect.succeed(input), options);
 }
 
-export const request = <TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>>(
+export const request = <
+  TTag extends Exclude<EnvironmentUnaryRpcTag, ClientGuardedRpcTag>,
+  E = never,
+  R = never,
+>(
   tag: TTag,
   input: EnvironmentRpcInput<TTag>,
   options?: {

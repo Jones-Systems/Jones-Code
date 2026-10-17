@@ -1378,3 +1378,27 @@ export function isThreadWokeUnseen(input: {
     .filter((ms) => !Number.isNaN(ms));
   return seenAt.every((ms) => ms < wokeAtMs);
 }
+
+export function resolveComposerPickerModelSelection(input: {
+  instanceId: ProviderInstanceId;
+  model: string;
+  currentSelection: ModelSelection | null | undefined;
+  rememberedOptions: ModelSelection["options"];
+}): ModelSelection {
+  const options =
+    input.rememberedOptions?.filter((option) => option.id !== "reasoningEffort") ?? [];
+  if (
+    input.currentSelection?.instanceId === input.instanceId &&
+    input.currentSelection.model === input.model
+  ) {
+    const effort = input.currentSelection.options?.find(
+      (option) => option.id === "reasoningEffort",
+    );
+    if (effort !== undefined) options.push(effort);
+  }
+  return {
+    instanceId: input.instanceId,
+    model: input.model,
+    ...(options.length ? { options } : {}),
+  };
+}

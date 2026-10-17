@@ -165,7 +165,7 @@ export function DeviceStreamView(props: {
           onScreen?.(next);
         },
         onUnauthorized: () => {
-          refreshDeviceHubAccess(props.environmentId);
+          if (clientRef.current === client) unauthorized(access);
         },
         onMjpegFallback: (url) => {
           if (clientRef.current !== client) return;

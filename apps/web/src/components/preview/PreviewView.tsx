@@ -200,6 +200,10 @@ export function PreviewView({
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
+  const companionBinding = useCompanionBindings(threadRef);
+  const companionTab =
+    companionBinding?.status === "ready" &&
+    companionBinding.value.tabs.some((tab) => tab.tabId === tabId && tab.hostId !== null);
   const nativeServerTab = useRendersServerTabNatively(threadRef.environmentId, snapshot);
   const isServerTab = snapshot?.runtime === "server" && !nativeServerTab;
   const serverOwnsRendering = snapshot?.runtime === "server";
@@ -934,7 +938,9 @@ export function PreviewView({
         onRefresh={handleRefresh}
         onSubmit={(next) => void handleSubmitUrl(next)}
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
-        onCapture={previewBridge && tabId && !isServerTab ? handleCapture : undefined}
+        onCapture={
+          previewBridge && tabId && !isServerTab && !companionTab ? handleCapture : undefined
+        }
         captureDisabled={!desktopOverlay || isUnreachable}
         recording={recordingRuntimeTabId !== null}
         onPictureInPicture={

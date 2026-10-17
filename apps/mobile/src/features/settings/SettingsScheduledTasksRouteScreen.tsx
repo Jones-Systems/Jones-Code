@@ -655,29 +655,8 @@ function TaskForm({
       Dialog.alert("Project unavailable", "Choose a project in this environment.");
       return;
     }
-    const input: ScheduledTaskUpsertInput = {
-      ...(draft.task ? { id: draft.task.id, requireExisting: true } : {}),
-      title: draft.title.trim(),
-      prompt: draft.prompt.trim(),
-      projectId: draft.projectId,
-      modelSelection: draft.modelSelection,
-      schedule,
-      enabled: draft.enabled,
-      threadId: draft.task?.threadId ?? null,
-      workspaceStrategy:
-        draft.workspace === "root"
-          ? { type: "root" }
-          : draft.workspace === "existing_worktree"
-            ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
-            : {
-                type: "worktree",
-                baseRef: draft.baseRef.trim() || "main",
-                startFromOrigin: draft.startFromOrigin,
-              },
-      runtimeMode: draft.runtimeMode,
-      interactionMode: draft.task?.interactionMode ?? "default",
-      creationSource: draft.task?.creationSource ?? "mobile",
-    };
+    const input = scheduledTaskUpsertInputFromDraft(draft, schedule);
+    if (input === null) return;
     submissionPending.current = true;
     setSaving(true);
     const result = await upsert({ environmentId, input });

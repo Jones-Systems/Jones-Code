@@ -51,6 +51,7 @@ interface AttachedTab {
   readonly key: DesktopBrowserTabKey;
   readonly debuggee: DesktopBrowserTabDebugger;
   relay: CdpRelayConnection | null;
+  readonly downloadPolicy: "shared-disk" | "deny";
   downloadDirectory: string | null;
   pendingDownloadGuid: string | null;
   agentInputAt: number;
@@ -66,8 +67,29 @@ export class DesktopBrowserHost extends Context.Service<
   DesktopBrowserHost,
   {
     readonly events: Stream.Stream<Uint8Array>;
-    readonly handleCommandLine: (line: string) => Effect.Effect<void>;
-    readonly attach: (key: DesktopBrowserTabKey, debuggee: DesktopBrowserTabDebugger) => void;
+    readonly eventsMatching: (
+      predicate: (key: DesktopBrowserTabKey) => boolean,
+    ) => Stream.Stream<Uint8Array>;
+    /** One line from the backend's browser control fd. */
+    readonly handleCommandLine: (
+      line: string,
+      predicate?: (key: DesktopBrowserTabKey) => boolean,
+    ) => Effect.Effect<void>;
+    readonly replaceCompanionAssignments: (keys: ReadonlyArray<DesktopBrowserTabKey>) => void;
+    readonly isCompanionAssigned: (key: DesktopBrowserTabKey) => boolean;
+    readonly isCompanionOwned: (key: DesktopBrowserTabKey) => boolean;
+    readonly registerCompanionGuest: (
+      key: DesktopBrowserTabKey,
+      contents: Electron.WebContents,
+    ) => void;
+    readonly isCompanionGuest: (contents: Electron.WebContents | null) => boolean;
+    /** Offers a server tab's `<webview>` to the server. */
+    readonly attach: (
+      key: DesktopBrowserTabKey,
+      debuggee: DesktopBrowserTabDebugger,
+      downloadPolicy?: "shared-disk" | "deny",
+    ) => void;
+    /** Withdraws it: closed, swapped, crashed, or devtools needs the debugger. */
     readonly detach: (key: DesktopBrowserTabKey) => void;
     readonly humanStartedDownload: (source: Electron.WebContents) => boolean;
     readonly placeDownload: (source: Electron.WebContents, item: Electron.DownloadItem) => boolean;
@@ -233,16 +255,29 @@ export const make = Effect.gen(function* () {
     return tab !== undefined && performance.now() - tab.agentInputAt > AGENT_DOWNLOAD_WINDOW_MS;
   };
 
-  const announceAll = Effect.suspend(() =>
-    Effect.forEach(
-      [...tabs.values()],
-      (tab) => {
-        tab.relay = null;
-        return PubSub.publish(outbox, { type: "attached", ...tab.key });
-      },
-      { discard: true },
-    ),
-  );
+  const announceMatching = (predicate: (key: DesktopBrowserTabKey) => boolean) =>
+    Effect.suspend(() =>
+      Effect.forEach(
+        [...tabs.values()].filter((tab) => predicate(tab.key)),
+        (tab) => {
+          tab.relay = null;
+          return PubSub.publish(outbox, { type: "attached", ...tab.key, ...identityFields });
+        },
+        { discard: true },
+      ),
+    );
+
+  const eventsMatching = (predicate: (key: DesktopBrowserTabKey) => boolean) =>
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const subscription = yield* PubSub.subscribe(outbox);
+        yield* announceMatching(predicate);
+        return Stream.fromSubscription(subscription);
+      }),
+    ).pipe(
+      Stream.filter(predicate),
+      Stream.map((event) => lineEncoder.encode(`${encodeEvent(event)}\n`)),
+    );
 
   return DesktopBrowserHost.of({
     pointers: Stream.fromPubSub(pointers),
