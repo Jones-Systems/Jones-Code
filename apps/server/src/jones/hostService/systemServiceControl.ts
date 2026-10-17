@@ -6,13 +6,7 @@
 // not use it: the qualified launcher supervises its child without root.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import { runCapturedProcess, type CapturedProcessResult } from "../cloud/qualifiedLinuxLease.ts";
-import {
-  QUALIFIED_WRITER_OBSERVER_PATH,
-  QUALIFIED_WRITER_OBSERVER_SHA256,
-  renderWriterObserverSocketUnits,
-} from "../cloud/qualifiedWriterObserver.ts";
-
+import { runCapturedProcess, type CapturedProcessResult } from "../cloud/capturedProcess.ts";
 export const SYSTEM_SERVICE_CONTROL_PATH =
   "/usr/local/libexec/jones-code/jones-system-service-control";
 export const SYSTEM_SERVICE_POLICY_PATH = "/etc/jones-code/system-service.policy";
@@ -403,15 +397,8 @@ export function renderSystemBootstrapManifest(policy: SystemServicePolicy): {
   readonly enable: readonly string[];
 } {
   const policyText = renderSystemServicePolicy(policy);
-  const units = renderWriterObserverSocketUnits({ user: policy.user, base: policy.base });
   return {
     files: [
-      {
-        path: QUALIFIED_WRITER_OBSERVER_PATH,
-        mode: "0755",
-        sha256: QUALIFIED_WRITER_OBSERVER_SHA256,
-        source: "apps/server/src/jones/cloud/qualifiedWriterObserver.pl",
-      },
       {
         path: SYSTEM_SERVICE_CONTROL_PATH,
         mode: "0755",
@@ -425,14 +412,7 @@ export function renderSystemBootstrapManifest(policy: SystemServicePolicy): {
         source: "rendered",
         text: policyText,
       },
-      ...[units.socket, units.service].map((unit) => ({
-        path: NodePath.join("/etc/systemd/system", unit.name),
-        mode: "0644" as const,
-        sha256: sha256(unit.text),
-        source: "rendered",
-        text: unit.text,
-      })),
     ],
-    enable: [units.socket.name],
+    enable: [],
   };
 }

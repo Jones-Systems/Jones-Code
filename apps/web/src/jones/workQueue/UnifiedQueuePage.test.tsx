@@ -477,6 +477,68 @@ describe("Prompts environment composition", () => {
     expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
   });
 
+  it("allows review on a connected source while its queue check waits and another server is offline", async () => {
+    setConnection("beta", "disconnected");
+    fixture.load.mockImplementation(() => new Promise(() => {}));
+    await render();
+    expect(groups()).toEqual(["Alpha prompts"]);
+    expect(editor("alpha").disabled).toBe(false);
+    await act(async () => {
+      const textarea = editor("alpha");
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+        textarea,
+        "Review while another source is offline",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(editor("alpha").value).toBe("Review while another source is offline");
+    expect(container.textContent).toContain("Cannot check prompt sources on Beta");
+    expect(fixture.load).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a connected queue before its voice check settles with another server offline", async () => {
+    setConnection("beta", "disconnected");
+    fixture.voiceList.mockImplementation(() => new Promise(() => {}));
+    fixture.load.mockResolvedValue({ status: "unavailable", reason: "source_unavailable" });
+    await render();
+    expect(groups()).toEqual(["Alpha prompts"]);
+    await click("Queued");
+    expect(container.textContent).toContain("the source cannot be read");
+    expect(container.textContent).toContain("Cannot check prompt sources on Beta");
+    expect(fixture.voiceList).toHaveBeenCalledTimes(1);
+  });
+
+  it("explains that connected servers have no sources without blaming the offline server", async () => {
+    setConnection("beta", "disconnected");
+    fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
+    await render();
+    expect(container.textContent).toContain("No prompt review or queue is configured on Alpha.");
+    expect(container.textContent).toContain(
+      "Reconnect unavailable servers to access their prompts.",
+    );
+    expect(container.textContent).not.toContain("Prompt sources have not all been checked.");
+  });
+
+  it("ignores a superseded source check after disconnect and retry", async () => {
+    setConnection("beta", "disconnected");
+    let rejectOld!: (error: unknown) => void;
+    fixture.voiceList.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        }),
+    );
+    await render();
+    setConnection("alpha", "disconnected");
+    await render();
+    setConnection("alpha", "connected");
+    await render();
+    expect(groups()).toEqual(["Alpha prompts"]);
+    await act(async () => rejectOld({ _tag: "VoiceReviewNotConfiguredError" }));
+    expect(groups()).toEqual(["Alpha prompts"]);
+    expect(editor("alpha").disabled).toBe(false);
+  });
+
   it("distinguishes an empty environment catalog from an unavailable connection", async () => {
     fixture.environments = [];
     await render();

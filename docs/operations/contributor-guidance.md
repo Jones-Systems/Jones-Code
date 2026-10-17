@@ -133,6 +133,41 @@ integrations predate these rules, for example the native-creation reference in
 effect outbox payloads and Jones table checks in the event sink. They are not
 precedent for new work.
 
+### Install path changes
+
+Jones Code is a personal development tool. Keep installation close to the
+upstream flow: verify the selected artifact, preflight the candidate, stop the
+owned backend, snapshot the database, and trial-start before committing.
+
+- Verify downloaded artifacts by their published digest. Do not pin emitted
+  bundle bytes, source hashes, lockfiles, or generated-code offsets in install
+  admission or artifact production. Ordinary application changes must not
+  require renewing an installation allowlist.
+- Keep updates within the launcher's owned child and state directory. Do not
+  introduce privileged observers or whole-host process scans as prerequisites
+  for installing an otherwise valid build.
+- Use one recovery snapshot of the database, WAL/SHM, and required settings.
+  Release the task's snapshot after commit or durably recorded rollback;
+  do not copy browser caches or retain a second failed database indefinitely.
+  Existing historical backups are outside routine update cleanup.
+- Make a refusal actionable: identify what failed and how to recover. Optional
+  fleet bookkeeping must not prevent a local app update.
+- Preserve launcher and startup-gate protocols when possible. A necessary
+  incompatible change must describe the one-time host refresh in the PR.
+
+Use small synthetic fixtures instead of installing across the fleet. Migration
+or startup-wiring changes run
+[`migrationPlan.test.ts`](../../apps/server/src/jones/updates/migrationPlan.test.ts)
+with the real migrations, a few retained rows, and a deliberately failing
+transaction. Launcher and recovery changes run
+[`serviceLauncher.test.ts`](../../apps/server/src/serviceLauncher.test.ts) and
+the affected backup tests. Desktop handoff or recovery changes run the affected
+[`native helper tests`](../../apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts)
+and updater tests. Keep fixtures isolated, clean them on success and failure,
+and retain the original failure result. Unrelated UI changes do not need an
+installation rehearsal. The normal read-only candidate preflight remains the
+per-install migration check.
+
 ## Coverage before completion
 
 The common failure is a change that works on the path tested but is missing

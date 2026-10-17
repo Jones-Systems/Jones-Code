@@ -32,7 +32,7 @@ import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 import { build } from "vite-plus/pack";
 // @ts-expect-error -- Existing owned native fixture helper has no declarations.
-import * as IdentityFixture from "../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
+import * as IdentityFixture from "../../../../scripts/jones/updates/native-fixture-support.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
@@ -347,7 +347,7 @@ describe("DesktopBackendManager", () => {
   it.for(["early-failure", "cancel", "race-cold", "race-warm"] as const)(
     "retains actual cold custody after %s while captured pipes remain open",
     async (scenario, { signal }) => {
-      await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+      await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
         const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
         const custodyPath = NodePath.resolve(
           NodePath.dirname(managerPath),
@@ -391,7 +391,7 @@ describe("DesktopBackendManager", () => {
             logLevel: "silent",
           });
           launched = true;
-          const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+          const result = await IdentityFixture.runNativeFixtureCommand(
             NodeProcess.execPath,
             [NodePath.join(root, "fixture.mjs"), scenario, root],
             root,
@@ -1841,7 +1841,7 @@ describe("DesktopBackendManager", () => {
 it.for(["ordinary", "trial", "live-enrollment"] as const)(
   "joins the production Manager and bundled backend owner channel after %s admission",
   async (scenario, { signal }) => {
-    await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+    await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
       const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
       const backendPath = NodePath.resolve(
         NodePath.dirname(managerPath),
@@ -2027,7 +2027,7 @@ it.for(["ordinary", "trial", "live-enrollment"] as const)(
             logLevel: "silent",
           });
         launched = true;
-        const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+        const result = await IdentityFixture.runNativeFixtureCommand(
           NodeProcess.execPath,
           [NodePath.join(root, "fixture.mjs"), root],
           root,

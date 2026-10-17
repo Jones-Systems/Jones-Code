@@ -45,15 +45,28 @@ as failed.
 ## Database rollback
 
 Before stopping the old child, the launcher refuses an update whose snapshot will
-not fit on disk, so a full disk does not cause an outage. After the old child
-exits, the launcher snapshots SQLite's main file, WAL, and shared-memory file. This makes trial migrations reversible without down
-migrations. The snapshot is made once per update and survives launcher restarts;
+not fit on disk, so a full disk does not cause an outage. After the captured old child exits, the launcher holds the same exclusive transaction
+on `userdata/server-owner.sqlite` that servers hold for their lifetime. A busy
+lock, or a known live legacy owner, refuses recovery before changing state. The
+launcher snapshots SQLite's main file, WAL, and shared-memory file, plus the five
+startup identity/settings files. It releases ownership before spawning the trial.
+This makes trial migrations reversible without down migrations. The snapshot is made once per update and survives launcher restarts;
 replacing it during a retry could capture changes from the failed trial.
 
-Rollback stops the trial before restoring. A durable restore marker makes an
-interrupted restore finish before either version boots. Keep the snapshot until
-commit, or until both restoration and the terminal rollback state are durable.
-Attachments and other files outside SQLite are outside this rollback boundary.
+Rollback awaits the captured trial's exit and acquires state ownership before
+restoring. A durable restore marker makes an interrupted restore finish before
+either version boots. After durable commit and its IPC acknowledgement, or after
+restoration and the terminal rollback state are durable, the launcher removes that
+attempt's recovery payload and transient advanced state, keeping the directory and
+small receipts used by startup and update status. Cleanup failures preserve the
+durable result and keep the remaining files for later reconciliation. An uncertain pointer write, failed
+restore or failed terminal write preserves recovery bytes. It leaves older retained
+snapshots alone. The shared ownership file is never unlinked.
+Attachments and other files outside SQLite and the paired startup files are outside
+this rollback boundary. Qualified at-most-once resume reservations remain at
+`runtime/db-backup/<update-id>/resume-dispatched.json`. Keeping that directory lets
+existing candidates reserve resume after commit; the guard still blocks replay
+after recovery payload cleanup. Launcher, qualified-update and startup-gate protocols remain 4, 1 and 1.
 
 ## Client acknowledgement
 
@@ -111,8 +124,8 @@ cannot be overwritten by a stale cancellation.
 Shutdown releases captured provider sessions concurrently, retaining the existing
 30-second bound for each session scope. The launcher gives the child 75 seconds
 for both session and parent-scope cleanup plus reconciliation; generated systemd
-and launchd definitions explicitly allow 90 seconds. Timeout escalation still
-requires the qualified updater's writer-quiescence proof before backup or restore.
+and launchd definitions explicitly allow 90 seconds. After timeout escalation the launcher still waits for its captured child to exit
+and holds state ownership throughout backup or restore.
 These source defaults do not rewrite existing installed service definitions.
 
 The [continuation handler](../../apps/server/src/orchestration-v2/RestartContinuation.ts)

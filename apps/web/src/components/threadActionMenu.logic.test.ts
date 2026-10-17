@@ -40,6 +40,31 @@ function allIds(state: ThreadActionMenuState): string[] {
 }
 
 describe("buildThreadActionMenuItems", () => {
+  it.each([false, true])(
+    "puts assignment directly below Snooze/Wake with read-only gating (snoozed: %s)",
+    (isSnoozed) => {
+      const assignmentItems = [
+        { id: "assign-workstream:group:alpha" as const, label: "alpha" },
+        { id: "assign-workstream:remove" as const, label: "Unassigned (remove primary)" },
+      ];
+      for (const canOperate of [true, false]) {
+        const items = buildThreadActionMenuItems({
+          ...baseState,
+          isSnoozed,
+          canOperate,
+          assignmentItems,
+        });
+        const snooze = items.findIndex((item) => item.id === (isSnoozed ? "unsnooze" : "snooze"));
+        expect(items[snooze + 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
+        expect(items[snooze + 1]?.children).toEqual(
+          canOperate
+            ? assignmentItems
+            : assignmentItems.map((item) => ({ ...item, disabled: true })),
+        );
+      }
+    },
+  );
+
   it("places Stop after settlement and keeps it reachable without session details", () => {
     const items = buildThreadActionMenuItems(baseState);
     expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({

@@ -8,6 +8,8 @@ export function SidebarDragLifecycle({ onUnmount }: { onUnmount: () => void }) {
   return null;
 }
 
+export const SIDEBAR_DRAG_DISTANCE = 6;
+
 type Options = {
   distance: number;
   onAttach: (sensor: SidebarPointerSensor) => void;

@@ -5,6 +5,13 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 import { expect, it } from "@effect/vitest";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as SqlClient from "effect/sql/SqlClient";
+import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
+import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
+import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
 import { readMigrationPlan } from "./migrationPlan.ts";
 
 const manifest = {
@@ -115,3 +122,101 @@ it("allows first startup without creating the missing database", () => {
     NodeFS.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.effect(
+  "preflights a tiny real installation, upgrades it, and preserves rows on migration failure",
+  () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-install-migrations-"));
+      const databasePath = NodePath.join(root, "statev2.sqlite");
+      const current = {
+        upstream: migrationManifest,
+        jones: jonesMigrationEntries.map(([id, name]) => [id, name] as const),
+      };
+      const latestJones = jonesMigrationEntries.at(-1)!;
+      const run = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+        effect.pipe(
+          Effect.provide(
+            NodeSqliteClient.layer({
+              filename: databasePath,
+              readerWorker: false,
+              checkpointWorker: false,
+            }),
+          ),
+          Effect.scoped,
+        );
+      try {
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: {
+            pendingUpstream: current.upstream.map(([id]) => id),
+            pendingJones: current.jones.map(([id]) => id),
+          },
+        });
+        yield* run(
+          Effect.gen(function* () {
+            yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+            yield* runJonesMigrations(jonesMigrationEntries.slice(0, -1));
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql`CREATE TABLE jones_install_fixture (value TEXT NOT NULL)`;
+            yield* sql`INSERT INTO jones_install_fixture VALUES ('keep-one'), ('keep-two')`;
+          }),
+        );
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [latestJones[0]] },
+        });
+        yield* run(runMigrations());
+        expect(readMigrationPlan({ databasePath, ...current })).toEqual({
+          status: "ready",
+          migrationPlan: { pendingUpstream: [], pendingJones: [] },
+        });
+        expect(
+          readMigrationPlan({ databasePath, ...current, jones: current.jones.slice(0, -1) }),
+        ).toEqual({
+          status: "blocked",
+          reason: `Candidate older than this database (Jones migration ${latestJones[0]}).`,
+        });
+        const failingId = latestJones[0] + 1;
+        const failed = yield* run(
+          Effect.exit(
+            runJonesMigrations([
+              ...jonesMigrationEntries,
+              [
+                failingId,
+                "SyntheticInstallFailure",
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* sql`CREATE TABLE jones_failed_install_fixture (value TEXT)`;
+                  yield* sql`DELETE FROM jones_install_fixture`;
+                  yield* sql`SELECT * FROM missing_install_fixture`;
+                }),
+              ],
+            ]),
+          ),
+        );
+        expect(Exit.isFailure(failed)).toBe(true);
+        const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+        try {
+          expect(
+            database.prepare("SELECT value FROM jones_install_fixture ORDER BY value").all(),
+          ).toEqual([{ value: "keep-one" }, { value: "keep-two" }]);
+          expect(
+            database
+              .prepare("SELECT name FROM sqlite_master WHERE name = 'jones_failed_install_fixture'")
+              .all(),
+          ).toEqual([]);
+          expect(
+            database
+              .prepare("SELECT migration_id FROM jones_sql_migrations WHERE migration_id = ?")
+              .all(failingId),
+          ).toEqual([]);
+        } finally {
+          database.close();
+        }
+        expect(readMigrationPlan({ databasePath, ...current }).status).toBe("ready");
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+);

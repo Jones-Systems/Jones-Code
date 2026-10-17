@@ -28,7 +28,7 @@ const systemPlan = {
     launcher: { version: "new" },
     active: { version: "old" },
   },
-  bootstrap: { worker: "installed", policy: "installed", observer: "installed", socket: "absent" },
+  bootstrap: { worker: "installed", policy: "installed" },
   manifest: {
     files: [
       {
@@ -39,7 +39,7 @@ const systemPlan = {
         text: "policy\n",
       },
     ],
-    enable: ["observer.socket"],
+    enable: [],
   },
 } as unknown as SystemAdoption.SystemAdoptionPlanResult;
 
@@ -310,7 +310,7 @@ it.effect("adopt-system dry-run prints the plan digest and root manifest without
       acceptUnattestedChildCapability: true,
     });
     expect(t.printed.join("\n")).toContain(`plan SHA-256: ${planSha256}`);
-    expect(t.printed.join("\n")).toContain("socket absent");
+    expect(t.printed.join("\n")).toContain("worker installed, policy installed");
     expect(t.printed.join("\n")).toContain("adoption installs none");
   }),
 );
