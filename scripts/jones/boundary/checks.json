@@ -2,6 +2,11 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-provider-order",
+      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/settings/providerOrder.test.ts"]
+    },
+    {
       "id": "jones-provider-restart-identity",
       "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "commands": [
@@ -1074,10 +1079,11 @@
       "id": "jones-codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "vp test run apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts --maxWorkers=1"
       ]
     },
     {
