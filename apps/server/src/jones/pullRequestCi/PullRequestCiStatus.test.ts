@@ -7,7 +7,8 @@ import * as Redacted from "effect/Redacted";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as TestClock from "effect/testing/TestClock";
 import type { OrchestrationProjectShell, ProjectId } from "@t3tools/contracts";
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
+import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as SourceControlProviderRegistry from "../../sourceControl/SourceControlProviderRegistry.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
@@ -73,7 +74,7 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
                 viewer: "test-user",
                 credentialFingerprint: credential,
               }).pipe(
-                Effect.provideService(GitHubApi.PinnedGitHubCredential, {
+                Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, {
                   host: request.host,
                   token: Redacted.make("fixture-secret"),
                   credentialFingerprint: credential,
@@ -100,10 +101,10 @@ function fixture(projects: ReadonlyArray<OrchestrationProjectShell>) {
           Layer.mock(PullRequestReadCache.PullRequestReadCache)({}),
           SourceControlRateLimit.layer,
           ServerSettings.layerTest(),
-          Layer.mock(GitHubApi.GitHubApi)({
+          Layer.mock(GitHubRest.GitHubRest)({
             rest: (request) =>
               Effect.gen(function* () {
-                const pinned = yield* GitHubApi.PinnedGitHubCredential;
+                const pinned = yield* GitHubRequestPolicy.PinnedGitHubCredential;
                 const endpoint = request.path;
                 calls.push({ endpoint, credential: pinned?.credentialFingerprint });
                 const value = endpoint.includes("/runners")

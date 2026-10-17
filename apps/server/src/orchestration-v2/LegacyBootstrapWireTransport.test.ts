@@ -100,6 +100,8 @@ import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
 import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
 import * as WsStorageCleanup from "../storageCleanup.ts";
+import * as WsDatabaseStorage from "../persistence/DatabaseStorage.ts";
+import * as WsCommandOutputHub from "./CommandOutputHub.ts";
 import * as WsServerSettings from "../serverSettings.ts";
 import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
@@ -544,6 +546,8 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       reports: Stream.fromEffect(denyRpcWork()),
       drain: denyRpcWork(),
     }),
+    Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+    Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
     Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
     Layer.mock(WsDeviceService.DeviceService)({}),
     Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
@@ -1309,6 +1313,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             ),
             drain: Effect.die("Legacy bootstrap must not drain storage cleanup."),
           }),
+          Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+          Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
           Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
           Layer.mock(WsDeviceService.DeviceService)({}),
           Layer.mock(WsOrchestrator.OrchestratorV2)({

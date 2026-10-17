@@ -411,7 +411,8 @@ it.effect("a bounded whole-probe timeout cannot qualify a partial quota response
     const fiber = yield* checkCodexProviderStatus(settings, () => Effect.never).pipe(
       Effect.forkChild,
     );
-    yield* TestClock.adjust("11 seconds");
+    // Codex has its own 20-second handshake budget.
+    yield* TestClock.adjust("21 seconds");
     const result = yield* Fiber.join(fiber);
     assert.strictEqual(result.qualifiedQuota?.status, "failed");
     assert.strictEqual(result.qualifiedQuota?.failureCode, "probe_timeout");
