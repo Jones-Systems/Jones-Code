@@ -62,6 +62,7 @@ export function openDesktopNativeOwnerChannel(
   let runId: string | undefined;
   let sequence = 0;
   let lastReply = 0;
+  let suspended = false;
   let buffer = "";
   let pending:
     | {
@@ -70,10 +71,15 @@ export function openDesktopNativeOwnerChannel(
         resolve: () => void;
         reject: (error: Error) => void;
         promise: Promise<void>;
+        expired: boolean;
+        expiresAt: number;
       }
     | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const transition = (state: "suspended" | "resumed" | "closed") => {
+    process.stderr.write(`[jones/desktop-native-owner] ${state}\n`);
+  };
   const close = () => {
     if (!live) return;
     live = false;
@@ -85,6 +91,23 @@ export function openDesktopNativeOwnerChannel(
     failed?.reject(unavailable());
     input.destroy();
     output.destroy();
+    transition("closed");
+  };
+  const expirePending = () => {
+    if (pending === undefined || pending.expired) return;
+    if (deadline !== undefined) clearTimeout(deadline);
+    deadline = undefined;
+    if (runId === undefined) {
+      close();
+      return;
+    }
+    lastReply = 0;
+    if (!suspended) {
+      suspended = true;
+      transition("suspended");
+    }
+    pending.expired = true;
+    pending.reject(unavailable());
   };
   input.on("error", close);
   input.on("end", close);
@@ -113,8 +136,19 @@ export function openDesktopNativeOwnerChannel(
         )
           throw unavailable();
         admission.assertCurrent();
+        if (performance.now() >= pending.expiresAt) expirePending();
+        if (!live || pending === undefined) return;
+        // The late response consumes only the expired challenge. It cannot qualify this child.
+        if (pending.expired) {
+          pending = undefined;
+          continue;
+        }
         runId = response.runId;
         lastReply = performance.now();
+        if (suspended) {
+          suspended = false;
+          transition("resumed");
+        }
         if (deadline !== undefined) clearTimeout(deadline);
         const complete = pending;
         pending = undefined;
@@ -126,13 +160,15 @@ export function openDesktopNativeOwnerChannel(
   });
   const refresh = (): Promise<void> => {
     if (!live) return Promise.reject(unavailable());
-    if (pending !== undefined) return pending.promise;
     try {
+      if (process.ppid !== parentPid) throw unavailable();
       admission.assertCurrent();
     } catch {
       close();
       return Promise.reject(unavailable());
     }
+    // Keep one expired challenge until its exact reply drains; never accumulate retries.
+    if (pending !== undefined) return pending.promise;
     let resolve!: () => void;
     let reject!: (error: Error) => void;
     const promise = new Promise<void>((yes, no) => {
@@ -146,35 +182,54 @@ export function openDesktopNativeOwnerChannel(
       childPid: process.pid,
       binding: admission.binding,
     };
-    pending = { sequence, nonce: request.nonce, resolve, reject, promise };
-    deadline = NodeTimers.setTimeout(close, 3000);
+    pending = {
+      sequence,
+      nonce: request.nonce,
+      resolve,
+      reject,
+      promise,
+      expired: false,
+      expiresAt: performance.now() + 3000,
+    };
+    deadline = NodeTimers.setTimeout(expirePending, 3000);
     output.write(`${JSON.stringify(request)}\n`, (error) => {
       if (error) close();
     });
     return promise;
   };
   heartbeat = NodeTimers.setInterval(() => {
-    void refresh().catch(close);
+    void refresh().catch(() => {
+      if (!suspended) close();
+    });
   }, 1000);
   heartbeat.unref();
   return {
     close,
     refresh,
+    get suspended() {
+      return live && suspended;
+    },
     assertCurrent: () => {
+      if (process.ppid !== parentPid) close();
       if (
         !live ||
-        process.ppid !== parentPid ||
+        suspended ||
         runId === undefined ||
         lastReply === 0 ||
         performance.now() - lastReply > 3000
       )
         throw unavailable();
-      admission.assertCurrent();
+      try {
+        admission.assertCurrent();
+      } catch (cause) {
+        close();
+        throw cause;
+      }
     },
   };
 }
 
-/** A valid trial can wait for ordinary admission; an attempted handshake can never be retried. */
+/** A valid trial may wait for admission; established proof may suspend, but a lost channel is never replaced. */
 export function openDesktopNativeOwnerSession(input: {
   readonly home: string;
   readonly databasePath: string;
@@ -254,7 +309,7 @@ export function openDesktopNativeOwnerSession(input: {
       try {
         await channel.refresh();
       } catch (cause) {
-        close();
+        if (!channel.suspended) close();
         throw cause;
       }
     };
@@ -265,7 +320,7 @@ export function openDesktopNativeOwnerSession(input: {
   };
   return {
     get available() {
-      return live && channel !== undefined;
+      return live && channel !== undefined && !channel.suspended;
     },
     get binding() {
       return live && channel !== undefined ? admission?.binding : undefined;
