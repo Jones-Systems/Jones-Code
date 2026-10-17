@@ -18,10 +18,21 @@ const fixture = vi.hoisted(() => ({
   failures: new Map<string, unknown>(),
   pending: new Set<string>(),
   calls: [] as string[],
+  appState: "background",
+  appearanceSupported: false,
+  appStateListeners: new Set<(state: string) => void>(),
 }));
 
 vi.mock("react-native", () => ({
-  AppState: { currentState: "background", addEventListener: () => ({ remove: () => {} }) },
+  AppState: {
+    get currentState() {
+      return fixture.appState;
+    },
+    addEventListener: (_event: string, listener: (state: string) => void) => {
+      fixture.appStateListeners.add(listener);
+      return { remove: () => fixture.appStateListeners.delete(listener) };
+    },
+  },
   Pressable: "Pressable",
   Text: "Text",
 }));
@@ -123,7 +134,21 @@ function respond(endpoint: string): unknown {
     case "memberships:beta":
       return { context, items: [], next_cursor: null };
     case "appearanceRead":
-      return { supported: false };
+      return fixture.appearanceSupported
+        ? {
+            supported: true,
+            page: {
+              owner_id: data.binding.ownerId,
+              server_generation: data.binding.serverGeneration,
+              permissions: ["workstreams:read"],
+              items: data.items.map((item) => ({
+                workstream_id: item.workstreamId,
+                border_color: "#123ABC",
+                version: 1,
+              })),
+            },
+          }
+        : { supported: false };
     case "threadPlacements":
       throw transport;
     default:
@@ -146,6 +171,8 @@ beforeEach(async () => {
   fixture.failures.clear();
   fixture.pending.clear();
   fixture.calls.length = 0;
+  fixture.appState = "background";
+  fixture.appearanceSupported = false;
   const { useMobileWorkstreams } = await import("./useWorkstreams");
   const threads = [thread];
   function Probe() {
@@ -250,6 +277,40 @@ describe("mobile Workstreams detail reads", () => {
     expect(recorded()).toEqual({
       snapshots: 1,
       stale: true,
+      grouped: new Set([key]),
+      assurance: "recorded",
+    });
+  });
+});
+
+describe("mobile Workstreams periodic color refresh", () => {
+  async function refreshColorsWith(cause: unknown) {
+    fixture.appearanceSupported = true;
+    await act(async () => latest.refresh());
+    await flush();
+    expect(latest.snapshots[0]?.appearance).not.toBeNull();
+    fixture.failures.set("appearanceRead", cause);
+    fixture.appState = "active";
+    await act(async () => {
+      for (const listener of fixture.appStateListeners) listener("active");
+    });
+    await flush();
+    expect(fixture.calls.filter((endpoint) => endpoint === "appearanceRead").length).toBe(3);
+  }
+
+  it("purges the environment when a periodic refresh is rejected with 401", async () => {
+    await refreshColorsWith(unauthorized);
+    expect(latest.snapshots).toHaveLength(0);
+    expect(latest.groups).toHaveLength(0);
+  });
+
+  it("keeps the environment and its colors after a transport failure", async () => {
+    await refreshColorsWith(transport);
+    expect(latest.snapshots).toHaveLength(1);
+    expect(latest.snapshots[0]?.appearance).not.toBeNull();
+    expect(recorded()).toEqual({
+      snapshots: 1,
+      stale: false,
       grouped: new Set([key]),
       assurance: "recorded",
     });

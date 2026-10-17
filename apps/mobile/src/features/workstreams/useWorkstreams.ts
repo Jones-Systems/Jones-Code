@@ -421,9 +421,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     const updateColors = async () => {
       if (loading || AppState.currentState !== "active") return;
       loading = true;
+      let reading: MobileWorkstreamSnapshot | undefined;
       try {
         for (const snapshot of snapshotsRef.current) {
           if (!snapshot.appearance || snapshot.stale) continue;
+          reading = snapshot;
           const ids = snapshot.data.items.map((item) => item.workstreamId);
           let appearance = snapshot.appearance;
           const items: WorkstreamAppearancePage["items"][number][] = [];
@@ -453,8 +455,22 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 ),
             );
         }
-      } catch {
-        /* Retain the last observed display until an explicit refresh. */
+      } catch (cause) {
+        // Lost authorization drops that environment; anything else keeps the last display.
+        if (
+          reading !== undefined &&
+          !abort.signal.aborted &&
+          classifyMobileWorkstreamFailure(cause) === "authorization"
+        ) {
+          const environmentId = reading.prepared.environmentId;
+          setLoaded((previous) =>
+            settleMobileWorkstreamSnapshots(
+              previous,
+              new Map([[environmentId, { kind: "failed", cause }]]),
+              retainedRef.current,
+            ),
+          );
+        }
       } finally {
         loading = false;
       }
