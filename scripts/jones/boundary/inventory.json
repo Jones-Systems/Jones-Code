@@ -3,9 +3,9 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6"
+    "commit": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4"
   },
-  "baseline": "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6",
+  "baseline": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4",
   "paths": {
     "scripts/dev-runner.ts": "accepted-shared",
     "apps/server/src/startupAccess.ts": "hook",
@@ -14,6 +14,7 @@
     "apps/server/src/jones/cloud/serviceLog.ts": "jones-owned",
     "scripts/jones/boundary/fragments/startup-access-logging.json": "jones-owned",
 
+    "apps/server/src/persistence/DatabaseMaintenance.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ProviderSettingsPanel.tsx": "hook",
     "scripts/jones/boundary/fragments/provider-order.json": "jones-owned",
     "apps/server/src/testUtils/weightedShardSequencer.ts": "hook",
@@ -225,6 +226,7 @@
     "apps/server/src/device/DeviceHubProxy.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/DeviceHubProxy.ts": "hook",
     "apps/server/src/device/DeviceService.ts": "accepted-shared",
+    "apps/server/src/device/DeviceService.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/SshDeviceHost.test.ts": "jones-tests-in-upstream",
     "apps/server/src/device/SshDeviceHost.ts": "hook",
     "apps/server/src/device/sshDeviceScript.test.ts": "jones-tests-in-upstream",
@@ -954,6 +956,7 @@
     "apps/web/src/jones/workQueue/classifySentPrompts.ts": "jones-owned",
     "apps/web/src/jones/workQueue/classifySentPrompts.test.ts": "jones-owned",
     "patches/effect@4.0.4.patch": "accepted-shared",
+    "patches/effect@4.0.5.patch": "accepted-shared",
     "pnpm-workspace.yaml": "accepted-shared",
     "scripts/jones/boundary/fragments/connection-rpc-isolation.json": "jones-owned",
     "apps/web/src/observability/clientTracing.ts": "accepted-shared",
