@@ -294,3 +294,36 @@ it.effect("migration 105 preserves released rows, rowids, triggers and Jones ref
     assert.deepStrictEqual(yield* runJonesMigrations(through105), []);
   }).pipe(Effect.provide(memory)),
 );
+
+it.effect(
+  "physical evidence upgrades after released migration 106 without rewriting its ledger",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 106));
+      const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      assert.strictEqual(
+        released.find((row) => row.migration_id === 106)?.name,
+        "PlannedUpdateContinuity",
+      );
+      const upstreamLedger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+        [107, "PhysicalProcessEvidence"],
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 106 ORDER BY migration_id`,
+        released,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        upstreamLedger,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM jones_physical_process_evidence`, []);
+      assert.deepStrictEqual(
+        yield* sql`PRAGMA foreign_key_list('jones_physical_process_evidence')`,
+        [],
+      );
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    }).pipe(Effect.provide(memory)),
+);

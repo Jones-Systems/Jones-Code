@@ -772,6 +772,7 @@ describe("CodexAdapterV2 process spawning", () => {
         Effect.provide(
           CodexAdapterV2.layerAppServerClientFactory.pipe(Layer.provide(ProcessAttribution.layer)),
         ),
+        Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(
           ProviderEventLoggers.ProviderEventLoggers,
@@ -907,6 +908,7 @@ describe("registerCodexAppServerProcess", () => {
           });
           const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
             Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+            Effect.provideService(FileSystem.FileSystem, FileSystem.makeNoop({})),
             Effect.provideService(ProcessAttribution.ProcessAttribution, attribution),
             Effect.provideService(
               ChildProcessSpawner.ChildProcessSpawner,
@@ -11681,6 +11683,52 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       invalidate: () => Effect.void,
     };
   };
+
+  it.effect(
+    "hands initialized physical diagnostics to the exact generation without blocking unsupported providers",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          let captures = 0;
+          const base = recordingRuntimeLifecycle([]);
+          yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "physical-responder-handoff",
+              entries: codexReplayPreamble({
+                nativeThreadId: "native-physical",
+                nativeTurnId: "unused",
+                prompt: "unused",
+              }).slice(0, 5),
+            }),
+            undefined,
+            undefined,
+            undefined,
+            {
+              runtimeLifecycle: {
+                ...base,
+                bind: (input) =>
+                  Effect.gen(function* () {
+                    assert.equal(input.physicalProcess?.runtimeGeneration, input.runtimeGeneration);
+                    const observation = yield* input.physicalProcess!.capture;
+                    assert.deepEqual(observation, {
+                      status: "unknown",
+                      runtimeGeneration: input.runtimeGeneration,
+                      reason: "unsupported",
+                    });
+                    captures++;
+                    return yield* base.bind(input);
+                  }),
+              },
+            },
+          );
+          assert.equal(captures, 1);
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
 
   it.effect("admits each shared producer target before native resume and creation", () =>
     Effect.scoped(

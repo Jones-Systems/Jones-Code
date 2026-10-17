@@ -4,6 +4,18 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "physical-process-evidence",
+      "tests": [
+        "apps/server/src/jones/runtime/PhysicalProcessEvidence.test.ts",
+        "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.test.ts",
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts"
+      ],
+      "scope": "Captured initialized Codex client diagnostics with local OS incarnation and generation fences; sparse Jones-only history, restart noncurrentness, explicitly bound shared children, and observation without stop or creation authority. Synthetic qualification only; MCP connection incarnation and installed support remain unresolved."
+    },
+    {
       "id": "provider-order",
       "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."

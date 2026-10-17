@@ -1,5 +1,6 @@
 import type {
   NativeProviderExecutionGuard,
+  PhysicalProcessLease,
   ProviderRuntimeObservation,
   ProviderGoalReadResult,
 } from "./jones/runtimeTypes.ts";
@@ -451,6 +452,7 @@ export interface ProviderRuntimeLifecycle {
     readonly requested: RequestedRuntimeIdentity;
     readonly observed: ObservedRuntimeIdentity;
     readonly producerOrigin?: ProviderEventProducerOrigin;
+    readonly physicalProcess?: PhysicalProcessLease | undefined;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
