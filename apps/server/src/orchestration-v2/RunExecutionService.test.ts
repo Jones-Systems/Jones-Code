@@ -56,6 +56,7 @@ import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 
 function executionEventSinkLayer(overrides: Partial<EventSink.EventSinkV2Shape>) {
   return Layer.mock(EventSink.EventSinkV2)({
@@ -5271,6 +5272,9 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
     sinkLayer,
     IdAllocator.layer,
     ThreadCommandExecutor.layer,
+    Layer.mock(GitVcsDriver.GitVcsDriver)({
+      resolveBranchName: () => Effect.die("Raw terminal ingestion must not read Git branches."),
+    }),
   );
   const testLayer = Layer.mergeAll(
     ingestorDependencies,

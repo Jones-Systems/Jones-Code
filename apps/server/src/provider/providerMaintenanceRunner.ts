@@ -484,24 +484,10 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               provider,
               { fresh: true },
             );
-            const { verifiedProviders } = yield* verifyRefreshedProvider(
-              provider,
-              verified,
-              instanceId,
-            );
-            // A missing version alone is not held against it, since Cursor's `about` probe can
-            // fail transiently on a healthy binary.
-            const couldNotVerify =
-              verifiedProviders.length === 0 ||
-              verifiedProviders.some(
-                (verifiedProvider) =>
-                  !isStillInstalled(verifiedProvider) ||
-                  (targetVersion !== undefined &&
-                    verifiedProvider.version?.replace(/^v/, "") !== targetVersion),
-              );
-            const stillOutdated =
-              targetVersion === undefined &&
-              verifiedProviders.some((verifiedProvider) => isOutdatedProvider(verifiedProvider));
+            const verification = yield* verifyRefreshedProvider(provider, verified, instanceId);
+            // Cursor's `about` probe can fail transiently on a healthy binary;
+            // an unreadable version remains uncertain until a later refresh.
+            const outcome = resolveProviderUpdateVerification({ ...verification, targetVersion });
             return yield* finish(
               makeUpdateState({
                 ...outcome,

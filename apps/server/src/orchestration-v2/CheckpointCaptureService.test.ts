@@ -531,7 +531,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
     }),
   );
 
-  it.effect("records the checkpoint of a cancelled run and keeps it cancelled", () =>
+  const captureStoppedRun = (terminalStatus: "cancelled" | "interrupted") =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;

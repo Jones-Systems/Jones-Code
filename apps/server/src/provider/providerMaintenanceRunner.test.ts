@@ -308,27 +308,15 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
-  it.effect(
-    "keeps a successful update when the binary is present but its version is unreadable",
-    () => {
-      return Effect.gen(function* () {
-        const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
-        const updater = yield* makeTestRunner({
-          ...registry,
-          refreshInstance: () =>
-            Ref.updateAndGet(providersRef, (providers) =>
-              providers.map((provider) => ({ ...provider, installed: true, version: null })),
-            ),
-        });
-
-        const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
-        assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            layerNonWindowsPlatform,
-            layerLatestVersionHttpClient("0.0.0"),
-            layerMockSpawner(() => ({ stdout: "updated" })),
+  it.effect("reports unchanged when the binary is present but its version is unreadable", () => {
+    return Effect.gen(function* () {
+      const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
+      // A native CLI version probe can fail immediately after a successful update.
+      const updater = yield* makeTestRunner({
+        ...registry,
+        refreshInstance: () =>
+          Ref.updateAndGet(providersRef, (providers) =>
+            providers.map((provider) => ({ ...provider, installed: true, version: null })),
           ),
       });
 

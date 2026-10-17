@@ -6402,6 +6402,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             });
             return updated;
           });
+          // Committed wake evidence belongs to this session buffer, which
+          // survives query replacement. Replay preserves its logical owner
+          // without claiming a replacement query's physical generation.
+          acceptedWakeProducers.set(message, sessionEventProducer);
+          // First idle opaque notification: consume wake eligibility so a
+          // duplicate cannot re-buffer, and leave a short-lived replay
+          // tombstone for continuation-drain classification.
           if (isPendingTaskNotification) {
             yield* consumeWakeEligibilityForBufferedNotification(
               wakeInput.nativeThreadId,
@@ -6628,6 +6635,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const handleSdkMessageFrameWithSource = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
+          readonly acceptedWakeReplay?: boolean;
+          // A held subagent frame replayed after its owner registered. Its
+          // turn-level assistant bookkeeping already ran when it arrived.
           readonly replayed?: boolean;
         }) {
           const liveQuery = yield* Ref.get(queryContext);
@@ -7731,6 +7741,37 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
         });
 
+        const handleSdkMessageFrame = (
+          frame: Parameters<typeof handleSdkMessageFrameWithSource>[0],
+        ) =>
+          Effect.gen(function* () {
+            const acceptedProducer =
+              frame.acceptedWakeReplay === true
+                ? acceptedWakeProducers.get(frame.message)
+                : undefined;
+            if (acceptedProducer !== undefined) {
+              const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
+              if (current._tag === "Failure") return;
+              yield* handleSdkMessageFrameWithSource(frame).pipe(
+                Effect.provideService(ClaudeProducerContext, undefined),
+                Effect.provideService(ClaudeEventProducerContext, acceptedProducer),
+              );
+              return;
+            }
+            const source = messageSources.get(frame.message);
+            if (source === undefined) return;
+            const current = yield* source.eventProducer.origin.revalidateCurrent.pipe(
+              Effect.result,
+            );
+            if (current._tag === "Failure") return;
+            yield* handleSdkMessageFrameWithSource({ ...frame, query: source.query }).pipe(
+              Effect.provideService(ClaudeProducerContext, source),
+            );
+          });
+
+        // Held subagent frames whose owner this lifecycle frame resolves. The
+        // frame's (task_id, tool_use_id) pair is authoritative, so it also
+        // fills the tool-use index when task_started lacked a tool_use_id.
         const takeReleasableSubagentFrames = Effect.fnUntraced(function* (message: SDKMessage) {
           if (
             message.type !== "system" ||
@@ -8432,6 +8473,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               options: queryOptions,
             })
             .pipe(
+              Effect.onError(() => retireGeneration(runtimeGeneration).pipe(Effect.orDie)),
               Effect.onError(() =>
                 closedExistingNativeThreadId === nativeThreadId
                   ? Effect.gen(function* () {
@@ -9151,22 +9193,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }),
             true,
           );
-          if (Option.isSome(closed)) {
-            return;
-          }
-
-          yield* Effect.logWarning("orchestration-v2.claude-query-close-timeout-before-fork", {
-            providerSessionId: input.providerSessionId,
-            nativeThreadId,
-          });
-          const ownedLiveQuery = yield* Ref.modify(queryContext, (current) =>
-            current?.query === existing.query ? [true, null] : [false, current],
-          );
-          if (ownedLiveQuery) {
-            yield* finalizeActiveTurnAfterQueryExit(existing);
-            yield* endSubagentCallsOfClosedQuery(nativeThreadId, "interrupted");
-          }
-          yield* Deferred.succeed(existing.closed, undefined);
+          if (queryBindingUnknown)
+            return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+              driver: CLAUDE_PROVIDER,
+              detail:
+                "The query binding became unconfirmed during retirement; native fork must not run.",
+            });
         });
         const closeLiveQueryForNativeThread = Effect.fnUntraced(function* (nativeThreadId: string) {
           const existing = boundQueriesByNativeThread.get(nativeThreadId);

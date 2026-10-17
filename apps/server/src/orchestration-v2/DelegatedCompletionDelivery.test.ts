@@ -1270,66 +1270,27 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
           deliveryState: "delivered",
           now,
         });
-      const resumed = yield* child("restart-resumed-child", true);
-      const stopped = yield* child("restart-stopped-child", false);
-      const backgrounded = yield* child("restart-backgrounded-child", true, "completed");
-      const recut = yield* child("restart-recut-child", false);
-      const recutContinuationId = RunId.make("run:restart-recut-child:2");
-      const recutCommandId = CommandId.make("command:restart-recut-child:reconcile");
-      const recutRun = runEvent({
-        threadId: recut.childThreadId,
-        runId: recutContinuationId,
-        ordinal: 2,
-        status: "cancelled",
-        now,
-      });
-      yield* eventSink.writeWithEffects({
-        commandId: recutCommandId,
-        events: [
-          {
-            ...recutRun,
-            payload: {
-              ...recutRun.payload,
-              startedAt: null,
-              restartContinuationOfRunId: recut.childRunId,
-            },
-          },
-        ],
-        effects: [
-          {
-            id: `effect:restart-continuation:${recutContinuationId}`,
-            commandId: recutCommandId,
-            threadId: recut.childThreadId,
-            request: { type: "provider-runtime.continue", sourceRunId: recutContinuationId },
-          },
-        ],
-      });
-
-      yield* orchestrator.recoverDelegatedTasks;
-
-      const recovered = yield* orchestrator.getThreadProjection(threadId);
-      const task = (id: NodeId) => recovered.subagents.find((row) => row.id === id);
-      assert.equal(task(stopped.taskId)?.status, "cancelled");
-      assert.equal(task(stopped.taskId)?.completionDelivery?.state, "claimed");
-      assert.equal(task(resumed.taskId)?.status, "running");
-      assert.isNull(task(resumed.taskId)?.result ?? null);
-      assert.equal(task(backgrounded.taskId)?.status, "running");
-      assert.isNull(task(backgrounded.taskId)?.result ?? null);
-      assert.equal(task(recut.taskId)?.status, "running");
-      assert.isTrue(yield* orchestrator.delegatedTaskResultPending(recut.childThreadId));
-      assert.isTrue(yield* orchestrator.delegatedTaskResultPending(resumed.childThreadId));
-      assert.isFalse(yield* orchestrator.delegatedTaskResultPending(stopped.childThreadId));
-      yield* orchestrator.recoverDelegatedTask(recut.childThreadId, recut.childRunId);
-      const replayed = yield* orchestrator.getThreadProjection(threadId);
-      assert.equal(replayed.subagents.find((row) => row.id === recut.taskId)?.status, "running");
-      yield* eventSink.write({
-        commandId: CommandId.make("command:restart-stopped-child:resumed"),
-        events: [
-          runEvent({
-            threadId: stopped.childThreadId,
-            runId: RunId.make("run:restart-stopped-child:2"),
-            ordinal: 2,
-            status: "running",
+        if (blocked)
+          yield* orchestrator.dispatch({
+            type: "thread.metadata.update",
+            commandId: CommandId.make(`block-parent:${threadId}`),
+            threadId,
+            threadMessagesBlocked: true,
+          });
+        const child = (
+          name: string,
+          continuationPending: boolean,
+          runStatus?: "cancelled" | "completed",
+        ) =>
+          seedRestartCancelledChild({
+            parentThreadId: threadId,
+            projectId,
+            parentRunId: runId,
+            rootNodeId,
+            name,
+            completionWake: "always",
+            continuationPending,
+            ...(runStatus === undefined ? {} : { runStatus }),
             now,
           });
         const resumed = yield* child(`restart-resumed-child-${blocked}`, true);
@@ -1373,19 +1334,53 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
           ],
         });
 
-      const afterSequence = yield* eventSink.latestSequence();
-      const continuationRunId = RunId.make("run:restart-resumed-child:2");
-      yield* eventSink.write({
-        commandId: CommandId.make("command:restart-resumed-child:completed"),
-        events: [
-          {
-            id: EventId.make("event:restart-resumed-child:result"),
-            type: "message.updated",
-            threadId: resumed.childThreadId,
-            runId: continuationRunId,
-            occurredAt: now,
-            payload: {
-              id: MessageId.make("message:restart-resumed-child:result"),
+        yield* orchestrator.recoverDelegatedTasks;
+
+        const recovered = yield* orchestrator.getThreadProjection(threadId);
+        const task = (id: NodeId) => recovered.subagents.find((row) => row.id === id);
+        assert.equal(task(stopped.taskId)?.status, "cancelled");
+        assert.equal(task(stopped.taskId)?.completionDelivery?.state, "claimed");
+        assert.equal(task(resumed.taskId)?.status, "running");
+        assert.isNull(task(resumed.taskId)?.result ?? null);
+        assert.equal(task(backgrounded.taskId)?.status, "running");
+        assert.isNull(task(backgrounded.taskId)?.result ?? null);
+        assert.equal(task(recut.taskId)?.status, "running");
+        assert.isTrue(yield* orchestrator.delegatedTaskResultPending(recut.childThreadId));
+        assert.isTrue(yield* orchestrator.delegatedTaskResultPending(resumed.childThreadId));
+        assert.isFalse(yield* orchestrator.delegatedTaskResultPending(stopped.childThreadId));
+        // A replayed first continuation settling must not release the second one's hold.
+        yield* orchestrator.recoverDelegatedTask(recut.childThreadId, recut.childRunId);
+        const replayed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(replayed.subagents.find((row) => row.id === recut.taskId)?.status, "running");
+        // A caller that read the cancelled run before the child resumed sees it as pending.
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:restart-stopped-child-${blocked}:resumed`),
+          events: [
+            runEvent({
+              threadId: stopped.childThreadId,
+              runId: RunId.make(`run:restart-stopped-child-${blocked}:2`),
+              ordinal: 2,
+              status: "running",
+              now,
+            }),
+          ],
+        });
+        assert.isTrue(yield* orchestrator.delegatedTaskResultPending(stopped.childThreadId));
+        assert.isFalse(
+          recovered.contextTransfers.some(
+            (transfer) => transfer.sourceThreadId === resumed.childThreadId,
+          ),
+        );
+
+        // The continuation's own run finishing settles the task with its result.
+        const afterSequence = yield* eventSink.latestSequence();
+        const continuationRunId = RunId.make(`run:restart-resumed-child-${blocked}:2`);
+        yield* eventSink.write({
+          commandId: CommandId.make(`command:restart-resumed-child-${blocked}:completed`),
+          events: [
+            {
+              id: EventId.make(`event:restart-resumed-child-${blocked}:result`),
+              type: "message.updated",
               threadId: resumed.childThreadId,
               runId: continuationRunId,
               occurredAt: now,

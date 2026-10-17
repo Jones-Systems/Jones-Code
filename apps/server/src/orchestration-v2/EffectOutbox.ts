@@ -15,94 +15,20 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
 
-export const OrchestrationEffectRequestV2 = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("provider-runtime.continue"),
-    sourceRunId: RunId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-session.detach"),
-    providerSessionId: ProviderSessionId,
-    detail: Schema.optional(Schema.String),
-    revokeMcpCredential: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.start"),
-    runId: RunId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.interrupt"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    subagent: Schema.optional(Schema.Struct({ id: NodeId, nativeTaskId: Schema.String })),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.steer"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    messageId: MessageId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.restart"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    interruptedAttemptId: RunAttemptId,
-    runId: RunId,
-    sessionTransition: Schema.optional(
-      Schema.Union([
-        Schema.Struct({
-          type: Schema.Literal("replace"),
-          replacementProviderSessionId: ProviderSessionId,
-        }),
-        Schema.Struct({ type: Schema.Literal("detach") }),
-      ]),
-    ),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("runtime-request.respond"),
-    providerSessionId: ProviderSessionId,
-    requestId: RuntimeRequestId,
-    decision: Schema.optional(ProviderApprovalDecision),
-    answers: Schema.optional(ProviderUserInputAnswers),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-thread.rollback"),
-    restoreFiles: Schema.optional(Schema.Boolean),
-    providerThreadId: ProviderThreadId,
-    checkpointId: CheckpointId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("checkpoint.capture"),
-    runId: RunId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("terminal.cleanup"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("preview.cleanup"),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("attachment.cleanup"),
-    attachmentIds: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("thread-title.generate"),
-    kind: Schema.Union([
-      Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
-      Schema.Struct({ type: Schema.Literal("regenerate") }),
-    ]),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("delegated-tasks.stop"),
-    reason: Schema.optional(Schema.String),
-  }),
-]);
-export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
+import {
+  enqueue as enqueueEffects,
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
+
+export {
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
@@ -405,42 +331,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
 
     const service: EffectOutboxV2Shape = {
       enqueue: (effects) =>
-        Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          const nowIso = DateTime.formatIso(now);
-          yield* Effect.forEach(
-            effects,
-            (effect) => sql`
-              INSERT INTO orchestration_v2_effect_outbox (
-                effect_id,
-                command_id,
-                thread_id,
-                effect_type,
-                payload_json,
-                status,
-                attempt_count,
-                available_at,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                ${effect.id},
-                ${effect.commandId},
-                ${effect.threadId},
-                ${effect.request.type},
-                ${encodeRequest(effect.request)},
-                'pending',
-                0,
-                ${DateTime.formatIso(effect.availableAt ?? now)},
-                ${nowIso},
-                ${nowIso}
-              )
-              ON CONFLICT(effect_id) DO NOTHING
-            `,
-            { concurrency: 1, discard: true },
-          );
-          // EventSink owns the corresponding post-commit notification.
-        }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
+        enqueueEffects(effects).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *

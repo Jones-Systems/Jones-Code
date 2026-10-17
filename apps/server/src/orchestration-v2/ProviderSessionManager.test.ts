@@ -352,6 +352,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly sessionCloseDelayMs?: number;
     readonly startTurn?: Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
+    readonly eventOriginMode?: "captured";
+    readonly beforeEventDelivery?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
+    /** Registers the process's closeCount finalizer before `beforeOpen` runs. */
     readonly spawnBeforeOpen?: boolean;
     readonly scopeCloseReached?: Deferred.Deferred<void>;
   } = {},
@@ -4883,6 +4886,9 @@ function runIdleThreadUnloadScenario<E>(
     readonly manager: ProviderSessionManager.ProviderSessionManagerV2Shape;
     readonly providerSessionId: ProviderSessionId;
     readonly threadA: ThreadId;
+    readonly threadB: ThreadId;
+    readonly providerThreadOf: (threadId: ThreadId) => OrchestrationV2ProviderThread;
+    /** Starts run `ordinal` on a thread and returns once the provider accepted it. */
     readonly startTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
     readonly endTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
     readonly resume: (threadId: ThreadId) => Effect.Effect<void>;

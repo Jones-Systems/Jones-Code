@@ -7,7 +7,6 @@ import * as Orchestrator from "./Orchestrator.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import type * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Fiber from "effect/Fiber";
 import * as EventSink from "./EventSink.ts";
 import { makeLegacyPreflight } from "./LegacyBootstrapPreflight.ts";
 import * as EventStore from "./EventStore.ts";

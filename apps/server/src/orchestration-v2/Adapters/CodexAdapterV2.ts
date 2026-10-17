@@ -1741,6 +1741,7 @@ const layer: Layer.Layer<
 );
 
 export interface CodexAdapterV2Options {
+  readonly getModelCatalog?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly instanceId: ProviderInstanceId;
   readonly settings: CodexSettings;
   readonly environment: NodeJS.ProcessEnv;
@@ -4763,16 +4764,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               (yield* Ref.get(activeTurns)).get(payload.turnId) ??
               (yield* Ref.get(settledTurns)).get(payload.turnId);
             if (context === undefined) return;
-            yield* emitProviderEvent({
-              type: "command_output.delta",
-              driver: CODEX_PROVIDER,
-              threadId: context.projectionThreadId,
-              itemId: idAllocator.derive.turnItemFromProviderItem({
+            yield* emitProviderEvent(
+              {
+                type: "command_output.delta",
                 driver: CODEX_PROVIDER,
-                nativeItemId: payload.itemId,
-              }),
-              chunk: payload.delta,
-            });
+                threadId: context.projectionThreadId,
+                itemId: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CODEX_PROVIDER,
+                  nativeItemId: payload.itemId,
+                }),
+                chunk: payload.delta,
+              },
+              context,
+            );
           }),
         );
 
@@ -7149,6 +7153,232 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }),
         );
 
+        const pauseActiveGoal = (providerThread: OrchestrationV2ProviderThread) =>
+          Effect.gen(function* () {
+            const nativeThreadId = yield* getNativeThreadId(providerThread);
+            const current = () =>
+              !capacityScopeClosed &&
+              providerThread.providerSessionId === input.providerSessionId &&
+              providerThread.providerInstanceId === adapterOptions.instanceId &&
+              providerThread.nativeThreadRef?.driver === CODEX_PROVIDER &&
+              providerThread.nativeThreadRef.nativeId === nativeThreadId;
+            // Goal control is best effort, but only a matching native acknowledgement
+            // proves a persisted pause. An unknown write must never be replayed.
+            const result = yield* Effect.gen(function* () {
+              if (!current()) return "context_changed";
+              const trackedGoal = goalsByNativeThread.get(nativeThreadId);
+              const response = goalsByNativeThread.has(nativeThreadId)
+                ? {
+                    goal: trackedGoal == null ? null : { ...trackedGoal, threadId: nativeThreadId },
+                  }
+                : yield* client.raw
+                    .request("thread/goal/get", { threadId: nativeThreadId })
+                    .pipe(
+                      Effect.flatMap(
+                        Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalGetResponse),
+                      ),
+                    );
+              if (!current()) return "context_changed";
+              if (response.goal === null) return "inactive";
+              if (response.goal === undefined) return "missing_goal";
+              if (response.goal.threadId !== nativeThreadId) return "native_thread_mismatch";
+              if (response.goal.status !== "active") return "inactive";
+              const acknowledgement = goalsByNativeThread.has(nativeThreadId)
+                ? yield* client.request("thread/goal/set", {
+                    threadId: nativeThreadId,
+                    status: "paused",
+                  })
+                : yield* client.raw
+                    .request("thread/goal/set", { threadId: nativeThreadId, status: "paused" })
+                    .pipe(
+                      Effect.flatMap(
+                        Schema.decodeUnknownEffect(CodexSchema.V2ThreadGoalSetResponse),
+                      ),
+                    );
+              if (!current()) return "context_changed";
+              return acknowledgement.goal.threadId === nativeThreadId &&
+                acknowledgement.goal.status === "paused"
+                ? "paused"
+                : "pause_not_acknowledged";
+            }).pipe(
+              Effect.timeout("1 second"),
+              Effect.catch((cause) =>
+                Effect.succeed(
+                  cause._tag === "TimeoutError"
+                    ? "timeout"
+                    : cause._tag === "CodexAppServerRequestError" && cause.code === -32601
+                      ? "unsupported"
+                      : "goal_rpc_or_decode_error",
+                ),
+              ),
+              Effect.exit,
+            );
+            if (
+              result._tag === "Success" &&
+              (result.value === "paused" || result.value === "inactive")
+            )
+              return;
+            const reason =
+              result._tag === "Success" ? result.value : "goal_rpc_decode_or_timeout_error";
+            yield* Effect.logWarning("orchestration-v2.codex-goal-pause-unknown", {
+              reason,
+              providerThreadId: providerThread.id,
+            });
+            return reason;
+          });
+        const emitInterruptWarning = (
+          context: ActiveCodexTurnContext | undefined,
+          code: string,
+          title: string,
+          message: string,
+        ) =>
+          Effect.gen(function* () {
+            if (context === undefined) return;
+            const itemKey = `${code}:${context.providerTurnId}`;
+            const item = makeProviderFailureTurnItem({
+              driver: CODEX_PROVIDER,
+              threadId: context.projectionThreadId,
+              runId: context.projectionRunId,
+              nodeId: context.providerNodeId,
+              providerThreadId: context.providerThread.id,
+              providerTurnId: context.providerTurnId,
+              itemOrdinal: yield* resolveItemOrdinal(context, itemKey),
+              occurredAt: yield* DateTime.now,
+              failure: makeProviderFailure({ class: "unknown", code, retryable: false, message }),
+            });
+            yield* emitProviderEvent(
+              {
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: {
+                  ...item,
+                  id: idAllocator.derive.turnItemFromProviderItem({
+                    driver: CODEX_PROVIDER,
+                    nativeItemId: itemKey,
+                  }),
+                  title,
+                },
+              },
+              context,
+            );
+          });
+        const emitGoalPauseWarning = (context: ActiveCodexTurnContext | undefined) =>
+          emitInterruptWarning(
+            context,
+            "codex_goal_pause_unknown",
+            "Goal may still be active",
+            "Codex could not confirm that its goal was paused. Stop still attempted to interrupt the turn; the goal may remain active.",
+          );
+
+        const startCapacityTurn = (
+          turnInput: ProviderAdapterV2TurnInput,
+          suppliedInput?: ReadonlyArray<CodexSchema.V2TurnStartParams__UserInput>,
+        ) =>
+          Effect.suspend(() => {
+            let request: CapacityRequest | undefined;
+            return Effect.gen(function* () {
+              const threadId = yield* getNativeThreadId(turnInput.providerThread);
+              if (hasUnknownNativeStart() || capacityScopeClosed)
+                return yield* toProtocolError(
+                  "Codex has an unconfirmed or closed native session and cannot send another turn.",
+                );
+              const previous = capacityByThread.get(threadId);
+              if (
+                previous !== undefined &&
+                previous.input.attemptId === turnInput.attemptId &&
+                previous.input.runId === turnInput.runId
+              ) {
+                return yield* toProtocolError(
+                  "Codex already owns this logical attempt; its prompt cannot be sent twice.",
+                );
+              }
+              if (previous !== undefined) {
+                yield* cancelCapacityRequest(previous, "superseded");
+              }
+
+              const codexInput =
+                suppliedInput ??
+                (turnInput.restartContinuationOfRunId === undefined
+                  ? yield* toCodexInput(turnInput)
+                  : []);
+              const mcpSession = yield* readMcpSession(turnInput.threadId);
+              const turnStartParams = yield* buildCodexTurnStartParams({
+                nativeThreadId: threadId,
+                codexInput,
+                runtimePolicy: turnInput.runtimePolicy,
+                modelSelection: turnInput.modelSelection,
+                ...(turnInput.configuredReasoningEffort === undefined
+                  ? {}
+                  : { configuredReasoningEffort: turnInput.configuredReasoningEffort }),
+                hasT3Mcp: mcpSession !== undefined,
+                browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
+                deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+                omitServiceTier: adapterOptions.resolveRuntime !== undefined,
+                ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
+              });
+              yield* Ref.update(pendingRootTurns, (current) => {
+                const updated = new Map(current);
+                updated.set(threadId, turnInput);
+                return updated;
+              });
+              yield* Ref.update(additionalContextByThread, (current) => {
+                const next = new Map(current);
+                if (turnStartParams.additionalContext)
+                  next.set(threadId, turnStartParams.additionalContext);
+                else next.delete(threadId);
+                return next;
+              });
+              request = makeCapacityRequest(
+                turnInput,
+                turnStartParams,
+                threadId,
+                currentProducer.generation,
+              );
+              capacityByThread.set(threadId, request);
+              yield* sendCapacityTurn(request, 0);
+              yield* Ref.update(pendingRootTurns, (current) => {
+                const updated = new Map(current);
+                updated.delete(threadId);
+                return updated;
+              });
+            }).pipe(
+              Effect.onError(() =>
+                request === undefined
+                  ? Effect.void
+                  : request.startDispatched
+                    ? finishUnknownCapacityStart(request)
+                    : Effect.sync(() => {
+                        request!.recoveryEnabled = false;
+                        reduceCapacity(request!, { type: "cancel", reason: "runtime_changed" });
+                        releaseCapacityRequest(request!);
+                      }),
+              ),
+              Effect.ensuring(
+                Effect.flatMap(getNativeThreadId(turnInput.providerThread), (threadId) =>
+                  Ref.update(pendingRootTurns, (current) => {
+                    const updated = new Map(current);
+                    updated.delete(threadId);
+                    return updated;
+                  }),
+                ).pipe(Effect.ignore),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterTurnStartError({
+                    driver: CODEX_PROVIDER,
+                    threadId: turnInput.threadId,
+                    providerThreadId: turnInput.providerThread.id,
+                    runId: turnInput.runId,
+                    cause,
+                  }),
+              ),
+            );
+          });
+
+        /**
+         * Settles a `/goal` run that started no Codex turn. Its reply is plain
+         * assistant text, as Claude's own `/goal` output is.
+         */
         const completeGoalCommandTurn = Effect.fnUntraced(function* (
           turnInput: ProviderAdapter.ProviderAdapterV2TurnInput,
           reply: string,
@@ -7820,12 +8050,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
                 Effect.flatMap(decodeCodexResumeMetadata),
               );
-              return {
-                ...threadInput.providerThread,
-                providerSessionId: input.providerSessionId,
-                providerInstanceId: adapterOptions.instanceId,
-                status: "idle",
-                nativeThreadRef: {
+              if (response.thread.id !== nativeThreadId) {
+                nativeStartUnknown = true;
+                return yield* new ProviderRuntimeBindingError({
                   driver: CODEX_PROVIDER,
                   detail:
                     "Codex resumed a different native conversation; continuation is unconfirmed.",
@@ -8091,6 +8318,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
               ];
               if (interruptTargetContexts.length === 0) {
+                if (goalPauseIssue !== undefined)
+                  return yield* toProtocolError(
+                    "Codex could not confirm that its goal was paused; the goal may remain active.",
+                  );
+                // Stop on a settled turn this process retains nothing for
+                // (released, restarted, or every command already reported).
                 if (turnInput.requestRuntimeRestart === true) return;
                 return yield* toProtocolError(
                   `Provider turn ${turnInput.providerTurnId} is not active and cannot be interrupted.`,

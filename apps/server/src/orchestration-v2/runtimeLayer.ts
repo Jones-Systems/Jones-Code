@@ -406,6 +406,10 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerPlannedUpdateContinuityProvided,
+  layerStores,
+  layerEventSinkProvided,
+  currentRuntimeStopProvided,
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,

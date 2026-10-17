@@ -397,6 +397,8 @@ export interface OrchestratorV2Shape {
   }) => Effect.Effect<SelfSettlementIntent, OrchestratorV2Error>;
   readonly resumeQueuedRuns: Effect.Effect<number, OrchestratorV2Error>;
   readonly recoverDelegatedTasks: Effect.Effect<void>;
+  readonly recoverPlannedUpdateQueues?: Effect.Effect<void>;
+  /** Settles a delegated child whose restart continuation of `sourceRunId` declined or failed. */
   readonly recoverDelegatedTask: (threadId: ThreadId, sourceRunId: RunId) => Effect.Effect<void>;
   readonly delegatedTaskResultPending: (
     childThreadId: ThreadId,
@@ -1461,7 +1463,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   ) =>
     Effect.gen(function* () {
-      if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      // Every terminal run checks the queue. Only a deliverable queued run
+      // needs the transcript for provider handoff and legacy import context.
+      if (options?.reviewed === undefined && !(yield* projectionStore.canStartQueuedRun(threadId)))
+        return;
       const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
@@ -1490,6 +1495,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (queuedRun === undefined) {
         return;
       }
+      if (
+        options?.reviewed !== undefined &&
+        (queuedRun.id !== options.reviewed.runId ||
+          queuedRun.userMessageId !== options.reviewed.messageId)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: options.reviewed.commandId,
+          commandType: "thread.imported-history.start",
+          cause: "Reviewed delivery no longer leads the queue",
+        });
+      }
+      // A provider that just failed will likely fail the next message too.
+      // Hold the queue so the user decides when to resume it. Validation
+      // failures (setup, unsupported handoff) belong to that message alone,
+      // and a message queued for another provider is how users recover.
       // A message queued behind a worktree that was cancelled or never created
       // would run in the project checkout instead, so it waits for the user.
       const failedRun = latestExecutedRun(projection.runs);

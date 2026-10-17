@@ -141,7 +141,8 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       const providerThread: OrchestrationV2ProviderThread = {
         id: providerThreadId,
         driver,
-        providerInstanceId,
+        providerInstanceId: replacementInstanceId,
+        // The restart command already projected this replacement binding.
         providerSessionId: replacementSessionId,
         appThreadId: threadId,
         ownerNodeId: null,

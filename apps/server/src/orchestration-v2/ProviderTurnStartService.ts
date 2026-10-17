@@ -92,6 +92,16 @@ const refusedBeforePrompt = (error: unknown): boolean =>
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
 
 export interface ProviderTurnStartServiceV2Shape {
+  readonly startNative?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+    readonly guard: NativeProvider.NativeProviderExecutionGuard;
+  }) => Effect.Effect<NativeCreationWholeOperationEvidence, ProviderTurnStartError>;
+  /**
+   * Starts the run's provider turn. When `willRetry` is true, a session open
+   * failure is returned so the caller can retry. Otherwise the run is settled
+   * as failed.
+   */
   readonly start: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
@@ -318,6 +328,33 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+      if (input.nativeCreationGuard !== undefined) {
+        yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+          threadId: input.threadId,
+          cwd: projection.thread.worktreePath,
+        });
+        if (
+          providerThread.driver !== "codex" ||
+          providerThread.nativeThreadRef !== null ||
+          nativeForkTransfer !== undefined ||
+          isWorkModeKeepWarm(message) ||
+          message.text.trim().toLowerCase() === "/compact" ||
+          isRestartNoteContinuation(
+            run,
+            projection.runs,
+            projection.providerTurns,
+            projection.attempts,
+          )
+        ) {
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "Native creation requires a fresh direct Codex root turn.",
+          });
+        }
+      }
+      // Settles a run that never reached the provider: one signal turn item plus
+      // terminal run, attempt and root node, written only while the run is still
+      // the current starting attempt.
       const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
         function* (input: {
           readonly signal: string;
@@ -1381,14 +1418,15 @@ export const layer: Layer.Layer<
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
-          const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          yield* start({
-            ...(noteContinuation ? promptedInput : turnInput),
-            message: {
-              ...turnInput.message,
-              text: context === "" ? userText : `${context}\n\nUser message:\n${userText}`,
-            },
-          }).pipe(
+          yield* startWithConfiguredEffort(
+            continuationPrompt(turnInput, {
+              sameNativeThread,
+              noteContinuation,
+              context,
+              userText,
+            }),
+            compact,
+          ).pipe(
             // A pending marker would make the next turn abandon this native
             // session, though the refused prompt never reached it.
             Effect.tapError((error) =>

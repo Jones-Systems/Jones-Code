@@ -511,14 +511,30 @@ export function routeProviderEvent(
     case "command_output.delta":
       // The session manager hands live output to the command output hub; runs never see it.
       return [false, state];
-    case "turn.terminal":
-      return event.providerTurnId === state.rootProviderTurnId
-        ? [true, { ...state, rootTurnEnded: true }]
+    case "turn.terminal": {
+      const identityMatches =
+        event.providerThreadId === input.providerThreadId &&
+        (input.runOrdinal === undefined || event.runOrdinal === input.runOrdinal) &&
+        (input.driver === undefined || event.driver === input.driver);
+      const knownRoot = event.providerTurnId === state.rootProviderTurnId;
+      const recoveredRoot =
+        state.rootProviderTurnId === null &&
+        event.evidenceKind !== undefined &&
+        event.evidenceKind !== "local_failure" &&
+        (event.status !== "interrupted" || event.evidenceKind === "attributed_abort") &&
+        terminalSnapshotMatchesAttempt(event, input);
+      const snapshotMatches =
+        event.providerTurn === undefined || terminalSnapshotMatchesAttempt(event, input);
+      return identityMatches && snapshotMatches && (knownRoot || recoveredRoot)
+        ? [true, { ...addProviderTurn(event.providerTurnId, true), rootTurnEnded: true }]
         : [false, state];
     }
   }
 }
 
+/**
+ * ERRORS
+ */
 export class RunExecutionStartError extends Schema.TaggedError<RunExecutionStartError>()(
   "RunExecutionStartError",
   {

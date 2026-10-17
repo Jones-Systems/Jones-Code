@@ -9,6 +9,7 @@ import type {
   DeletionWorktreeRemovalStartV1,
 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
+import { captureNativeProviderSettlementProof } from "../jones/workstreams/nativeProvider/settlementProof.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
@@ -101,6 +102,53 @@ export class EventSinkStreamError extends Schema.TaggedError<EventSinkStreamErro
 
 export const EventSinkV2Error = Schema.Union([EventSinkWriteError, EventSinkStreamError]);
 export type EventSinkV2Error = typeof EventSinkV2Error.Type;
+
+function runtimeEvidenceMatches(
+  current: OrchestrationV2ProviderThread | null,
+  capture: ProviderRuntimeEvidenceCapture,
+): boolean {
+  if (
+    current === null ||
+    current.appThreadId !== capture.threadId ||
+    current.id !== capture.providerThreadId ||
+    current.providerSessionId !== capture.providerSessionId ||
+    current.providerInstanceId !== capture.providerInstanceId ||
+    current.driver !== capture.driver ||
+    current.nativeThreadRef?.driver !== capture.driver ||
+    current.nativeThreadRef.nativeId !== capture.nativeThreadId ||
+    current.runtimeIdentity === undefined
+  )
+    return false;
+  const identity = current.runtimeIdentity;
+  if (
+    capture.runtimeGeneration !== undefined &&
+    identity.runtimeGeneration !== capture.runtimeGeneration
+  )
+    return false;
+  if (capture.evidenceRevision !== undefined) {
+    const revision = identity.evidenceRevision;
+    if (
+      revision === undefined ||
+      (capture.runtimeGeneration === undefined
+        ? revision !== capture.evidenceRevision
+        : revision < capture.evidenceRevision)
+    )
+      return false;
+  }
+  return true;
+}
+
+/**
+ * SERVICE DEFINITION
+ */
+interface EventSinkStreamInput {
+  readonly threadId?: ThreadId;
+  readonly afterSequence?: number;
+  /** Filter before queuing so workers retain only the events they handle. */
+  readonly eventType?: OrchestrationV2DomainEvent["type"];
+  /** Bounded subscribers receive projected public events. Workers retain recorded values. */
+  readonly bounded?: boolean;
+}
 
 export interface EventSinkV2Shape {
   readonly readDeletionWorktreeRemovalStartForTarget?: (
@@ -316,13 +364,17 @@ export interface EventSinkV2Shape {
     readonly rejectedAt: DateTime.Utc;
     readonly error: string;
   }) => Effect.Effect<CommandReceiptStore.ProjectCommandReceiptV2, EventSinkV2Error>;
-  readonly stream: (input?: {
-    readonly threadId?: ThreadId;
-    readonly afterSequence?: number;
-    readonly eventType?: OrchestrationV2DomainEvent["type"];
-    /** Bound RPC subscribers; internal workers must not drop their subscription under load. */
-    readonly bounded?: boolean;
-  }) => Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+  readonly stream: {
+    (
+      input: EventSinkStreamInput & { readonly bounded: true },
+    ): Stream.Stream<PublicStoredEvent, EventSinkV2Error>;
+    (
+      input?: EventSinkStreamInput & { readonly bounded?: false },
+    ): Stream.Stream<OrchestrationV2StoredEvent, EventSinkV2Error>;
+    (
+      input?: EventSinkStreamInput,
+    ): Stream.Stream<PublicStoredEvent | OrchestrationV2StoredEvent, EventSinkV2Error>;
+  };
   readonly latestSequence: (input?: {
     readonly threadId?: ThreadId;
   }) => Effect.Effect<number, EventSinkV2Error>;
@@ -353,6 +405,12 @@ export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>(
   "t3/orchestration-v2/EventSink/EventSinkV2",
 ) {}
 
+/**
+ * IMPLEMENTATIONS
+ */
+const isDispatchGuardRejected = (value: unknown): value is DispatchGuardRejected =>
+  Schema.is(DispatchGuardRejected)(value);
+
 const layerBase: Layer.Layer<
   EventSinkV2,
   never,
@@ -371,6 +429,33 @@ const layerBase: Layer.Layer<
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
     );
+    const captureSettlementProof = (
+      receipt: CommandReceiptStore.CommandReceiptV2,
+      storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+    ) =>
+      receipt.commandType === "thread.settle" || receipt.commandType === "thread.unsettle"
+        ? captureNativeProviderSettlementProof({
+            receipt: {
+              commandId: receipt.commandId,
+              aggregateKind: "thread",
+              aggregateId: receipt.threadId,
+              commandType: receipt.commandType,
+              acceptedAt: DateTime.formatIso(receipt.acceptedAt),
+              resultSequence: receipt.resultSequence,
+              status: receipt.status,
+            },
+            events: storedEvents.map((stored) => ({
+              eventId: stored.event.id,
+              commandId: stored.commandId,
+              aggregateKind: "thread" as const,
+              aggregateId: stored.event.threadId,
+              sequence: stored.sequence,
+              type: stored.event.type,
+              occurredAt: DateTime.formatIso(stored.event.occurredAt),
+              applicationEventVersion: 2,
+            })),
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql))
+        : Effect.void;
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -400,7 +485,11 @@ const layerBase: Layer.Layer<
     // Transactions commit one at a time, but each writer publishes after its
     // commit. If a writer is descheduled in between, a later commit reaches
     // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied.
+    // sequence they have applied. So a writer takes this lane as the last step
+    // of its transaction and holds it until it has published. Publishing never
+    // waits, so a writer that holds the transaction while it waits for the
+    // lane is not blocked for long.
+    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql);
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -1036,6 +1125,7 @@ const layerBase: Layer.Layer<
             error: null,
           };
           yield* commandReceipts.upsert(receipt);
+          yield* captureSettlementProof(receipt, storedEvents);
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
           if (imported !== undefined && choice !== undefined) {
             if (choice.duplicate)
@@ -1553,6 +1643,7 @@ const layerBase: Layer.Layer<
               (yield* eventStore.latestSequence({ threadId: input.threadId })),
           };
           yield* commandReceipts.upsert(receipt);
+          yield* captureSettlementProof(receipt, storedEvents);
           return { receipt, storedEvents };
         }),
         (committed) => publishStoredEvents(committed.storedEvents),

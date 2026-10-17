@@ -1382,6 +1382,36 @@ export const layerWithOptions = (
           ),
         );
 
+      const retainThreadForWorkMode = (
+        threadId: ThreadId,
+        providerSessionId: ProviderSessionId,
+        providerInstanceId: ProviderInstanceId,
+      ) =>
+        Effect.gen(function* () {
+          if (Option.isNone(serverSettings)) return false;
+          const settings = yield* serverSettings.value.getSettings;
+          if (!settings.workModeEnabled) return false;
+          const thread = yield* projectionStore.getThread(threadId);
+          if (
+            thread.archivedAt !== null ||
+            thread.deletedAt !== null ||
+            thread.settledAt !== null ||
+            thread.settledOverride === "settled" ||
+            thread.lineage.parentThreadId !== null ||
+            thread.lineage.relationshipToParent !== null ||
+            thread.activeProviderThreadId === null
+          )
+            return false;
+          return WorkModeRetention.workModeRetainsSession({
+            projection: yield* projectionStore.getThreadProjection(threadId),
+            providerSessionId,
+            providerInstanceId,
+            nowMs: yield* Clock.currentTimeMillis,
+          });
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+
+      // Annotated to break the releaseIfStillIdle <-> scheduleIdleReleaseInternal
+      // inference cycle introduced by the pin re-arm below.
       const releaseIfStillIdle = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly generation: number;
@@ -2052,7 +2082,9 @@ export const layerWithOptions = (
         >,
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
-        const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const subscribeEvents = makeEventSubscription(runtime, eventSubscribers);
+        // Every provider's turn operations pass through here, so this is where they are
+        // counted. Only turn starts are timed: until the provider accepts the turn.
         const turnMetrics = (operation: string, model?: string) =>
           withMetrics({
             counter: providerTurnsTotal,
@@ -2264,6 +2296,26 @@ export const layerWithOptions = (
             // never persisted, and a flood of it must not queue ahead of real events.
             if (event.type === "command_output.delta") {
               return commandOutput.append(event);
+            }
+            if (event.type === "runtime_identity.observed") {
+              return providerEventIngestor
+                .ingestNormalized({
+                  providerSessionId: entry.runtime.providerSessionId,
+                  providerInstanceId: entry.runtime.instanceId,
+                  threadId: event.binding.threadId,
+                  event,
+                })
+                .pipe(
+                  Effect.asVoid,
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterEventStreamError({
+                        driver: entry.runtime.driver,
+                        providerSessionId: entry.runtime.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
             }
             // A settled item carries its final output, so its live tail can go.
             const releaseLiveOutput =

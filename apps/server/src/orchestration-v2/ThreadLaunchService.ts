@@ -157,7 +157,12 @@ type PreparationInput = Pick<
   | "preparationReleaseCommandId"
   | "legacyBootstrap"
 > & {
-  readonly reusedWorktree?: { readonly baseRef: string };
+  /**
+   * Set when a retry reuses the worktree its failed attempt created and
+   * recorded. Its setup is tracked like a new one, but the thread already
+   * records the workspace, and a branch rename may still be running.
+   */
+  readonly reusedWorktree?: { readonly baseRef: string | undefined };
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -1350,7 +1355,34 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
-        let startRef = input.workspaceStrategy.baseRef;
+        let baseRef = input.workspaceStrategy.baseRef;
+        let selectedBase: VcsRef | undefined;
+        if (baseRef === undefined) {
+          const refs = yield* git
+            .listRefs({ cwd: project.workspaceRoot, limit: 100 })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          const automaticBase = resolveDefaultWorktreeBaseBranch(refs.refs);
+          if (!refs.isRepo || automaticBase === null) {
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )(
+              refs.isRepo
+                ? "No default or checked-out branch is available. Select a base branch before retrying."
+                : "New worktree mode requires a Git repository.",
+            );
+          }
+          baseRef = automaticBase;
+          selectedBase = refs.refs.find((ref) => ref.name === baseRef);
+          yield* setupTracker.update(threadId, (snapshot) => ({
+            ...snapshot,
+            baseRef: automaticBase,
+          }));
+        }
+        let startRef = baseRef;
+        // "Start from origin" is a stored default; repos without the requested
+        // remote branch fall back to the local base branch.
         const startFromOrigin =
           input.workspaceStrategy.startFromOrigin === true &&
           (yield* git

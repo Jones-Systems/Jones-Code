@@ -1743,6 +1743,24 @@ function buildVisibleTurnItems(input: {
   ]);
 }
 
+function runtimeIdentityForShell(
+  thread: OrchestrationV2ThreadProjection["thread"],
+  providerThreads: ReadonlyArray<OrchestrationV2ProviderThread>,
+) {
+  return providerThreads.find(
+    (provider) =>
+      provider.id === thread.activeProviderThreadId &&
+      provider.appThreadId === thread.id &&
+      provider.providerInstanceId === thread.providerInstanceId,
+  )?.runtimeIdentity;
+}
+
+/**
+ * An agent waiting on a secret is waiting on the user just like a question,
+ * so the shell reports it as pending user input. Secret requests have no
+ * runtime request of their own; this stands one in for the shell summary
+ * only, keyed by the card's turn item.
+ */
 function secretRequestAsPendingInput(
   item: OrchestrationV2TurnItem | null,
 ): OrchestrationV2ThreadProjection["runtimeRequests"][number] | null {
