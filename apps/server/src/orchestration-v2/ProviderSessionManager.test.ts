@@ -2004,6 +2004,7 @@ it.effect(
           }),
         );
         yield* manager.close(providerSessionId);
+        assert.isFalse(yield* manager.isMcpCallerAttached(binding));
         assert.isUndefined(yield* mcpSessions.read(threadId));
         assert.isUndefined(yield* registry.resolve(token!));
       });
