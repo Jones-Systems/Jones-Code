@@ -623,6 +623,7 @@ function layerTest(input: {
       Layer.provide(
         Layer.mergeAll(
           layerRegistry.pipe(Layer.provideMerge(McpProviderSessions.layer)),
+          layerTestDatabase,
           CommandOutputHub.layer.pipe(
             Layer.provide(Layer.merge(layerConfiguredEventSink, layerTestStores)),
           ),
@@ -6082,7 +6083,14 @@ it.effect("refuses a missing native ID before committing a runtime boundary", ()
   }),
 );
 
-it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] as const)(
+it.effect.each([
+  "monitoring",
+  "unsupported",
+  "replacement",
+  "selected-account",
+  "physical",
+  "physical-change",
+] as const)(
   "observes actual resident background activity without refreshing retention: %s",
   (scenario) =>
     Effect.scoped(
@@ -6130,6 +6138,34 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
           if (lifecycle === undefined || manager.observeThreadActivity === undefined)
             return yield* Effect.die("Missing activity owner");
           const generation = yield* lifecycle.reserve(threadId);
+          let physicalCurrent = true;
+          const physicalProcess = {
+            runtimeGeneration: generation,
+            capture: Effect.sync(() =>
+              physicalCurrent
+                ? {
+                    status: "observed" as const,
+                    runtimeGeneration: generation,
+                    launcherPid: 42,
+                    source: "codex.server/diagnostics+local-os" as const,
+                    responder: {
+                      platform: "linux" as const,
+                      bootId: "boot",
+                      pidNamespace: "pid:[1]",
+                      pid: 42,
+                      startTime: "1",
+                      startTimeUnit: "linux-clock-ticks-since-boot" as const,
+                      executableIdentity: "1:2:3:4",
+                      build: "unknown" as const,
+                    },
+                  }
+                : {
+                    status: "unknown" as const,
+                    runtimeGeneration: generation,
+                    reason: "retired" as const,
+                  },
+            ),
+          };
           const provider = yield* lifecycle.bind({
             providerThread: makeProviderThread({
               idAllocator: ids,
@@ -6138,6 +6174,9 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
               now,
             }),
             runtimeGeneration: generation,
+            ...(scenario === "physical" || scenario === "physical-change"
+              ? { physicalProcess }
+              : {}),
             requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
             observed: unobservedRuntimeIdentity(),
           });
@@ -6150,7 +6189,21 @@ it.effect.each(["monitoring", "unsupported", "replacement", "selected-account"] 
           if (attachment.status !== "attached")
             return yield* Effect.die("Missing attachment capture");
           assert.deepEqual(attachment.binding, runtimeBinding(provider, generation));
-          assert.equal(attachment.physicalIncarnation.status, "unknown");
+          assert.equal(
+            attachment.physicalIncarnation.status,
+            scenario === "physical" || scenario === "physical-change" ? "observed" : "unknown",
+          );
+          if (scenario === "physical" || scenario === "physical-change") {
+            assert.isTrue(yield* attachment.physicalIsCurrent!);
+            if (scenario === "physical-change") {
+              physicalCurrent = false;
+              assert.isFalse(yield* attachment.physicalIsCurrent!);
+              assert.isTrue(
+                yield* attachment.isCurrent,
+                "physical identity does not redefine the logical session lease",
+              );
+            }
+          }
           assert.isTrue(yield* attachment.isCurrent);
           assert.isFalse(
             yield* Deferred.isDone(sampleStarted),
