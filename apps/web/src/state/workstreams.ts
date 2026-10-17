@@ -15,6 +15,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
+  EnvironmentInternalError,
   T3_PLACEMENT_MAX_IDENTITIES,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
@@ -50,6 +51,7 @@ const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, sign
 
 const metadataCache = new LiveWorkstreamMetadataCache();
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
+const isInternalReadError = Schema.is(EnvironmentInternalError);
 const CURSOR_RESTART_ATTEMPTS = 3;
 const EMPTY_NATIVE_THREADS: readonly { readonly environmentId: string; readonly id: string }[] = [];
 
@@ -91,6 +93,26 @@ const waitForRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
     }, delayMs);
     signal?.addEventListener("abort", abort, { once: true });
   });
+
+async function withTransientReadRecovery<A>(
+  load: () => Promise<A>,
+  signal: AbortSignal,
+): Promise<A> {
+  for (let retry = 0; ; retry += 1) {
+    throwIfAborted(signal);
+    try {
+      const value = await load();
+      throwIfAborted(signal);
+      return value;
+    } catch (cause) {
+      throwIfAborted(signal);
+      // CP outages share the opaque internal-error response; never retry reads indefinitely.
+      if (!isInternalReadError(cause) || cause.reason !== "internal_error" || retry === 5)
+        throw cause;
+      await waitForRetry(1_000 * 2 ** retry, signal);
+    }
+  }
+}
 
 async function withCursorRestart<A>(
   load: () => Promise<A>,
@@ -483,17 +505,21 @@ export function useWorkstreams(
     setPlacements(null);
     setRegistrationContext(null);
     setLoading(true);
-    void loadCompleteWorkstreamList(
-      (cursor) =>
-        request(
-          (client) =>
-            client.workstreams.list({
-              headers: {},
-              payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
-            }),
-          controller.signal,
+    void withTransientReadRecovery(
+      () =>
+        loadCompleteWorkstreamList(
+          (cursor) =>
+            request(
+              (client) =>
+                client.workstreams.list({
+                  headers: {},
+                  payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+                }),
+              controller.signal,
+            ),
+          { signal: controller.signal },
         ),
-      { signal: controller.signal },
+      controller.signal,
     )
       .then(async (value) => {
         if (generation.current !== current) return;
@@ -501,8 +527,12 @@ export function useWorkstreams(
         metadataCache.write(normalized);
         setData(metadataCache.read(normalized.binding));
         setError(null);
-        void request(
-          (client) => client.workstreams.registrationContext({ headers: {} }),
+        void withTransientReadRecovery(
+          () =>
+            request(
+              (client) => client.workstreams.registrationContext({ headers: {} }),
+              controller.signal,
+            ),
           controller.signal,
         ).then(
           (context) => {
