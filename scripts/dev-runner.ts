@@ -714,6 +714,8 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
           ]
             .filter((entry) => entry && entry.length > 0)
             .join(",");
+          // Startup browser auto-open and explicit pairing use this shareable
+          // web origin. An explicit --dev-url still wins.
           if (input.devUrl === undefined) {
             env.VITE_DEV_SERVER_URL = shared.url;
           }
@@ -828,7 +830,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   share: Flag.Boolean("share").pipe(
     Flag.withDescription(
-      "Publish the web dev server on this machine's tailnet over HTTPS (via `tailscale serve`) and print the pairing URL for it. Removed again on exit.",
+      "Publish the web dev server on this machine's tailnet over HTTPS (via `tailscale serve`). Use the pair command to print a pairing URL. Removed again on exit.",
     ),
     Flag.withDefault(false),
   ),

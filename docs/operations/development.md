@@ -18,8 +18,20 @@ including access to potentially sensitive configuration. An assignment to edit
 source does not itself authorize running setup or accessing those files.
 Confirm the applicable scope before invoking it; do not print their contents.
 
-Give the printed pairing URL to the authorized tester. The bare origin does not
-authenticate a new browser. [Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
+Startup logs record issuance without printing pairing credentials or QR codes,
+including when stdout is a terminal or redirected. For manual access, explicitly
+request a link in a separate terminal using the base directory printed by the
+runner:
+
+```sh
+node apps/server/src/bin.ts pair --base-dir <printed-base-directory>
+```
+
+Keep this command's credential-bearing output private; do not redirect it into
+service logs. Give its pairing URL to the authorized tester. The bare origin
+does not authenticate a new browser. `vp run dev --browser` instead opens the
+startup pairing URL automatically without printing it.
+[Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
 covers isolated synthetic verification; agents must not consume the user's
 pairing token.
 
@@ -108,12 +120,14 @@ creating its own, and the mapping can outlive the process. Obtain authorization
 covering the exact shared route and its cleanup before running it. Do not
 manually change Tailscale routes as a workaround.
 
-Wait for the runner's actual share result and `pairingUrl:` output. Sharing can
-fail while the server continues locally; a running process does not prove
-tailnet access. Give the authorized tester the complete pairing URL through
-the approved private channel. Do not open or consume the user's pairing token,
-or put it in commits, PRs, or public output. A browser already holding the
-reusable dev cookie can use the bare origin.
+Wait for the runner's actual share result. Sharing can fail while the server
+continues locally; a running process does not prove tailnet access. After the
+server is ready, use the explicit `pair --base-dir <printed-base-directory>`
+command above to print a pairing URL for the recorded web origin. Give the
+authorized tester that URL through the approved private channel. Do not open
+or consume the user's pairing token, or put it in commits, PRs, service logs,
+or public output. A browser already holding the reusable dev cookie can use
+the bare origin.
 
 The runner attempts to remove its mapping on exit, but cleanup can fail and
 overlapping runs can affect the same mapping. Verify cleanup through the
@@ -121,10 +135,13 @@ authorized route and report any remaining or unknown effect. Do not claim
 removal from process exit alone or perform an unapproved manual cleanup.
 
 If an authorized tester consumed a normal one-time token and needs another,
-the development server's `node apps/server/src/bin.ts pair` command can mint
-one. Run it only against the exact authorized isolated environment. It grants
-standard scopes; the startup pairing URL carries administrative scopes needed
-for Connections settings.
+repeat the explicit pairing command for the same authorized isolated base
+directory. It grants standard client scopes. Startup browser auto-open carries
+administrative scopes needed for Connections settings; manual `pair` accepts
+repeated `--scope` flags when additional scopes are intended. Explicit scopes
+replace the default set, so include every required scope. See
+[environment authentication](../internals/environment-auth.md) for the scope
+model.
 
 Leave `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
 Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` through the browser's
@@ -182,11 +199,14 @@ export T3CODE_DEV_AUTH_TOKEN="<the value generated above>"
 ```
 
 Do not generate a new value at startup. For an authorized shared run, start or
-restart `vp run dev --share` after configuration and have the authorized tester
-open its printed startup pairing URL once per browser profile on that hostname.
-Later web dev servers on the same hostname accept the shared cookie across
-ports. The cookie expires after 30 days. Reload an old tab if its URL now serves
-a replacement environment.
+restart `vp run dev --share --browser` after configuration. Browser auto-open
+passes the reusable startup credential directly to the browser on the server
+host; startup logs never print it. After pairing, later web dev servers on the
+same hostname accept that browser profile's shared cookie across ports. The
+cookie expires after 30 days. Reload an old tab if its URL now serves a
+replacement environment. For a remote browser or unavailable auto-open, the
+explicit pairing command above creates an ordinary one-time link; it does not
+print the reusable dev credential or establish cross-environment cookie reuse.
 
 The token and startup pairing URLs are reusable administrative secrets. Never put them in a
 commit, pull request, or public output. Every server still seeds its own auth database record at
