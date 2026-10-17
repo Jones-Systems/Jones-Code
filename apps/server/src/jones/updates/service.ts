@@ -6,10 +6,11 @@ import {
   type JonesUpdateState,
   type JonesUpdateDownloadInput,
   type JonesUpdateInstallInput,
+  type JonesNativePrepareInput,
   ServerSelfUpdateError,
 } from "@t3tools/contracts";
 
-import { HostProcessPlatform, HostProcessArchitecture } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,8 +26,15 @@ import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
 import { qualifiedServerCapability } from "./serverCapability.ts";
+import {
+  isUpdateOperationId,
+  operationBinding,
+  reconcileUpdateOperation,
+  type OperationReconciliation,
+} from "./launcherOperation.ts";
+import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
-import { JonesUpdater } from "./JonesUpdater.ts";
+import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
@@ -37,11 +45,27 @@ import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiv
 export class JonesUpdates extends Context.Service<
   JonesUpdates,
   {
+    readonly fleetOperationsSupported: boolean;
     readonly state: (after?: number) => Effect.Effect<JonesUpdateState | null>;
     readonly check: Effect.Effect<JonesUpdateState>;
-    readonly prepareNative: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    readonly stageExact: (input: {
+      readonly targetSource: string;
+      readonly operationId: string;
+    }) => Effect.Effect<JonesUpdateState>;
+    readonly installForOperation: (
+      input: JonesUpdateInstallInput & {
+        readonly operationId: string;
+        readonly targetSource: string;
+        readonly expectedInstalledSource: string;
+      },
+    ) => Effect.Effect<JonesUpdateState>;
+    readonly retireStagedOperation: (
+      input: JonesStagedRetirementInput,
+    ) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
+    readonly reconcileOperation: (operationId: string) => Effect.Effect<OperationReconciliation>;
   }
 >()("t3/jones/updates/service/JonesUpdates") {}
 
@@ -56,8 +80,8 @@ const blocked = (message: string): JonesUpdateState => ({
 export const layer = Layer.effect(
   JonesUpdates,
   Effect.gen(function* () {
-    const platform = yield* HostProcessPlatform;
-    const architecture = yield* HostProcessArchitecture;
+    const platform = yield* HostProcess.Platform;
+    const architecture = yield* HostProcess.Architecture;
     const config = yield* ServerConfig.ServerConfig;
     const selfUpdate = yield* SelfUpdate.ServerSelfUpdate;
     const launcher = yield* Launcher.ServiceLauncherClient;
@@ -65,20 +89,38 @@ export const layer = Layer.effect(
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
-    const activeReceipt = isPreviewRuntime(version)
+    const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
           readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
         ).pipe(Effect.catch(() => Effect.succeed(undefined)))
       : undefined;
-    const nativeReceipt = activeReceipt?.version === version;
+    const nativeReceipt = runtimeReceipt?.version === version;
     const installedSource =
-      !nativeReceipt || activeReceipt === undefined
+      !nativeReceipt || runtimeReceipt === undefined
         ? undefined
         : {
-            repository: activeReceipt.repository,
-            sha: activeReceipt.sourceSha,
-            tree: activeReceipt.sourceTree,
+            repository: runtimeReceipt.repository,
+            sha: runtimeReceipt.sourceSha,
+            tree: runtimeReceipt.sourceTree,
           };
+    const unsupportedOperations = {
+      retireStagedOperation: () =>
+        Effect.succeed({
+          retired: false,
+          reason: "Caller-bound native updates are unavailable on this host.",
+        }),
+      fleetOperationsSupported: false,
+      stageExact: () =>
+        Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
+      installForOperation: () =>
+        Effect.succeed(blocked("Caller-bound native updates are unavailable on this host.")),
+      reconcileOperation: (operationId: string) =>
+        Effect.succeed({
+          state: "blocked" as const,
+          operationId,
+          reason: "Caller-bound native updates are unavailable on this host.",
+        }),
+    };
     if (
       !isJonesRuntime({
         version,
@@ -88,6 +130,7 @@ export const layer = Layer.effect(
     ) {
       const unavailable = Effect.succeed(blocked("This host uses Release updates."));
       return JonesUpdates.of({
+        ...unsupportedOperations,
         state: () => Effect.succeed(null),
         check: unavailable,
         prepareNative: () => unavailable,
@@ -95,9 +138,34 @@ export const layer = Layer.effect(
         install: () => unavailable,
       });
     }
+    const reconcileOperation = (operationId: string) =>
+      Effect.promise(async (): Promise<OperationReconciliation> => {
+        try {
+          if (!launcher.managed || !isUpdateOperationId(operationId))
+            return {
+              state: "blocked",
+              operationId,
+              reason: "A managed launcher and UUID v4 operation ID are required.",
+            };
+          const baseDir = await NodeFSP.realpath(config.baseDir);
+          const state = parseServiceState(
+            await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
+          );
+          if (state === undefined)
+            return { state: "blocked", operationId, reason: "Native update state is invalid." };
+          return await reconcileUpdateOperation(baseDir, operationId, state.update);
+        } catch {
+          return {
+            state: "blocked",
+            operationId,
+            reason: "Native update state is unavailable for reconciliation.",
+          };
+        }
+      });
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
+      reconcileQualifiedOperation: reconcileOperation,
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
@@ -165,10 +233,11 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = (input: JonesUpdateInstallInput) =>
+      const prepareNative = (input: JonesNativePrepareInput) =>
         Effect.gen(function* () {
           if (
             !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
+            !/^[a-f0-9]{64}$/.test(input.transactionId) ||
             state.stagedHandle !== input.stagedHandle ||
             !state.capability.install ||
             state.environmentId !== input.environmentId ||
@@ -184,6 +253,7 @@ export const layer = Layer.effect(
                 environmentId: input.environmentId,
                 version: input.currentVersion,
                 handle: input.stagedHandle,
+                transactionId: input.transactionId,
                 prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
                 clear: (ids) =>
                   run(
@@ -207,6 +277,7 @@ export const layer = Layer.effect(
           ),
         );
       return JonesUpdates.of({
+        ...unsupportedOperations,
         prepareNative,
         state: (after) =>
           after !== revision
@@ -256,8 +327,8 @@ export const layer = Layer.effect(
                 refreshed.phase !== "staged"
               )
                 return blocked("The fixed desktop stage could not be prepared for installation.");
-              const prepared = yield* prepareNative(input);
-              if (prepared.phase === "blocked") return prepared;
+              // The desktop controller claims this selection before asking the prepare endpoint
+              // to mark continuations. Committing here only hands it the selected request token.
               state = { ...state, phase: "installing" };
               revision += 1;
               yield* receiver.commitDesktopUpdate(token).pipe(Effect.orDie);
@@ -418,10 +489,49 @@ export const layer = Layer.effect(
           ...(migrationPlan === undefined ? {} : { migrationPlan }),
         };
       },
+      retireStaged: async (input) => {
+        if (launcher.qualifiedRetirement !== true || launcher.retireUpdate === undefined)
+          throw new Error("bootstrap-required: The launcher cannot revoke retired staged updates.");
+        const result = await run(launcher.retireUpdate(input));
+        if (!result.retired)
+          throw new Error(result.reason ?? "Native stage retirement remains held.");
+      },
       install: async (input) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
-        const accepted = await run(qualifiedSelfUpdate.installQualified(input));
+        const operationId =
+          input.operationId ??
+          (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const accepted = await run(
+          qualifiedSelfUpdate.installQualified(
+            { ...input, ...(operationId === undefined ? {} : { operationId }) },
+            undefined,
+            (staged) =>
+              operationId === undefined
+                ? Effect.void
+                : startup.capturePlannedUpdate === undefined
+                  ? Effect.fail(
+                      new ServerSelfUpdateError({
+                        reason: "Planned update continuity is not configured.",
+                      }),
+                    )
+                  : startup
+                      .capturePlannedUpdate({
+                        operationId,
+                        binding: operationBinding(staged),
+                        continueRunningThreads: input.continueRunningThreads === true,
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ServerSelfUpdateError({
+                              reason: "Could not capture planned update continuity.",
+                              cause,
+                            }),
+                        ),
+                      ),
+          ),
+        );
         return {
           ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
           ...(launcher.qualifiedUpdateMigrationPlan === undefined
@@ -441,7 +551,60 @@ export const layer = Layer.effect(
       Effect.forever,
       Effect.forkScoped,
     );
+    const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
+      Effect.gen(function* () {
+        const prior = yield* reconcileOperation(input.operationId);
+        if (prior.state !== "absent") {
+          const binding = prior.binding;
+          if (
+            prior.state === "blocked" ||
+            binding === undefined ||
+            binding.environmentId !== input.environmentId ||
+            binding.currentVersion !== input.currentVersion ||
+            binding.expectedInstalledSource !== input.expectedInstalledSource ||
+            binding.targetSource !== input.targetSource ||
+            binding.stagedHandle !== input.stagedHandle
+          )
+            return blocked(
+              "The operation is ambiguous or its immutable installation binding changed.",
+            );
+          const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
+          return {
+            ...current,
+            updateId: input.operationId,
+            phase: prior.state === "pending" ? "installing" : prior.state,
+            message: "The native launcher retained this exact installation operation.",
+          };
+        }
+        if (
+          launcher.qualifiedOperations !== true ||
+          launcher.qualifiedRetirement !== true ||
+          runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
+          updater.snapshot().provenance?.sourceSha !== input.targetSource
+        )
+          return blocked(
+            "The installed source, staged source, or operation-capable launcher changed.",
+          );
+        return yield* Effect.promise(() => updater.install(input));
+      });
     return JonesUpdates.of({
+      retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
+      fleetOperationsSupported:
+        launcher.managed &&
+        launcher.qualifiedOperations === true &&
+        launcher.qualifiedRetirement === true &&
+        supported &&
+        nativeReceipt,
+      stageExact: (input) =>
+        isUpdateOperationId(input.operationId) &&
+        launcher.qualifiedOperations === true &&
+        launcher.qualifiedRetirement === true
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
+          : Effect.succeed(
+              blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
+            ),
+      installForOperation,
+      reconcileOperation,
       prepareNative: () =>
         Effect.succeed(blocked("Native desktop preparation is unavailable on this server.")),
       state: (after) =>

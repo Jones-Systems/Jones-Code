@@ -3,7 +3,7 @@ import { ContextHandoffId, MessageId, NodeId, RunAttemptId, RunId } from "@t3too
 import type { OrchestrationV2ContextHandoff } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { deliverContextHandoffs } from "../../orchestration-v2/ContextHandoffDelivery.ts";
-import type { ProviderAdapterV2TurnInput } from "../../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2TurnInput } from "@t3tools/provider-core/server/ProviderAdapter";
 import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
 import { continuationPrompt } from "./continuationPrompt.ts";
 

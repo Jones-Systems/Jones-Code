@@ -4,6 +4,8 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as NodeModule from "node:module";
+// plist is CommonJS; Node cannot load its named exports from an ES module.
+import Plist from "plist";
 
 import {
   createPackageWithOptions,
@@ -15,7 +17,7 @@ import {
 } from "@electron/asar";
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
@@ -31,6 +33,7 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
+  bundlesJonesNativeHelper,
   verifyJonesPackagedStartupGate,
   type JonesBuildSource,
 } from "./jones/updates/build-provenance.ts";
@@ -45,6 +48,18 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
+import {
+  createJonesLegacyBootstrapBundle,
+  verifyJonesLegacyIdentityMachO,
+  readJonesLegacyBootstrapNativeProof,
+  type JonesLegacyBootstrapNativeInput,
+  type JonesLegacyBootstrapBundleFile,
+  type JonesLegacyBootstrapPreparationBundle,
+} from "./jones/updates/legacy-bootstrap-bundle.ts";
+import {
+  verifyJonesPreparationRuntime,
+  readPackagedBootstrapProof,
+} from "./jones/updates/legacy-bootstrap-after-pack.mjs";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -91,9 +106,27 @@ const StageWorkspaceConfig = Schema.Struct({
   allowBuilds: Schema.optional(Schema.Record(Schema.String, Schema.Boolean)),
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  packageExtensions: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        peerDependenciesMeta: Schema.Record(
+          Schema.String,
+          Schema.Struct({ optional: Schema.Boolean }),
+        ),
+      }),
+    ),
+  ),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
+
+// electron-webauthn declares TypeScript as a peer only for its typings. pnpm
+// auto-installs missing peers, which would ship a compiler inside the app.
+const STAGE_PACKAGE_EXTENSIONS = {
+  "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
+  "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
+} as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -103,7 +136,9 @@ const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknow
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
-const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
+// Decodes the repo's pnpm-workspace.yaml. A PR CI test calls this too, so a bad
+// entry fails the PR instead of the nightly desktop build.
+export const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
@@ -862,7 +897,7 @@ export const resolveGitCommitHash = Effect.fn("resolveGitCommitHash")(function* 
 const resolvePythonForNodeGyp = Effect.fn("resolvePythonForNodeGyp")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
   const env = yield* Config.all({
     configuredPython: Config.String("npm_config_python").pipe(
       Config.orElse(() => Config.String("PYTHON")),
@@ -944,6 +979,7 @@ interface StagePackageJson {
   readonly t3codeCommitHash: string;
   readonly jonesSource?: JonesBuildSource;
   readonly startupGateProtocol?: 1;
+  readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
   readonly private: true;
   readonly packageManager: string;
   readonly description: string;
@@ -1025,6 +1061,15 @@ export const WINDOWS_SERVER_ASAR_RESOURCE = "server.asar";
 // asar redirect convention). Everything else stays packed.
 export const WINDOWS_NATIVE_ASAR_UNPACK_GLOB =
   "{**/*.node,**/*.dll,**/*.exe,**/*.so,**/*.so.*,**/*.dylib}";
+// ASAR matches these against basenames; globstars cannot cross hidden source ancestors.
+// The server sidecar unpacks .node files separately, keeping only Windows ones.
+export const WINDOWS_SERVER_ASAR_UNPACK_GLOBS = [
+  "*.dll",
+  "*.exe",
+  "*.so",
+  "*.so.*",
+  "*.dylib",
+] as const;
 // Mirrors DESKTOP_FILE_EXCLUSIONS for the hand-packed sidecar: the Claude SDK
 // platform packages are dead weight (see above), and node_modules/.bin shims
 // are never spawned at runtime (and are symlinks on POSIX build hosts, which
@@ -1101,6 +1146,130 @@ export const DESKTOP_EXTRA_RESOURCES = [
     to: "resource-monitor",
   },
 ] as const;
+export const JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE = {
+  from: "apps/desktop/prod-resources/jones-bootstrap",
+  to: "jones-bootstrap",
+} as const;
+
+export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMacResources")(
+  function* (input: {
+    readonly packagedAsar: string;
+    readonly version: string;
+    readonly source: JonesBuildSource;
+    readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile<string | Uint8Array>>;
+    readonly bootstrapRuntime?: JonesLegacyBootstrapPreparationBundle["runtime"];
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const failure = (check: string, resource: string, cause: unknown) =>
+      new BundleNotSelfContainedError({
+        exitCode: -1,
+        output: `Packaged Jones Mac ${check} failed for ${resource}: ${String(cause).slice(0, 1024)}`,
+      });
+    // Catch each native throw directly: Effect.try's default UnknownError string
+    // hides the cause that identifies a metadata, permission, or byte mismatch.
+    const manifestJson = yield* Effect.try({
+      try: () => extractFile(input.packagedAsar, "package.json").toString("utf8"),
+      catch: (cause) => failure("manifest extraction", "app.asar/package.json", cause),
+    });
+    const metadata = yield* decodeJsonString(manifestJson).pipe(
+      Effect.mapError((cause) => failure("manifest JSON", "app.asar/package.json", cause)),
+    );
+    yield* Effect.try({
+      try: () => verifyJonesPackagedStartupGate(metadata, input),
+      catch: (cause) => failure("startup gate", "app.asar/package.json", cause),
+    });
+    for (const file of input.bootstrapBundle) {
+      const packagedFile = path.join(path.dirname(input.packagedAsar), file.relativePath);
+      const observed = yield* Effect.tryPromise({
+        try: () => NodeFSP.lstat(packagedFile),
+        catch: (cause) => failure("bootstrap file stat", file.relativePath, cause),
+      });
+      if (!observed.isFile() || (observed.mode & 0o777) !== file.mode) {
+        return yield* failure(
+          "bootstrap file identity/mode",
+          file.relativePath,
+          `expected regular file mode 0o${file.mode.toString(8)}; observed ${observed.isFile() ? "regular file" : "non-regular file"} mode 0o${(observed.mode & 0o777).toString(8)}`,
+        );
+      }
+      const content = yield* fs
+        .readFile(packagedFile)
+        .pipe(Effect.mapError((cause) => failure("bootstrap file read", file.relativePath, cause)));
+      const expected =
+        typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content;
+      if (!Buffer.from(content).equals(Buffer.from(expected))) {
+        const digest = (value: string | Uint8Array) =>
+          NodeCrypto.createHash("sha256").update(value).digest("hex");
+        return yield* failure(
+          "bootstrap file bytes",
+          file.relativePath,
+          `expected SHA-256 ${digest(file.content)}; observed ${digest(content)}`,
+        );
+      }
+      if (file.relativePath === "jones-bootstrap/identity-native") {
+        yield* Effect.try({
+          try: () => verifyJonesLegacyIdentityMachO(content),
+          catch: (cause) => failure("native architecture", file.relativePath, cause),
+        });
+      }
+    }
+    if (input.bootstrapRuntime !== undefined) {
+      const runtime = input.bootstrapRuntime;
+      yield* Effect.tryPromise({
+        try: async () => {
+          const manifest = input.bootstrapBundle.find(
+            (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
+          );
+          if (manifest === undefined || typeof manifest.content !== "string")
+            throw new Error("Preparation resource requires the retained bundle proof.");
+          const proof = readPackagedBootstrapProof(manifest.content, {
+            repository: input.source.repository,
+            sourceSha: input.source.sha,
+            sourceTree: input.source.tree,
+            version: input.version,
+          });
+          if (
+            proof.schema !== 3 ||
+            proof.preparation.executable.sha256 !== runtime.sha256 ||
+            proof.preparation.executable.size !== runtime.size
+          )
+            throw new Error("Preparation runtime differs from the retained bundle proof.");
+          const resources = path.dirname(input.packagedAsar);
+          await verifyJonesPreparationRuntime(path.join(resources, runtime.relativePath), runtime);
+          const names = await NodeFSP.readdir(path.join(resources, "jones-bootstrap"));
+          const expected = [
+            ...input.bootstrapBundle.map((file) => path.basename(file.relativePath)),
+            path.basename(runtime.relativePath),
+          ];
+          names.sort();
+          expected.sort();
+          if (
+            names.length !== expected.length ||
+            names.some((name, index) => name !== expected[index])
+          )
+            throw new Error("Preparation resource inventory differs.");
+        },
+        catch: (cause) => failure("preparation runtime", runtime.relativePath, cause),
+      });
+    } else {
+      const manifest = input.bootstrapBundle.find(
+        (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
+      );
+      if (manifest && typeof manifest.content === "string") {
+        const value = yield* decodeJsonString(manifest.content).pipe(
+          Effect.mapError((cause) => failure("bundle JSON", manifest.relativePath, cause)),
+        );
+        if (typeof value === "object" && value !== null && "schema" in value && value.schema === 3)
+          return yield* failure(
+            "preparation runtime",
+            "jones-bootstrap/jones-offline-preparation",
+            "Missing independent runtime descriptor.",
+          );
+      }
+    }
+  },
+);
+
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
     from: "apps/desktop/prod-resources/hyprland-capture",
@@ -1307,12 +1476,80 @@ function escapeXml(value: string): string {
     .replaceAll("'", "&apos;");
 }
 
+/**
+ * Passkey entitlements for the in-app browser. Each is granted only when the
+ * provisioning profile authorizes it: macOS refuses to launch an app that
+ * claims a restricted entitlement its embedded profile does not carry.
+ */
+export interface MacWebAuthnEntitlements {
+  /** Keychain group for Electron's Touch ID passkeys. */
+  readonly touchIdKeychainAccessGroup: string | undefined;
+  /** Apple's managed browser entitlement, which allows passkeys for any site. */
+  readonly browserPasskeys: boolean;
+}
+
+const BROWSER_PASSKEYS_ENTITLEMENT = "com.apple.developer.web-browser.public-key-credential";
+
+const ProvisioningProfilePlist = Schema.Struct({
+  Entitlements: Schema.Struct({
+    "keychain-access-groups": Schema.optional(Schema.Array(Schema.String)),
+    [BROWSER_PASSKEYS_ENTITLEMENT]: Schema.optional(Schema.Boolean),
+  }),
+});
+const isProvisioningProfilePlist = Schema.is(ProvisioningProfilePlist);
+
+/**
+ * Reads the Entitlements dict of the XML plist a provisioning profile wraps in
+ * its CMS envelope. Anything unreadable grants nothing.
+ */
+const readProfileEntitlements = (provisioningProfile: string) => {
+  const start = provisioningProfile.indexOf("<?xml");
+  const end = provisioningProfile.indexOf("</plist>", start);
+  if (start === -1 || end === -1) return undefined;
+  try {
+    const profile: unknown = Plist.parse(provisioningProfile.slice(start, end + "</plist>".length));
+    return isProvisioningProfilePlist(profile) ? profile.Entitlements : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+export function resolveMacWebAuthnEntitlements(
+  provisioningProfile: string,
+  configuration: Pick<MacPasskeySigningConfiguration, "appId" | "teamId">,
+): MacWebAuthnEntitlements {
+  const entitlements = readProfileEntitlements(provisioningProfile);
+  const keychainAccessGroup = `${configuration.teamId}.${configuration.appId}.webauthn`;
+  const keychainGroupAuthorized = (entitlements?.["keychain-access-groups"] ?? []).some((group) =>
+    group.endsWith("*")
+      ? keychainAccessGroup.startsWith(group.slice(0, -1))
+      : group === keychainAccessGroup,
+  );
+  return {
+    touchIdKeychainAccessGroup: keychainGroupAuthorized ? keychainAccessGroup : undefined,
+    browserPasskeys: entitlements?.[BROWSER_PASSKEYS_ENTITLEMENT] === true,
+  };
+}
+
 export function renderMacPasskeyEntitlements(
   configuration: MacPasskeySigningConfiguration,
+  webAuthn: MacWebAuthnEntitlements,
 ): string {
   const associatedDomains = configuration.rpDomains
     .map((domain) => `      <string>webcredentials:${escapeXml(domain)}</string>`)
     .join("\n");
+  const keychainAccessGroups = webAuthn.touchIdKeychainAccessGroup
+    ? `
+    <key>keychain-access-groups</key>
+    <array>
+      <string>${escapeXml(webAuthn.touchIdKeychainAccessGroup)}</string>
+    </array>`
+    : "";
+  const browserPasskeys = webAuthn.browserPasskeys
+    ? `
+    <key>${BROWSER_PASSKEYS_ENTITLEMENT}</key>
+    <true/>`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1325,7 +1562,7 @@ export function renderMacPasskeyEntitlements(
     <key>com.apple.developer.associated-domains</key>
     <array>
 ${associatedDomains}
-    </array>
+    </array>${keychainAccessGroups}${browserPasskeys}
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
@@ -1553,6 +1790,7 @@ export function createStageWorkspaceConfig(input: {
       ? { patchedDependencies }
       : {}),
     ...(overrides && Object.keys(overrides).length > 0 ? { overrides } : {}),
+    packageExtensions: STAGE_PACKAGE_EXTENSIONS,
   };
 }
 
@@ -1644,7 +1882,7 @@ export const resolveBuildOptions = Effect.fn("resolveBuildOptions")(function* (
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
   const env = yield* BuildEnvConfig;
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
 
   const platform = mergeOptions(
     input.platform,
@@ -2236,6 +2474,70 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
   }
 });
 
+const stageJonesLegacyIdentity = Effect.fn("stageJonesLegacyIdentity")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageRoot: string;
+  readonly verbose: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  if (platform !== "darwin")
+    return yield* new BundleNotSelfContainedError({
+      exitCode: -1,
+      output: "Native identity packaging requires a Darwin build host.",
+    });
+  const directory = path.join(input.stageRoot, "jones-identity-build");
+  yield* fs.makeDirectory(directory);
+  yield* fs.chmod(directory, 0o700);
+  const source = yield* fs.readFile(
+    path.join(input.repoRoot, "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"),
+  );
+  const sourcePath = path.join(directory, "identity.c");
+  const binaryPath = path.join(directory, "identity-native");
+  yield* fs.writeFile(sourcePath, source);
+  yield* fs.chmod(sourcePath, 0o400);
+  const nativeEnvironment = {
+    ...process.env,
+    TMPDIR: directory,
+    CLANG_MODULE_CACHE_PATH: path.join(directory, "clang-cache"),
+  };
+  for (const [command, args] of [
+    [
+      "/usr/bin/clang",
+      [
+        "-target",
+        "arm64-apple-macos13.0",
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        sourcePath,
+        "-o",
+        binaryPath,
+      ],
+    ],
+    ["/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", binaryPath]],
+    ["/usr/bin/codesign", ["--verify", "--strict", binaryPath]],
+  ] as const) {
+    yield* runCommand(
+      ChildProcess.make(command, args, { cwd: directory, env: nativeEnvironment }),
+      { label: `Jones native identity ${command}`, verbose: input.verbose },
+    );
+  }
+  yield* fs.chmod(binaryPath, 0o500);
+  const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(binaryPath));
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4194304)
+    return yield* new BundleNotSelfContainedError({
+      exitCode: -1,
+      output: "Native identity build output is not a bounded regular file.",
+    });
+  const identityNative = yield* fs.readFile(binaryPath);
+  yield* Effect.try(() => verifyJonesLegacyIdentityMachO(identityNative));
+  const identityNativeSourceSha256 = NodeCrypto.createHash("sha256").update(source).digest("hex");
+  return { identityNative, identityNativeSourceSha256 };
+});
+
 export const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input: {
   readonly repoRoot: string;
   readonly stageResourcesDir: string;
@@ -2334,7 +2636,7 @@ export const stageBrowserSecret = Effect.fn("stageBrowserSecret")(function* (inp
   // silently. `universal` is a mac-only arch the option type still admits;
   // the helper script rejects it, so it maps to the concrete x64 the Linux
   // resource monitor uses for the same request.
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
   if (hostPlatform !== "linux") {
     return yield* new LinuxBrowserSecretHostError({ hostPlatform });
   }
@@ -2686,6 +2988,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
   variant?: DesktopPackageVariant,
+  legacyBootstrapBundled = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -2711,6 +3014,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
+      ...(platform === "mac" && variant !== "preview-companion" && legacyBootstrapBundled
+        ? [JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE]
+        : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -2735,18 +3041,45 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
+    if (variant !== "preview-companion" && legacyBootstrapBundled) {
+      buildConfig.afterPack = path.join(
+        repoRoot,
+        "scripts/jones/updates/legacy-bootstrap-after-pack.mjs",
+      );
+    }
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
+        // macOS 26 offers Messages/Mail codes in every text field unless opted out.
+        NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
+        NSLocalNetworkUsageDescription:
+          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
         NSScreenCaptureUsageDescription:
           "T3 Code captures the active window when you use the window capture shortcut.",
+        // macOS lists an app under Default web browser only when it opens web
+        // pages as documents as well as http and https links (see protocols).
+        CFBundleDocumentTypes: [
+          {
+            CFBundleTypeName: "Web page",
+            CFBundleTypeRole: "Viewer",
+            LSHandlerRank: "Alternate",
+            LSItemContentTypes: ["public.html", "public.xhtml"],
+          },
+        ],
       },
       protocols: [
         {
           name: "T3 Code",
           schemes: ["t3code", "t3code-dev"],
+        },
+        // Lets people choose T3 Code as their default web browser, which opens
+        // each link in a new thread's browser panel.
+        {
+          name: "Web site URL",
+          schemes: ["http", "https"],
+          role: "Viewer",
         },
       ],
       ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
@@ -2849,6 +3182,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const winConfig: Record<string, unknown> = {
       target: [target],
       icon: "icon.ico",
+      // Smart App Control validates unpacked native addons independently from
+      // the signed desktop executable. Extend release signing to every native
+      // Windows library that Electron or the server sidecar loads at runtime.
+      signExts: [".node", ".dll"],
       // Resource editing applies the product metadata and icon independently
       // of code signing. Disabling it for local unsigned builds leaves the
       // packaged executable with Electron's stock icon.
@@ -2937,17 +3274,44 @@ export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function
   readonly arch: typeof BuildArch.Type;
 }) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const sourceDir = path.resolve(input.sourceDir);
+  const sourcePattern = sourceDir
+    .split(path.sep)
+    .join("/")
+    .replace(/[\\*?[\]{}(),]/g, "\\$&");
+  // Native addons are unpacked only when they are Windows PE ("MZ") binaries.
+  // Signed builds Authenticode-sign every unpacked .node file, which fails on
+  // the darwin and linux prebuilds some packages (node-pty) ship alongside
+  // their win32 ones. The Windows primary never loads those, so they stay packed.
+  const unpackGlobs: string[] = [...WINDOWS_SERVER_ASAR_UNPACK_GLOBS];
+  for (const entry of yield* fs.readDirectory(sourceDir, { recursive: true })) {
+    if (!entry.endsWith(".node")) continue;
+    const addonPath = path.join(sourceDir, entry);
+    if ((yield* fs.stat(addonPath)).type !== "File") continue;
+    const bytes = yield* fs.readFile(addonPath);
+    if (bytes[0] !== 0x4d || bytes[1] !== 0x5a) continue;
+    const posixPath = entry.split(path.sep).join("/");
+    // Reject glob syntax before selecting a specific PE addon.
+    if (/[\\*?[\]{}(),]/.test(posixPath)) {
+      return yield* new WindowsServerSidecarPackError({
+        asarPath: input.asarPath,
+        cause: new Error(`native addon path contains glob syntax: ${posixPath}`),
+      });
+    }
+    // ASAR tests absolute filenames without dot matching. Use the complete path
+    // so hidden ancestors match and an ELF addon with the same basename stays packed.
+    unpackGlobs.push(`${sourcePattern}/${posixPath}`);
+  }
   yield* Effect.tryPromise({
     try: () =>
-      createPackageWithOptions(input.sourceDir, input.asarPath, {
+      createPackageWithOptions(sourceDir, input.asarPath, {
         dot: true,
-        // ASAR matches absolute filenames with matchBase; slash-free patterns
-        // match native basenames even beneath hidden ancestor directories.
-        unpack: "{*.node,*.dll,*.exe,*.so,*.so.*,*.dylib}",
+        unpack: `{${unpackGlobs.join(",")}}`,
         // glob 13 (via @electron/asar 4) matches `ignore` relative to `cwd`,
         // not against the absolute paths it crawls, so anchor it at the source.
         globOptions: {
-          cwd: input.sourceDir,
+          cwd: sourceDir,
           ignore: resolveWindowsServerAsarIgnoreGlobs(input.arch),
         },
       }),
@@ -3096,8 +3460,8 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
   readonly targetArch: typeof BuildArch.Type;
   readonly verbose: boolean;
 }) {
-  const hostPlatform = yield* HostProcessPlatform;
-  const hostArchitecture = yield* HostProcessArchitecture;
+  const hostPlatform = yield* HostProcess.Platform;
+  const hostArchitecture = yield* HostProcess.Architecture;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const executablePath = path.join(input.packagedAppDir, input.appExecutableName);
@@ -3114,10 +3478,7 @@ export const verifyWindowsPrimaryFffNativeLoad = Effect.fn(
   const probeRoot = yield* fs.makeTempDirectoryScoped({
     prefix: "t3code-windows-primary-native-probe-",
   });
-  const fffEntryPath = path.join(
-    input.asarPath,
-    "node_modules/@ff-labs/fff-node/dist/src/index.js",
-  );
+  const fffEntryPath = path.join(input.asarPath, "node_modules/@ff-labs/fff-node/dist/index.js");
   const probeEnv = { ...process.env };
   delete probeEnv.ELECTRON_NO_ASAR;
   delete probeEnv.NODE_OPTIONS;
@@ -3410,13 +3771,45 @@ export const validateWindowsPackagedPayload = Effect.fn(
   return { packagedAppDir, fileCount, unpackedFiles } as const;
 });
 
+export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(function* (
+  platform: typeof BuildPlatform.Type,
+  keepStage: boolean,
+  directory?: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const allocate = keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
+  const allocatedRoot = yield* allocate({
+    prefix: `t3code-desktop-${platform}-stage-`,
+    ...(directory === undefined ? {} : { directory }),
+  });
+  // Preserve the allocator's cleanup path while passing canonical paths to
+  // electron-builder and its source-bound afterPack verification.
+  return yield* fs.realPath(allocatedRoot);
+});
+
+// No complete worker verifier exists yet. Neither a held artifact nor JSON evidence
+// supplied by a caller may substitute for that future in-memory producer capability.
+export function requireJonesPreparationProducer(requested: boolean): void {
+  if (requested)
+    throw new Error(
+      "BUNDLE3 requires a qualified complete preparation producer; the current producer is held.",
+    );
+}
+
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
+  const preparationRequested = yield* Config.Boolean("JONES_PACK_PREPARATION_BUNDLE").pipe(
+    Config.withDefault(false),
+  );
+  yield* Effect.try({
+    try: () => requireJonesPreparationProducer(preparationRequested),
+    catch: (cause) => new BundleNotSelfContainedError({ exitCode: -1, output: String(cause) }),
+  });
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
-  const hostPlatform = yield* HostProcessPlatform;
+  const hostPlatform = yield* HostProcess.Platform;
   if (hostPlatform === "linux" && options.platform === "linux") {
     yield* preflightLinuxDesktopBuild(options.arch);
   }
@@ -3489,10 +3882,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const appVersion = options.version ?? serverPackageJson.version;
   const iconAssets = resolveDesktopBuildIconAssets(appVersion);
   const commitHash = yield* resolveGitCommitHash(repoRoot);
-  const mkdir = options.keepStage ? fs.makeTempDirectory : fs.makeTempDirectoryScoped;
-  const stageRoot = yield* mkdir({
-    prefix: `t3code-desktop-${options.platform}-stage-`,
-  });
+  const stageRoot = yield* allocateDesktopStageRoot(options.platform, options.keepStage);
 
   const stageAppDir = path.join(stageRoot, "app");
   const stageResourcesDir = path.join(stageAppDir, "apps/desktop/resources");
@@ -3694,13 +4084,24 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const macEntitlementsPath = macPasskeySigning
     ? path.join(stageAppDir, "entitlements.mac.plist")
     : undefined;
+  let macWebAuthn: MacWebAuthnEntitlements | undefined;
   if (macPasskeySigning && macEntitlementsPath) {
     if (!(yield* fs.exists(macPasskeySigning.provisioningProfilePath))) {
       return yield* new MacProvisioningProfileNotFoundError({
         provisioningProfilePath: macPasskeySigning.provisioningProfilePath,
       });
     }
-    yield* fs.writeFileString(macEntitlementsPath, renderMacPasskeyEntitlements(macPasskeySigning));
+    macWebAuthn = resolveMacWebAuthnEntitlements(
+      yield* fs.readFileString(macPasskeySigning.provisioningProfilePath),
+      macPasskeySigning,
+    );
+    yield* Effect.log(
+      `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,
+    );
+    yield* fs.writeFileString(
+      macEntitlementsPath,
+      renderMacPasskeyEntitlements(macPasskeySigning, macWebAuthn),
+    );
   }
 
   // Windows splits dependencies per process: app.asar carries only the
@@ -3725,20 +4126,25 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata({
+    ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
+    ...("startupGateProtocol" in desktopPackageJson
+      ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
+      : {}),
+  });
+  const legacyBootstrapBundled =
+    bundlesJonesNativeHelper(options.platform, appVersion, options.signed) &&
+    options.variant !== "preview-companion" &&
+    jonesBuildMetadata.jonesSource !== undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     ...companionPackageMetadata(options.variant),
     version: appVersion,
     buildVersion: appVersion,
     t3codeCommitHash: commitHash,
-    ...(yield* decodeJonesDesktopBuildMetadata({
-      ...("jonesSource" in desktopPackageJson
-        ? { jonesSource: desktopPackageJson.jonesSource }
-        : {}),
-      ...("startupGateProtocol" in desktopPackageJson
-        ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
-        : {}),
-    })),
+    ...jonesBuildMetadata,
+    // Read by apps/desktop/src/preview/Passkeys.ts; must match the signed entitlements.
+    ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
     description:
@@ -3764,12 +4170,61 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
       options.variant,
+      legacyBootstrapBundled,
     ),
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,
     },
   };
+
+  const legacyBootstrapSource = stagePackageJson.jonesSource;
+  let legacyNative: JonesLegacyBootstrapNativeInput | undefined;
+  if (legacyBootstrapBundled && options.arch === "arm64") {
+    const native = yield* stageJonesLegacyIdentity({
+      repoRoot,
+      stageRoot,
+      verbose: options.verbose,
+    });
+    const { jonesLegacyMaintenanceSource } = yield* Effect.promise(
+      () => import("../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts"),
+    );
+    legacyNative = { ...native, maintenanceSource: jonesLegacyMaintenanceSource };
+  }
+  const legacyBootstrapBundle =
+    legacyBootstrapBundled && legacyBootstrapSource !== undefined
+      ? yield* Effect.try(() => {
+          const identity = {
+            repository: legacyBootstrapSource.repository,
+            sourceSha: legacyBootstrapSource.sha,
+            sourceTree: legacyBootstrapSource.tree,
+            version: appVersion,
+          };
+          return legacyNative === undefined
+            ? createJonesLegacyBootstrapBundle(identity)
+            : createJonesLegacyBootstrapBundle(identity, legacyNative);
+        })
+      : [];
+  const legacyNativeProof =
+    legacyNative === undefined ? undefined : String(legacyBootstrapBundle[2]!.content);
+  if (legacyNativeProof !== undefined && legacyBootstrapSource !== undefined)
+    yield* Effect.try(() =>
+      readJonesLegacyBootstrapNativeProof(legacyNativeProof, {
+        repository: legacyBootstrapSource.repository,
+        sourceSha: legacyBootstrapSource.sha,
+        sourceTree: legacyBootstrapSource.tree,
+        version: appVersion,
+      }),
+    );
+  for (const file of legacyBootstrapBundle) {
+    const destination = path.join(stageProdResourcesDir, file.relativePath);
+    yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
+    yield* fs.writeFile(
+      destination,
+      typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content,
+    );
+    yield* fs.chmod(destination, file.mode);
+  }
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
@@ -3844,6 +4299,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const buildEnv: NodeJS.ProcessEnv = {
     ...process.env,
   };
+  // Only this build's independently retained proof can authorize the copied native bytes.
+  delete buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF;
+  if (legacyNativeProof !== undefined)
+    buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF = legacyNativeProof;
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {
@@ -3956,27 +4415,22 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       "Resources",
       "app.asar",
     );
-    yield* Effect.gen(function* () {
-      const manifestJson = yield* Effect.try(() =>
-        extractFile(packagedAsar, "package.json").toString("utf8"),
-      );
-      const metadata = yield* decodeJsonString(manifestJson);
-      yield* Effect.try(() =>
-        verifyJonesPackagedStartupGate(metadata, { version: appVersion, source }),
-      );
-    }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new BundleNotSelfContainedError({
-            exitCode: -1,
-            output: `Packaged Jones startup-gate verification failed: ${String(cause)}`,
-          }),
-      ),
-    );
+    yield* verifyJonesPackagedMacResources({
+      packagedAsar,
+      version: appVersion,
+      source,
+      bootstrapBundle: legacyBootstrapBundle,
+    });
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
+
+  if (legacyNativeProof !== undefined)
+    yield* fs.writeFileString(
+      path.join(options.outputDir, "JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF.json"),
+      legacyNativeProof,
+    );
 
   const copiedArtifacts: string[] = [];
   for (const entry of stageEntries) {

@@ -12,6 +12,8 @@
         // CodeRabbit loads its configuration by filename.
         ".coderabbit.config.ts",
         ".github/scripts/thread-transfer-report.cjs",
+        // Retained upstream helper; its publishing workflow stays disabled in Jones.
+        ".github/scripts/mirror-play-apk.cjs",
       ],
       "vite": { "entry": [".github/**/*.test.cjs"] },
       "vitest": { "entry": [".github/**/*.test.cjs"] },
@@ -24,6 +26,18 @@
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
+        "jones/ci-test-progress-reporter.ts",
+        "jones/server-shard-weights/select.ts",
+        "jones/server-shard-weights/aggregate-cli.ts",
+        // Xvfb invokes this native Chromium qualifier through a wrapper command.
+        "jones/updates/native-startup-chromium.mjs",
+        // Typed companion for the native fixture loaded through a computed file URL.
+        "jones/updates/legacy-preparation-native-fixture.d.mts",
+        // Bundled by computed path for graph observation; never imported or executed.
+        "jones/updates/offline-preparation-producer-entry.ts",
+        // The native capture test and its typed companion are direct tooling entries.
+        "jones/updates/offline-preparation-producer-loader.node-test.mjs",
+        "jones/updates/offline-preparation-producer-loader.d.mts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",
@@ -60,7 +74,9 @@
       ],
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
-      "ignoreDependencies": ["@effect/platform-node-shared", "@t3tools/web"],
+      // Native and disk-loaded provider packages stay external to the bundle; the
+      // CLI archive and desktop sidecar stage them from this manifest.
+      "ignoreDependencies": ["@effect/platform-node-shared", "@t3tools/web", "@napi-rs/keyring"],
     },
     "apps/desktop": {
       // Electron loads these bundles by filename rather than importing them.
@@ -77,6 +93,8 @@
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
+        // The hosted two-process store test launches this captured child by filename.
+        "src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
         "src/preview/Annotation.css!",
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",
@@ -91,8 +109,13 @@
     "apps/web": {
       // Vitest loads this through the per-file @vitest-environment directive.
       "ignoreDependencies": ["jsdom"],
-      // Worktree setup (scripts/setup-worktree.ts) runs this directly.
-      "entry": ["scripts/warm-dep-cache.ts"],
+      "entry": [
+        // Worktree setup (scripts/setup-worktree.ts) runs this directly.
+        "scripts/warm-dep-cache.ts",
+        // Qualification invokes the config by CLI and the fixture entry through HTML.
+        "vite.install-preview.config.ts",
+        "src/jones/updates/fixtures/install-preview-entry.ts",
+      ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
@@ -116,7 +139,7 @@
         "@t3tools/mobile-terminal-native",
       ],
     },
-    "apps/mobile/modules/t3-markdown-text": {
+    "apps/mobile/modules/t3-source-text": {
       // React Native codegen discovers component specifications by filename.
       "entry": ["src/*NativeComponent.ts!"],
     },

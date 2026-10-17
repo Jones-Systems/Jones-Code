@@ -254,6 +254,7 @@ it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =
 it.effect("migration 105 preserves released rows, rowids, triggers and Jones references", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const through105 = jonesMigrationEntries.filter(([id]) => id <= 105);
     yield* runMigrations({ toMigrationInclusive: upstreamThrough });
     yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 105));
     yield* seedReferencedRows;
@@ -262,7 +263,7 @@ it.effect("migration 105 preserves released rows, rowids, triggers and Jones ref
     assert.isTrue(Exit.isFailure(yield* Effect.exit(pruneSettled)));
 
     assert.deepStrictEqual(
-      (yield* runJonesMigrations(jonesMigrationEntries)).map(([id]) => id),
+      (yield* runJonesMigrations(through105)).map(([id]) => id),
       [105],
     );
     const after = yield* Effect.forEach([...rebuiltTables, ...rebuiltChildren], readTable);
@@ -290,6 +291,6 @@ it.effect("migration 105 preserves released rows, rowids, triggers and Jones ref
       assert.isTrue(Exit.isFailure(yield* Effect.exit(sql.unsafe(`DELETE FROM "${table}"`))));
     }
     assert.strictEqual(yield* pruneSettled, 1);
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    assert.deepStrictEqual(yield* runJonesMigrations(through105), []);
   }).pipe(Effect.provide(memory)),
 );

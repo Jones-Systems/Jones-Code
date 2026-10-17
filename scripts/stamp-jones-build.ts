@@ -12,7 +12,12 @@ const sha = git(["rev-parse", "HEAD"]);
 const tree = git(["rev-parse", "HEAD^{tree}"]);
 if (!/^[a-f0-9]{40}$/.test(sha) || !/^[a-f0-9]{40}$/.test(tree))
   throw new Error("Invalid Jones build source.");
-if (process.env.GITHUB_SHA && process.env.GITHUB_SHA !== sha)
+// Pull-request jobs may check out the head while GitHub retains the merge SHA in GITHUB_SHA.
+const expectedSourceSha =
+  process.env.JONES_EXPECTED_SOURCE_SHA ?? (process.env.GITHUB_SHA || undefined);
+if (expectedSourceSha !== undefined && !/^[a-f0-9]{40}$/.test(expectedSourceSha))
+  throw new Error("Invalid expected Jones build source.");
+if (expectedSourceSha !== undefined && expectedSourceSha !== sha)
   throw new Error("Checkout does not match workflow source.");
 const identity = { repository: "Jones-Systems/Jones-Code", sha, tree };
 for (const relative of ["apps/server/package.json", "apps/desktop/package.json"]) {

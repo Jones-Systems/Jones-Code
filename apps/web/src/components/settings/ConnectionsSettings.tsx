@@ -1,4 +1,8 @@
+import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
+import { SessionPermissions } from "./SessionPermissions";
+import { AUTH_SCOPE_OPTIONS as PAIRING_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
+import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import {
   ChevronRightIcon,
   ChevronsLeftRightEllipsisIcon,
@@ -24,20 +28,13 @@ import {
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
-  AuthSettingsWriteScope,
-  AuthProvidersManageScope,
   AuthEnvironmentMaintainScope,
   AuthDiagnosticsReadScope,
-  AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
-  AuthPreviewOperateScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
-  AuthSourceControlWriteScope,
   AuthFilesystemReadScope,
-  AuthFilesystemWriteScope,
   AuthStandardClientScopes,
-  AuthTerminalOperateScope,
   AuthTerminalReadScope,
   type AuthClientSession,
   type AuthEnvironmentScope,
@@ -231,93 +228,6 @@ function formatAccessTimestamp(value: string): string {
   }
   return accessTimestampFormatter.format(parsed);
 }
-
-const PAIRING_SCOPE_OPTIONS: ReadonlyArray<{
-  readonly scope: AuthGrantScope;
-  readonly title: string;
-  readonly description: string;
-}> = [
-  {
-    scope: AuthOrchestrationReadScope,
-    title: "View environment",
-    description: "Read threads, status, checkpoints, and configuration.",
-  },
-  {
-    scope: AuthOrchestrationOperateScope,
-    title: "Operate tasks",
-    description: "Start, update, and stop tasks.",
-  },
-  {
-    scope: AuthSettingsWriteScope,
-    title: "Change environment settings",
-    description: "Edit environment preferences and keybindings.",
-  },
-  {
-    scope: AuthProvidersManageScope,
-    title: "Manage providers",
-    description: "Configure, install, sign in to, and update providers and usage sources.",
-  },
-  {
-    scope: AuthEnvironmentMaintainScope,
-    title: "Maintain environment",
-    description: "Update the server and control environment processes.",
-  },
-  {
-    scope: AuthPreviewOperateScope,
-    title: "Control previews",
-    description: "Open browser previews and host browser automation.",
-  },
-  {
-    scope: AuthDiagnosticsReadScope,
-    title: "View diagnostics and usage",
-    description: "Read process diagnostics, resource history, and usage totals.",
-  },
-  {
-    scope: AuthTerminalReadScope,
-    title: "View terminals",
-    description: "Read existing terminal output and status.",
-  },
-  {
-    scope: AuthTerminalOperateScope,
-    title: "Use terminals",
-    description: "Create terminals and send input to running shells.",
-  },
-  {
-    scope: AuthSourceControlWriteScope,
-    title: "Change source control",
-    description: "Commit, push, manage branches and repositories, and change pull requests.",
-  },
-  {
-    scope: AuthFilesystemReadScope,
-    title: "Read files",
-    description: "Browse host files, search workspaces, and inspect local changes.",
-  },
-  {
-    scope: AuthFilesystemWriteScope,
-    title: "Write files",
-    description: "Edit workspace files and save plans to disk.",
-  },
-  {
-    scope: AuthAccessReadScope,
-    title: "View access",
-    description: "Inspect pairing links and authorized clients.",
-  },
-  {
-    scope: AuthAccessWriteScope,
-    title: "Manage access",
-    description: "Issue and revoke credentials for other clients.",
-  },
-  {
-    scope: AuthRelayReadScope,
-    title: "View relay",
-    description: "Inspect managed relay connectivity.",
-  },
-  {
-    scope: AuthRelayWriteScope,
-    title: "Manage relay",
-    description: "Change managed tunnel connectivity.",
-  },
-];
 
 function AccessScopeSummary({
   scopes,
@@ -963,7 +873,7 @@ const PairingLinkListRow = memo(function PairingLinkListRow({
                       role="radio"
                       aria-checked={isSelected}
                       className={cn(
-                        "flex w-full items-baseline gap-2 rounded-lg border px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        "flex w-full items-baseline gap-2 rounded-lg border px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                         isSelected
                           ? "border-foreground/60 bg-muted/30"
                           : "border-border/50 hover:bg-muted/20",
@@ -1587,8 +1497,10 @@ function SavedBackendListRow({
   onAddRoute,
 }: SavedBackendListRowProps) {
   const [routesOpen, setRoutesOpen] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
+  const historicalUpdate = environment.entry.compatibilityHint?.kind === "outdated-update";
   const enabled = environment.entry.enabled && !unsupported;
   const isConnected = environment.connection.phase === "connected";
   const isRemoving = removingEnvironmentId === environmentId;
@@ -1743,7 +1655,7 @@ function SavedBackendListRow({
             type="button"
             aria-expanded={routesOpen}
             onClick={() => setRoutesOpen((open) => !open)}
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           >
             {routeCount === 1 ? "Routes" : `${routeCount} routes`}
             <ChevronRightIcon
@@ -1754,11 +1666,31 @@ function SavedBackendListRow({
               )}
             />
           </button>
+          <span aria-hidden className="shrink-0">
+            ·
+          </span>
+          <button
+            type="button"
+            aria-expanded={permissionsOpen}
+            aria-controls={`remote-permissions-${environmentId}`}
+            onClick={() => setPermissionsOpen((open) => !open)}
+            className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            Permissions
+            <ChevronRightIcon
+              aria-hidden
+              className={cn(
+                "size-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none",
+                permissionsOpen && "rotate-90",
+              )}
+            />
+          </button>
         </span>
       }
       below={
         <>
           {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
+          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
           {serverUpdateState.status !== "idle" ? (
             <div className="mt-1 max-w-md">
               <ServerUpdateProgress state={serverUpdateState} />
@@ -1767,12 +1699,26 @@ function SavedBackendListRow({
         </>
       }
       detail={
-        routesOpen ? (
-          <EnvironmentRoutesList
-            environment={environment}
-            onAddRoute={() => onAddRoute(environment)}
-          />
-        ) : null
+        <>
+          {routesOpen && (
+            <EnvironmentRoutesList
+              environment={environment}
+              onAddRoute={() => onAddRoute(environment)}
+            />
+          )}
+          {permissionsOpen && (
+            <div
+              id={`remote-permissions-${environmentId}`}
+              className="mt-2 border-t border-border/50"
+            >
+              <SessionPermissions
+                environmentId={environmentId}
+                connected={isConnected}
+                routeContext
+              />
+            </div>
+          )}
+        </>
       }
     >
       {unsupported &&
@@ -1785,6 +1731,9 @@ function SavedBackendListRow({
           targetVersion={APP_VERSION}
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
         />
+      ) : null}
+      {!unsupported && historicalUpdate ? (
+        <JonesBlockedHostUpdates environmentId={environmentId} historical />
       ) : null}
       {showUpdateAction ? (
         <ServerUpdateAction
@@ -1805,14 +1754,20 @@ function SavedBackendListRow({
             <Switch
               size="sm"
               checked={enabled}
-              disabled={isRemoving || unsupported}
+              disabled={isRemoving || unsupported || historicalUpdate}
               aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
               onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
             />
           }
         />
         <TooltipPopup side="top">
-          {unsupported ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+          {unsupported
+            ? "Client not supported"
+            : historicalUpdate
+              ? "Previously required an update; refresh host status"
+              : enabled
+                ? "Switch off"
+                : "Switch on"}
         </TooltipPopup>
       </Tooltip>
       <Menu>
@@ -1890,7 +1845,9 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
   const {
     isSignedIn,
     linkState: primaryCloudLinkState,
+    linkRevoked,
     managedTunnelActive,
+    managedTunnelOutOfSync,
     publishAgentActivity,
     holdWebhooksWhileOffline,
     operationError,
@@ -1979,9 +1936,13 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
         <SettingsRow
           title={searchableSetting("t3-connect").title}
           description={
-            managedTunnelActive
-              ? "This environment is available to your other devices through T3 Connect."
-              : "Make this environment available to your other devices through T3 Connect."
+            linkRevoked
+              ? "This environment was removed from T3 Connect. Turn it on to link it again."
+              : managedTunnelActive
+                ? "This environment is available to your other devices through T3 Connect."
+                : managedTunnelOutOfSync
+                  ? "T3 Connect is out of sync. This environment is linked only to publish agent activity, so other devices cannot connect. Turn T3 Connect on to repair it."
+                  : "Make this environment available to your other devices through T3 Connect."
           }
           status={operationError ?? primaryCloudLinkState.error}
           control={
@@ -1998,6 +1959,11 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
               onCheckedChange={(enabled) => void updateManagedTunnel(enabled)}
             />
           }
+        />
+      ) : linkRevoked ? (
+        <SettingsRow
+          title={searchableSetting("t3-connect").title}
+          description="This environment was removed from T3 Connect. Run `t3 connect link` on the host to link it again."
         />
       ) : null}
       <SettingsRow
@@ -3781,6 +3747,21 @@ export function ConnectionsSettings() {
                 ) : null}
               </>
             ) : null}
+            {primaryEnvironment ? (
+              <details className="group px-3 sm:px-4">
+                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                  Permissions
+                  <ChevronRightIcon
+                    aria-hidden
+                    className="size-3 text-muted-foreground group-open:rotate-90"
+                  />
+                </summary>
+                <SessionPermissions
+                  environmentId={primaryEnvironment.environmentId}
+                  connected={primaryEnvironment.connection.phase === "connected"}
+                />
+              </details>
+            ) : null}
           </SettingsSection>
 
           {canReadAccess || canWriteAccess ? (
@@ -4101,6 +4082,8 @@ export function ConnectionsSettings() {
             title="No environment selected"
             description="Connect an environment to view its settings and access."
           />
+          {/* A turned-off local environment leaves no primary environment, so its switch lives here too. */}
+          <LocalEnvironmentSetting />
           {canReadRelay || canManageRelay ? (
             <CloudLinkRow canReadRelay={canReadRelay} canManageRelay={canManageRelay} />
           ) : null}
@@ -4110,7 +4093,7 @@ export function ConnectionsSettings() {
   );
 
   return (
-    <SettingsPageContainer width="wide">
+    <SettingsPageContainer>
       {primarySettings}
       <SettingsSection
         {...searchableSetting("remote-environments")}

@@ -33,6 +33,11 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
      * Connect credential instead of a stored bearer token.
      */
     authorization: Schema.optionalKey(Schema.Literal("t3-connect")),
+    /**
+     * "tailscale" on a learned route the server found on its Tailscale
+     * interface. A bare 100.64.0.0/10 address could belong to any VPN.
+     */
+    network: Schema.optionalKey(Schema.Literal("tailscale")),
   },
 ) {}
 
@@ -64,6 +69,8 @@ export interface ConnectionCatalogEntry {
   readonly alternateRoutes?: ReadonlyArray<ConnectionRoute>;
   /** False when the user switched the environment off: saved, but never connects. */
   readonly enabled: boolean;
+  /** Historical update-management hint for these saved routes; never live connection state. */
+  readonly compatibilityHint?: { readonly routeBinding: string; readonly kind: "outdated-update" };
   /** Discovery rejection stays visible while the saved connection is switched off. */
   readonly unsupportedReason?: string;
   /** The rejection came from an outdated host, which can still be updated remotely. */

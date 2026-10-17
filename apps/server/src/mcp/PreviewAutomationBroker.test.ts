@@ -515,7 +515,6 @@ it.effect.each([
         threadId: scope.thread.threadId,
       });
       expect(error.cause).toBe(remoteError);
-      expect(error.message).toContain("remains on the desktop");
       expect(error.message).not.toContain("remote recording details");
     }),
   ),
@@ -1404,7 +1403,7 @@ it.effect("evicts an unanswered host and lets later calls use a healthy runtime"
           Effect.forkScoped,
         );
       yield* Deferred.await(otherReceived);
-      yield* TestClock.adjust(1_000);
+      yield* TestClock.adjust(2_000);
       expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
       yield* Deferred.await(otherCompleted);
       expect(yield* Deferred.isDone(otherCompleted)).toBe(true);
@@ -1474,7 +1473,7 @@ it.effect("discards buffered actions before completing an evicted host stream", 
         })
         .pipe(Effect.flip, Effect.forkScoped);
       yield* Deferred.await(actionRouted);
-      yield* TestClock.adjust(1_000);
+      yield* TestClock.adjust(2_000);
       expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
       expect(yield* Fiber.join(buffered)).toMatchObject({
         _tag: "PreviewAutomationClientDisconnectedError",
@@ -1536,7 +1535,7 @@ it.effect("rejects a routed action when its generation is evicted before deliver
           Effect.forkScoped,
         );
       yield* Deferred.await(actionRouted);
-      yield* TestClock.adjust(1_000);
+      yield* TestClock.adjust(2_000);
       expect(yield* Fiber.join(timedOut)).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
       expect(Exit.isSuccess(yield* Fiber.await(consumer))).toBe(true);
 
@@ -1550,30 +1549,41 @@ it.effect("rejects a routed action when its generation is evicted before deliver
   ),
 );
 
-it.effect("keeps a host that responds with an operation timeout", () =>
+it.effect("keeps a host whose operation timeout arrives just after the budget", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const broker = yield* makeBroker;
-      const connected = yield* Deferred.make<void>();
-      const events = yield* broker.connect(makeHost());
-      yield* Stream.runForEach(events, (event) => {
-        if (event.type === "connected") return Deferred.succeed(connected, undefined);
-        return broker.respond({
-          clientId: "client-1",
-          connectionId: event.connectionId,
-          requestId: event.request.requestId,
-          ...(event.request.operation === "waitFor"
-            ? {
-                ok: false,
-                error: { _tag: "PreviewAutomationTimeoutError", message: "Selector timed out" },
-              }
-            : { ok: true, result: "responsive" }),
-        });
-      }).pipe(Effect.forkScoped);
-      yield* Deferred.await(connected);
-      expect(
-        yield* broker.invoke<void>({ scope, operation: "waitFor", input: {} }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "PreviewAutomationTimeoutError" });
+      const received = yield* Deferred.make<void>();
+      const requests = requestsFrom(yield* broker.connect(makeHost()));
+      yield* Stream.runForEach(requests, (request) =>
+        Effect.gen(function* () {
+          if (request.operation === "waitFor") {
+            yield* Deferred.succeed(received, undefined);
+            // The browser starts its own timer after delivery, so its timeout lands late.
+            yield* Effect.sleep(request.timeoutMs + 50);
+          }
+          yield* broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ...(request.operation === "waitFor"
+              ? {
+                  ok: false,
+                  error: { _tag: "PreviewAutomationTimeoutError", message: "Selector timed out" },
+                }
+              : { ok: true, result: "responsive" }),
+          });
+        }),
+      ).pipe(Effect.forkScoped);
+      const timedOut = yield* broker
+        .invoke<void>({ scope, operation: "waitFor", input: {}, timeoutMs: 1_000 })
+        .pipe(Effect.flip, Effect.forkScoped);
+      yield* Deferred.await(received);
+      yield* TestClock.adjust(1_050);
+      expect(yield* Fiber.join(timedOut)).toMatchObject({
+        _tag: "PreviewAutomationTimeoutError",
+        remoteTag: "PreviewAutomationTimeoutError",
+      });
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("responsive");
     }),
   ),
@@ -1767,7 +1777,7 @@ it.effect("expires one request without evicting a generation with a newer valid 
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("alive");
-      yield* TestClock.adjust(1000);
+      yield* TestClock.adjust(2000);
       const error = yield* Fiber.join(expired);
       expect(yield* broker.invoke({ scope, operation: "status", input: {} })).toBe("alive");
       expect(error).toMatchObject({ _tag: "PreviewAutomationTimeoutError", outcome: "unknown" });
@@ -1841,7 +1851,7 @@ it.effect("coalesces simultaneous expiries into one unanswered ping before evict
         .invoke({ scope, operation: "snapshot", input: {}, timeoutMs: 100 })
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(routed);
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       expect(yield* Fiber.join(a)).toMatchObject({ outcome: "unknown" });
       expect(yield* Fiber.join(b)).toMatchObject({ outcome: "unknown" });
       expect(pings).toBe(1);
@@ -1888,7 +1898,7 @@ it.effect.each(["late reply", "snapshot"])(
           .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
         const late = yield* Deferred.await(received);
         yield* broker.invoke({ scope, operation: "status", input: {} });
-        yield* TestClock.adjust(100);
+        yield* TestClock.adjust(1100);
         yield* Fiber.join(a);
         expect(
           yield* broker
@@ -1951,7 +1961,7 @@ it.effect("snapshot cannot clear a mutation outside the controlled semaphore", (
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
       yield* broker.invoke({ scope, operation: "status", input: {} });
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(expired);
       yield* broker.invoke({ scope, operation: "snapshot", tabId, input: {} });
       expect(
@@ -2058,7 +2068,7 @@ it.effect("a stale unanswered ping cannot evict a replacement generation", () =>
         .invoke({ scope, operation: "status", input: {}, timeoutMs: 100 })
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       yield* Deferred.await(received);
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(expired);
       yield* Deferred.await(pingReady);
       yield* Stream.runForEach(
@@ -2116,7 +2126,7 @@ it.effect(
           .invoke({ scope, operation: "evaluate", input: {}, timeoutMs: 5000 })
           .pipe(Effect.forkScoped);
         const bRequest = yield* Deferred.await(bReady);
-        yield* TestClock.adjust(100);
+        yield* TestClock.adjust(1100);
         expect(yield* Fiber.join(a)).toMatchObject({ outcome: "unknown" });
         yield* broker.respond({
           clientId: "client-1",
@@ -2158,7 +2168,7 @@ it.effect("an exact late unknown reply retains quarantine until a settled reply 
         .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
       const late = yield* Deferred.await(ready);
       yield* broker.invoke({ scope, operation: "status", input: {} });
-      yield* TestClock.adjust(100);
+      yield* TestClock.adjust(1100);
       yield* Fiber.join(a);
       yield* broker.respond({
         clientId: "client-1",

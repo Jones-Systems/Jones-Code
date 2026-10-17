@@ -1,7 +1,6 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import {
-  executeAtomQuery,
   type AtomCommandResult,
   isAtomCommandInterrupted,
   settlePromise,
@@ -19,13 +18,10 @@ import { useCallback, useMemo } from "react";
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
-  canStopThreadSession,
   threadActionRequiresOperate,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
@@ -152,17 +148,6 @@ export function useThreadActionMenu(input: {
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
         };
-        const projection = await executeAtomQuery(
-          appAtomRegistry,
-          orchestrationEnvironment.v2.threadProjection({
-            environmentId: threadRef.environmentId,
-            input: { threadId: threadRef.threadId },
-          }),
-          { refresh: true, reportFailure: false },
-        );
-        const canStopSession = canStopThreadSession(
-          projection._tag === "Success" ? projection.value.providerSessions : null,
-        );
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
         const items = buildThreadActionMenuItems({
@@ -176,7 +161,6 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: !threadRuntimeCanArchive(thread.runtime),
-          canStopSession,
           supports,
           snoozePresets,
         });
@@ -248,7 +232,6 @@ export function useThreadActionMenu(input: {
             return;
           }
           case "stop-thread":
-            if (!canStopSession) return;
             await reportFailure("Failed to stop thread", () =>
               stopThreadSession({
                 environmentId: threadRef.environmentId,

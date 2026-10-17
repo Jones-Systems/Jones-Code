@@ -186,7 +186,7 @@ const make = Effect.gen(function* () {
     }
     const requestKey =
       input.clientRequestId === undefined
-        ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
+        ? yield* crypto.randomUUIDv4().pipe(Effect.orDie)
         : input.clientRequestId;
     const updateCommandId = commandId({
       scope,

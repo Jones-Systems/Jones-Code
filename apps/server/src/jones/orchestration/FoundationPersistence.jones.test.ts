@@ -28,7 +28,7 @@ import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
-import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionMaintenance from "../../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 

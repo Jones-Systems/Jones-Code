@@ -5,6 +5,21 @@ on:
   push:
     branches:
       - main
+  # Manual runs compare server shard counts against a fixed weights source.
+  workflow_dispatch:
+    inputs:
+      server_shards:
+        description: Number of server test shards
+        type: choice
+        options:
+          - "6"
+          - "8"
+        default: "6"
+      weights_source_run_id:
+        description: CI run whose combined server shard weights to use (default newest main push)
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -25,6 +40,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           sparse-checkout: |
             /*
             !/.repos/
@@ -52,8 +68,26 @@ jobs:
       - name: Check unused code
         run: vp run knip:check
 
+      - name: Verify Jones boundary accounting
+        run: node scripts/jones/check-boundary.ts --strict --json
+
       - name: Check
         run: vp check
+
+      - name: Capture formatting repair patch
+        if: failure()
+        run: |
+          vp fmt
+          git diff --binary > "${{ runner.temp }}/formatting-repair.patch"
+
+      - name: Upload formatting repair patch
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: formatting-repair
+          path: ${{ runner.temp }}/formatting-repair.patch
+          if-no-files-found: ignore
+          retention-days: 7
 
   typecheck:
     name: Typecheck
@@ -154,6 +188,9 @@ jobs:
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
 
+      - name: Test process placement build custody
+        run: node --test native/process-placement/build.test.mjs
+
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
@@ -188,19 +225,63 @@ jobs:
       - name: Test
         run: vp run --filter @t3tools/web test
 
+  # Picks the server shard weights once for the whole run, so every shard splits
+  # the same file list the same way. It reads the combined weights that the
+  # newest successful main push uploaded and otherwise keeps the checked-in map;
+  # it fails only when a manual run names a source that cannot be used.
+  server_weights:
+    name: Server Weights
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      source_run_id: ${{ steps.select.outputs.source_run_id }}
+      digest: ${{ steps.select.outputs.digest }}
+      weights: ${{ steps.select.outputs.weights }}
+      shards: ${{ steps.select.outputs.shards }}
+      shard_count: ${{ steps.select.outputs.shard_count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /package.json
+            /scripts/jones/server-shard-weights/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Select server shard weights
+        id: select
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_SERVER_SHARDS: ${{ inputs.server_shards }}
+          INPUT_WEIGHTS_SOURCE_RUN_ID: ${{ inputs.weights_source_run_id }}
+        run: node scripts/jones/server-shard-weights/select.ts
+
   # apps/server sets `fileParallelism: false`, so its test files run strictly
   # one at a time. Sharding spreads them over separate runners instead of
   # separate workers, so no two server test files ever share a machine and the
   # isolation that flag buys is preserved exactly. The shards
-  # split files by recorded duration (apps/server/src/testUtils/weightedShardSequencer.ts).
+  # split files by recorded duration (apps/server/src/testUtils/weightedShardSequencer.ts),
+  # using the weights `server_weights` picked, and each records its own timings.
   test_server:
     name: Test Server ${{ matrix.shard }}
+    needs: server_weights
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.server_weights.outputs.shards) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -223,11 +304,59 @@ jobs:
       - name: Install Chromium for server browser integration tests
         run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
 
+      # Every shard must use the same weights, so a map that fails its digest
+      # fails the shard rather than falling back on its own.
+      - name: Load server shard weights
+        env:
+          WEIGHTS_MODE: ${{ needs.server_weights.outputs.mode }}
+          WEIGHTS: ${{ needs.server_weights.outputs.weights }}
+          WEIGHTS_DIGEST: ${{ needs.server_weights.outputs.digest }}
+          WEIGHTS_SOURCE_RUN_ID: ${{ needs.server_weights.outputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          case "$WEIGHTS_MODE" in
+            checked-in)
+              echo "Using the checked-in server shard weights."
+              ;;
+            runtime)
+              path="$RUNNER_TEMP/server-shard-weights.json"
+              # The step output drops the file's final newline.
+              printf '%s\n' "$WEIGHTS" > "$path"
+              actual="$(sha256sum "$path" | cut -d ' ' -f 1)"
+              if [[ "$actual" != "$WEIGHTS_DIGEST" ]]; then
+                echo "Server shard weights hash to $actual, expected $WEIGHTS_DIGEST." >&2
+                exit 1
+              fi
+              {
+                echo "JONES_SERVER_SHARD_WEIGHTS_PATH=$path"
+                echo "JONES_SERVER_SHARD_WEIGHTS_DIGEST=$WEIGHTS_DIGEST"
+                echo "JONES_SERVER_SHARD_WEIGHTS_SOURCE_RUN_ID=$WEIGHTS_SOURCE_RUN_ID"
+              } >> "$GITHUB_ENV"
+              echo "Using server shard weights from run $WEIGHTS_SOURCE_RUN_ID ($WEIGHTS_DIGEST)."
+              ;;
+            *)
+              echo "Unknown server shard weights mode: $WEIGHTS_MODE" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Test
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
-        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
+          JONES_SERVER_SHARD_TIMINGS_PATH: ${{ runner.temp }}/server-timings.ndjson
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts
+
+      # Uploaded even when the shard fails, so partial timings stay inspectable.
+      # The attempt and shard in the name keep reruns and shards apart.
+      - name: Upload server shard timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-timings-a${{ github.run_attempt }}-s${{ matrix.shard }}-of-${{ strategy.job-total }}
+          path: ${{ runner.temp }}/server-timings.ndjson
+          if-no-files-found: warn
+          retention-days: 7
 
       # integration/transferBudgetV2.integration.test.ts writes the report; exactly one shard
       # produces these files. Gating the upload on their presence keeps a
@@ -274,6 +403,64 @@ jobs:
         with:
           name: thread-transfer-results
           path: ${{ runner.temp }}/thread-transfer
+
+  # Combines the server shards' timings into one weights file for later runs to
+  # use. A run whose server tests did not all pass, or a rerun of only some
+  # shards, is not a measurement. Passing shards whose timings fail validation
+  # fail this job.
+  server_timings:
+    name: Server Timings
+    needs: [server_weights, test_server]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /package.json
+            /scripts/jones/server-shard-weights/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      # The combine step decides whether every shard arrived, so a failed
+      # download leaves that judgement to it.
+      - name: Download server shard timings
+        if: needs.test_server.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: server-timings-a${{ github.run_attempt }}-s*-of-${{ needs.server_weights.outputs.shard_count }}
+          path: ${{ runner.temp }}/server-timings
+
+      - name: Combine server shard timings
+        id: combine
+        env:
+          TEST_SERVER_RESULT: ${{ needs.test_server.result }}
+          SHARD_COUNT: ${{ needs.server_weights.outputs.shard_count }}
+          WEIGHTS_MODE: ${{ needs.server_weights.outputs.mode }}
+          WEIGHTS_DIGEST: ${{ needs.server_weights.outputs.digest }}
+          WEIGHTS_SOURCE_RUN_ID: ${{ needs.server_weights.outputs.source_run_id }}
+          CAPTURES_DIR: ${{ runner.temp }}/server-timings
+          WEIGHTS_OUT: ${{ runner.temp }}/server-shard-weights.json
+        run: node scripts/jones/server-shard-weights/aggregate-cli.ts
+
+      # Main pushes are the only runs later runs read weights from.
+      - name: Upload server shard weights
+        if: steps.combine.outputs.eligible == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-shard-weights-a${{ github.run_attempt }}
+          path: ${{ runner.temp }}/server-shard-weights.json
+          if-no-files-found: error
+          retention-days: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 30 || 7 }}
 
   # Split out of Check and Test: both paid ~7-9s to install a Rust toolchain
   # for checks that take under 3s, on the critical path of every PR.
@@ -345,6 +532,11 @@ jobs:
           row='[.filename, (.previous_filename // empty)] | @tsv'
 
           if [[ -n "${PR_NUMBER}" ]]; then
+            stack_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.stack.base.ref // empty') \
+              || fail_open "Could not read native stack membership."
+            if [[ -n "$stack_base" ]]; then
+              fail_open "Native stack qualification covers lower layers as well as this PR."
+            fi
             # The PR files endpoint stops at 3000 files and pagination cannot
             # extend it, so cross-check against the count the PR itself reports.
             expected=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files') \
@@ -456,8 +648,10 @@ jobs:
         build,
         test,
         test_web,
+        server_weights,
         test_server,
         transfer-report,
+        server_timings,
         rust,
         mobile_native_changes,
         mobile_native_static_analysis,

@@ -10,7 +10,8 @@
     "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
     "apps/web/src/jones/composer/composerModelEffortShortcuts.ts",
     "apps/web/src/jones/composer/composerShortcutRails.test.ts",
-    "apps/web/src/jones/composer/composerShortcutRails.ts"
+    "apps/web/src/jones/composer/composerShortcutRails.ts",
+    "apps/web/src/jones/composer/ProviderShortcutIcon.tsx"
   ],
   "hookPaths": [
     "apps/web/src/components/ChatView.tsx",

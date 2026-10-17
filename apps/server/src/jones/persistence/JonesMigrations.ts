@@ -19,6 +19,8 @@ import JonesMigration0103 from "./Migrations/103_JonesRuntimeStop.ts";
 import JonesMigration0102 from "./Migrations/102_JonesImportedHistoryChoices.ts";
 import JonesMigration0105 from "./Migrations/105_JonesUpstreamReferenceIsolation.ts";
 
+import JonesMigration0106 from "./Migrations/106_JonesPlannedUpdateContinuity.ts";
+
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -32,6 +34,7 @@ export const jonesMigrationEntries = [
   [103, "RuntimeStop", JonesMigration0103],
   [104, "DeletionAdmission", JonesMigration0104],
   [105, "UpstreamReferenceIsolation", JonesMigration0105],
+  [106, "PlannedUpdateContinuity", JonesMigration0106],
 ] as const;
 
 export const runMigrations = () =>

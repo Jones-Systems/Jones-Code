@@ -1,12 +1,18 @@
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node's glob matcher to verify electron-builder exclusions.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
+import {
+  createJonesLegacyBootstrapPreparationBundle,
+  JONES_PREPARATION_SOURCE_INPUTS,
+  type JonesPreparationArtifactEvidence,
+} from "./jones/updates/legacy-bootstrap-bundle.ts";
 
-import { extractFile, statFile } from "@electron/asar";
+import { createPackageWithOptions, extractFile, statFile } from "@electron/asar";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,16 +24,19 @@ import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import {
+  allocateDesktopStageRoot,
   BundleNotSelfContainedError,
   BuildCommandFailedError,
   parseWslRuntimeArchiveMembers,
   DesktopDmgBackgroundSourceMissingError,
   createStageWorkspaceConfig,
   createStagePatchedDependencies,
+  readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_ELECTRON_LANGUAGES,
   DESKTOP_FILE_EXCLUSIONS,
   DESKTOP_EXTRA_RESOURCES,
+  JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE,
   LINUX_CAPTURE_EXTRA_RESOURCES,
   LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
   LINUX_FILE_EXCLUSIONS,
@@ -47,6 +56,7 @@ import {
   preflightMacDesktopBuild,
   preflightWindowsDesktopBuild,
   renderMacPasskeyEntitlements,
+  resolveMacWebAuthnEntitlements,
   resolveClerkPasskeyNativeArtifacts,
   resolveMacPasskeySigningConfiguration,
   resolveDesktopRuntimeDependencies,
@@ -77,6 +87,8 @@ import {
   LinuxBrowserSecretHostError,
   stageBrowserSecret,
   validateWindowsPackagedPayload,
+  verifyJonesPackagedMacResources,
+  requireJonesPreparationProducer,
   WindowsPrimaryNativeProbeError,
   WindowsDesktopBuildPrerequisitesMissingError,
   WindowsPackagedPayloadValidationError,
@@ -96,8 +108,14 @@ import {
   wslRuntimeArchiveStem,
 } from "./build-desktop-artifact.ts";
 import { BRAND_ASSET_PATHS } from "./lib/brand-assets.ts";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
+
+// Keeps pnpm from auto-installing TypeScript, a types-only peer, into the app.
+const stagePackageExtensions = {
+  "electron-webauthn": { peerDependenciesMeta: { typescript: { optional: true } } },
+  "@electron-webauthn/macos": { peerDependenciesMeta: { typescript: { optional: true } } },
+};
 
 // A minimal stand-in for the Linux CLI release archive: one top-level
 // directory named after the archive stem holding the executable, the web
@@ -194,7 +212,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   yield* fs.makeDirectory(path.dirname(serverEntryPath), { recursive: true });
   yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
   yield* fs.writeFileString(serverEntryPath, input.serverEntrySource ?? "console.log('server');\n");
-  yield* fs.writeFileString(nativePath, "native-binary");
+  yield* fs.writeFileString(nativePath, "MZ native-binary");
 
   const generatedAsarPath = path.join(tempDir, WINDOWS_SERVER_ASAR_RESOURCE);
   yield* packWindowsServerAsar({ sourceDir, asarPath: generatedAsarPath, arch: "x64" });
@@ -480,6 +498,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         os: ["darwin"],
         cpu: ["x64"],
       },
+      packageExtensions: stagePackageExtensions,
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "linux", arch: "x64" }), {
       supportedArchitectures: {
@@ -487,6 +506,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         cpu: ["x64"],
         libc: ["glibc"],
       },
+      packageExtensions: stagePackageExtensions,
     });
     // Windows stages only win32 natives; WSL runs the separately built Linux
     // CLI archive rather than anything installed here.
@@ -495,20 +515,42 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         os: ["win32"],
         cpu: ["x64"],
       },
+      packageExtensions: stagePackageExtensions,
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "win", arch: "arm64" }), {
       supportedArchitectures: {
         os: ["win32"],
         cpu: ["arm64"],
       },
+      packageExtensions: stagePackageExtensions,
     });
     assert.deepStrictEqual(createStageWorkspaceConfig({ platform: "mac", arch: "universal" }), {
       supportedArchitectures: {
         os: ["darwin"],
         cpu: ["arm64", "x64"],
       },
+      packageExtensions: stagePackageExtensions,
     });
   });
+
+  // pnpm writes "set this to true or false" placeholders into allowBuilds when a
+  // tarball changes. pnpm ignores them, but the release build decode rejects them.
+  it.effect("decodes the repo allowBuilds and every file: tarball it names exists", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { allowBuilds = {} } = yield* readWorkspaceConfig();
+      const repoRoot = path.join(import.meta.dirname, "..");
+      for (const key of Object.keys(allowBuilds)) {
+        const tarball = key.split("@file:")[1];
+        if (tarball === undefined) continue;
+        assert.isTrue(
+          yield* fs.exists(path.join(repoRoot, tarball)),
+          `allowBuilds names a missing tarball: ${key}`,
+        );
+      }
+    }),
+  );
 
   it("stages pnpm 11 allowBuilds and patchedDependencies in the workspace yaml", () => {
     assert.deepStrictEqual(
@@ -533,6 +575,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           cpu: ["x64"],
           libc: ["glibc"],
         },
+        packageExtensions: stagePackageExtensions,
         allowBuilds: {
           electron: true,
           "node-pty": true,
@@ -563,6 +606,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           os: ["darwin"],
           cpu: ["arm64"],
         },
+        packageExtensions: stagePackageExtensions,
       },
     );
   });
@@ -710,6 +754,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual((linux.linux as Record<string, unknown>).protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
       ]);
+      // macOS also offers itself as a web browser, so it can be chosen as the default.
+      assert.deepStrictEqual((mac.mac as Record<string, unknown>).protocols, [
+        { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+      ]);
+      // macOS lists a default browser only when it also opens web pages as documents.
+      const macInfo = (mac.mac as { extendInfo: Record<string, unknown> }).extendInfo;
+      assert.strictEqual(macInfo.NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac, true);
+      assert.deepStrictEqual(macInfo.CFBundleDocumentTypes, [
+        {
+          CFBundleTypeName: "Web page",
+          CFBundleTypeRole: "Viewer",
+          LSHandlerRank: "Alternate",
+          LSItemContentTypes: ["public.html", "public.xhtml"],
+        },
+      ]);
       assert.deepStrictEqual(linux.toolsets, { appimage: "1.0.3" });
       assert.notProperty(mac, "toolsets");
       assert.notProperty(win, "toolsets");
@@ -718,12 +778,348 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.deepStrictEqual(win.files, DESKTOP_FILE_EXCLUSIONS);
       assert.deepStrictEqual(winWithoutWslRuntime.files, win.files);
       assert.notProperty(mac.mac as Record<string, unknown>, "sign");
+      assert.propertyVal(
+        (mac.mac as Record<string, unknown>).extendInfo as Record<string, unknown>,
+        "NSLocalNetworkUsageDescription",
+        "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+      );
       for (const config of [linux, win]) {
         assert.deepStrictEqual(config.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
       }
       assert.deepStrictEqual(mac.electronLanguages, DESKTOP_ELECTRON_LANGUAGES);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
+
+  it.effect.skipIf(!symlinksSupported)(
+    "canonicalizes an aliased staging parent while preserving cleanup and keep-stage behavior",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtureRoot = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ownedRoot = yield* fs.makeTempDirectoryScoped({ prefix: "jones-stage-alias-" });
+            const parent = path.join(yield* fs.realPath(ownedRoot), "parent");
+            const alias = path.join(ownedRoot, "alias");
+            yield* fs.makeDirectory(parent);
+            yield* fs.symlink(parent, alias);
+            for (const keepStage of [false, true]) {
+              for (const fail of [false, true]) {
+                const allocation = Effect.scoped(
+                  Effect.gen(function* () {
+                    const stageRoot = yield* allocateDesktopStageRoot("mac", keepStage, alias);
+                    assert.equal(path.dirname(stageRoot), parent);
+                    assert.equal(stageRoot, yield* fs.realPath(stageRoot));
+                    const stageAppDir = path.join(stageRoot, "app");
+                    yield* fs.makeDirectory(stageAppDir);
+                    assert.equal(stageAppDir, yield* fs.realPath(stageAppDir));
+                    yield* fs.writeFileString(path.join(stageAppDir, "owned-fixture"), "fixture");
+                    if (fail) return yield* Effect.fail(stageRoot);
+                    return stageRoot;
+                  }),
+                );
+                const result = yield* fail ? Effect.flip(allocation) : allocation;
+                assert.isString(result);
+                const stageRoot = result as string;
+                assert.equal(yield* fs.exists(stageRoot), keepStage);
+                const allocatedAlias = path.join(alias, path.basename(stageRoot));
+                assert.equal(yield* fs.exists(allocatedAlias), keepStage);
+                if (keepStage) {
+                  assert.equal(
+                    yield* fs.readFileString(path.join(stageRoot, "app", "owned-fixture")),
+                    "fixture",
+                  );
+                }
+              }
+            }
+            return ownedRoot;
+          }),
+        );
+        assert.isFalse(yield* fs.exists(fixtureRoot));
+      }),
+  );
+
+  it.effect("copies the standalone bootstrap only when the Mac bundle was staged", () =>
+    Effect.gen(function* () {
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+        undefined,
+        true,
+      );
+      const ordinaryMac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const linux = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "x64",
+        undefined,
+        true,
+      );
+      const companion = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3-preview.20261011.1.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "arm64",
+        "preview-companion",
+        true,
+      );
+      assert.deepStrictEqual(mac.extraResources, [
+        ...DESKTOP_EXTRA_RESOURCES,
+        JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE,
+      ]);
+      assert.deepStrictEqual(ordinaryMac.extraResources, DESKTOP_EXTRA_RESOURCES);
+      assert.deepStrictEqual(linux.extraResources, [
+        ...DESKTOP_EXTRA_RESOURCES,
+        ...LINUX_CAPTURE_EXTRA_RESOURCES,
+        ...LINUX_BROWSER_SECRET_EXTRA_RESOURCES,
+      ]);
+      assert.isString(mac.afterPack);
+      assert.isTrue(NodePath.isAbsolute(mac.afterPack as string));
+      assert.equal(NodePath.basename(mac.afterPack as string), "legacy-bootstrap-after-pack.mjs");
+      assert.equal(JSON.parse(JSON.stringify(mac)).afterPack, mac.afterPack);
+      for (const config of [ordinaryMac, linux, companion]) assert.notProperty(config, "afterPack");
+      assert.deepStrictEqual(companion.extraResources, DESKTOP_EXTRA_RESOURCES);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  it.effect.skipIf(
+    !["linux", "darwin"].includes(Context.get(Context.empty(), HostProcess.Platform)),
+  )("identifies Mac startup metadata, bootstrap modes, bytes, and missing files separately", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-mac-proof-" });
+        const sourceDirectory = path.join(root, "source");
+        const resources = path.join(root, "Resources");
+        const packagedAsar = path.join(resources, "app.asar");
+        const source = {
+          repository: "Jones-Systems/Jones-Code" as const,
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        };
+        const version = "1.0.0-preview.20261011.1.1";
+        const file = {
+          relativePath: "jones-bootstrap/bootstrap.py",
+          content: "synthetic bootstrap bytes\n",
+          mode: 0o500,
+        };
+        const resource = path.join(resources, file.relativePath);
+        yield* fs.makeDirectory(sourceDirectory);
+        yield* fs.makeDirectory(path.dirname(resource), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(sourceDirectory, "package.json"),
+          JSON.stringify({ version, jonesSource: source, startupGateProtocol: 1 }),
+        );
+        yield* Effect.tryPromise(() => createPackageWithOptions(sourceDirectory, packagedAsar, {}));
+        yield* fs.writeFileString(resource, file.content);
+        yield* fs.chmod(resource, file.mode);
+        const input = { packagedAsar, source, version, bootstrapBundle: [file] };
+        yield* verifyJonesPackagedMacResources(input);
+
+        const metadataFailure = yield* verifyJonesPackagedMacResources({
+          ...input,
+          version: "different",
+        }).pipe(Effect.flip);
+        assert.instanceOf(metadataFailure, BundleNotSelfContainedError);
+        assert.include(metadataFailure.output, "startup gate failed for app.asar/package.json");
+        assert.include(metadataFailure.output, "does not prove its source-bound startup gate");
+        assert.notInclude(metadataFailure.output, "UnknownError");
+
+        yield* fs.chmod(resource, 0o755);
+        const modeFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(
+          modeFailure.output,
+          `bootstrap file identity/mode failed for ${file.relativePath}`,
+        );
+        assert.include(modeFailure.output, "expected regular file mode 0o500");
+        assert.include(modeFailure.output, "observed regular file mode 0o755");
+
+        yield* fs.chmod(resource, 0o600);
+        yield* fs
+          .writeFileString(resource, "changed fixture bytes\n")
+          .pipe(Effect.ensuring(fs.chmod(resource, file.mode).pipe(Effect.orDie)));
+        const bytesFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(bytesFailure.output, `bootstrap file bytes failed for ${file.relativePath}`);
+        assert.include(bytesFailure.output, "expected SHA-256");
+        assert.include(bytesFailure.output, "observed");
+        assert.notInclude(bytesFailure.output, "changed fixture bytes");
+
+        yield* fs.remove(resource);
+        const missingFailure = yield* verifyJonesPackagedMacResources(input).pipe(Effect.flip);
+        assert.include(
+          missingFailure.output,
+          `bootstrap file stat failed for ${file.relativePath}`,
+        );
+        assert.include(missingFailure.output, "ENOENT");
+        assert.notInclude(missingFailure.output, "UnknownError");
+
+        const native = Buffer.alloc(160);
+        [0xfeedfacf, 0x0100000c, 0, 2, 2, 96, 0, 0].forEach((value, index) =>
+          native.writeUInt32LE(value, index * 4),
+        );
+        native.writeUInt32LE(0x19, 32);
+        native.writeUInt32LE(72, 36);
+        native.write("__TEXT", 40, "ascii");
+        native.writeBigUInt64LE(160n, 80);
+        native.writeUInt32LE(0x80000028, 104);
+        native.writeUInt32LE(24, 108);
+        native.writeBigUInt64LE(128n, 112);
+        native[159] = 0xff;
+        const nativeFile = {
+          relativePath: "jones-bootstrap/identity-native",
+          content: native,
+          mode: 0o500,
+        };
+        const nativePath = path.join(resources, nativeFile.relativePath);
+        yield* fs.writeFile(nativePath, native);
+        yield* fs.chmod(nativePath, 0o500);
+        const nativeInput = { ...input, bootstrapBundle: [nativeFile] };
+        yield* verifyJonesPackagedMacResources(nativeInput);
+        const changed = Buffer.from(native);
+        changed[159] = 0xfe;
+        yield* fs.chmod(nativePath, 0o600);
+        yield* fs.writeFile(nativePath, changed);
+        yield* fs.chmod(nativePath, 0o500);
+        const changedFailure = yield* verifyJonesPackagedMacResources(nativeInput).pipe(
+          Effect.flip,
+        );
+        assert.include(changedFailure.output, "bootstrap file bytes");
+        changed.writeUInt32LE(0x01000007, 4);
+        yield* fs.chmod(nativePath, 0o600);
+        yield* fs.writeFile(nativePath, changed);
+        yield* fs.chmod(nativePath, 0o500);
+        const architectureFailure = yield* verifyJonesPackagedMacResources({
+          ...input,
+          bootstrapBundle: [{ ...nativeFile, content: changed }],
+        }).pipe(Effect.flip);
+        assert.include(architectureFailure.output, "native architecture");
+        // Synthetic runtime bytes prove final package binding, not worker execution.
+        const runtimeBytes = Buffer.from("inert preparation package fixture\n");
+        const digest = (value: string | Uint8Array) =>
+          NodeCrypto.createHash("sha256").update(value).digest("hex");
+        const seaConfig =
+          '{"main":"offlinePreparationEntry.mjs","mainFormat":"module","executable":"node","output":"jones-offline-preparation","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":false,"execArgv":[],"execArgvExtension":"none"}\n';
+        const identity = {
+          repository: source.repository,
+          sourceSha: source.sha,
+          sourceTree: source.tree,
+          version,
+        };
+        const evidence: JonesPreparationArtifactEvidence = {
+          schema: 1,
+          observation: "complete",
+          classification: "cold-preparation-worker",
+          source: identity,
+          preparation: {
+            schema: 1,
+            protocol: 1,
+            provenanceSha256: "1".repeat(64),
+            sourceInputHashes: Object.fromEntries(
+              JONES_PREPARATION_SOURCE_INPUTS.map((name) => [name, "2".repeat(64)]),
+            ) as JonesPreparationArtifactEvidence["preparation"]["sourceInputHashes"],
+            entry: { sha256: "3".repeat(64), size: 4096 },
+            seaConfig: { sha256: digest(seaConfig), size: Buffer.byteLength(seaConfig) },
+            executable: {
+              name: "jones-offline-preparation",
+              sha256: digest(runtimeBytes),
+              size: runtimeBytes.length,
+            },
+            node: {
+              version: "26.8.2",
+              platform: "darwin",
+              architecture: "arm64",
+              archiveSha256: "4".repeat(64),
+              archiveBytes: 4096,
+              checksumsSha256: "5".repeat(64),
+              runtimeSha256: "6".repeat(64),
+              runtimeBytes: 4096,
+            },
+            sqlite: { version: "3.50.4", sourceId: "2025-07-30 19:33:53 " + "7".repeat(64) },
+          },
+        };
+        const preparation = createJonesLegacyBootstrapPreparationBundle(
+          identity,
+          {
+            identityNative: native,
+            identityNativeSourceSha256: "8".repeat(64),
+            maintenanceSource: "# inert maintenance\n",
+          },
+          evidence,
+        );
+        for (const member of preparation.files) {
+          const filename = path.join(resources, member.relativePath);
+          if (yield* fs.exists(filename)) yield* fs.chmod(filename, 0o600);
+          yield* fs.writeFile(
+            filename,
+            typeof member.content === "string" ? Buffer.from(member.content) : member.content,
+          );
+          yield* fs.chmod(filename, member.mode);
+        }
+        const runtimePath = path.join(resources, preparation.runtime.relativePath);
+        yield* fs.writeFile(runtimePath, runtimeBytes);
+        yield* fs.chmod(runtimePath, 0o500);
+        const preparationInput = {
+          ...input,
+          bootstrapBundle: preparation.files,
+          bootstrapRuntime: preparation.runtime,
+        };
+        // The native resource verifier deliberately requires canonical parent paths.
+        const canonicalResources = yield* fs.realPath(resources);
+        const canonicalInput = {
+          ...preparationInput,
+          packagedAsar: path.join(canonicalResources, "app.asar"),
+        };
+        yield* verifyJonesPackagedMacResources(canonicalInput);
+        const missingDescriptor = yield* verifyJonesPackagedMacResources({
+          ...input,
+          bootstrapBundle: preparation.files,
+        }).pipe(Effect.flip);
+        assert.include(missingDescriptor.output, "Missing independent runtime descriptor");
+        yield* fs.chmod(runtimePath, 0o600);
+        yield* fs.writeFile(runtimePath, Buffer.alloc(runtimeBytes.length));
+        yield* fs.chmod(runtimePath, 0o500);
+        const alteredRuntime = yield* verifyJonesPackagedMacResources(canonicalInput).pipe(
+          Effect.flip,
+        );
+        assert.include(alteredRuntime.output, "Preparation runtime digest differs");
+      }),
+    ),
+  );
+
+  it("refuses an explicit preparation bundle request while the producer remains held", () => {
+    assert.doesNotThrow(() => requireJonesPreparationProducer(false));
+    assert.throws(
+      () => requireJonesPreparationProducer(true),
+      /qualified complete preparation producer/,
+    );
+  });
 
   it("excludes foreign node-pty prebuilds from macOS and Linux packages", () => {
     assert.deepStrictEqual(MAC_FILE_EXCLUSIONS, [
@@ -900,6 +1296,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             "node_modules/native/library.dylib",
           ];
           const packedFiles = [
+            ["node_modules/native/foreign/addon.node", "\x7fELF"],
             ["node_modules/native/index.js", "module.exports = true;"],
             ["node_modules/native/package.json", '{"name":"native-fixture"}'],
           ] as const;
@@ -907,10 +1304,12 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           for (const nativeFile of nativeFiles) {
             const nativePath = path.join(sourceDir, nativeFile);
             yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
-            yield* fs.writeFileString(nativePath, `native:${nativeFile}`);
+            yield* fs.writeFileString(nativePath, `MZnative:${nativeFile}`);
           }
           for (const [packedFile, contents] of packedFiles) {
-            yield* fs.writeFileString(path.join(sourceDir, packedFile), contents);
+            const packedPath = path.join(sourceDir, packedFile);
+            yield* fs.makeDirectory(path.dirname(packedPath), { recursive: true });
+            yield* fs.writeFileString(packedPath, contents);
           }
 
           const asarPath = path.join(tempDir, "server.asar");
@@ -920,7 +1319,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
             assert.isTrue(statFile(asarPath, nativeFile).unpacked);
             assert.equal(
               yield* fs.readFileString(path.join(unpackedRoot, nativeFile)),
-              `native:${nativeFile}`,
+              `MZnative:${nativeFile}`,
             );
           }
           for (const [packedFile, contents] of packedFiles) {
@@ -932,7 +1331,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       ),
   );
 
-  it.effect("keeps target native files while excluding the other Windows architecture", () =>
+  it.effect("unpacks target Windows natives while excluding the other architecture", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -946,12 +1345,14 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "node_modules/node-pty/prebuilds/win32-arm64/conpty/OpenConsole.exe",
           "node_modules/node-pty/third_party/conpty/1.0.0/win10-x64/OpenConsole.exe",
           "node_modules/node-pty/third_party/conpty/1.0.0/win10-arm64/OpenConsole.exe",
+          "node_modules/node-pty/prebuilds/win32-x64/pty.node",
+          "node_modules/node-pty/prebuilds/linux-x64/pty.node",
         ];
 
         for (const nativeFile of nativeFiles) {
           const nativePath = path.join(sourceDir, nativeFile);
           yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
-          yield* fs.writeFileString(nativePath, "native");
+          yield* fs.writeFileString(nativePath, nativeFile.includes("linux") ? "\x7fELF" : "MZ");
         }
 
         const asarPath = path.join(tempDir, "server.asar");
@@ -965,6 +1366,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               "node_modules/node-pty/prebuilds/win32-x64/conpty/OpenConsole.exe",
             ),
           ),
+        );
+        assert.isTrue(
+          yield* fs.exists(
+            path.join(unpackedRoot, "node_modules/node-pty/prebuilds/win32-x64/pty.node"),
+          ),
+        );
+        // Signed builds sign every unpacked .node, so the ELF prebuild stays packed.
+        assert.isFalse(
+          yield* fs.exists(path.join(unpackedRoot, "node_modules/node-pty/prebuilds/linux-x64")),
+        );
+        assert.equal(
+          extractFile(
+            asarPath,
+            path.join("node_modules", "node-pty", "prebuilds", "linux-x64", "pty.node"),
+          ).toString(),
+          "\x7fELF",
         );
         assert.isFalse(
           yield* fs.exists(path.join(unpackedRoot, "node_modules/node-pty/prebuilds/win32-arm64")),
@@ -1327,7 +1744,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isBelow(result.fileCount, WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT);
         assert.deepStrictEqual(secondAsar, firstAsar);
       }),
-    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("accepts an embedded Linux CLI release archive with a matching digest", () =>
@@ -1347,7 +1764,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
         assert.equal(result.packagedAppDir, fixture.packagedAppDir);
       }),
-    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each(["x64", "arm64"] as const)(
@@ -1371,7 +1788,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
           assert.equal(result.packagedAppDir, fixture.packagedAppDir);
         }),
-      ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+      ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect.each(["x64", "arm64"] as const)(
@@ -1552,7 +1969,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           primaryProbe.args[4],
           path.join(
             fixture.packagedAppDir,
-            "resources/server.asar/node_modules/@ff-labs/fff-node/dist/src/index.js",
+            "resources/server.asar/node_modules/@ff-labs/fff-node/dist/index.js",
           ),
         );
         assert.equal(primaryProbe.options.cwd, fixture.packagedAppDir);
@@ -1562,8 +1979,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         Layer.mergeAll(
           spawnerLayer,
-          Layer.succeed(HostProcessPlatform, "win32"),
-          Layer.succeed(HostProcessArchitecture, "x64"),
+          Layer.succeed(HostProcess.Platform, "win32"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
         ),
       ),
     );
@@ -1605,8 +2022,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         Layer.mergeAll(
           spawnerLayer,
-          Layer.succeed(HostProcessPlatform, "linux"),
-          Layer.succeed(HostProcessArchitecture, "x64"),
+          Layer.succeed(HostProcess.Platform, "linux"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
         ),
       ),
     );
@@ -1641,8 +2058,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         Layer.mergeAll(
           spawnerLayer,
-          Layer.succeed(HostProcessPlatform, "darwin"),
-          Layer.succeed(HostProcessArchitecture, "arm64"),
+          Layer.succeed(HostProcess.Platform, "darwin"),
+          Layer.succeed(HostProcess.Architecture, "arm64"),
         ),
       ),
     );
@@ -1687,8 +2104,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       Effect.provide(
         Layer.mergeAll(
           spawnerLayer,
-          Layer.succeed(HostProcessPlatform, "win32"),
-          Layer.succeed(HostProcessArchitecture, "x64"),
+          Layer.succeed(HostProcess.Platform, "win32"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
         ),
       ),
     );
@@ -1716,8 +2133,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ).pipe(
       Effect.provide(
         Layer.mergeAll(
-          Layer.succeed(HostProcessPlatform, "win32"),
-          Layer.succeed(HostProcessArchitecture, "x64"),
+          Layer.succeed(HostProcess.Platform, "win32"),
+          Layer.succeed(HostProcess.Architecture, "x64"),
         ),
       ),
     ),
@@ -1828,7 +2245,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.instanceOf(error, BundleNotSelfContainedError);
         assert.include(error.output, "t3code-deliberately-missing-package");
       }),
-    ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
+    ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("preserves both Linux icon resize failures with structural context", () => {
@@ -1964,7 +2381,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       T3CODE_CLERK_PASSKEY_RP_DOMAINS:
         " Clerk.Example.com,example.clerk.accounts.dev,clerk.example.com ",
     });
-    const entitlements = renderMacPasskeyEntitlements(configuration);
+    const entitlements = renderMacPasskeyEntitlements(configuration, {
+      touchIdKeychainAccessGroup: undefined,
+      browserPasskeys: false,
+    });
 
     assert.deepStrictEqual(configuration.rpDomains, [
       "clerk.example.com",
@@ -1974,6 +2394,78 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
+    assert.notInclude(entitlements, "keychain-access-groups");
+    assert.notInclude(entitlements, "com.apple.developer.web-browser.public-key-credential");
+  });
+
+  it("grants in-app browser passkey entitlements only when the provisioning profile does", () => {
+    const configuration = { appId: "com.t3tools.t3code", teamId: "ABC1234567" };
+    // Profiles are CMS envelopes around a plain XML plist.
+    const profile = (entitlements: string, outside = "") =>
+      `0\x82\x1f\x9a\x06\t*\x86H<?xml version="1.0"?><plist version="1.0"><dict>${outside}<key>Entitlements</key><dict>${entitlements}</dict></dict></plist>\x00\x01`;
+    const teamWildcardGroups = `<key>keychain-access-groups</key>
+      <array>
+        <string>ABC1234567.*</string>
+        <string>com.apple.token</string>
+      </array>`;
+
+    assert.deepStrictEqual(resolveMacWebAuthnEntitlements(profile(""), configuration), {
+      touchIdKeychainAccessGroup: undefined,
+      browserPasskeys: false,
+    });
+    assert.deepStrictEqual(
+      resolveMacWebAuthnEntitlements(
+        profile("<key>keychain-access-groups</key><array><string>OTHERTEAM1.*</string></array>"),
+        configuration,
+      ),
+      { touchIdKeychainAccessGroup: undefined, browserPasskeys: false },
+    );
+    // Only real values inside the Entitlements dict count: not comments, not
+    // explicit false, not keys elsewhere in the profile.
+    assert.deepStrictEqual(
+      resolveMacWebAuthnEntitlements(
+        profile(
+          `<!-- ${teamWildcardGroups}
+          <key>com.apple.developer.web-browser.public-key-credential</key><true/> -->
+          <key>com.apple.developer.web-browser.public-key-credential</key><false/>`,
+          teamWildcardGroups,
+        ),
+        configuration,
+      ),
+      { touchIdKeychainAccessGroup: undefined, browserPasskeys: false },
+    );
+    assert.deepStrictEqual(
+      resolveMacWebAuthnEntitlements(
+        profile(
+          `${teamWildcardGroups}
+          <key>com.apple.developer.web-browser.public-key-credential</key>
+          <true/>`,
+        ),
+        configuration,
+      ),
+      {
+        touchIdKeychainAccessGroup: "ABC1234567.com.t3tools.t3code.webauthn",
+        browserPasskeys: true,
+      },
+    );
+
+    const entitlements = renderMacPasskeyEntitlements(
+      { ...configuration, rpDomains: ["clerk.example.com"], provisioningProfilePath: "" },
+      resolveMacWebAuthnEntitlements(
+        profile(
+          `${teamWildcardGroups}<key>com.apple.developer.web-browser.public-key-credential</key><true/>`,
+        ),
+        configuration,
+      ),
+    );
+    assert.match(
+      entitlements,
+      /<key>keychain-access-groups<\/key>\s*<array>\s*<string>ABC1234567\.com\.t3tools\.t3code\.webauthn<\/string>\s*<\/array>/u,
+    );
+    assert.match(
+      entitlements,
+      /<key>com\.apple\.developer\.web-browser\.public-key-credential<\/key>\s*<true\/>/u,
+    );
   });
 
   it("rejects incomplete macOS passkey signing configuration", () => {
@@ -2071,6 +2563,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
       assert.deepStrictEqual(mac.protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
       ]);
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
@@ -2094,7 +2587,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
-  it.effect("keeps executable resource editing enabled for unsigned Windows builds", () =>
+  it.effect("configures Windows executable metadata and native signing extensions", () =>
     Effect.gen(function* () {
       const config = yield* createBuildConfig(
         "win",
@@ -2108,6 +2601,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
       const win = config.win as Record<string, unknown>;
       assert.equal(win.icon, "icon.ico");
+      assert.deepStrictEqual(win.signExts, [".node", ".dll"]);
       assert.equal(win.signAndEditExecutable, true);
       assert.notProperty(win, "azureSignOptions");
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
@@ -2322,8 +2816,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
-            Layer.succeed(HostProcessPlatform, "win32"),
-            Layer.succeed(HostProcessArchitecture, "x64"),
+            Layer.succeed(HostProcess.Platform, "win32"),
+            Layer.succeed(HostProcess.Architecture, "x64"),
             ConfigProvider.layer(
               ConfigProvider.fromEnv({
                 env: {

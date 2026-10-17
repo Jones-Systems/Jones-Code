@@ -2,7 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { qualifiedPayloadDigest, QUALIFIED_RUNTIME_RECEIPT } from "../../cloud/qualifiedRuntime.ts";
@@ -39,8 +39,8 @@ const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 export const syntheticT3Home = (prefix: string) =>
   Effect.acquireRelease(
     Effect.gen(function* () {
-      const platform = yield* HostProcessPlatform;
-      const architecture = yield* HostProcessArchitecture;
+      const platform = yield* HostProcess.Platform;
+      const architecture = yield* HostProcess.Architecture;
       return yield* Effect.tryPromise(async (): Promise<SyntheticT3Home> => {
         const baseDir = NodeFS.realpathSync(
           NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), prefix)),
@@ -122,8 +122,8 @@ export const syntheticT3Home = (prefix: string) =>
         }
       });
     }).pipe(
-      Effect.provideService(HostProcessPlatform, HostProcessPlatform.defaultValue()),
-      Effect.provideService(HostProcessArchitecture, HostProcessArchitecture.defaultValue()),
+      Effect.provideService(HostProcess.Platform, HostProcess.Platform.defaultValue()),
+      Effect.provideService(HostProcess.Architecture, HostProcess.Architecture.defaultValue()),
     ),
     (home) => Effect.sync(() => NodeFS.rmSync(home.baseDir, { recursive: true, force: true })),
   );

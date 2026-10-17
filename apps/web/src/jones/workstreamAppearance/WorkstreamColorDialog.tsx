@@ -92,7 +92,7 @@ export function WorkstreamColorDialog(props: {
                   setDraft(value);
                   setAutomatic(false);
                 }}
-                className="h-8 rounded border-2 border-transparent outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="h-8 rounded border-2 border-transparent outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 style={{
                   backgroundColor: value,
                   borderColor: !automatic && color === value ? "var(--foreground)" : "transparent",

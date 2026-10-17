@@ -10,6 +10,7 @@ import * as DesktopEnvironment from "../../app/DesktopEnvironment.ts";
 import * as DesktopLinuxUrlHandler from "../../app/DesktopLinuxUrlHandler.ts";
 import { resolveEarlyLinuxElectronOptions } from "../../app/DesktopEarlyElectronStartup.ts";
 import * as DesktopClerk from "../../app/DesktopClerk.ts";
+import * as DesktopWebLinks from "../../app/DesktopWebLinks.ts";
 import * as DesktopAssets from "../../app/DesktopAssets.ts";
 import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
@@ -193,6 +194,10 @@ describe("companion product boot", () => {
         const f = bootFixture(yield* Path.Path.pipe(Effect.provide(Path.layer)));
         const layer = Layer.mergeAll(
           environmentLayer(f.env, "linux"),
+          Layer.succeed(DesktopWebLinks.DesktopWebLinks, {
+            receive: () => Effect.die("unexpected companion web link"),
+            setRendererReady: () => Effect.die("unexpected companion renderer registration"),
+          }),
           Layer.mock(ElectronApp.ElectronApp, {}),
           Layer.mock(ElectronWindow.ElectronWindow, {}),
           Layer.mock(ElectronShell.ElectronShell, {}),

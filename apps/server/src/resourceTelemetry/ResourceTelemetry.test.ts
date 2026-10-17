@@ -145,69 +145,79 @@ function desktopSnapshot(sampledAtUnixMs: number): DesktopHostTelemetrySnapshot 
 }
 
 describe("ResourceTelemetry", () => {
-  it.effect(
-    "projects scoped provider ownership only into live samples and removes it after scope closure",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          yield* TestClock.adjust("1 second");
-          const sampledAtUnixMs = DateTime.toEpochMillis(yield* DateTime.now);
-          const sample = nativeSnapshot({
-            sequence: 1,
-            sampledAtUnixMs,
-            childCpuTimeMs: 100,
-            childWriteBytes: 1_000,
-          });
-          const samples = yield* Ref.make(sample);
-          const attribution = yield* ProcessAttribution.make();
-          const runtimeScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
-            Scope.close(scope, Exit.void),
+  it.effect("replays churning history and retains baselines for returning processes", () =>
+    Effect.gen(function* () {
+      const readAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const sampleCount = 100;
+      const samples = Array.from({ length: sampleCount }, (_, index) => {
+        const sample = nativeSnapshot({
+          sequence: index + 1,
+          sampledAtUnixMs: readAtMs - (sampleCount - index) * 1_000,
+          childCpuTimeMs: index * 10,
+          childWriteBytes: index * 100,
+        });
+        const processes = sample.processes
+          .filter((entry) => entry.pid === process.pid || entry.pid === 4_242)
+          .map((entry) =>
+            entry.pid === 4_242
+              ? { ...entry, startTimeMs: index }
+              : { ...entry, ioWriteBytes: index * 100 },
           );
-          yield* attribution
-            .registerProviderRoot({ pid: 4_242, threadId: "thread-1", provider: "codex" })
-            .pipe(Effect.provideService(Scope.Scope, runtimeScope));
-          const layerTelemetry = ResourceTelemetry.layer.pipe(
-            Layer.provide(
-              Layer.mergeAll(
-                NativeTelemetryClient.layerTest({
-                  sampleNow: Ref.get(samples).pipe(
-                    Effect.map((snapshot) => nativeGeneration(snapshot, 0)),
-                  ),
-                  readHistory: () => Effect.succeed([sample]),
-                }),
-                DesktopTelemetryReceiver.layerTest(),
-                Layer.succeed(ProcessAttribution.ProcessAttribution, attribution),
-                ResourceAttribution.layer,
-              ),
-            ),
+        if (index === 0 || index === 2) {
+          processes.push(
+            processSample({
+              pid: 4_243,
+              ppid: process.pid,
+              startTimeMs: 500,
+              cpuTimeMs: index === 0 ? 100 : 350,
+              ioWriteBytes: index === 0 ? 1_000 : 5_000,
+            }),
           );
-          yield* Effect.gen(function* () {
-            const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
-            const live = yield* telemetry.refresh;
-            expect(live.processes.find((entry) => entry.identity.pid === 4_242)).toMatchObject({
-              category: "provider-root",
-              owner: { kind: "provider", threadId: "thread-1", provider: "codex" },
-            });
-            const history = yield* telemetry.readHistory({ windowMs: 1_000, bucketMs: 1_000 });
-            const historicalRoot = history.topProcesses.find(
-              (entry) => entry.identity.pid === 4_242,
-            );
-            expect(historicalRoot).toMatchObject({ category: "server-child" });
-            expect(historicalRoot).not.toHaveProperty("owner");
+        }
+        return { ...sample, processes };
+      });
+      const layerTelemetry = ResourceTelemetry.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NativeTelemetryClient.layerTest({ readHistory: () => Effect.succeed(samples) }),
+            DesktopTelemetryReceiver.layerTest(),
+            ProcessAttribution.layer,
+            ResourceAttribution.layer,
+          ),
+        ),
+      );
 
-            yield* Scope.close(runtimeScope, Exit.void);
-            yield* Ref.set(samples, {
-              ...sample,
-              sequence: 2,
-              sampledAtUnixMs: sampledAtUnixMs + 1,
-            });
-            const afterClose = yield* telemetry.refresh;
-            const root = afterClose.processes.find((entry) => entry.identity.pid === 4_242);
-            expect(root).toMatchObject({ category: "server-child" });
-            expect(root?.owner).toBeUndefined();
-          }).pipe(Effect.provide(layerTelemetry));
-        }),
-      ),
+      yield* Effect.gen(function* () {
+        const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
+        const history = yield* telemetry.readHistory({
+          windowMs: sampleCount * 1_000,
+          bucketMs: 10_000,
+        });
+
+        expect(history.topProcesses).toHaveLength(sampleCount + 2);
+        expect(
+          history.topProcesses.find((entry) => entry.identity.pid === process.pid),
+        ).toMatchObject({
+          sampleCount,
+          cpuTimeMs: (sampleCount - 1) * 10,
+          ioWriteBytes: (sampleCount - 1) * 100,
+        });
+        const children = history.topProcesses.filter((entry) => entry.identity.pid === 4_242);
+        expect(children).toHaveLength(sampleCount);
+        for (const child of children) {
+          expect(child).toMatchObject({ sampleCount: 1, cpuTimeMs: 0, ioWriteBytes: 0 });
+        }
+        expect(history.topProcesses.find((entry) => entry.identity.pid === 4_243)).toMatchObject({
+          sampleCount: 2,
+          cpuTimeMs: 250,
+          ioWriteBytes: 4_000,
+        });
+        expect(Math.max(...history.buckets.map((bucket) => bucket.maxProcessCount))).toBe(3);
+        expect(history.buckets.reduce((total, bucket) => total + bucket.ioWriteBytes, 0)).toBe(
+          (sampleCount - 1) * 100 + 4_000,
+        );
+      }).pipe(Effect.provide(layerTelemetry));
+    }),
   );
 
   it.effect("enables live native and Electron collection only while changes are retained", () =>

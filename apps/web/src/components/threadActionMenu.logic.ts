@@ -1,4 +1,4 @@
-import type { OrchestrationV2ProviderSession, ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
 /**
@@ -70,12 +70,6 @@ export function buildDraftActionMenuItems(options: {
   ];
 }
 
-export function canStopThreadSession(
-  sessions: ReadonlyArray<Pick<OrchestrationV2ProviderSession, "status">> | null,
-): boolean {
-  return sessions?.some((session) => session.status !== "stopped") ?? false;
-}
-
 export interface ThreadActionMenuState {
   readonly canOperate: boolean;
   readonly branch: string | null;
@@ -97,7 +91,6 @@ export interface ThreadActionMenuState {
   readonly isRegeneratingTitle: boolean;
   /** Archive rejects a thread with an attached provider, so disable it here rather than let the action fail. */
   readonly isRunning: boolean;
-  readonly canStopSession: boolean;
   readonly supports: {
     readonly settlement: boolean;
     /** Server understands thread.auto-settle.set. */
@@ -161,7 +154,8 @@ export function buildThreadActionMenuItems(
       id: "stop-thread",
       label: "Stop thread",
       icon: "square",
-      disabled: !state.canStopSession,
+      // Session liveness is checked by the stop command when selected.
+      disabled: !state.canOperate,
     },
     ...(state.supports.snooze
       ? [
