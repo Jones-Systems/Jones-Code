@@ -56,21 +56,33 @@ export interface ServiceState {
   readonly update?: ServiceUpdateRecord;
 }
 
-/** Context is copied from launcher-owned state when a child is spawned. */
 export interface ServiceLauncherContext {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
   readonly qualifiedUpdatesProtocol?: 1;
+  readonly updateOperationsProtocol?: 1;
+  readonly updateRetirementProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
 
+export interface ServiceUpdateRetirement {
+  readonly operationId: string;
+  readonly environmentId: string;
+  readonly currentVersion: string;
+  readonly expectedInstalledSource: string;
+  readonly targetSource: string;
+  readonly stagedHandle: string;
+}
+
 export type ServiceLauncherChildMessage =
+  | ({ readonly type: "request-retire-update" } & ServiceUpdateRetirement)
   | {
       readonly type: "request-update";
       readonly targetVersion: string;
       readonly dbPath: string;
       readonly stagedHandle?: string;
+      readonly operationId?: string;
     }
   | {
       readonly type: "prepared";
@@ -81,6 +93,13 @@ export type ServiceLauncherChildMessage =
 
 export type ServiceLauncherParentMessage =
   | {
+      readonly type: "update-retired";
+      readonly operationId: string;
+      readonly stagedHandle: string;
+      readonly retired: boolean;
+      readonly reason?: string;
+    }
+  | {
       readonly type: "update-accepted";
       readonly updateId: string;
       readonly migrationPlan?: MigrationPlan;
@@ -88,6 +107,7 @@ export type ServiceLauncherParentMessage =
   | {
       readonly type: "update-rejected";
       readonly reason: string;
+      readonly operationId?: string;
     }
   | {
       readonly type: "committed";
@@ -102,7 +122,6 @@ const EXACT_SERVICE_VERSION = new RegExp(
   `^${SEMVER_NUMBER}\\.${SEMVER_NUMBER}\\.${SEMVER_NUMBER}(?:-${SEMVER_PRERELEASE}(?:\\.${SEMVER_PRERELEASE})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$`,
 );
 
-/** Accepts exact SemVer only: never dist-tags or ranges passed to npm or filesystem paths. */
 export const isExactServiceVersion = (version: string): boolean =>
   EXACT_SERVICE_VERSION.test(version);
 
@@ -184,7 +203,6 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   return undefined;
 }
 
-/** SemVer precedence for exact versions. Build metadata is ignored. */
 export function compareExactServiceVersions(left: string, right: string): number {
   const parse = (version: string) => {
     const withoutBuild = version.split("+", 1)[0] ?? version;
@@ -255,7 +273,6 @@ export function parseServiceState(value: string): ServiceState | undefined {
   }
 }
 
-/** Detects an in-flight update across launcher protocol versions before replacing its state. */
 export function serviceStateHasPendingUpdate(value: string): boolean {
   try {
     const parsed: unknown = JSON.parse(value);
@@ -265,7 +282,6 @@ export function serviceStateHasPendingUpdate(value: string): boolean {
   }
 }
 
-/** Reads the active version across launcher protocol revisions for downgrade protection. */
 export function serviceStateActiveVersion(value: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(value);
@@ -322,6 +338,8 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
+    ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
+    ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -351,6 +369,27 @@ export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "request-retire-update") {
+    const keys = [
+      "operationId",
+      "environmentId",
+      "currentVersion",
+      "expectedInstalledSource",
+      "targetSource",
+      "stagedHandle",
+    ] as const;
+    if (
+      keys.some((key) => typeof value[key] !== "string" || value[key] === "") ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        String(value.operationId),
+      )
+    )
+      return undefined;
+    return {
+      type: "request-retire-update",
+      ...Object.fromEntries(keys.map((key) => [key, value[key]])),
+    } as Extract<ServiceLauncherChildMessage, { type: "request-retire-update" }>;
+  }
   if (
     value.type === "request-update" &&
     typeof value.targetVersion === "string" &&
@@ -358,11 +397,21 @@ export function decodeServiceLauncherChildMessage(
   ) {
     if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
       return undefined;
+    if (
+      value.operationId !== undefined &&
+      (typeof value.operationId !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+          value.operationId,
+        ) ||
+        value.stagedHandle === undefined)
+    )
+      return undefined;
     return {
       type: value.type,
       targetVersion: value.targetVersion,
       dbPath: value.dbPath,
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
+      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
     };
   }
   if (value.type !== "prepared" || typeof value.updateId !== "string") return undefined;
@@ -383,8 +432,29 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "update-retired") {
+    if (
+      typeof value.operationId !== "string" ||
+      typeof value.stagedHandle !== "string" ||
+      typeof value.retired !== "boolean" ||
+      (value.reason !== undefined && typeof value.reason !== "string")
+    )
+      return undefined;
+    return {
+      type: "update-retired",
+      operationId: value.operationId,
+      stagedHandle: value.stagedHandle,
+      retired: value.retired,
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    };
+  }
   if (value.type === "update-rejected" && typeof value.reason === "string") {
-    return { type: value.type, reason: value.reason };
+    if (value.operationId !== undefined && typeof value.operationId !== "string") return undefined;
+    return {
+      type: value.type,
+      reason: value.reason,
+      ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
+    };
   }
   if (value.type === "update-accepted" && typeof value.updateId === "string") {
     const migrationPlan =

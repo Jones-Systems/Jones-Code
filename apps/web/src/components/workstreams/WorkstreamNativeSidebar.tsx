@@ -267,7 +267,7 @@ export function WorkstreamNativeSidebar(props: {
                   draggable={canMove(thread)}
                   disabled={!canMove(thread)}
                   aria-label={`Drag ${thread.title} to a Workstream or reorder`}
-                  className="cursor-grab rounded p-1 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+                  className="cursor-grab rounded p-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-40"
                 >
                   <GripVerticalIcon aria-hidden className="size-3" />
                 </button>

@@ -53,7 +53,6 @@ const Releases = Schema.Array(
 );
 const decodeReleases = Schema.decodeUnknownSync(Releases);
 
-/** Keep release hosts on their channel; Jones previews require qualified actions. */
 export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
   const channel = cliReleaseChannelOf(currentVersion);
   if (channel === "preview") {

@@ -70,6 +70,33 @@ path checks checksums only and does not establish Jones provenance. Prefer local
 staging; an existing cache without matching Jones provenance is refused and
 preserved. An update prompt in a client does not prove a Jones artifact is available.
 
+## Follow laptop updates automatically
+
+In the Jones desktop app, open **Settings → Connections** and choose **Enroll
+this host** for each server you want to follow laptop updates. Enrollment is
+separate from connecting to a server. A host must first have a verified Jones
+installation and the supported background launcher; **Setup required** means
+that initial host setup is still needed. Enrollment does not replace an existing
+system service or take over an upstream T3 Code installation.
+
+Download the offered laptop update, then choose Install. Enrolled hosts follow
+that exact source only after the laptop successfully switches to it. Servers
+may download ahead of time, but a laptop rollback does not authorize their
+installation. Offline hosts wait until they can be reached; another unavailable
+host does not stop the rest of the rollout. Keep the desktop app running to
+coordinate remaining hosts.
+
+The connection row shows each host's progress and any action needed. If the
+connection drops during installation, Jones checks what the host accepted before
+sending another installation request. An uncertain outcome stays on hold;
+repeatedly clicking Install does not resolve missing evidence.
+
+Choose **Continue eligible active threads after this host updates** when enrolling
+if you want that behavior. Explicit user stops and queue holds remain in force;
+provider approval or unavailable native session state can still require attention.
+Disabling automatic updates stops new dispatch from the laptop; an installation
+already accepted by a host must still finish or reconcile.
+
 ## Platform support
 
 Linux uses the systemd user unit `jones-code.service`. Lingering is needed to
@@ -82,8 +109,12 @@ It starts at the user's GUI login and stops at logout. Keep the Mac logged in an
 awake for unattended access. Setup over SSH with nobody logged in at the screen
 can report `installed-awaiting-gui-login`; installed does not mean running.
 Starting before GUI login requires a separate operational decision and is not
-provided by this LaunchAgent. The current artifact workflows do not provide a
-Mac CLI archive for this setup; the desktop DMG is not a substitute.
+provided by this LaunchAgent. The manual
+[Mac CLI artifact workflow](../operations/build-artifacts.md#mac-cli-artifact)
+provides an Apple Silicon archive for initial setup. A successful native build
+and the approved host setup are separate requirements. After qualified launcher
+adoption, routine Mac updates use the verified desktop DMG through the headless
+runtime wrapper; the DMG itself is not an initial CLI setup command.
 
 Windows background services are not supported. T3 Connect and the background
 service are managed separately; signing out of Connect does not stop the service.
@@ -109,3 +140,27 @@ Access to Desktop, Documents, or Downloads may need Full Disk Access for the
 `t3` executable listed in the Jones LaunchAgent's `ProgramArguments`.
 For T3 Connect failures, see
 [connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).
+
+## Reclaim database space
+
+T3 Code removes superseded internal history on its own while it runs; your
+conversations are kept. Databases created before this shrank automatically
+still hold the freed space on disk until a one-time offline repair returns it
+and turns on automatic shrinking. Settings > Storage (web and desktop) or
+Settings > Maintenance (mobile) suggests the repair when at least 1 GiB can be
+reclaimed.
+
+Run `t3 doctor` on the machine that hosts the environment. It reports the
+database size and the space it can reclaim, then asks which repairs to run;
+pass `--fix` to run the recommended ones without a prompt (for scripts), or
+`--dry-run` to only report. An installed background service for the same data
+directory is stopped for the repair and started again afterwards, also when
+the repair fails. Quit a server you started by hand, or the desktop app, first:
+the repair refuses to touch a database that is in use. Use `--base-dir` for a
+different data directory.
+
+The repair can take several minutes on a large database. It rebuilds the
+database through a temporary copy, so it needs free space of about the
+database's size twice over: once in the system temporary directory (`TMPDIR`
+or `/tmp` on Linux and macOS) and once next to the database for its
+write-ahead log.

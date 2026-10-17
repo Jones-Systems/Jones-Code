@@ -2,7 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { PROCESS_PLACEMENT_BOOTSTRAP_ENV, ProcessPlacementError } from "./processPlacement.ts";
 
 export interface ProcessPlacementBootstrap {
@@ -53,7 +53,7 @@ export function readProcessPlacementBootstrap(
 }
 export function validateProcessPlacementBootstrap(
   binding: ProcessPlacementBootstrap,
-  platform = HostProcessPlatform.defaultValue(),
+  platform = HostProcess.Platform.defaultValue(),
 ): void {
   if (platform !== "linux") throw new ProcessPlacementError("bootstrap requires Linux cgroup v2");
   try {

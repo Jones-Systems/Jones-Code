@@ -195,3 +195,56 @@ describe("v2 native handoff metadata", () => {
     }
   });
 });
+
+const pendingHandoff = { ...handoff, correlation_status: "pending", turn_id: null };
+const v3 = {
+  ...v2,
+  schema: "codex.t3-work-queue-metadata/v3",
+  items: [{ ...v2Item, native_handoff: pendingHandoff }],
+};
+
+describe("v3 recorded handoff metadata", () => {
+  it("preserves accepted pre-start evidence without inventing an exact turn", () => {
+    expect(decode(v3)).toEqual(v3);
+    expect(Schema.encodeSync(WorkQueueMetadata)(decode(v3))).toEqual(v3);
+    expect(decode({ ...v3, items: [v2Item] })).toEqual({ ...v3, items: [v2Item] });
+    const unconfirmed = { ...v3, items: [{ ...v2Item, native_handoff: null }] };
+    expect(decode(unconfirmed)).toEqual(unconfirmed);
+    expect(() => decode({ ...v3, schema: v2.schema })).toThrow();
+  });
+  it.each(["error", "interrupted"])(
+    "preserves the same recorded receipt when a pre-start handoff becomes %s",
+    (terminalState) => {
+      for (const turn_state of ["pending", terminalState]) {
+        const native_handoff = { ...pendingHandoff, turn_state };
+        const sample = { ...v3, items: [{ ...v2Item, native_handoff }] };
+        expect(decode(sample)).toEqual(sample);
+        expect(Schema.encodeSync(WorkQueueMetadata)(decode(sample))).toEqual(sample);
+        expect(() => decode({ ...sample, schema: v2.schema })).toThrow();
+      }
+    },
+  );
+  it("rejects contradictory, incomplete, unbound and private v3 proof", () => {
+    const { turn_state: _state, ...missingState } = pendingHandoff;
+    const { turn_id: _turnId, ...missingTurn } = pendingHandoff;
+    for (const native_handoff of [
+      { ...pendingHandoff, turn_id: "invented-turn" },
+      { ...pendingHandoff, turn_state: "running" },
+      { ...pendingHandoff, turn_state: "completed" },
+      { ...pendingHandoff, turn_state: null },
+      { ...pendingHandoff, correlation_status: "exact" },
+      { ...pendingHandoff, correlation_status: "inferred" },
+      { ...pendingHandoff, command_status: "rejected" },
+      { ...pendingHandoff, receipt_sequence: 0.5 },
+      { ...pendingHandoff, text: "private" },
+      missingState,
+      missingTurn,
+    ]) {
+      expect(() => decode({ ...v3, items: [{ ...v2Item, native_handoff }] })).toThrow();
+    }
+    for (const change of [{ target: null }, { payload_sha256: null }, { text: "private" }]) {
+      expect(() => decode({ ...v3, items: [{ ...v3.items[0], ...change }] })).toThrow();
+    }
+    expect(() => decode({ ...v3, text: "private" })).toThrow();
+  });
+});

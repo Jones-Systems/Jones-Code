@@ -10,19 +10,21 @@ import {
   PreviewViewportSize,
 } from "./preview.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
+import { BrowserProfileId } from "./browserProfile.ts";
 
 const BoundedUrl = Schema.String.check(Schema.isTrimmed())
   .check(Schema.isNonEmpty())
   .check(Schema.isMaxLength(2048));
 const URL_GUIDANCE =
   "Absolute http(s) URL or a schemeless host such as t3.chat or localhost:5173. Schemeless public hosts use https; loopback hosts use http.";
+const PROFILE_GUIDANCE =
+  "Browser profile for a new tab, by id or name (case-insensitive) from preview_status profiles. Omit to use the user's default profile. A tab keeps the profile it opened with.";
 const OptionalTimeoutMs = Schema.optional(
   Schema.Int.check(Schema.isGreaterThan(0))
     .check(Schema.isLessThanOrEqualTo(60_000))
     .annotate({ description: "Maximum wait in milliseconds. Defaults to 15000; maximum 60000." }),
 ).annotate({ description: "Maximum wait in milliseconds. Defaults to 15000; maximum 60000." });
 
-/** Operations understood by desktop hosts predating viewport resizing. */
 export const PREVIEW_AUTOMATION_V1_OPERATIONS = [
   "status",
   "open",
@@ -38,7 +40,6 @@ export const PREVIEW_AUTOMATION_V1_OPERATIONS = [
   "recordingStop",
 ] as const;
 
-/** Advertised by current desktop hosts for mixed-version routing. */
 export const PREVIEW_AUTOMATION_OPERATIONS = [
   ...PREVIEW_AUTOMATION_V1_OPERATIONS,
   "resize",
@@ -64,17 +65,25 @@ const PreviewAutomationTabTargetFields = {
   tabId: Schema.optional(
     PreviewTabId.annotate({
       description:
-        "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+        "Exact collaborative browser tab to target, including a tab the user opened (see preview_status tabs). Omit to use this agent session's current tab, or the user's visible tab when this session has none.",
     }),
   ).annotate({
     description:
-      "Exact collaborative browser tab to target. Omit to use this agent session's current tab.",
+      "Exact collaborative browser tab to target, including a tab the user opened (see preview_status tabs). Omit to use this agent session's current tab, or the user's visible tab when this session has none.",
   }),
 };
 
 export const PreviewAutomationTabTargetInput = Schema.Struct(PreviewAutomationTabTargetFields);
 export type PreviewAutomationTabTargetInput = typeof PreviewAutomationTabTargetInput.Type;
 
+export const PreviewAutomationTabOwner = Schema.Literals(["agent", "human", "unclaimed"]);
+
+export const PreviewAutomationProfile = Schema.Struct({
+  id: BrowserProfileId,
+  name: Schema.String,
+  incognito: Schema.optional(Schema.Boolean),
+});
+export type PreviewAutomationProfile = typeof PreviewAutomationProfile.Type;
 export const PreviewAutomationRuntimeIdentity = Schema.Struct({
   schemaVersion: Schema.Literal(1),
   runtimeKind: Schema.Literal("electron"),
@@ -93,7 +102,7 @@ export const PreviewAutomationStatus = Schema.Struct({
   loading: Schema.Boolean,
   control: Schema.optional(
     Schema.Struct({
-      owner: Schema.Literals(["agent", "human", "unclaimed"]),
+      owner: PreviewAutomationTabOwner,
       ownedByCaller: Schema.Boolean,
       generation: Schema.Number,
     }),
@@ -107,9 +116,7 @@ export const PreviewAutomationStatus = Schema.Struct({
       }),
     ),
   ),
-  /** Optional for compatibility with desktop hosts predating viewport sizing. */
   viewportSetting: Schema.optional(PreviewViewportSetting),
-  /** Measured guest-page viewport in CSS pixels when a webview is ready. */
   viewport: Schema.optional(PreviewRenderedViewportSize),
   selectedClient: Schema.optional(
     Schema.Struct({
@@ -120,11 +127,9 @@ export const PreviewAutomationStatus = Schema.Struct({
       runtimeIdentity: Schema.NullOr(PreviewAutomationRuntimeIdentity),
     }),
   ),
-  /** Server hosts: a file picker the page opened, answered with preview_upload. */
   fileChooser: Schema.optional(
     Schema.NullOr(Schema.Struct({ multiple: Schema.Boolean, accept: Schema.String })),
   ),
-  /** Server hosts: files this tab downloaded, saved on the environment until the tab closes. */
   downloads: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -136,16 +141,26 @@ export const PreviewAutomationStatus = Schema.Struct({
       }),
     ),
   ),
-  /** Server hosts: every tab this agent session owns, including popups its pages opened. */
+  /**
+   * Server hosts: every tab in the thread, including ones the user or another
+   * agent session opened. Any of them can be read; acting needs `ownedByCaller`,
+   * or an `unclaimed` tab while no human controls it.
+   */
   tabs: Schema.optional(
     Schema.Array(
       Schema.Struct({
         tabId: PreviewTabId,
         url: Schema.NullOr(Schema.String),
         openerTabId: Schema.optional(PreviewTabId),
+        owner: Schema.optional(PreviewAutomationTabOwner),
+        ownedByCaller: Schema.optional(Schema.Boolean),
+        visible: Schema.optional(Schema.Boolean),
+        profileId: Schema.optional(BrowserProfileId),
       }),
     ),
   ),
+  profiles: Schema.optional(Schema.Array(PreviewAutomationProfile)),
+  defaultProfileId: Schema.optional(BrowserProfileId),
 });
 export type PreviewAutomationStatus = typeof PreviewAutomationStatus.Type;
 
@@ -183,6 +198,11 @@ export const PreviewAutomationOpenInput = Schema.Struct({
         "Reuse tabId when supplied, otherwise this agent session's current tab. Defaults to true; set false to create a new tab.",
     }),
   ),
+  profileId: Schema.optional(
+    TrimmedNonEmptyString.check(Schema.isMaxLength(64)).annotate({
+      description: PROFILE_GUIDANCE,
+    }),
+  ).annotate({ description: PROFILE_GUIDANCE }),
 })
   .check(
     Schema.makeFilter(
@@ -472,7 +492,7 @@ export const PreviewAutomationSelectResult = Schema.Struct({
 });
 export type PreviewAutomationSelectResult = typeof PreviewAutomationSelectResult.Type;
 
-/** A required locator field. Its JSON schema keeps only the description on its last check. */
+/** Its JSON schema keeps only the description on its last check. */
 const DescribedLocator = (description: string) =>
   Schema.String.check(Schema.isTrimmed())
     .check(Schema.isNonEmpty({ description }))
@@ -766,8 +786,7 @@ export type PreviewAutomationHostIdentity = typeof PreviewAutomationHostIdentity
 export const PreviewAutomationHost = Schema.Struct({
   ...PreviewAutomationHostIdentity.fields,
   /**
-   * Missing means the pre-capability-negotiation V1 operation set. This lets
-   * a newer server safely coexist with an older desktop during rollout.
+   * Missing means the pre-capability-negotiation V1 operation set.
    */
   supportedOperations: Schema.optional(Schema.Array(PreviewAutomationOperation)),
   runtimeIdentity: Schema.optional(PreviewAutomationRuntimeIdentity),
@@ -837,7 +856,6 @@ export const PreviewAutomationResponse = Schema.Struct({
 });
 export type PreviewAutomationResponse = typeof PreviewAutomationResponse.Type;
 
-// Thread fields are absent when the caller signed in from outside a T3 thread.
 const McpCapabilityErrorFields = {
   environmentId: EnvironmentId,
   threadId: Schema.optional(ThreadId),
@@ -845,7 +863,6 @@ const McpCapabilityErrorFields = {
   providerInstanceId: Schema.optional(ProviderInstanceId),
 };
 
-/** Agents read this message, so it names the next step and not only the failure. */
 export class PreviewAutomationUnavailableError extends Schema.TaggedError<PreviewAutomationUnavailableError>()(
   "PreviewAutomationUnavailableError",
   {
@@ -858,7 +875,6 @@ export class PreviewAutomationUnavailableError extends Schema.TaggedError<Previe
   }
 }
 
-/** A `t3-code` MCP tool was called with a credential that does not carry its capability. */
 export class McpCapabilityUnavailableError extends Schema.TaggedError<McpCapabilityUnavailableError>()(
   "McpCapabilityUnavailableError",
   {
@@ -879,7 +895,6 @@ const PreviewAutomationScopeErrorFields = {
   providerInstanceId: ProviderInstanceId,
 };
 
-/** The automation host id of an environment's own server browser. */
 export const SERVER_BROWSER_AUTOMATION_CLIENT_ID = "server-browser";
 
 const PreviewAutomationRequestErrorFields = {
@@ -924,9 +939,7 @@ export class PreviewAutomationNoAvailableHostError extends Schema.TaggedError<Pr
   },
 ) {
   override get message(): string {
-    if (this.reconnecting)
-      return "The original browser host is reconnecting. This session will not migrate to another desktop during its 30-second affinity hold. Reconnect the same runtime or deliberately start a new provider session to rebind.";
-    return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. Preview tools run in a T3 Code desktop app that is open and connected to this environment; a headless server has no browser of its own. Do not retry. To check a page, use a headless browser from the shell, such as Playwright, or curl, or ask the user to open this thread in the T3 Code desktop app.`;
+    return `No preview automation host is available for ${this.operation} in environment ${this.environmentId}. The server-owned browser may be starting or reconnecting. Retry preview_status, then call preview_open if no tab is available. If it remains unavailable, report the browser connection failure.`;
   }
 }
 
@@ -1016,10 +1029,6 @@ export class PreviewAutomationExecutionError extends Schema.TaggedError<PreviewA
   {
     ...PreviewAutomationRequestErrorFields,
     ...PreviewAutomationRemoteDiagnosticFields,
-    /**
-     * What went wrong, as the server's own browser reported it, such as a
-     * page that refused the connection. Absent for other hosts.
-     */
     reason: Schema.optional(Schema.String),
   },
 ) {
@@ -1037,7 +1046,6 @@ export class PreviewAutomationInvalidSelectorError extends Schema.TaggedError<Pr
     ...PreviewAutomationRemoteDiagnosticFields,
     selectorKind: Schema.optional(Schema.Literals(["locator", "selector"])),
     selectorLength: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
-    /** The selector was an `aria-ref` from an older snapshot. */
     staleRef: Schema.optional(Schema.Boolean),
   },
 ) {
@@ -1135,7 +1143,7 @@ export class PreviewAutomationRecordingTransferError extends Schema.TaggedError<
   },
 ) {
   override get message(): string {
-    return "Preview recording could not be saved to the agent environment. The saved copy remains on the desktop.";
+    return "Preview recording could not be saved to the agent environment.";
   }
 }
 
@@ -1153,7 +1161,7 @@ export class PreviewAutomationRecordingTooLargeError extends Schema.TaggedError<
   { threadId: ThreadId, cause: Schema.optional(Schema.Defect()) },
 ) {
   override get message(): string {
-    return "The recording exceeds 50 MiB. The saved copy remains on the desktop.";
+    return "The recording exceeds 50 MiB. Make a shorter recording.";
   }
 }
 
@@ -1162,7 +1170,7 @@ export class PreviewAutomationRecordingDeadlineExpiredError extends Schema.Tagge
   { threadId: ThreadId, cause: Schema.optional(Schema.Defect()) },
 ) {
   override get message(): string {
-    return "The recording transfer deadline expired. The saved copy remains on the desktop.";
+    return "The recording transfer deadline expired.";
   }
 }
 

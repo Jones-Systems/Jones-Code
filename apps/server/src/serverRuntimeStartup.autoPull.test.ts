@@ -6,7 +6,7 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import { HttpServer } from "effect/http";
@@ -113,7 +113,7 @@ it.effect("parks automatic pull until activation without delaying command readin
         }),
         Layer.succeed(SqlClient.SqlClient, sql),
         FileSystem.layerNoop({}),
-        Layer.succeed(HostProcessEnvironment, {}),
+        Layer.succeed(HostProcess.Environment, {}),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
         Layer.mock(EventSink.EventSinkV2)({}),
         Layer.mock(EffectOutbox.EffectOutboxV2)({}),
@@ -128,7 +128,10 @@ it.effect("parks automatic pull until activation without delaying command readin
           prepareForShutdown: Effect.void,
           reconcile: () => Effect.succeed(recovery),
         }),
-        Layer.mock(Orchestrator.OrchestratorV2)({ recoverDelegatedTasks: Effect.void }),
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          recoverDelegatedTasks: Effect.void,
+          recoverPlannedUpdateQueues: Effect.void,
+        }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ shutdown: Effect.void }),
         Layer.mock(AgentAwarenessRelay.AgentAwarenessRelay)({ start: () => Effect.void }),
         Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({ runOnce: Effect.never }),
@@ -193,9 +196,13 @@ it.effect("parks automatic pull until activation without delaying command readin
           NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
         );
 
-        // A reverted, awaited pull reaches statusDetails instead of prepareTrial.
-        // Race the two receipts so that regression fails without a timeout.
-        yield* Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled));
+        // Race both receipts and startup failure so a failed phase cannot leave the test waiting.
+        yield* Effect.raceFirst(
+          Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled)),
+          startup.awaitCommandReady.pipe(
+            Effect.andThen(Effect.die("Command readiness completed before trial preparation.")),
+          ),
+        );
         expect(yield* Deferred.isDone(activation)).toBe(false);
         expect(yield* Deferred.isDone(statusCalled)).toBe(false);
         expect(yield* Deferred.isDone(prepared)).toBe(true);
@@ -203,7 +210,6 @@ it.effect("parks automatic pull until activation without delaying command readin
         yield* Deferred.succeed(commitTrial, undefined);
         yield* Deferred.await(activation);
         expect(yield* Deferred.await(statusCalled)).toBe(cwd);
-        // statusDetails can never finish; readiness must not depend on it.
         yield* startup.awaitCommandReady;
       }).pipe(
         Effect.provide(

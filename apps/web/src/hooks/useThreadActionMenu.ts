@@ -1,7 +1,6 @@
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { requestCustomSnooze } from "../components/CustomSnoozeDialog";
 import {
-  executeAtomQuery,
   type AtomCommandResult,
   isAtomCommandInterrupted,
   settlePromise,
@@ -19,13 +18,10 @@ import { useCallback, useMemo } from "react";
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
 import {
   buildThreadActionMenuItems,
-  canStopThreadSession,
   threadActionRequiresOperate,
   type ThreadActionMenuId,
 } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
-import { appAtomRegistry } from "../rpc/atomRegistry";
-import { orchestrationEnvironment } from "../state/orchestration";
 import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope } from "../state/session";
@@ -62,19 +58,8 @@ function failureToast(title: string, error: unknown) {
   );
 }
 
-/**
- * The per-thread action menu (pin, settle, snooze, rename, copy, delete…) as
- * a self-contained hook, for surfaces other than the sidebar row — today the
- * chat header. Renders through the native context-menu bridge and dispatches
- * through the same mutations the sidebar uses.
- *
- * Unlike the sidebar, settle and snooze here never navigate away: the caller
- * is acting on the thread they are reading, and ChatView's parked-thread
- * banner already offers the way back.
- */
 export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
-  /** Fallback for "Copy path" when the thread has no worktree. */
   readonly projectCwd: string | null;
   readonly onStartRename: () => void;
 }) {
@@ -140,8 +125,6 @@ export function useThreadActionMenu(input: {
       void (async () => {
         const api = readLocalApi();
         if (!api) return;
-        // Snapshot at open time — the menu is modal, so state read now is
-        // what the user is looking at.
         const thread = readThreadShell(threadRef);
         if (!thread) return;
         const now = new Date();
@@ -152,17 +135,6 @@ export function useThreadActionMenu(input: {
           pinning: readEnvironmentSupportsPinning(threadRef.environmentId),
           titleRegeneration: readEnvironmentSupportsTitleRegeneration(threadRef.environmentId),
         };
-        const projection = await executeAtomQuery(
-          appAtomRegistry,
-          orchestrationEnvironment.v2.threadProjection({
-            environmentId: threadRef.environmentId,
-            input: { threadId: threadRef.threadId },
-          }),
-          { refresh: true, reportFailure: false },
-        );
-        const canStopSession = canStopThreadSession(
-          projection._tag === "Success" ? projection.value.providerSessions : null,
-        );
         const isRegeneratingTitle = thread.titleRegeneration != null;
         const snoozePresets = resolveSnoozePresets(now, timestampFormat);
         const items = buildThreadActionMenuItems({
@@ -176,7 +148,6 @@ export function useThreadActionMenu(input: {
           canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
           isRegeneratingTitle,
           isRunning: !threadRuntimeCanArchive(thread.runtime),
-          canStopSession,
           supports,
           snoozePresets,
         });
@@ -232,8 +203,6 @@ export function useThreadActionMenu(input: {
             return;
           }
           case "new-thread-on-branch": {
-            // Explicit branch carry-over: reuse the thread's worktree when it
-            // has one, otherwise its branch on the local checkout.
             const result = await settlePromise(() =>
               handleNewThread(scopeProjectRef(threadRef.environmentId, thread.projectId), {
                 branch: thread.branch,
@@ -248,7 +217,6 @@ export function useThreadActionMenu(input: {
             return;
           }
           case "stop-thread":
-            if (!canStopSession) return;
             await reportFailure("Failed to stop thread", () =>
               stopThreadSession({
                 environmentId: threadRef.environmentId,

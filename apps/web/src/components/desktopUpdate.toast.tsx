@@ -1,3 +1,4 @@
+import { getJonesDesktopUpdateBuildUrl } from "../jones/updates/localDesktopUpdate";
 import { getJonesDesktopUpdateBlockedMessage } from "../jones/updates/localDesktopUpdate";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { ArrowRightIcon } from "lucide-react";
@@ -16,9 +17,7 @@ export async function openDesktopUpdateReleaseNotes(
 ): Promise<void> {
   try {
     if (shell && (await shell.openExternal(releaseUrl))) return;
-  } catch {
-    // Surface rejected IPC calls through the same user-visible fallback.
-  }
+  } catch {}
   toastManager.add({ type: "error", title: "Unable to open release notes" });
 }
 
@@ -51,7 +50,9 @@ export function showDesktopUpdateDownloadedToast(
   shell: DesktopUpdateShell,
   state: DesktopUpdateState,
 ): void {
-  const releaseUrl = getDesktopUpdateReleaseUrl(getDesktopUpdateDownloadedVersion(state));
+  const releaseUrl = state.jones
+    ? getJonesDesktopUpdateBuildUrl(state)
+    : getDesktopUpdateReleaseUrl(getDesktopUpdateDownloadedVersion(state));
   toastManager.add({
     type: "success",
     title: "Update downloaded",

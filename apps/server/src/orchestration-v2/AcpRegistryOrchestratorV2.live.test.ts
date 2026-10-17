@@ -30,9 +30,11 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 import * as ProviderInstanceRegistryHydration from "../provider/ProviderInstanceRegistryHydration.ts";
-import * as ProviderEventLoggers from "../provider/ProviderEventLoggers.ts";
-import * as OpenCodeRuntime from "../provider/opencodeRuntime.ts";
-import * as OpenCodeServerLedger from "../provider/OpenCodeServerLedger.ts";
+import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
+import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as OpenCodeRuntime from "@t3tools/provider-opencode/server/OpenCodeRuntime";
+import * as OpenCodeServerLedger from "@t3tools/provider-opencode/server/OpenCodeServerLedger";
 import * as ServerSettings from "../serverSettings.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
@@ -41,12 +43,6 @@ import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.tes
 import * as RuntimeLayer from "./runtimeLayer.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 
-// The Antigravity switch is a durable, named conformance fixture for Google's
-// official Registry distribution. It uses credentials already owned by the
-// Antigravity agent and never stores them in the test database.
-//
-// T3_ACP_ANTIGRAVITY_LIVE=1 ../../node_modules/.bin/vp test run \
-//   src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts
 const layerPlatformTest = Layer.merge(
   NodeServices.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
@@ -113,6 +109,7 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
         ProviderEventLoggers.ProviderEventLoggers,
         ProviderEventLoggers.NoOpProviderEventLoggers,
       ),
+      ProviderLatestVersions.layer,
       ModelManifest.layerTest,
       ProcessAttribution.layer,
       AntigravityInstallation.AntigravityInstallation.layer.pipe(
@@ -120,7 +117,6 @@ const layerProviderInstanceRegistry = ProviderInstanceRegistryHydration.layer.pi
         Layer.provide(FetchHttpClient.layer),
         Layer.provide(layerPlatformTest),
       ),
-      // The Codex driver now resolves managed ChatGPT installs; these runs never launch Codex.
       Layer.mock(CodexInstallation.CodexInstallation)({
         managedDirectory: "unused-managed-installation",
       }),
@@ -144,6 +140,7 @@ const layerLive = RuntimeLayer.layer.pipe(
   Layer.provide(layerBackgroundPolicy),
   Layer.provide(ProviderTurnStartServiceTestkit.layer),
   Layer.provide(layerPlatformTest),
+  Layer.provide(McpProviderSessions.layer),
 );
 
 const waitForIdle = Effect.fn("AcpRegistryOrchestratorV2Live.waitForIdle")(function* (

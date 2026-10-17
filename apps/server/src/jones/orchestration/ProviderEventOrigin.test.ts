@@ -8,13 +8,14 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Queue from "effect/Queue";
 
-import type { ProviderAdapterV2Event } from "../../orchestration-v2/ProviderAdapter.ts";
-import * as ProviderEventOrigin from "./ProviderEventOrigin.ts";
+import type { ProviderAdapterV2Event } from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 
 const driver = ProviderDriverKind.make("codex");
 const currentCheck = (): Effect.Effect<void, ProviderEventOrigin.ProviderEventOriginStaleError> =>
@@ -142,6 +143,64 @@ describe("provider event origin", () => {
       );
     }),
   );
+  it.effect(
+    "accepts command output from the current captured producer and rejects retired output",
+    () =>
+      Effect.gen(function* () {
+        const turn = owner();
+        const producer = ProviderEventOrigin.makeProviderEventProducer({
+          ...runtime,
+          runtimeGeneration: turn.binding.runtimeGeneration,
+        });
+        const output = ProviderEventOrigin.stampProviderEvent(
+          {
+            type: "command_output.delta",
+            driver,
+            threadId: turn.binding.threadId,
+            itemId: TurnItemId.make("command-item"),
+            chunk: "command output\n",
+            runtimeEvidence: turn.binding,
+          } satisfies ProviderAdapterV2Event,
+          { producer: producer.origin, turn },
+        );
+        const queue = yield* Queue.unbounded<ProviderAdapterV2Event>();
+        yield* ProviderEventOrigin.revalidateProviderEventOrigin(output, runtime);
+        yield* Queue.offer(queue, output);
+        producer.retire();
+        const received = yield* Queue.take(queue);
+        assert.strictEqual(received, output);
+        assert.equal(
+          (yield* ProviderEventOrigin.revalidateProviderEventOrigin(received, runtime).pipe(
+            Effect.flip,
+          ))._tag,
+          "ProviderEventOriginStaleError",
+        );
+      }),
+  );
+
+  it.effect("rejects command output carrying evidence from a different runtime generation", () =>
+    Effect.gen(function* () {
+      const captured = origin();
+      const output = ProviderEventOrigin.stampProviderEvent(
+        {
+          type: "command_output.delta",
+          driver,
+          threadId: captured.turn.binding.threadId,
+          itemId: TurnItemId.make("command-item"),
+          chunk: "stale command output\n",
+          runtimeEvidence: { ...captured.turn.binding, runtimeGeneration: "replacement" },
+        } satisfies ProviderAdapterV2Event,
+        captured,
+      );
+      assert.equal(
+        (yield* ProviderEventOrigin.revalidateProviderEventOrigin(output, runtime).pipe(
+          Effect.flip,
+        ))._tag,
+        "ProviderEventOriginStaleError",
+      );
+    }),
+  );
+
   it("preserves frozen event identity, own properties and serialized wire data", () => {
     const terminal = Object.freeze(event());
     const before = JSON.stringify(terminal);

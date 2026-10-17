@@ -3,25 +3,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as CodexSchema from "effect-codex-app-server/schema";
 
-export type ProviderGoalReasonCode =
-  | "goal_null"
-  | "goal_present"
-  | "no_session"
-  | "session_stopped"
-  | "instance_mismatch"
-  | "native_cursor_missing"
-  | "unsupported"
-  | "timeout"
-  | "malformed"
-  | "goal_field_omitted"
-  | "rpc_error"
-  | "context_changed";
-
-export interface ProviderGoalReadResult {
-  readonly nativeThreadId: string | null;
-  readonly state: "inactive" | "active" | "unknown";
-  readonly reasonCode: ProviderGoalReasonCode;
-}
+import type {
+  ProviderGoalReadResult,
+  ProviderGoalReasonCode,
+} from "@t3tools/provider-core/server/jones/runtimeTypes";
+export type {
+  ProviderGoalReadResult,
+  ProviderGoalReasonCode,
+} from "@t3tools/provider-core/server/jones/runtimeTypes";
 
 export const unknownProviderGoal = (
   reasonCode: ProviderGoalReasonCode,

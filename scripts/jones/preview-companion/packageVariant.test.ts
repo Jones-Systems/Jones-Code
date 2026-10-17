@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { createBuildConfig, resolveBuildOptions } from "../../build-desktop-artifact.ts";
 import { companionPackageMetadata } from "./packageVariant.ts";
 import { isCompanionPackage } from "@t3tools/shared/jones/previewCompanionProduct";
@@ -84,7 +84,10 @@ describe("dedicated companion artifact", () => {
         expect.objectContaining({ provider: "github", owner: "synthetic", repo: "example" }),
       ]);
       expect(config.mac).toMatchObject({
-        protocols: [{ name: "T3 Code", schemes: ["t3code", "t3code-dev"] }],
+        protocols: [
+          { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
+          { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+        ],
       });
       expect(companionPackageMetadata()).toEqual({});
     }),
@@ -108,8 +111,8 @@ describe("dedicated companion artifact", () => {
         wslRuntime: Option.none(),
       }).pipe(
         Effect.provide(layer),
-        Effect.provideService(HostProcessPlatform, "darwin"),
-        Effect.provideService(HostProcessArchitecture, "arm64"),
+        Effect.provideService(HostProcess.Platform, "darwin"),
+        Effect.provideService(HostProcess.Architecture, "arm64"),
       );
       expect(resolved.variant).toBe("preview-companion");
       const metadata = companionPackageMetadata(resolved.variant);

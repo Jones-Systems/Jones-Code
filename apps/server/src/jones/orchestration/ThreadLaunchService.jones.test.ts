@@ -31,8 +31,8 @@ import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/Cod
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
-import * as IdAllocator from "../../orchestration-v2/IdAllocator.ts";
-import type { ProviderAdapterV2Shape } from "../../orchestration-v2/ProviderAdapter.ts";
+import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -96,8 +96,13 @@ function makeHarness(options: HarnessOptions = {}) {
     registry,
     { databaseLayer: database, runEffectWorker: false },
   );
-  const threadManagement = ThreadManagement.layer.pipe(Layer.provide(orchestrator));
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
+  const serverSettings = ServerSettings.layerTest(options.serverSettings);
+  const threadManagement = ThreadManagement.layer.pipe(
+    Layer.provide(orchestrator),
+    Layer.provide(receipts),
+    Layer.provide(serverSettings),
+  );
   const outbox = EffectOutbox.layer.pipe(Layer.provide(database));
   const createWorktree = vi.fn(
     options.createWorktree ??
@@ -175,7 +180,7 @@ function makeHarness(options: HarnessOptions = {}) {
       generateThreadTitle,
       generateBranchName,
     }),
-    ServerSettings.layerTest(options.serverSettings),
+    serverSettings,
     ProviderRegistryMock.layer(options.providers),
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
@@ -295,6 +300,26 @@ function worktreeBaseRef(name: string, overrides: Partial<VcsRef> = {}): VcsRef 
     ...overrides,
   };
 }
+
+it.effect("defers an omitted worktree base to launch without reading Git refs", () => {
+  const hasCommit = vi.fn(() => Effect.die("Preflight must not substitute HEAD"));
+  const listRefs = vi.fn(() => Effect.die("Launch owns automatic base selection"));
+  const harness = makeHarness({ listRefs });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const git = yield* GitWorkflow.GitWorkflowService;
+    const commitRead = vi.spyOn(git, "hasCommit").mockImplementation(hasCommit);
+    yield* launches
+      .checkWorktreeBase({
+        projectId,
+        workspaceStrategy: { type: "worktree", branch: "feature" },
+      })
+      .pipe(Effect.ensuring(Effect.sync(() => commitRead.mockRestore())));
+    assert.equal(hasCommit.mock.calls.length, 0);
+    assert.equal(listRefs.mock.calls.length, 0);
+    assert.equal(harness.createWorktree.mock.calls.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("accepts the first message while its automatic worktree base is still loading", () =>
   Effect.gen(function* () {

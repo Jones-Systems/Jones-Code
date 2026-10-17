@@ -37,6 +37,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/device/DeviceService.test.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceHubProxy.stream.test.ts",
+      "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
+    },
+    {
       "from": "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
       "to": "apps/desktop/src/jones/deviceMedia/ipcMethods.ts"
     },

@@ -29,6 +29,79 @@ const pragmaNames = [
   "user_version",
 ];
 const contexts = new WeakMap();
+const diagnosticStages = new Set([
+  "initialize",
+  "seed",
+  "replay",
+  "receipt-check",
+  "callback",
+  "ledger",
+  "integrity",
+  "maintenance",
+  "close",
+  "seal",
+]);
+const diagnosticTags = new Set([
+  "V2DatabaseImportError",
+  "EventSinkWriteError",
+  "EventStoreAppendEventsError",
+  "EventStoreReadEventsError",
+  "ProjectionStoreApplyEventError",
+  "ProjectionStoreSetupError",
+  "ProjectionStoreReadError",
+  "ProjectionStoreThreadNotFoundError",
+  "UnsupportedNodeSqliteVersionError",
+  "UnsupportedNodeSqliteOperationError",
+  "SchemaError",
+  "MigrationError",
+  "SqlError",
+  "ConnectionError",
+  "SqlSyntaxError",
+  "ConstraintError",
+  "UniqueViolation",
+  "LockTimeoutError",
+  "UnknownError",
+  "SystemError",
+]);
+const diagnosticReasons = new Set([
+  "unclassified",
+  "ERR_SQLITE_ERROR",
+  "SQLITE_ERROR",
+  "SQLITE_BUSY",
+  "SQLITE_LOCKED",
+  "SQLITE_CONSTRAINT",
+  "EACCES",
+  "ENOENT",
+  "ENOSPC",
+  "EIO",
+  "EROFS",
+  "invalid_close",
+  "invalid_close_proof",
+  "changed_identity",
+  "changed_layout",
+  "manifest_limit",
+  "missing_pragma",
+  "durability_pragmas_changed",
+  "project_receipt_replay_mismatch",
+  "thread_receipt_replay_mismatch",
+  "projection_history_mismatch",
+  "receipt_links_mismatch",
+  "integrity_failed",
+  "delete_maintenance_failed",
+  "closed_delete_layout_mismatch",
+]);
+
+// Rebuild optional diagnostics at both transport boundaries; never forward arbitrary error fields.
+export function compactFixtureDiagnostic(value) {
+  if (!value || typeof value !== "object" || !diagnosticStages.has(value.stage)) return undefined;
+  return {
+    stage: value.stage,
+    errorTags: Array.isArray(value.errorTags)
+      ? [...new Set(value.errorTags.slice(0, 8).filter((tag) => diagnosticTags.has(tag)))]
+      : [],
+    reasonCode: diagnosticReasons.has(value.reasonCode) ? value.reasonCode : "unclassified",
+  };
+}
 const timestampBase = Date.parse("2026-10-02T12:00:00.000Z");
 const nativeTables = [
   "native_creation_automation_enrollments",
@@ -1640,12 +1713,14 @@ async function workerMain() {
     );
     if (produced.error) {
       process.exitCode = 1;
+      const diagnostic = compactFixtureDiagnostic(produced.diagnostic);
       const bytes = `${JSON.stringify({
         schema: "jones-performance-fixture-failure/v1",
         code: produced.error.code ?? "producer_failed",
         closeKnown: produced.closeKnown,
         retainReason: produced.retainReason,
         creationReceipt: produced.owner.creationReceipt,
+        ...(diagnostic ? { diagnostic } : {}),
         ...(produced.profile ? { profile: produced.profile } : {}),
       })}\n`;
       if (Buffer.byteLength(bytes) > 49 * 1024)

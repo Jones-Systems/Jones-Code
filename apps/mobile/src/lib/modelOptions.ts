@@ -2,9 +2,11 @@ import type { MenuAction } from "@react-native-menu/menu";
 import type {
   ModelCapabilities,
   ModelSelection,
+  ProjectId,
   RuntimeMode,
   ServerConfig as T3ServerConfig,
 } from "@t3tools/contracts";
+import { resolveProjectProviderInstanceEnabled } from "@t3tools/contracts";
 import {
   applyConfiguredReasoningEffortDefault,
   buildExplicitProviderOptionSelectionsFromDescriptors,
@@ -23,8 +25,11 @@ export type ModelOption = {
   readonly isDefault: boolean;
   readonly isLegacy: boolean;
   readonly isUnavailable?: boolean;
+  readonly isHidden?: boolean;
+  readonly canHide?: boolean;
   readonly capabilities: ModelCapabilities | null;
   readonly selection: ModelSelection;
+  readonly providerUpdateRequired?: ProviderUpdateRequired;
 };
 
 export function resolveModelDisplayCapabilities(input: {
@@ -54,10 +59,16 @@ export function resolveModelDisplayCapabilities(input: {
   });
 }
 
+type ProviderUpdateRequired = Pick<
+  T3ServerConfig["providers"][number],
+  "driver" | "updateRequiredModels"
+>;
+
 export type ProviderGroup = {
   readonly providerKey: string;
   readonly providerLabel: string;
   readonly models: ReadonlyArray<ModelOption>;
+  readonly updateRequired?: ProviderUpdateRequired;
 };
 
 function providerDisplayLabel(provider: {
@@ -70,6 +81,49 @@ function providerDisplayLabel(provider: {
   if (provider.driver === "claudeAgent") return "Claude";
   if (provider.driver === "pi") return "Pi";
   return provider.instanceId;
+}
+
+function isProviderEnabledForProject(
+  config: T3ServerConfig | null | undefined,
+  provider:
+    | { readonly instanceId: ModelSelection["instanceId"]; readonly enabled: boolean }
+    | undefined,
+  projectId: ProjectId | null,
+): boolean {
+  if (!provider) {
+    return false;
+  }
+  return config?.settings
+    ? resolveProjectProviderInstanceEnabled(config.settings, projectId, provider.instanceId)
+    : provider.enabled;
+}
+
+function isProjectDisabledOverride(
+  config: T3ServerConfig | null | undefined,
+  instanceId: ModelSelection["instanceId"],
+  projectId: ProjectId | null,
+): boolean {
+  if (!projectId || !config?.settings) {
+    return false;
+  }
+  return (
+    config.settings.projectSettingsOverrides[projectId]?.providerInstances?.[instanceId]
+      ?.enabled === false
+  );
+}
+
+function isDisabledForProject(
+  config: T3ServerConfig | null | undefined,
+  provider:
+    | { readonly instanceId: ModelSelection["instanceId"]; readonly enabled: boolean }
+    | undefined,
+  instanceId: ModelSelection["instanceId"],
+  projectId: ProjectId | null,
+): boolean {
+  if (isProjectDisabledOverride(config, instanceId, projectId)) {
+    return true;
+  }
+  return provider !== undefined && !isProviderEnabledForProject(config, provider, projectId);
 }
 
 function normalizeSelectionOptions(
@@ -97,10 +151,15 @@ function normalizeSelectionOptions(
       };
 }
 
-/** Whether a known Antigravity selection needs setup or a different model. */
+/**
+ * `projectId` has no default: a caller that forgets it would silently check only the
+ * machine-wide state and miss a project that turned this instance off. Pass `null` explicitly
+ * outside a project's scope.
+ */
 export function isModelSelectionUnavailable(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null | undefined,
+  projectId: ProjectId | null,
 ): boolean {
   if (!config || !selection) {
     return false;
@@ -108,12 +167,14 @@ export function isModelSelectionUnavailable(
   const provider = config.providers.find(
     (candidate) => candidate.instanceId === selection.instanceId,
   );
+  if (isDisabledForProject(config, provider, selection.instanceId, projectId)) {
+    return true;
+  }
   const driver =
     provider?.driver ?? config.settings?.providerInstances[selection.instanceId]?.driver;
   return (
     driver === "antigravity" &&
     (!provider ||
-      !provider.enabled ||
       !provider.installed ||
       provider.auth.status === "unauthenticated" ||
       provider.availability === "unavailable" ||
@@ -121,14 +182,29 @@ export function isModelSelectionUnavailable(
   );
 }
 
-/**
- * Keep Antigravity selections when setup or catalog changes make them
- * unavailable. Other providers fall through to the server default when they
- * are disabled, missing, or signed out. Without config, keep stored selections.
- */
+export function describeUnavailableModelSelection(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection,
+  projectId: ProjectId | null,
+): { readonly title: string; readonly detail: string } {
+  const provider = config?.providers.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  return isDisabledForProject(config, provider, selection.instanceId, projectId)
+    ? {
+        title: "Model turned off for this project",
+        detail: "Turn it back on from web or desktop, or choose another model.",
+      }
+    : {
+        title: "Antigravity model unavailable",
+        detail: "Set up Antigravity on web or desktop, or choose another model.",
+      };
+}
+
 export function resolveSelectableModelSelection(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null,
+  projectId: ProjectId | null,
 ): ModelSelection | null {
   if (!selection || !config) {
     return selection;
@@ -139,26 +215,22 @@ export function resolveSelectableModelSelection(
   const driver =
     provider?.driver ?? config.settings?.providerInstances[selection.instanceId]?.driver;
   if (driver === "antigravity") {
-    return selection;
+    return isProjectDisabledOverride(config, selection.instanceId, projectId) ? null : selection;
   }
   return provider &&
-    provider.enabled &&
+    isProviderEnabledForProject(config, provider, projectId) &&
     provider.installed &&
     provider.auth.status !== "unauthenticated"
     ? selection
     : null;
 }
 
-/**
- * Reject legacy models for implicit defaults, except Antigravity selections,
- * which must not silently change after a catalog update. Explicit picks in
- * the settings sheet are unaffected.
- */
 export function resolveDefaultableModelSelection(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null,
+  projectId: ProjectId | null,
 ): ModelSelection | null {
-  const usable = resolveSelectableModelSelection(config, selection);
+  const usable = resolveSelectableModelSelection(config, selection, projectId);
   if (!usable || !config) {
     return usable;
   }
@@ -186,7 +258,9 @@ export function resolveNewTaskModelSelection(input: {
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
-  providerInstanceId?: ModelSelection["instanceId"],
+  providerInstanceId: ModelSelection["instanceId"] | undefined,
+  projectId: ProjectId | null,
+  includeHidden = false,
   defaultModelSelection?: ModelSelection | null | undefined,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
@@ -194,7 +268,7 @@ export function buildModelOptions(
   for (const provider of config?.providers ?? []) {
     if (
       (providerInstanceId !== undefined && provider.instanceId !== providerInstanceId) ||
-      !provider.enabled ||
+      !isProviderEnabledForProject(config, provider, projectId) ||
       !provider.installed ||
       provider.auth.status === "unauthenticated" ||
       (provider.driver === "antigravity" && provider.availability === "unavailable")
@@ -203,7 +277,18 @@ export function buildModelOptions(
     }
 
     const providerLabel = providerDisplayLabel(provider);
-    for (const model of provider.models) {
+    const updateRequired = provider.updateRequiredModels?.length
+      ? { driver: provider.driver, updateRequiredModels: provider.updateRequiredModels }
+      : undefined;
+    const preferences = config?.settings?.providerModelPreferences?.[provider.instanceId];
+    const hiddenModels = new Set(preferences?.hiddenModels ?? []);
+    const order = new Map((preferences?.modelOrder ?? []).map((slug, index) => [slug, index]));
+    const models = provider.models.filter(
+      (model) => includeHidden || model.isCustom || !hiddenModels.has(model.slug),
+    );
+    if (order.size > 0)
+      models.sort((a, b) => (order.get(a.slug) ?? Infinity) - (order.get(b.slug) ?? Infinity));
+    for (const model of models) {
       const key = `${provider.instanceId}:${model.slug}`;
       options.set(key, {
         key,
@@ -216,8 +301,11 @@ export function buildModelOptions(
           ? {}
           : { supportedRuntimeModes: provider.supportedRuntimeModes }),
         ...(provider.iconUrl ? { providerIconUrl: provider.iconUrl } : {}),
+        isHidden: !model.isCustom && hiddenModels.has(model.slug),
+        canHide: !model.isCustom,
         isDefault: model.isDefault === true,
         isLegacy: model.isLegacy === true,
+        ...(updateRequired ? { providerUpdateRequired: updateRequired } : {}),
         capabilities: model.capabilities,
         selection: normalizeSelectionOptions(
           {
@@ -232,7 +320,14 @@ export function buildModelOptions(
 
   if (
     fallbackModelSelection &&
-    (providerInstanceId === undefined || fallbackModelSelection.instanceId === providerInstanceId)
+    (providerInstanceId === undefined ||
+      fallbackModelSelection.instanceId === providerInstanceId) &&
+    (!config?.settings?.providerModelPreferences?.[
+      fallbackModelSelection.instanceId
+    ]?.hiddenModels.includes(fallbackModelSelection.model) ||
+      config?.providers
+        .find((provider) => provider.instanceId === fallbackModelSelection.instanceId)
+        ?.models.find((model) => model.slug === fallbackModelSelection.model)?.isCustom)
   ) {
     const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
     const existing = options.get(key);
@@ -268,7 +363,9 @@ export function buildModelOptions(
         providerDriver,
         isDefault: false,
         isLegacy: model?.isLegacy === true,
-        ...(isModelSelectionUnavailable(config, fallbackModelSelection)
+        ...(isModelSelectionUnavailable(config, fallbackModelSelection, projectId) ||
+        (provider !== undefined && !isProviderEnabledForProject(config, provider, projectId)) ||
+        provider?.updateRequiredModels?.some((gated) => gated.slug === fallbackModelSelection.model)
           ? { isUnavailable: true }
           : {}),
         capabilities: model?.capabilities ?? null,
@@ -294,15 +391,24 @@ export function buildModelOptions(
 }
 
 export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyArray<ProviderGroup> {
-  const groups = new Map<string, { providerLabel: string; models: ModelOption[] }>();
+  const groups = new Map<
+    string,
+    {
+      providerLabel: string;
+      models: ModelOption[];
+      updateRequired: ProviderUpdateRequired | undefined;
+    }
+  >();
   for (const option of options) {
     const existing = groups.get(option.providerKey);
     if (existing) {
       existing.models.push(option);
+      existing.updateRequired ??= option.providerUpdateRequired;
     } else {
       groups.set(option.providerKey, {
         providerLabel: option.providerLabel,
         models: [option],
+        updateRequired: option.providerUpdateRequired,
       });
     }
   }
@@ -311,6 +417,7 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     providerKey,
     providerLabel: group.providerLabel,
     models: group.models,
+    ...(group.updateRequired ? { updateRequired: group.updateRequired } : {}),
   }));
 }
 

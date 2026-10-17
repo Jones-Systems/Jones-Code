@@ -246,3 +246,134 @@ describe("native handoff classification", () => {
     expect(result.remainingVoice[0]!.queue_delivery_links?.deliveries).toEqual([]);
   });
 });
+
+const preStartSnapshot = (): WorkQueueMetadata => {
+  const sample = snapshot();
+  if (sample.schema !== "codex.t3-work-queue-metadata/v2") throw new Error("fixture");
+  return {
+    ...sample,
+    schema: "codex.t3-work-queue-metadata/v3",
+    items: sample.items.map((item) => ({
+      ...item,
+      native_handoff: {
+        ...item.native_handoff!,
+        correlation_status: "pending",
+        turn_id: null,
+        turn_state: "pending",
+      },
+    })),
+  } as unknown as WorkQueueMetadata;
+};
+
+describe("recorded pre-start handoffs", () => {
+  it("moves recorded accepted pre-start proof to Sent using the observation time", () => {
+    const result = classifySentPrompts(preStartSnapshot(), [voice()], "native-env");
+    expect(result.sent).toHaveLength(1);
+    expect(result.sent[0]).toMatchObject({
+      text: "Authorized retained prompt",
+      providerState: "pending",
+      sentAt: 1500,
+      confirmation: { receiptId: "native-command" },
+    });
+    expect([...result.confirmedRequests]).toEqual(["request"]);
+    expect(result.remainingVoice).toEqual([]);
+  });
+  it.each(["error", "interrupted"] as const)(
+    "keeps the same recorded pre-start handoff Sent after %s",
+    (terminalState) => {
+      const sample = preStartSnapshot();
+      if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+      for (const turn_state of ["pending", terminalState] as const) {
+        const observed = {
+          ...sample,
+          items: sample.items.map((item) => ({
+            ...item,
+            native_handoff: { ...item.native_handoff!, turn_state },
+          })),
+        };
+        const result = classifySentPrompts(observed, [voice()], "native-env");
+        expect(result.sent).toHaveLength(1);
+        expect(result.sent[0]).toMatchObject({
+          id: "request",
+          text: "Authorized retained prompt",
+          providerState: turn_state,
+          sentAt: 1500,
+          confirmation: { receiptId: "native-command" },
+        });
+        expect([...result.confirmedRequests]).toEqual(["request"]);
+        expect(result.remainingVoice).toEqual([]);
+      }
+    },
+  );
+  it("keeps missing turn evidence and contradictory null-turn states queued", () => {
+    const sample = preStartSnapshot();
+    if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+    const item = sample.items[0]!;
+    const { turn_id: _turnId, ...missingTurn } = item.native_handoff!;
+    for (const native_handoff of [
+      null,
+      missingTurn,
+      { ...item.native_handoff, turn_state: "running" },
+      { ...item.native_handoff, turn_state: "completed" },
+      { ...item.native_handoff, turn_state: null },
+    ]) {
+      const unconfirmed = {
+        ...sample,
+        items: [{ ...item, native_handoff }],
+      } as unknown as WorkQueueMetadata;
+      const result = classifySentPrompts(unconfirmed, [voice()], "native-env");
+      expect(result.sent).toEqual([]);
+      expect(result.confirmedRequests.size).toBe(0);
+      expect(result.remainingVoice).toEqual([voice()]);
+    }
+  });
+  it("keeps pending commands without recorded proof queued", () => {
+    const sample = preStartSnapshot();
+    const unconfirmed = {
+      ...sample,
+      items: sample.items.map((item) => ({ ...item, native_handoff: null })),
+    } as WorkQueueMetadata;
+    const result = classifySentPrompts(unconfirmed, [voice()], "native-env");
+    expect(result.sent).toEqual([]);
+    expect(result.confirmedRequests.size).toBe(0);
+    expect(result.remainingVoice).toEqual([voice()]);
+  });
+  it("preserves source, digest, destination and unique-delivery fencing for pre-start proof", () => {
+    const entry = voice();
+    const links = entry.queue_delivery_links!;
+    const delivery = links.deliveries[0]!;
+    for (const deliveries of [
+      [{ ...delivery, payload_sha256: "c".repeat(64) }],
+      [{ ...delivery, destination: { ...delivery.destination, thread_id: "other" } }],
+      [delivery, { ...delivery, delivery_id: "ambiguous" }],
+    ]) {
+      const candidate = { ...entry, queue_delivery_links: { ...links, deliveries } };
+      const result = classifySentPrompts(preStartSnapshot(), [candidate], "native-env");
+      expect(result.sent[0]!.text).toBeNull();
+      expect(result.remainingVoice).toEqual([candidate]);
+    }
+    for (const nativeEnvironment of [null, "foreign-env"]) {
+      const result = classifySentPrompts(preStartSnapshot(), [entry], nativeEnvironment);
+      expect(result.sent[0]!.text).toBeNull();
+      expect(result.remainingVoice).toEqual([entry]);
+    }
+    const sample = preStartSnapshot();
+    const foreignHost = { ...sample, source: { ...sample.source, host_id: "foreign-host" } };
+    expect(classifySentPrompts(foreignHost, [entry], "native-env").sent[0]!.text).toBeNull();
+    const sibling = { ...delivery, delivery_id: "sibling", queue_request_id: "unconfirmed" };
+    const candidate = {
+      ...entry,
+      queue_delivery_links: {
+        ...links,
+        deliveries: [delivery, sibling],
+        unlinked_delivery_count: 1,
+      },
+    };
+    const result = classifySentPrompts(sample, [candidate], "native-env");
+    expect(result.sent[0]!.text).toBe(entry.text);
+    expect(result.remainingVoice[0]!.queue_delivery_links).toMatchObject({
+      deliveries: [sibling],
+      unlinked_delivery_count: 1,
+    });
+  });
+});

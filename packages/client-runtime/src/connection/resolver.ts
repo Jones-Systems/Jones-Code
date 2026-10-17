@@ -54,8 +54,9 @@ export class ConnectionResolver extends Context.Service<
       entry: ConnectionCatalogEntry,
     ) => Effect.Effect<PreparedConnection, ConnectionAttemptError>;
     /**
-     * Authorizes a socket without the orchestration protocol gate, for hosts
-     * too old to connect normally. Only update RPCs may run over it.
+     * Authorizes an update connection without the orchestration protocol gate.
+     * Only update HTTP requests or legacy update RPCs may use this preparation;
+     * it does not admit ordinary orchestration on an incompatible host.
      */
     readonly prepareForUpdate: (entry: ConnectionCatalogEntry) => Effect.Effect<
       {
@@ -147,7 +148,6 @@ const makeBearerBroker = Effect.fn("clientRuntime.connection.broker.makeBearer")
       });
       return { ...authorized, target } satisfies PreparedConnection;
     }
-    // A learned route borrows the credential of the route it was learned from.
     const credential = yield* credentials.get(credentialConnectionId(target.connectionId)).pipe(
       Effect.flatMap(
         Option.match({

@@ -58,6 +58,7 @@ import {
   classifyToolActivity,
   collectToolFilePaths,
   dynamicToolTitle,
+  isJavaScriptReplTool,
   formatReadToolLabel,
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
@@ -89,7 +90,6 @@ export interface ThreadFeedActivity {
   readonly summary: string;
   readonly detail: string | null;
   readonly canExpand: boolean;
-  /** Expanding fetches the withheld input and output with getTurnItem. */
   readonly fetchesDetail: boolean;
   readonly getFullDetail: () => string | null;
   readonly getCopyText: () => string;
@@ -98,6 +98,7 @@ export interface ThreadFeedActivity {
     | "alert"
     | "browser"
     | "computer"
+    | "code"
     | "check"
     | "command"
     | "edit"
@@ -141,7 +142,6 @@ export interface ThreadFeedMessage {
   readonly projectedItem?: OrchestrationV2ProjectedTurnItem;
 }
 
-/** A message shown before the server has it: a pending creation or local feedback. */
 export interface LocalThreadMessage {
   readonly id: MessageId;
   readonly role: string;
@@ -168,7 +168,6 @@ type RawThreadFeedEntry =
       readonly activity: ThreadFeedActivity;
     }
   | {
-      /** A page a completed `html_render` call published, shown in place of its work row. */
       readonly type: "html-render";
       readonly id: string;
       readonly createdAt: string;
@@ -176,7 +175,6 @@ type RawThreadFeedEntry =
       readonly render: HtmlRenderReference;
     }
   | {
-      /** An MCP App a completed tool call captured, hosted in place of its work row. */
       readonly type: "mcp-app";
       readonly id: string;
       readonly createdAt: string;
@@ -215,7 +213,6 @@ type ThreadFeedEntryContent =
       readonly hasFailure: boolean;
       readonly live: boolean;
       readonly shimmer: boolean;
-      /** First sentence of the latest thought, shown above the live status line. */
       readonly thought?: string;
     }
   | {
@@ -257,7 +254,6 @@ function compactWorkEntryText(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-/** Expanded work rows keep their detail while compact rows show a stable one-line label. */
 export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = false): string {
   if (expanded && entry.itemType === "reasoning")
     return entry.toolLifecycleStatus === "inProgress" ? "Thinking" : "Thought";
@@ -273,7 +269,6 @@ export function workEntryRowLabel(entry: WorkLogPresentationEntry, expanded = fa
       !Array.isArray(entry.toolData)
         ? (entry.toolData as Record<string, unknown>)
         : undefined;
-    // Adapters title file searches with their target; the item keeps only the pattern.
     const searchLabel =
       entry.itemType === "file_search" ? entry.label : formatSearchToolLabel(toolData);
     if (searchLabel) return searchLabel;
@@ -400,8 +395,12 @@ function resolvePendingUserInputAnswer(
 ): string | ReadonlyArray<string> | null {
   if (draft?.attachmentsBlocked) return null;
   const customAnswer =
-    question.allowCustomAnswer === false ? null : normalizeDraftAnswer(draft?.customAnswer);
-  if (customAnswer) {
+    question.allowCustomAnswer === false
+      ? null
+      : question.initialAnswer !== undefined
+        ? (draft?.customAnswer ?? null)
+        : normalizeDraftAnswer(draft?.customAnswer);
+  if (customAnswer !== null && customAnswer.length > 0) {
     return customAnswer;
   }
 
@@ -409,12 +408,12 @@ function resolvePendingUserInputAnswer(
   if (question.multiSelect) {
     return selectedOptionValues.length > 0
       ? selectedOptionValues
-      : question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0
-        ? ""
-        : null;
+      : (customAnswer ??
+          (question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0 ? "" : null));
   }
   return (
     selectedOptionValues[0] ??
+    customAnswer ??
     (question.allowCustomAnswer !== false && (draft?.attachmentCount ?? 0) > 0 ? "" : null)
   );
 }
@@ -455,7 +454,6 @@ function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
     item.type === "fork" ||
     item.type === "thread_created" ||
     item.type === "system_notice" ||
-    // An answerable card: it must stand alone and never fold away with the run.
     item.type === "secret_request"
   );
 }
@@ -518,6 +516,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
       case "monitor":
         return "eye";
       case "background_task":
+      case "system":
         return "zap";
       default:
         source satisfies never;
@@ -552,7 +551,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "assistant_message":
       return "message";
     case "dynamic_tool":
-      return "wrench";
+      return isJavaScriptReplTool(item.toolName) ? "code" : "wrench";
     case "subagent":
       return "hammer";
     case "run_interrupt_request":
@@ -594,8 +593,9 @@ function itemSummary(
   if (item.type === "system_notice") return item.message;
   if (item.type === "compaction") return contextCompactionLabel(item);
   const title =
-    (item.type === "dynamic_tool" ? dynamicToolTitle(item.toolName, item.input) : undefined) ??
-    item.title?.trim();
+    (item.type === "dynamic_tool"
+      ? dynamicToolTitle(item.toolName, item.input, item.title)
+      : undefined) ?? item.title?.trim();
   if (item.type === "subagent") return formatSubagentDisplayTitle(title || "Subagent");
   if (title) return toolPresentation?.displayName ?? capitalizePhrase(title);
   switch (item.type) {
@@ -779,7 +779,6 @@ function toWorkLogEntry(
   }
 }
 
-/** Expanded detail for a row, from its wire item or the full item from getTurnItem. */
 export function formatItemFullDetail(
   row: OrchestrationV2ProjectedTurnItem,
   item: OrchestrationV2TurnItem,
@@ -811,7 +810,11 @@ function toFeedActivity(
       ? collectToolFilePaths(item)
       : null;
   const getFullDetail = memoizeValue(() =>
-    readPaths ? readPaths.join("\n") || null : formatItemFullDetail(row, item),
+    readPaths
+      ? readPaths.join("\n") || null
+      : item.type === "notification"
+        ? item.detail?.trim() || null
+        : formatItemFullDetail(row, item),
   );
   const getCopyText = memoizeValue(() =>
     [summary, detail, getFullDetail()]
@@ -833,7 +836,6 @@ function toFeedActivity(
       (readPaths
         ? readPaths.length > 0 || turnItemNeedsDetailFetch(item)
         : turnItemHasDetail(item) || workEntry.questionAnswer !== undefined),
-    // Read rows show their paths, then the fetched file contents.
     fetchesDetail: turnItemNeedsDetailFetch(item),
     getFullDetail,
     getCopyText,
@@ -910,8 +912,6 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
   };
 
   for (const entry of entries) {
-    // A successful delegation is already represented by its durable child card.
-    // Pending, failed and unmatched calls remain visible, even with identical prompts.
     if (entry.type === "activity") {
       const item = entry.activity.projectedItem.item;
       if (
@@ -930,7 +930,6 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
           continue;
       }
     }
-    // Skip empty messages so they don't break activity grouping.
     if (isEmptyMessage(entry)) {
       continue;
     }
@@ -1040,36 +1039,44 @@ export function failedFeedRunIds(
   return failed;
 }
 
-/**
- * A prompt without a run (a provider-native subagent, or a turn imported from
- * V1) folds its response like a run. `runlessWorkActive` keeps the latest
- * runless response open; V2 work must not reopen imported turns.
- */
 function deriveThreadFeedRunFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
   latestRun: ThreadFeedLatestRun | null,
   runlessWorkActive: boolean,
+  feedFailedRunIds: ReadonlySet<RunId>,
 ): ReadonlyMap<string, ThreadFeedRunFold> {
   const firstAssistantMessageIdByRun = new Map<RunId, string>();
   const terminalAssistantMessageIdByRun = new Map<RunId, string>();
   const interruptedRunIds = new Set<RunId>();
-  const failedRunIds = failedFeedRunIds(feed, latestRun);
+  const failedRunIds = new Set(feedFailedRunIds);
+  const promptIndexByRunId = new Map<RunId, number>();
+  for (const [index, entry] of feed.entries()) {
+    if (
+      entry.type !== "message" ||
+      entry.message.role !== "user" ||
+      entry.message.inputIntent === "steer" ||
+      entry.message.inputIntent === "promoted_queued_to_steer"
+    ) {
+      continue;
+    }
+    const runId = entry.message.runId;
+    if (runId != null && !promptIndexByRunId.has(runId)) promptIndexByRunId.set(runId, index);
+  }
   const groupsByRunId = new Map<
     RunId,
     { entries: ThreadFeedEntry[]; startBoundary: string | null }
   >();
-  // Fold state is keyed by run, so each runless prompt lends its response a
-  // stable key of its own. Decide per prompt, not per thread: a V1 thread's
-  // first V2 run must not unfold every imported turn above it.
   let runlessKey: RunId | null = null;
+  let responseKey: RunId | null = null;
   let pendingUserBoundary: string | null = null;
-  for (const entry of feed) {
+  for (const [index, entry] of feed.entries()) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
       runlessKey = entry.message.runId == null ? RunId.make(`runless:${entry.id}`) : null;
+      responseKey = entry.message.runId ?? runlessKey;
       continue;
     }
-    const runId =
+    const ownRunId =
       entry.type === "message" && entry.message.role === "assistant"
         ? (entry.message.runId ?? runlessKey)
         : entry.type === "activity-group" ||
@@ -1077,7 +1084,14 @@ function deriveThreadFeedRunFolds(
             entry.type === "mcp-app"
           ? (entry.runId ?? runlessKey)
           : null;
-    if (!runId) continue;
+    if (!ownRunId) continue;
+    // Resuming a subagent moves its item to the resuming run, but the item
+    // keeps its place in the turn that started it. It folds with that turn,
+    // so the later run's fold still opens under its own prompt.
+    const runId =
+      responseKey !== null && (promptIndexByRunId.get(ownRunId) ?? -1) > index
+        ? responseKey
+        : ownRunId;
     let group = groupsByRunId.get(runId);
     if (!group) {
       group = { entries: [], startBoundary: pendingUserBoundary };
@@ -1191,7 +1205,6 @@ function deriveThreadFeedRunFolds(
 const supersededReasoningGroups = new WeakMap<ThreadFeedActivityGroup, ThreadFeedActivityGroup>();
 const trailingReasoningGroups = new WeakMap<ThreadFeedActivityGroup, ThreadFeedActivityGroup>();
 
-/** A steer or subsequent activity ends thinking even if the provider omits its completion. */
 function settleSupersededReasoning(
   entry: Exclude<ThreadFeedEntry, { readonly type: "run-fold" | "work-toggle" | "thinking" }>,
   tail: boolean,
@@ -1225,7 +1238,6 @@ export function deriveThreadFeedPresentation(
   expandedRunIds: ReadonlySet<RunId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
-  /** The live work is a provider-native subagent's runless root turn. */
   runlessWorkActive = false,
 ): ThreadFeedEntry[] {
   const sentinelEntry = (entry: ThreadFeedEntry) =>
@@ -1255,6 +1267,7 @@ export function deriveThreadFeedPresentation(
     sourceFeed,
     latestRun,
     isWorking && runlessWorkActive,
+    failedRunIds,
   );
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
@@ -1264,8 +1277,6 @@ export function deriveThreadFeedPresentation(
   }
   const result: ThreadFeedEntry[] = [];
   for (const entry of sourceFeed) {
-    // A provider-native subagent works without a run: its null-run tail is
-    // live only while that runless work is active.
     const isActiveTailGroup =
       isWorking &&
       (activeRunId !== null || runlessWorkActive) &&
@@ -1329,8 +1340,6 @@ export function deriveThreadFeedPresentation(
       );
     }
   }
-  // Keep exactly one live slot while a run is working. When no tool row can
-  // carry it yet (or the latest call failed), the slot reads "Thinking".
   if (
     isWorking &&
     activeWorkStartedAt !== null &&
@@ -1375,7 +1384,6 @@ function isWorkLogFeedRow(row: ThreadFeedEntry | undefined): boolean {
   );
 }
 
-/** Shared by the trailing live tool row and its Thinking fallback. */
 export const LIVE_ACTIVITY_ROW_ID = "live-activity-row";
 
 function thinkingRow(createdAt: string, runId: RunId | null) {
@@ -1507,8 +1515,6 @@ function appendToolGroupRows(
   const active = latestActiveActivity !== undefined;
   const live = activeTail || active;
   const latestActivity = latestActiveActivity ?? activities.at(-1)!;
-  // A successful trailing call remains the live slot until the next activity.
-  // Failed/stopped calls hand that slot to the Thinking row.
   const shimmer = activeTail && (active || latestActivity.status === "success");
   const singleActivity = activities.length === 1 ? latestActivity : null;
   const groupSummary = summarizeToolGroup(activities.map((activity) => activity.workEntry));
@@ -1646,7 +1652,7 @@ export function setPendingUserInputCustomAnswer(
   }
 
   const selectedOptionValues =
-    customAnswer.trim().length > 0
+    question.initialAnswer !== undefined || customAnswer.trim().length > 0
       ? undefined
       : normalizeSelectedOptionValues(question, draft?.selectedOptionValues);
   return {
@@ -1723,11 +1729,6 @@ export function buildPendingUserInputAnswers(
   return answers;
 }
 
-/**
- * Projects the server-authored visible sequence into mobile row presentation.
- * It deliberately preserves the incoming order and never rebuilds chat from
- * separate message, plan, or work-entry collections.
- */
 export function buildThreadFeed(
   visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
   options?: {
@@ -1769,8 +1770,6 @@ export function buildThreadFeed(
     if (turnItemIsWorkspacePreparation(item)) continue;
     if (item.type === "todo_list" || item.type === "checkpoint") continue;
     if (item.type === "user_message" && foldedAnswerMessageIds.has(item.messageId)) continue;
-    // Match the web timeline: only the terminal interrupt result is useful to
-    // users; the preceding request is transient bookkeeping.
     if (item.type === "run_interrupt_request") {
       continue;
     }
@@ -1781,7 +1780,6 @@ export function buildThreadFeed(
       continue;
     }
     const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
-    // A running or failed render stays an ordinary work row.
     const render =
       item.type === "dynamic_tool" && item.status === "completed"
         ? htmlRenderFromToolItem(item)

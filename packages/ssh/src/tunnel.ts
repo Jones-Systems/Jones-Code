@@ -77,17 +77,8 @@ const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
 export interface RemoteT3RunnerOptions {
   /** Jones clients attach to the host's managed active runtime. */
   readonly hostManagedRuntime?: boolean;
-  /**
-   * Dev mode: run `node <path>` on the remote instead of a release archive.
-   * The only mode that needs Node on the remote.
-   */
   readonly nodeScriptPath?: string | null;
   readonly nodeEngineRange?: string | null;
-  /**
-   * Exact version whose self-contained release archive the remote installs
-   * and runs. Required unless `nodeScriptPath` or `hostManagedRuntime` is set;
-   * the remote then needs neither Node nor npm.
-   */
   readonly archiveVersion?: string | null;
   readonly releaseBaseUrl?: string | null;
 }
@@ -252,13 +243,12 @@ function applyScriptPlaceholders(
 ): string {
   let result = template;
   for (const [token, value] of Object.entries(replacements)) {
-    result = result.replaceAll(`@@${token}@@`, value);
+    // A replacer function keeps `$$` and other `$` patterns in the value literal.
+    result = result.replaceAll(`@@${token}@@`, () => value);
   }
   return result;
 }
 
-// Re-exported from the shared HTTP readiness module so existing importers
-// (notably tunnel.test.ts) keep resolving it from here.
 export { describeReadinessCause };
 
 export const REMOTE_PICK_PORT_SCRIPT = `const fs = require("node:fs");
@@ -271,20 +261,38 @@ const preferred = Number.parseInt(raw, 10);
 const start = Number.isInteger(preferred) ? preferred : defaultPort;
 const end = start + scanWindow;
 
-function tryPort(port) {
+function canBind(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.unref();
     server.once("error", () => resolve(false));
     server.listen(port, "127.0.0.1", () => {
-      server.close((error) => resolve(error ? false : port));
+      server.close((error) => resolve(!error));
     });
+  });
+}
+
+// macOS lets the bind above succeed while another process listens on
+// *:<port>, so also skip any port that already answers on loopback.
+function answersOnLoopback(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    socket.setTimeout(1000);
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("timeout", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
   });
 }
 
 (async () => {
   for (let port = start; port < end; port += 1) {
-    const available = await tryPort(port);
+    const available = (await canBind(port)) && !(await answersOnLoopback(port));
     if (available) {
       process.stdout.write(String(port));
       return;
@@ -609,6 +617,14 @@ wait_for_pid_exit() {
     sleep 0.1
   done
 }
+# kill -0 also succeeds for a server that exited but was not reaped yet, so
+# a zombie does not count as running. Without ps to tell, trust kill -0.
+server_running() {
+  [ -n "$1" ] && kill -0 "$1" 2>/dev/null || return 1
+  case "$(ps -o stat= -p "$1" 2>/dev/null || true)" in
+    *Z*) return 1 ;;
+  esac
+}
 resolve_default_runtime_port() {
   if [ "$T3_ARCHIVE_MODE" = "1" ]; then
     "$RUNNER_FILE" __ssh-helper runtime-port "$DEFAULT_RUNTIME_FILE"
@@ -644,6 +660,10 @@ DEFAULT_REMOTE_PORT=""
 if [ -n "$DEFAULT_RUNTIME_INFO" ]; then
   DEFAULT_RUNTIME_PID="\${DEFAULT_RUNTIME_INFO%% *}"
   DEFAULT_REMOTE_PORT="\${DEFAULT_RUNTIME_INFO#* }"
+fi
+if [ -n "$DEFAULT_RUNTIME_PID" ] && ! server_running "$DEFAULT_RUNTIME_PID"; then
+  DEFAULT_RUNTIME_PID=""
+  DEFAULT_REMOTE_PORT=""
 fi
 ${PERSISTENT_REMOTE_REUSE_SCRIPT}
 if [ -z "$REMOTE_PORT" ]; then
@@ -688,6 +708,29 @@ PAIRING_BASE_DIR="$DEFAULT_SERVER_HOME"
 "$RUNNER_FILE" auth pairing create --base-dir "$PAIRING_BASE_DIR" --json
 `;
 
+const REMOTE_STOP_SCRIPT = `set -eu
+STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
+PID_FILE="$STATE_DIR/pid"
+PORT_FILE="$STATE_DIR/port"
+MANAGED_FILE="$STATE_DIR/managed"
+REMOTE_MANAGED="$(cat "$MANAGED_FILE" 2>/dev/null || true)"
+REMOTE_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
+if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ] && kill -0 "$REMOTE_PID" 2>/dev/null; then
+  kill "$REMOTE_PID" 2>/dev/null || true
+  WAIT_COUNT=0
+  while kill -0 "$REMOTE_PID" 2>/dev/null && [ "$WAIT_COUNT" -lt 20 ]; do
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+    sleep 0.1
+  done
+  if kill -0 "$REMOTE_PID" 2>/dev/null; then
+    printf 'Remote T3 server with PID %s did not stop within 2 seconds. Its ownership files were kept.\\n' "$REMOTE_PID" >&2
+    exit 1
+  fi
+fi
+rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"
+printf '{"stopped":true}\\n'
+`;
+
 const REMOTE_LOG_TAIL_SCRIPT = `set -eu
 STATE_DIR="$HOME/.t3/ssh-launch/@@T3_STATE_KEY@@"
 LOG_FILE="$STATE_DIR/server.log"
@@ -730,7 +773,6 @@ export function buildRemoteT3RunnerScript(input?: RemoteT3RunnerOptions): string
   if (archiveVersion !== "" && !EXACT_ARCHIVE_VERSION.test(archiveVersion)) {
     throw new SshInvalidArchiveVersionError({ archiveVersion });
   }
-  // Strip the `/v<version>` the helper appends: the script builds URLs itself.
   const releaseBaseUrl = cliReleaseDownloadBaseUrl("", input?.releaseBaseUrl ?? undefined).replace(
     /\/v$/u,
     "",
@@ -778,6 +820,12 @@ export function buildRemotePairingScript(stateKey: string, input?: RemoteT3Runne
   return applyScriptPlaceholders(REMOTE_PAIRING_SCRIPT, {
     T3_STATE_KEY: stateKey,
     T3_RUNNER_SCRIPT: stripTrailingNewlines(buildRemoteT3RunnerScript(input)),
+  });
+}
+
+export function buildRemoteStopScript(stateKey: string): string {
+  return applyScriptPlaceholders(REMOTE_STOP_SCRIPT, {
+    T3_STATE_KEY: stateKey,
   });
 }
 
@@ -868,10 +916,7 @@ export const issueRemotePairingToken = Effect.fn("ssh/tunnel.issueRemotePairingT
   const result = yield* runSshCommand(target, {
     remoteCommandArgs: ["sh", "-s"],
     stdin: buildRemotePairingScript(stateKey, runner),
-    // Only archive runners can install during pairing; host attachment is bounded.
-    ...(isNodeScriptRunner(runner) || runner?.hostManagedRuntime
-      ? {}
-      : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
+    ...(isNodeScriptRunner(runner) ? {} : { timeoutMs: REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS }),
     ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
     ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
     ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
@@ -1502,6 +1547,8 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
         remotePort: entry.remotePort,
         cause: readinessExit.cause,
       });
+      // Closing a stale forward must not run the manager-owned remote stop.
+      tunnels.delete(key);
       yield* closeTunnelEntry(entry);
     }
 

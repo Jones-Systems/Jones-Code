@@ -6,6 +6,7 @@
 // runtime: it is the one part of the executable that cannot depend on the
 // rest of it being loadable.
 import * as NodeChildProcess from "node:child_process";
+import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "./jones/cloud/shutdownBudget.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -49,6 +50,16 @@ import {
   qualifiedServicePreflightFailure,
 } from "./cloud/servicePreflight.ts";
 import type { MigrationPlan } from "./jones/updates/migrationPlan.ts";
+import {
+  archiveUpdateOperation,
+  assertNoUnreconciledUpdateOperations,
+  operationBinding,
+  readOperationReservation,
+  reconcileUpdateOperation,
+  reserveUpdateOperation,
+} from "./jones/updates/launcherOperation.ts";
+
+import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
 
 import type {
   PendingServiceUpdate,
@@ -76,8 +87,15 @@ import {
 } from "./environment/nativeStoreAuthorityPersistence.ts";
 
 const HANDOFF_DELAY_MS = 2_000;
-const PREPARED_TIMEOUT_MS = 120_000;
-const TERMINATE_GRACE_MS = 5_000;
+/**
+ * Migrations and the open-time `PRAGMA optimize` count toward it and scale with the database:
+ * tens of GB on a cold page cache take minutes. A missed window rolls back the database, so
+ * the next attempt pays the same cost.
+ */
+export const PREPARED_TIMEOUT_MS = 30 * 60_000;
+// Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
+// launcher stays independent of the Effect-backed contracts package.
+const STATE_DIR_OWNED_EXIT_CODE = 78;
 // The server abandons a launcher exchange after 30 seconds (serviceLauncherClient).
 // Past this fence, measured from message receipt, a qualified Install is not
 // accepted and a qualified pointer is not committed. The margin covers the
@@ -93,9 +111,6 @@ interface ManagedChild {
   readonly process: NodeChildProcess.ChildProcess;
 }
 
-// Mirrors pinnedRuntimePaths: a runtime is an unpacked release archive whose
-// executable runs on its own. Kept inline so this file stays on Node
-// built-ins only.
 const runtimePaths = (baseDir: string, version: string) => {
   const versionDir = NodePath.join(baseDir, "runtime", "versions", version);
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -157,7 +172,6 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   args: ["serve"],
 });
 
-/** SQLite persists across the main file plus its WAL and shared-memory sidecars. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
 const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
@@ -213,9 +227,129 @@ async function syncDirectory(directory: string): Promise<void> {
   }
 }
 
+function runCp(args: ReadonlyArray<string>): Promise<boolean> {
+  return new Promise((resolve) => {
+    NodeChildProcess.execFile("cp", args, (error) => resolve(error === null));
+  });
+}
+
 /**
- * Snapshots the database once per update before the first trial. A completed
- * backup is never overwritten because a restarted launcher may be looking at
+ * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a full copy.
+ */
+async function copyDatabaseFile(source: string, destination: string): Promise<void> {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  const platform = process.platform;
+  // `cp -c` replaces the destination with a new file, which would cut a
+  // hard-linked database off from its other links; copy into it instead.
+  const hardLinked =
+    platform === "darwin" &&
+    ((await NodeFSP.stat(destination).catch(() => undefined))?.nlink ?? 1) > 1;
+  const args =
+    platform === "darwin" && !hardLinked
+      ? ["-c", source, destination]
+      : platform === "linux"
+        ? ["--reflink=auto", source, destination]
+        : undefined;
+  if (args === undefined || !(await runCp(args))) await NodeFSP.copyFile(source, destination);
+}
+
+const GIB = 1024 ** 3;
+/**
+ * Clones share blocks, but the trial server diverges from them as it writes,
+ * migrations included, so a cloned backup still needs room for that churn.
+ */
+const CLONED_BACKUP_MIN_HEADROOM_BYTES = GIB;
+const CLONED_BACKUP_HEADROOM_FRACTION = 0.1;
+
+async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.Stats>> {
+  const stats: Array<NodeFS.Stats> = [];
+  for (const suffix of DB_FILE_SUFFIXES) {
+    const stat = await NodeFSP.stat(`${dbPath}${suffix}`).catch((cause: unknown) => {
+      if (suffix !== "" && (cause as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw cause;
+    });
+    if (stat !== undefined) stats.push(stat);
+  }
+  return stats;
+}
+
+/**
+ * - macOS: `cp -c` clones within one APFS volume and silently copies
+ *   anywhere else, so every existing database file must share the backup
+ *   directory's device, whose filesystem type must match the system volume's,
+ *   which is always APFS.
+ */
+async function backupCanClone(dbPath: string, backupRoot: string): Promise<boolean> {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
+  const platform = process.platform;
+  if (platform === "darwin") {
+    const [backupDirectory, backupFs, systemFs] = await Promise.all([
+      NodeFSP.stat(backupRoot),
+      NodeFSP.statfs(backupRoot),
+      NodeFSP.statfs("/"),
+    ]);
+    if (backupFs.type !== systemFs.type) return false;
+    return (await statDatabaseFiles(dbPath)).every(
+      (source) => source.dev === backupDirectory.dev && source.nlink === 1,
+    );
+  }
+  if (platform !== "linux") return false;
+  const probe = NodePath.join(backupRoot, `.clone-probe-${NodeCrypto.randomUUID()}`);
+  try {
+    for (const suffix of DB_FILE_SUFFIXES) {
+      const source = `${dbPath}${suffix}`;
+      if (suffix !== "" && !(await pathExists(source))) continue;
+      if (!(await runCp(["--reflink=always", source, `${probe}${suffix}`]))) return false;
+    }
+    return true;
+  } finally {
+    for (const suffix of DB_FILE_SUFFIXES) {
+      await NodeFSP.rm(`${probe}${suffix}`, { force: true }).catch(() => undefined);
+    }
+  }
+}
+
+export interface BackupSpaceProbe {
+  readonly readFreeBytes: (directory: string) => Promise<number>;
+  readonly canClone: (dbPath: string, backupRoot: string) => Promise<boolean>;
+}
+
+const filesystemBackupSpaceProbe: BackupSpaceProbe = {
+  readFreeBytes: async (directory) => {
+    const stats = await NodeFSP.statfs(directory);
+    return stats.bavail * stats.bsize;
+  },
+  canClone: backupCanClone,
+};
+
+/**
+ * Runs before the server is stopped so a full disk refuses the update instead of causing an
+ * outage and a cold restart.
+ */
+export async function databaseBackupBlocker(
+  baseDir: string,
+  dbPath: string,
+  probe: Partial<BackupSpaceProbe> = {},
+): Promise<string | undefined> {
+  const { readFreeBytes, canClone } = { ...filesystemBackupSpaceProbe, ...probe };
+  const backupRoot = NodePath.join(baseDir, "runtime", "db-backup");
+  await NodeFSP.mkdir(backupRoot, { recursive: true, mode: 0o700 });
+  const [files, free] = await Promise.all([statDatabaseFiles(dbPath), readFreeBytes(backupRoot)]);
+  const size = files.reduce((total, file) => total + file.size, 0);
+  const fullCopyBytes = size * 1.05;
+  if (free >= fullCopyBytes) return undefined;
+  const clonedBytes = Math.max(
+    CLONED_BACKUP_MIN_HEADROOM_BYTES,
+    size * CLONED_BACKUP_HEADROOM_FRACTION,
+  );
+  const needed = (await canClone(dbPath, backupRoot)) ? clonedBytes : fullCopyBytes;
+  if (free >= needed) return undefined;
+  const gb = (bytes: number) => (bytes / GIB).toFixed(1);
+  return `Not enough free disk space to back up the database before updating: ${gb(needed)} GB needed, ${gb(free)} GB free. Free up disk space and try again. The server was not stopped.`;
+}
+
+/**
+ * A completed backup is never overwritten because a restarted launcher may be looking at
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(
@@ -276,7 +410,7 @@ async function backupDatabaseOnce(
       const source = `${pending.dbPath}${suffix}`;
       if (suffix !== "" && !(await pathExists(source))) continue;
       const destination = databaseBackupFile(stagingDir, suffix);
-      await NodeFSP.copyFile(source, destination);
+      await copyDatabaseFile(source, destination);
       await syncFile(destination);
     }
     await NodeFSP.rename(stagingDir, backupDir);
@@ -376,7 +510,34 @@ async function markDatabaseRestorePending(backupDir: string): Promise<void> {
   }
 }
 
-/** Resume durable restore intent; missing backups or unproved writer ownership stop recovery. */
+/**
+ * The file a restore writes for `path`: where its symlinks lead, even when the
+ * last target is missing, as after a crash between `cp -c` removing a file
+ * and cloning over it.
+ */
+async function restoreTarget(path: string): Promise<string> {
+  let current = path;
+  for (let hops = 0; hops < 40; hops++) {
+    try {
+      return await NodeFSP.realpath(current);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    }
+    const link = await NodeFSP.readlink(current).catch((cause: unknown) => {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "EINVAL") return undefined;
+      throw cause;
+    });
+    if (link === undefined) return current;
+    // Joined without normalizing: a `..` in the link must follow directory links
+    // the way the filesystem does, not cancel a path segment.
+    current = NodePath.isAbsolute(link)
+      ? link
+      : `${await NodeFSP.realpath(NodePath.dirname(current))}${NodePath.sep}${link}`;
+  }
+  throw new Error(`Too many symbolic links resolving ${path}.`);
+}
+
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
@@ -396,20 +557,24 @@ async function restoreDatabaseBackup(
   fenceNativeStoreAuthorityForBaseDir(baseDir);
   if (pending.qualified !== undefined)
     await retainQualifiedAdvancedState(baseDir, pending.dbPath, backupDir);
+  const directories = new Set([NodePath.dirname(pending.dbPath)]);
   for (const suffix of DB_FILE_SUFFIXES) {
-    const target = `${pending.dbPath}${suffix}`;
+    const livePath = `${pending.dbPath}${suffix}`;
     const source = databaseBackupFile(backupDir, suffix);
     if (await pathExists(source)) {
+      // Restore through the symlink target so replacing a clone preserves the link itself.
+      const target = await restoreTarget(livePath);
       if (pending.qualified !== undefined) await restoreQualifiedBackupFile(source, target);
       else {
-        await NodeFSP.copyFile(source, target);
+        await copyDatabaseFile(source, target);
         await syncFile(target);
       }
+      directories.add(NodePath.dirname(target));
     } else {
-      await NodeFSP.rm(target, { force: true });
+      await NodeFSP.rm(livePath, { force: true });
     }
   }
-  await syncDirectory(NodePath.dirname(pending.dbPath));
+  for (const directory of directories) await syncDirectory(directory);
   if (pending.qualified !== undefined) await restorePairedSettings(baseDir, backupDir);
   advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
@@ -428,7 +593,6 @@ export async function readServiceState(filePath: string): Promise<ServiceState> 
   return state;
 }
 
-/** Durable same-directory replacement used for every runtime state transition. */
 export async function writeServiceState(filePath: string, state: ServiceState): Promise<void> {
   const directory = NodePath.dirname(filePath);
   await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -506,7 +670,7 @@ async function terminateChild(
 ): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill(signal);
-  const force = setTimeout(() => child.kill("SIGKILL"), TERMINATE_GRACE_MS);
+  const force = setTimeout(() => child.kill("SIGKILL"), SERVER_CHILD_SHUTDOWN_GRACE_MS);
   try {
     await waitForExit(child);
   } finally {
@@ -525,6 +689,10 @@ export class Launcher {
   readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
+  readonly #updateOperationIO: {
+    readonly archive: typeof archiveUpdateOperation;
+    readonly reserve: typeof reserveUpdateOperation;
+  };
   readonly #now: () => number;
   #state: ServiceState;
   #child: ManagedChild | null = null;
@@ -535,24 +703,35 @@ export class Launcher {
   #done = false;
   #qualifiedPointerCommitAttempted = false;
   readonly #completion = Promise.withResolvers<void>();
+  readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
 
   constructor(
     baseDir: string,
     state: ServiceState,
     options: {
+      readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
       readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
       readonly backupAdapter?: QualifiedBackupAdapter;
+      readonly updateOperationIO?: {
+        readonly archive: typeof archiveUpdateOperation;
+        readonly reserve: typeof reserveUpdateOperation;
+      };
       /** Monotonic milliseconds for the qualified exchange fence; injectable in tests. */
       readonly now?: () => number;
     } = {},
   ) {
     this.#baseDir = baseDir;
+    this.#backupSpaceProbe = options.backupSpaceProbe;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
     this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
     this.#backupAdapter = options.backupAdapter;
+    this.#updateOperationIO = options.updateOperationIO ?? {
+      archive: archiveUpdateOperation,
+      reserve: reserveUpdateOperation,
+    };
     this.#now = options.now ?? (() => performance.now());
   }
 
@@ -811,6 +990,8 @@ export class Launcher {
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      updateOperationsProtocol: 1,
+      updateRetirementProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -899,6 +1080,31 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "request-retire-update") {
+      let retired = false;
+      let reason: string | undefined;
+      try {
+        if (
+          child.role !== "active" ||
+          child.version !== this.#state.activeVersion ||
+          this.#startupGateProtocol !== 1 ||
+          this.#stopRequested
+        )
+          throw new Error("Only the selected active qualified server can retire a stage.");
+        await retireNativeStage(this.#baseDir, child.version, this.#state.update, message);
+        retired = true;
+      } catch (cause) {
+        reason = cause instanceof Error ? cause.message : "Native stage retirement is uncertain.";
+      }
+      await sendMessage(child.process, {
+        type: "update-retired",
+        operationId: message.operationId,
+        stagedHandle: message.stagedHandle,
+        retired,
+        ...(reason === undefined ? {} : { reason }),
+      });
+      return;
+    }
     if (message.type === "request-update") {
       await this.#handleUpdateRequest(child, message, receivedAt);
       return;
@@ -912,7 +1118,11 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     const reject = (reason: string) =>
-      sendMessage(child.process, { type: "update-rejected", reason });
+      sendMessage(child.process, {
+        type: "update-rejected",
+        reason,
+        ...(message.operationId === undefined ? {} : { operationId: message.operationId }),
+      });
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -920,6 +1130,44 @@ export class Launcher {
     if (child.version !== this.#state.activeVersion) {
       await reject("The requesting server is not the selected active version.");
       return;
+    }
+    if (message.stagedHandle !== undefined) {
+      try {
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
+      } catch (cause) {
+        await reject(cause instanceof Error ? cause.message : "Stage revocation is uncertain.");
+        return;
+      }
+    }
+    if (message.operationId !== undefined) {
+      const existing = await reconcileUpdateOperation(
+        this.#baseDir,
+        message.operationId,
+        this.#state.update,
+      );
+      if (existing.state !== "absent") {
+        if (existing.state === "blocked") {
+          await reject("The update operation is ambiguous and requires reconciliation.");
+          return;
+        }
+        const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
+          () => undefined,
+        );
+        if (
+          reserved === undefined ||
+          reserved.binding.stagedHandle !== message.stagedHandle ||
+          reserved.binding.dbPath !== message.dbPath ||
+          reserved.binding.targetVersion !== message.targetVersion
+        ) {
+          await reject("The update operation is ambiguous or its immutable binding changed.");
+          return;
+        }
+        await sendMessage(child.process, {
+          type: "update-accepted",
+          updateId: message.operationId,
+        });
+        return;
+      }
     }
     if (this.#state.update?.status === "pending") {
       await reject("Another server update is already pending.");
@@ -957,7 +1205,6 @@ export class Launcher {
       await reject("The requested target runtime is missing or incomplete.");
       return;
     }
-
     if (message.stagedHandle !== undefined && this.#startupGateProtocol !== 1) {
       await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
       return;
@@ -1002,6 +1249,24 @@ export class Launcher {
         );
         return;
       }
+    }
+    // A check that cannot run refuses the update too: the alternative is
+    // stopping the server without knowing whether the backup fits.
+    const backupBlocker = await databaseBackupBlocker(
+      this.#baseDir,
+      message.dbPath,
+      this.#backupSpaceProbe,
+    ).catch(
+      (error: unknown) =>
+        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+    );
+    if (!child.process.connected) return;
+    if (backupBlocker !== undefined) {
+      await reject(backupBlocker);
+      return;
+    }
+    if (message.stagedHandle !== undefined) {
+      if (this.#child !== child || this.#stopRequested || this.#stopping) return;
       if (this.#exchangeExpired(receivedAt)) {
         // The requester may already have reported a timeout; never accept,
         // record or stop behind it. A disconnected requester needs no reply.
@@ -1011,8 +1276,40 @@ export class Launcher {
         return;
       }
     }
+    try {
+      if (message.stagedHandle !== undefined)
+        await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
+      await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
+      if (message.operationId !== undefined) {
+        if (qualified === undefined) {
+          await reject("An operation ID requires a qualified staged runtime.");
+          return;
+        }
+        await this.#updateOperationIO.reserve(
+          this.#baseDir,
+          message.operationId,
+          operationBinding(qualified),
+        );
+      }
+    } catch {
+      // A failed fsync may leave a reservation. Preserve it for reconciliation
+      // while the unchanged active child continues serving.
+      await reject(
+        "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
+      );
+      return;
+    }
+    if (qualified !== undefined && this.#exchangeExpired(receivedAt)) {
+      // Receipt preparation can consume the exchange budget too. A reservation
+      // already written stays available for reconciliation; no Install was accepted.
+      await reject(
+        "request-expired: Native operation preparation outlasted the server's launcher exchange; Install was not admitted.",
+      ).catch(() => undefined);
+      return;
+    }
     const pending: PendingServiceUpdate = {
-      id: NodeCrypto.randomUUID(),
+      id: message.operationId ?? NodeCrypto.randomUUID(),
       fromVersion: child.version,
       targetVersion: message.targetVersion,
       dbPath: message.dbPath,
@@ -1181,6 +1478,10 @@ export class Launcher {
     if (this.#child !== child || this.#stopping) return;
     this.#child = null;
     await this.#retractCapability(child.process);
+    if (code === STATE_DIR_OWNED_EXIT_CODE) {
+      await this.#idleWhileStateDirOwned();
+      return;
+    }
     if (child.role === "trial") {
       this.#clearTimer();
       const pending = this.#state.update;
@@ -1203,6 +1504,31 @@ export class Launcher {
       return;
     }
     throw new Error(`Active child exited unexpectedly (${String(code ?? signal ?? "unknown")}).`);
+  }
+
+  /**
+   * Exiting would make systemd or launchd start another refused server, so stay
+   * idle until stopped or restarted. A pending update fails without restoring
+   * its backup: the other owner may have written to the database since.
+   */
+  async #idleWhileStateDirOwned(): Promise<void> {
+    this.#clearTimer();
+    const pending = this.#state.update;
+    if (pending?.status === "pending") {
+      const next: ServiceState = {
+        ...this.#state,
+        activeVersion: pending.fromVersion,
+        update: terminalUpdate({ pending, status: "failed", reason: "state-dir-owned" }),
+      };
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+    }
+    // Signal listeners alone do not keep Node alive.
+    this.#timer = setInterval(() => {}, 2_147_483_647);
+    process.stderr.write(
+      "[service-launcher] Another T3 Code server owns this T3 home. Stop it, then restart this service.\n",
+    );
   }
 
   async #returnToPrevious(

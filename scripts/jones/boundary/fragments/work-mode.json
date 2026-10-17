@@ -29,7 +29,9 @@
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
     "apps/web/src/components/chat/MessagesTimeline.logic.ts",
     "apps/web/src/components/sidebar/SidebarChrome.tsx",
-    "packages/contracts/src/settings.ts"
+    "packages/contracts/src/settings.ts",
+    "packages/shared/src/KeyedLock.test.ts",
+    "packages/shared/src/KeyedLock.ts"
   ],
   "tombstones": [],
   "allowedImports": [

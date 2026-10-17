@@ -1,20 +1,5 @@
-import { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
-import { LegacyOwnedTerminalControl } from "./RecordedTypes.ts";
-import {
-  CheckpointId,
-  CheckpointScopeId,
-  CommandId,
-  MessageId,
-  ProviderSessionId,
-  RunAttemptId,
-  ProviderApprovalDecision,
-  ProviderUserInputAnswers,
-  ProviderThreadId,
-  ProviderTurnId,
-  RunId,
-  RuntimeRequestId,
-  ThreadId,
-} from "@t3tools/contracts";
+import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
+import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -30,96 +15,20 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { forkParked } from "../serverActivation.ts";
 
-export const OrchestrationEffectRequestV2 = Schema.Union([
-  Schema.Struct({
-    type: Schema.Literal("provider-runtime.continue"),
-    sourceRunId: RunId,
-    preparedForRestart: Schema.optional(Schema.Boolean),
-    continueWithoutPreference: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-session.detach"),
-    runtimeStopCommandId: Schema.optional(CommandId),
-    providerSessionId: ProviderSessionId,
-    detail: Schema.optional(Schema.String),
-    /** Set on terminal detaches (thread archive/delete): revoke the thread's MCP credentials. */
-    revokeMcpCredential: Schema.optional(Schema.Boolean),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.start"),
-    runId: RunId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.interrupt"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.steer"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    messageId: MessageId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-turn.restart"),
-    providerSessionId: ProviderSessionId,
-    providerThreadId: ProviderThreadId,
-    providerTurnId: ProviderTurnId,
-    interruptedAttemptId: RunAttemptId,
-    runId: RunId,
-    sessionTransition: Schema.optional(
-      Schema.Union([
-        Schema.Struct({
-          type: Schema.Literal("replace"),
-          replacementProviderSessionId: ProviderSessionId,
-        }),
-        Schema.Struct({ type: Schema.Literal("detach") }),
-      ]),
-    ),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("runtime-request.respond"),
-    providerSessionId: ProviderSessionId,
-    requestId: RuntimeRequestId,
-    decision: Schema.optional(ProviderApprovalDecision),
-    answers: Schema.optional(ProviderUserInputAnswers),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("provider-thread.rollback"),
-    restoreFiles: Schema.optional(Schema.Boolean),
-    providerThreadId: ProviderThreadId,
-    checkpointId: CheckpointId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("checkpoint.capture"),
-    runId: RunId,
-    scopeId: CheckpointScopeId,
-  }),
-  Schema.Struct({
-    type: Schema.Literal("terminal.cleanup"),
-    legacyOwnedControl: Schema.optional(LegacyOwnedTerminalControl),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("attachment.cleanup"),
-    attachmentIds: Schema.Array(Schema.String),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("thread-title.generate"),
-    kind: Schema.Union([
-      Schema.Struct({ type: Schema.Literal("initial"), messageId: MessageId }),
-      Schema.Struct({ type: Schema.Literal("regenerate") }),
-    ]),
-  }),
-  /** Follows a Stop: sends `thread.stop` to every delegated task under the stopped thread. */
-  Schema.Struct({
-    type: Schema.Literal("delegated-tasks.stop"),
-    reason: Schema.optional(Schema.String),
-  }),
-]);
-export type OrchestrationEffectRequestV2 = typeof OrchestrationEffectRequestV2.Type;
+import {
+  enqueue as enqueueEffects,
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
+
+export {
+  EffectOutboxError,
+  NativeOrchestrationEffectPayloadV2,
+  OrchestrationEffectRequestV2,
+  type PendingOrchestrationEffectV2,
+} from "./EffectOutboxEnqueue.ts";
 
 export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-runtime.continue",
@@ -127,6 +36,7 @@ export const REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS = [
   "provider-thread.rollback",
   "checkpoint.capture",
   "terminal.cleanup",
+  "preview.cleanup",
   "attachment.cleanup",
   "thread-title.generate",
   "delegated-tasks.stop",
@@ -150,16 +60,10 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
 
 /**
- * How long a succeeded or cancelled effect row is kept after it completes.
- * Claiming, recovery, the orchestrator and storage cleanup only ask whether a
- * row is pending, running or failed, so a missing succeeded or cancelled row
- * reads the same as a present one. Its one other use is deduplication: `enqueue`
- * ignores an id that already exists, and ids are deterministic per command or
- * run. Command retries are deduplicated by their receipts first, and a run's
- * effects are re-enqueued only around one server restart, so a week is far
- * longer than either and leaves recent history for debugging.
- * Failed rows are kept: storage cleanup keeps a deleted thread's worktree while
- * any of its effects failed.
+ * Command retries are deduplicated by their receipts first, and a run's effects
+ * are re-enqueued only around one server restart, so a week is far longer than
+ * either and leaves recent history for debugging. Failed rows are kept: storage
+ * cleanup keeps a deleted thread's worktree while any of its effects failed.
  */
 export const SETTLED_EFFECT_RETENTION = Duration.days(7);
 const PRUNE_BATCH_SIZE = 500;
@@ -179,28 +83,6 @@ export interface OrchestrationEffectV2 {
   readonly updatedAt: string;
   readonly completedAt: string | null;
   readonly lastError: string | null;
-}
-
-export interface PendingOrchestrationEffectV2 {
-  readonly id: string;
-  readonly commandId: CommandId;
-  readonly threadId: ThreadId;
-  readonly nativeCreationExecutionReference?: NativeCreationExecutionReferenceV2;
-  readonly request: OrchestrationEffectRequestV2;
-  readonly availableAt?: DateTime.Utc;
-}
-
-export class EffectOutboxError extends Schema.TaggedError<EffectOutboxError>()(
-  "EffectOutboxError",
-  {
-    operation: Schema.String,
-    effectId: Schema.optional(Schema.String),
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `Orchestration effect outbox ${this.operation} failed${this.effectId === undefined ? "" : ` for ${this.effectId}`}.`;
-  }
 }
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
@@ -232,6 +114,8 @@ export interface EffectOutboxV2Shape {
   readonly signalCancellations: (effectIds: ReadonlyArray<string>) => Effect.Effect<void>;
   readonly awaitCancellation: (effectId: string) => Effect.Effect<void>;
   readonly clearCancellation: (effectId: string) => Effect.Effect<void>;
+  /** Resolves once the effect is neither pending nor running, or right away when it does not exist. */
+  readonly awaitSettled: (effectId: string) => Effect.Effect<void, EffectOutboxError>;
   readonly reconcileAfterProcessLoss: Effect.Effect<
     { readonly requeued: number; readonly cancelled: number },
     EffectOutboxError
@@ -257,7 +141,6 @@ export interface EffectOutboxV2Shape {
     readonly workerId: string;
     readonly error: string;
   }) => Effect.Effect<boolean, EffectOutboxError>;
-  /** Deletes succeeded and cancelled rows older than `SETTLED_EFFECT_RETENTION`. Returns the count. */
   readonly pruneSettled: Effect.Effect<number, EffectOutboxError>;
 }
 
@@ -282,21 +165,13 @@ type EffectRow = {
   readonly last_error: string | null;
 };
 
-const encodeRequest = Schema.encodeSync(Schema.fromJsonString(OrchestrationEffectRequestV2));
 const decodeRequest = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationEffectRequestV2),
 );
 
-export const NativeOrchestrationEffectPayloadV2 = Schema.Struct({
-  request: OrchestrationEffectRequestV2,
-  nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
-});
 const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2, {
   onExcessProperty: "error",
 });
-const encodeNativePayload = Schema.encodeSync(
-  Schema.fromJsonString(NativeOrchestrationEffectPayloadV2),
-);
 // An invalid native envelope must never fall back to ordinary provider execution.
 export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
   Effect.gen(function* () {
@@ -333,24 +208,28 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   EffectOutboxV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    // Availability is only a bounded latency hint; durable rows remain
-    // authoritative. Retaining a small burst lets multiple worker slots wake
-    // for distinct threads without allowing notifications to grow unbounded.
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
+    const settledSignals = new Map<string, Deferred.Deferred<void>>();
+    const signalSettled = (effectIds: ReadonlyArray<string>) =>
+      Effect.forEach(
+        effectIds,
+        (effectId) => {
+          const signal = settledSignals.get(effectId);
+          if (signal === undefined) return Effect.void;
+          settledSignals.delete(effectId);
+          return Deferred.succeed(signal, undefined);
+        },
+        { discard: true },
+      );
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
-    // Each thread runs its effects one at a time, in enqueue (rowid) order. An earlier
-    // effect waiting out a retry backoff still blocks later ones, so a turn
-    // cannot start while a failed rollback is about to restore files. A claim
-    // that skips restart continuations is not blocked by them either.
-    // Title generation is correlated metadata work, so it has its own
-    // per-thread lane and cannot delay provider lifecycle effects.
-    // Automatic boundary steers follow receipt order; only successful predecessors release them.
+    // An earlier effect waiting out a retry backoff still blocks later ones, so
+    // a turn cannot start while a failed rollback is about to restore files.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -452,44 +331,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
 
     const service: EffectOutboxV2Shape = {
       enqueue: (effects) =>
-        Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          const nowIso = DateTime.formatIso(now);
-          yield* Effect.forEach(
-            effects,
-            (effect) => sql`
-              INSERT INTO orchestration_v2_effect_outbox (
-                effect_id,
-                command_id,
-                thread_id,
-                effect_type,
-                payload_json,
-                status,
-                attempt_count,
-                available_at,
-                created_at,
-                updated_at
-              )
-              VALUES (
-                ${effect.id},
-                ${effect.commandId},
-                ${effect.threadId},
-                ${effect.request.type},
-                ${effect.nativeCreationExecutionReference === undefined ? encodeRequest(effect.request) : encodeNativePayload({ request: effect.request, nativeCreationExecutionReference: effect.nativeCreationExecutionReference })},
-                'pending',
-                0,
-                ${DateTime.formatIso(effect.availableAt ?? now)},
-                ${nowIso},
-                ${nowIso}
-              )
-              ON CONFLICT(effect_id) DO NOTHING
-            `,
-            { concurrency: 1, discard: true },
-          );
-          // Do not signal here: callers enqueue inside a larger transaction,
-          // and workers must only observe availability after that transaction
-          // commits. EventSink owns the corresponding post-commit notification.
-        }).pipe(Effect.mapError((cause) => new EffectOutboxError({ operation: "enqueue", cause }))),
+        enqueueEffects(effects).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       get: (effectId) =>
         sql<EffectRow>`
           SELECT *
@@ -601,15 +443,24 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             },
             { discard: true },
           );
-          // Cancellation can unblock other pending work on the same thread.
-          // This method is deliberately post-commit, so it is also the safe
-          // place to wake claimers after the durable status change.
+          yield* signalSettled(effectIds);
           if (effectIds.length > 0) yield* notifyAvailable(effectIds.length);
         }),
       awaitCancellation: (effectId) => Deferred.await(cancellationSignal(effectId)),
       clearCancellation: (effectId) =>
         Effect.sync(() => {
           cancellationSignals.delete(effectId);
+        }),
+      awaitSettled: (effectId) =>
+        Effect.gen(function* () {
+          // Registered before the read, so a settle right after it still resolves.
+          const signal = settledSignals.get(effectId) ?? Deferred.makeUnsafe<void>();
+          settledSignals.set(effectId, signal);
+          const effect = yield* service.get(effectId);
+          if (Option.exists(effect, ({ status }) => status === "pending" || status === "running")) {
+            return yield* Deferred.await(signal);
+          }
+          yield* signalSettled([effectId]);
         }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
@@ -751,7 +602,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
-            yield* PubSub.publish(completionChanges, undefined);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -811,7 +662,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           `;
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
-            yield* PubSub.publish(completionChanges, undefined);
+            yield* signalSettled([effectId]);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -851,7 +702,6 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   }),
 );
 
-/** Prunes settled effect rows once the server is active, then every hour. */
 export const layerPruneWorker = Layer.effectDiscard(
   Effect.gen(function* () {
     const outbox = yield* EffectOutboxV2;

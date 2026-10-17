@@ -23,7 +23,7 @@ import {
   runtimeBinding,
   requestedRuntimeIdentity,
   unobservedRuntimeIdentity,
-} from "../../orchestration-v2/ProviderAdapter.ts";
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeObservation from "../provider/observations/ProviderThreadRuntimeObservation.ts";
 import { workModeFixture } from "../workMode/Fixtures.testkit.ts";
 import * as RuntimeCensus from "./RuntimeCensus.ts";
@@ -97,6 +97,7 @@ const ports = (input: {
 }) =>
   Layer.succeed(ProviderSessionManager.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    isLive: () => Effect.die("A census must use captured runtime attachment evidence"),
     shutdown: Effect.void,
     open: () => Effect.die("A census must never open a provider"),
     get: () => Effect.succeed(Option.none()),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  type EnvironmentId,
+  EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -107,7 +107,7 @@ describe("provider update launch notification logic", () => {
     ).toBe(false);
   });
 
-  it("deduplicates multi-instance provider candidates by driver", () => {
+  it("retains every provider instance as an update candidate", () => {
     expect(
       collectProviderUpdateCandidates([
         provider({
@@ -122,10 +122,10 @@ describe("provider update launch notification logic", () => {
         }),
         provider({ driver: driver("cursor"), latestVersion: "0.3.0" }),
       ]),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
-  it("disables one-click updates when provider instances disagree on the update command", () => {
+  it("allows one-click updates when provider instances use different update commands", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),
       instanceId: instanceId("claude_personal"),
@@ -143,7 +143,48 @@ describe("provider update launch notification logic", () => {
           updateCommand: "bun add -g @anthropic-ai/claude-code@latest",
         }),
       ]),
-    ).toBe(false);
+    ).toBe(true);
+  });
+
+  it("does not let a manual sibling suppress an actionable instance", () => {
+    const candidate = updateCandidate({ driver: driver("codex") });
+    const manual = provider({
+      driver: driver("codex"),
+      instanceId: instanceId("manual"),
+      canUpdate: false,
+      updateCommand: null,
+    });
+
+    expect(canOneClickUpdateProviderCandidate(candidate, [candidate, manual])).toBe(true);
+  });
+
+  it("selects the freshest instance snapshot before checking update eligibility", () => {
+    const outdated = provider({ driver: driver("codex") });
+    const current = {
+      ...provider({ driver: driver("codex"), advisoryStatus: "current" }),
+      checkedAt: laterCheckedAt,
+    };
+
+    expect(collectProviderUpdateCandidates([current, outdated])).toEqual([]);
+    expect(collectProviderUpdateCandidates([outdated, current])).toEqual([]);
+  });
+
+  it("changes notification identity when actionable instance membership changes", () => {
+    const personal = updateCandidate({
+      driver: driver("codex"),
+      instanceId: instanceId("personal"),
+    });
+    const work = updateCandidate({
+      driver: driver("codex"),
+      instanceId: instanceId("work"),
+    });
+
+    expect(providerUpdateNotificationKey([personal])).not.toBe(
+      providerUpdateNotificationKey([work]),
+    );
+    expect(providerUpdateNotificationKey([personal, work])).not.toBe(
+      providerUpdateNotificationKey([personal]),
+    );
   });
 
   it("keeps one-click updates enabled when sibling instances are already current", () => {
@@ -212,7 +253,9 @@ describe("provider update launch notification logic", () => {
       latestVersion: "0.3.0",
     });
 
-    expect(providerUpdateNotificationKey([codex, cursor])).toBe("codex:1.1.0|cursor:0.3.0");
+    expect(providerUpdateNotificationKey([codex, cursor])).toBe(
+      "codex:codex:1.1.0:one-click|cursor:cursor:0.3.0:one-click",
+    );
     expect(providerUpdateNotificationKey([])).toBeNull();
   });
 
@@ -387,8 +430,8 @@ describe("provider update launch notification logic", () => {
     expect(view).toMatchObject({
       phase: "unchanged",
       type: "warning",
-      title: "Provider still needs an update",
-      description: "Cursor still appears outdated. Check provider settings for details.",
+      title: "Provider update could not be verified",
+      description: "still old",
     });
   });
 
@@ -573,7 +616,7 @@ describe("provider update launch notification logic", () => {
     expect(view).toMatchObject({
       key: "unchanged:cursor:2026-04-23T10:00:00.000Z:still old",
       tone: "warning",
-      title: "Cursor still needs an update",
+      title: "Cursor update could not be verified",
       dismissible: true,
     });
   });
@@ -815,6 +858,42 @@ describe("provider update launch notification logic", () => {
       expect(result.groups.every((group) => group.candidates.length === 1)).toBe(true);
     });
 
+    it("retains each instance in each environment even when command strings match", () => {
+      const providers = [
+        provider({ driver: driver("codex"), instanceId: instanceId("personal") }),
+        provider({ driver: driver("codex"), instanceId: instanceId("work") }),
+      ];
+      const { groups } = buildLocalEnvironmentUpdateGroups([
+        environment({ environmentId: "first", providers }),
+        environment({ environmentId: "second", providers }),
+      ]);
+
+      expect(
+        groups.flatMap((group) =>
+          group.candidates.map((candidate) => [group.environmentId, candidate.instanceId]),
+        ),
+      ).toEqual([
+        ["first", "personal"],
+        ["first", "work"],
+        ["second", "personal"],
+        ["second", "work"],
+      ]);
+    });
+
+    it.each(["connecting", "disconnected", "error"] as const)(
+      "does not offer cached candidates for a %s environment",
+      (connectionState) => {
+        const { groups } = buildLocalEnvironmentUpdateGroups([
+          environment({
+            environmentId: "offline",
+            connectionState,
+            providers: [provider({ driver: driver("codex") })],
+          }),
+        ]);
+        expect(environmentGroupsWithUpdates(groups)).toEqual([]);
+      },
+    );
+
     it("flags settling while a secondary backend is still connecting", () => {
       const result = buildLocalEnvironmentUpdateGroups([
         environment({
@@ -876,8 +955,8 @@ describe("provider update launch notification logic", () => {
         }),
       ]);
       const key = localEnvironmentUpdateNotificationKey(both.groups);
-      expect(key).toContain("env-windows=codex:1.1.0");
-      expect(key).toContain("env-wsl=codex:1.1.0");
+      expect(key).toContain("env-windows=codex:codex:1.1.0:one-click");
+      expect(key).toContain("env-wsl=codex:codex:1.1.0:one-click");
     });
 
     it("labels environments by platform so they are distinguishable", () => {
@@ -924,12 +1003,6 @@ describe("provider update launch notification logic", () => {
     });
 
     it("treats running/initial as non-terminal so they are not persisted", () => {
-      // The per-environment update row uses this to decide what to store. A
-      // "running"/"initial" snapshot never re-polls, so persisting it would pin
-      // the row's spinner forever once pending clears (see the
-      // resolveEnvironmentUpdateRowStatus "keeps a non-terminal result on
-      // loading even after pending clears" case). Dropping these lets the live
-      // per-environment provider state drive the row so it self-heals.
       expect(isTerminalProviderUpdatePhase("running")).toBe(false);
       expect(isTerminalProviderUpdatePhase("initial")).toBe(false);
     });
@@ -988,8 +1061,6 @@ describe("provider update launch notification logic", () => {
     });
 
     it("falls through a non-terminal result to live server state", () => {
-      // The dispatch snapshot is still "running", but server state already
-      // reports success — the row must not stay pinned on "Updating…".
       expect(
         resolveEnvironmentUpdateRowStatus({
           group,
@@ -1014,8 +1085,6 @@ describe("provider update launch notification logic", () => {
     });
 
     it("keeps a non-terminal result on loading even after pending clears", () => {
-      // The dispatch returned an incomplete ("running") snapshot and pending was
-      // cleared in finally — the row must not revert to the idle Update button.
       expect(
         resolveEnvironmentUpdateRowStatus({
           group,
@@ -1062,7 +1131,7 @@ it("does not offer incompatible latest versions and restores suggestions after p
 
 describe("getProviderUpdateRunToastView", () => {
   const updateState = (
-    status: "succeeded" | "failed",
+    status: "succeeded" | "failed" | "unchanged",
     message: string,
   ): ServerProvider["updateState"] => ({
     status,
@@ -1076,6 +1145,7 @@ describe("getProviderUpdateRunToastView", () => {
     providerDriver: string,
     result: Parameters<typeof getProviderUpdateRunToastView>[0][number]["result"],
   ) => ({
+    environmentId: EnvironmentId.make(machineLabel),
     machineLabel,
     driver: driver(providerDriver),
     instanceId: instanceId(providerDriver),
@@ -1118,6 +1188,57 @@ describe("getProviderUpdateRunToastView", () => {
       description: "Mac Studio · Claude: npm exited with code 1.\nLaptop · Codex: WebSocket closed",
     });
   });
+
+  it.each([false, true])(
+    "preserves unverified results alongside successes (failure=%s)",
+    (hasFailure) => {
+      const unverified = provider({
+        driver: driver("codex"),
+        latestVersion: null,
+        advisoryStatus: "unknown",
+        updateState: updateState("unchanged", "The installed version could not be verified."),
+      });
+      const runs = [
+        run("Laptop", "codex", AsyncResult.success({ providers: [unverified] })),
+        run(
+          "Server",
+          "codex",
+          AsyncResult.success({
+            providers: [
+              provider({
+                driver: driver("codex"),
+                updateState: updateState("succeeded", "Provider updated."),
+              }),
+            ],
+          }),
+        ),
+      ];
+      if (hasFailure) {
+        runs.push(
+          run("Other", "codex", AsyncResult.failure(Cause.die(new Error("Connection lost")))),
+        );
+      }
+      const view = getProviderUpdateRunToastView(runs);
+      expect(view?.type).toBe(hasFailure ? "error" : "warning");
+      expect(view?.title).toBe(
+        hasFailure
+          ? "1 of 3 provider updates failed"
+          : "1 of 2 provider updates could not be verified",
+      );
+      expect(view?.description).toContain(
+        "Laptop · Codex: The installed version could not be verified.",
+      );
+      if (hasFailure) expect(view?.description).toContain("Other · Codex: Connection lost");
+      expect(
+        getProviderUpdateProgressToastView({ providers: [unverified], providerCount: 1 }),
+      ).toMatchObject({
+        phase: "unchanged",
+        type: "warning",
+        title: "Provider update could not be verified",
+        description: "The installed version could not be verified.",
+      });
+    },
+  );
 
   it("reports success when every update succeeded", () => {
     const succeeded = AsyncResult.success({

@@ -19,6 +19,7 @@ vi.mock("electron", () => ({
   },
 }));
 import * as BrowserSession from "../../preview/BrowserSession.ts";
+import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 
 it.effect(
   "denies clipboard reads on companion guests through both existing permission handlers",
@@ -26,7 +27,17 @@ it.effect(
     Effect.gen(function* () {
       requestHandler.mockClear();
       checkHandler.mockClear();
-      const service = yield* BrowserSession.make;
+      const unexpectedDialog = vi.fn(() =>
+        Effect.die("unexpected dialog for clipboard permissions"),
+      );
+      const service = yield* BrowserSession.make.pipe(
+        Effect.provideService(ElectronDialog.ElectronDialog, {
+          pickFolder: unexpectedDialog,
+          pickFiles: unexpectedDialog,
+          showMessageBox: unexpectedDialog,
+          showErrorBox: unexpectedDialog,
+        }),
+      );
       yield* service.getSession("synthetic-companion-permissions", false);
       const request = requestHandler.mock.calls[0]![0] as (
         contents: Electron.WebContents,
@@ -51,5 +62,6 @@ it.effect(
           expect(check(contents, permission)).toBe(expected);
         }
       }
+      expect(unexpectedDialog).not.toHaveBeenCalled();
     }).pipe(Effect.provide(NodeServices.layer)),
 );

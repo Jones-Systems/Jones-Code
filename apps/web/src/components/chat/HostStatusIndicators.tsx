@@ -9,6 +9,7 @@ import {
   observeHostStatus,
 } from "../../hostStatus";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { observeResize } from "~/lib/observeResize";
 
 const healthClasses = {
   healthy: "border-emerald-500/30 bg-emerald-500/5",
@@ -73,11 +74,7 @@ function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: Env
       setVisibleCount(count);
     };
     update();
-    const observer = new ResizeObserver(update);
-    observer.observe(container);
-    observer.observe(measurement);
-    for (const bubble of measurement.children) observer.observe(bubble);
-    return () => observer.disconnect();
+    return observeResize([container, measurement, ...measurement.children], update);
   }, []);
   const hosts = HOST_STATUS_IDS.map((id) => {
     const host = snapshot?.hosts.find((entry) => entry.id === id);

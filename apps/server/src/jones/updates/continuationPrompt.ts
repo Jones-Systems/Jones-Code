@@ -1,4 +1,4 @@
-import type { ProviderAdapterV2TurnInput } from "../../orchestration-v2/ProviderAdapter.ts";
+import type { ProviderAdapterV2TurnInput } from "@t3tools/provider-core/server/ProviderAdapter";
 
 /** Native resume may omit input only when the original thread needs no new context. */
 export function continuationPrompt(

@@ -14,6 +14,7 @@ const TrialIdentity = Schema.Struct({
   protocol: Schema.Literal(1),
   startupGateProtocol: Schema.Literal(1),
   transactionId: Schema.NonEmptyString,
+  stagedHandle: Schema.NonEmptyString,
   home: Schema.NonEmptyString,
   databasePath: Schema.NonEmptyString,
   profile: Schema.NonEmptyString,
@@ -32,6 +33,32 @@ const CommitGrant = Schema.Struct({
   ...TrialIdentity.fields,
   generation: Schema.NonEmptyString,
 });
+const NativeActiveInstall = Schema.Struct({
+  protocol: Schema.Literal(1),
+  owner: Schema.Literal("desktop"),
+  generation: Schema.NonEmptyString,
+  transactionId: Schema.NonEmptyString,
+  home: Schema.NonEmptyString,
+  databasePath: Schema.NonEmptyString,
+  profile: Schema.NonEmptyString,
+  environmentId: Schema.NonEmptyString,
+  version: Schema.NonEmptyString,
+  sourceSha: Schema.NonEmptyString,
+  sourceTree: Schema.NonEmptyString,
+});
+const TrialReceipt = Schema.Struct({
+  ...TrialIdentity.fields,
+  resumeHeld: Schema.Literal(true),
+  backendProcess: Schema.Struct({ pid: Schema.Number, identity: Schema.NonEmptyString }),
+});
+const ResumedJournal = Schema.Struct({
+  phase: Schema.Literal("resumed"),
+  intent: Schema.Struct({
+    protocol: Schema.Literal(1),
+    transactionId: Schema.NonEmptyString,
+    staged: Schema.Struct({ handle: Schema.NonEmptyString }),
+  }),
+});
 const BuildIdentity = Schema.Struct({
   jonesSource: Schema.Struct({
     repository: Schema.Literal("Jones-Systems/Jones-Code"),
@@ -41,8 +68,22 @@ const BuildIdentity = Schema.Struct({
 });
 const decodeDescriptor = Schema.decodeUnknownSync(Schema.fromJsonString(TrialDescriptor));
 const decodeGrant = Schema.decodeUnknownSync(Schema.fromJsonString(CommitGrant));
+const decodeNativeActive = Schema.decodeUnknownSync(Schema.fromJsonString(NativeActiveInstall));
+const decodeReceipt = Schema.decodeUnknownSync(Schema.fromJsonString(TrialReceipt));
+const decodeResumedJournal = Schema.decodeUnknownSync(Schema.fromJsonString(ResumedJournal));
 const decodeBuildIdentity = Schema.decodeUnknownSync(BuildIdentity);
 const identityKeys = Object.keys(TrialIdentity.fields) as Array<keyof typeof TrialIdentity.Type>;
+const activeIdentityKeys = [
+  "protocol",
+  "transactionId",
+  "home",
+  "databasePath",
+  "profile",
+  "environmentId",
+  "version",
+  "sourceSha",
+  "sourceTree",
+] as const;
 
 export class JonesTrialGateError extends Schema.TaggedError<JonesTrialGateError>()(
   "JonesTrialGateError",
@@ -184,7 +225,115 @@ async function proveBackend(signal?: AbortSignal): Promise<{ pid: number; identi
   return { pid: process.pid, identity };
 }
 
-/** Holds command/provider recovery until an exact grant and durable, non-replayable resume reservation. */
+function withLegacyStagedHandle(raw: string, handle?: string): string {
+  if (handle === undefined) return raw;
+  const value = JSON.parse(raw) as Record<string, unknown>;
+  return value.stagedHandle === undefined
+    ? JSON.stringify({ ...value, stagedHandle: handle })
+    : raw;
+}
+
+async function legacyCommittedHandle(
+  raw: string,
+  descriptorPath: string,
+): Promise<string | undefined> {
+  const value = JSON.parse(raw) as Record<string, unknown>;
+  if (value.stagedHandle !== undefined) return undefined;
+  const directory = NodePath.dirname(descriptorPath);
+  const journal = decodeResumedJournal(
+    await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8"),
+  );
+  if (
+    value.transactionId !== journal.intent.transactionId ||
+    journal.intent.staged.handle !== journal.intent.transactionId
+  )
+    throw new Error(
+      "Legacy trial evidence does not prove equal artifact and transaction identities.",
+    );
+  try {
+    const claim = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(directory, "prepare-intent.json"), "utf8"),
+    ) as Record<string, unknown>;
+    if (claim.preparationClaimProtocol !== undefined && claim.preparationClaimProtocol !== 1)
+      throw new Error("A new native attempt requires its explicit staged handle.");
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+  }
+  // Normalize only in memory. Canonical paths, active generation and every
+  // retained receipt are still checked by the committed-restart gate below.
+  return journal.intent.staged.handle;
+}
+
+async function isCommittedRestart(
+  descriptor: typeof TrialDescriptor.Type,
+  descriptorPath: string,
+  legacyStagedHandle: string | undefined,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const manifestPath = NodePath.join(descriptor.home, "runtime", "jones-active-install.json");
+  let raw: string;
+  try {
+    raw = await NodeFSP.readFile(manifestPath, "utf8");
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw cause;
+  }
+  cancelled(signal);
+  const active = decodeNativeActive(raw);
+  if (active.generation !== descriptor.transactionId) return false;
+  const directory = NodePath.join(
+    descriptor.home,
+    "runtime",
+    "jones-updates",
+    "transactions",
+    descriptor.transactionId,
+  );
+  if (
+    !/^[a-zA-Z0-9_-]+$/.test(descriptor.transactionId) ||
+    descriptorPath !== NodePath.join(directory, "trial-descriptor.json") ||
+    descriptor.trialReceiptPath !== NodePath.join(directory, "trial-receipt.json") ||
+    descriptor.commitGrantPath !== NodePath.join(directory, "commit-grant.json") ||
+    activeIdentityKeys.some((key) => active[key] !== descriptor[key])
+  )
+    throw new Error("Committed native generation differs from the inherited descriptor.");
+  const [grant, journal, receipt, reservation] = await Promise.all([
+    NodeFSP.readFile(descriptor.commitGrantPath, "utf8").then((raw) =>
+      decodeGrant(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
+    NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8").then(decodeResumedJournal),
+    NodeFSP.readFile(descriptor.trialReceiptPath, "utf8").then((raw) =>
+      decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
+    NodeFSP.readFile(NodePath.join(directory, "resume-dispatched.json"), "utf8").then((raw) =>
+      decodeReceipt(withLegacyStagedHandle(raw, legacyStagedHandle)),
+    ),
+  ]);
+  cancelled(signal);
+  if (
+    grant.generation !== descriptor.transactionId ||
+    journal.intent.transactionId !== descriptor.transactionId ||
+    journal.intent.staged.handle !== descriptor.stagedHandle ||
+    identityKeys.some(
+      (key) =>
+        grant[key] !== descriptor[key] ||
+        receipt[key] !== descriptor[key] ||
+        reservation[key] !== descriptor[key],
+    ) ||
+    !Number.isSafeInteger(receipt.backendProcess.pid) ||
+    receipt.backendProcess.pid <= 0 ||
+    receipt.backendProcess.pid !== reservation.backendProcess.pid ||
+    receipt.backendProcess.identity !== reservation.backendProcess.identity
+  )
+    throw new Error("Completed native trial evidence does not bind the committed generation.");
+  if ((await NodeFSP.readFile(manifestPath, "utf8")) !== raw)
+    throw new Error("The committed native generation changed during startup inspection.");
+  cancelled(signal);
+  // A child restart uses ordinary recovery policy. The prior resume reservation
+  // is retained as evidence and never replayed or republished by this path.
+  return true;
+}
+
+/** Holds startup until an exact trial grant or a fully evidenced committed child restart. */
 export async function awaitJonesTrialCommit(input: {
   descriptorPath?: string | undefined;
   home: string;
@@ -201,12 +350,15 @@ export async function awaitJonesTrialCommit(input: {
   cancelled(signal);
   let descriptor: typeof TrialDescriptor.Type;
   let descriptorPath: string;
+  let legacyStagedHandle: string | undefined;
   try {
     if (!input.descriptorPath.trim() || input.profile === undefined || !input.profile.trim()) {
       throw new Error("Trial descriptor and inherited desktop profile are required.");
     }
     descriptorPath = await NodeFSP.realpath(input.descriptorPath);
-    descriptor = decodeDescriptor(await NodeFSP.readFile(descriptorPath, "utf8"));
+    const rawDescriptor = await NodeFSP.readFile(descriptorPath, "utf8");
+    legacyStagedHandle = await legacyCommittedHandle(rawDescriptor, descriptorPath);
+    descriptor = decodeDescriptor(withLegacyStagedHandle(rawDescriptor, legacyStagedHandle));
     const build = decodeBuildIdentity(input.buildMetadata);
     const [home, databasePath, profile] = await Promise.all([
       NodeFSP.realpath(input.home),
@@ -246,6 +398,14 @@ export async function awaitJonesTrialCommit(input: {
     assertListener(descriptor.listener, input.observedListener);
   } catch (cause) {
     throw new JonesTrialGateError({ step: "listener", uncertain: false, cause });
+  }
+  try {
+    if (await isCommittedRestart(descriptor, descriptorPath, legacyStagedHandle, signal)) return;
+    if (legacyStagedHandle !== undefined)
+      throw new Error("Legacy trial evidence is readable only for its committed generation.");
+  } catch (cause) {
+    if (Schema.is(JonesTrialGateError)(cause)) throw cause;
+    throw new JonesTrialGateError({ step: "identity", uncertain: false, cause });
   }
   const reservationPath = NodePath.join(NodePath.dirname(descriptorPath), "resume-dispatched.json");
   const identity = Object.fromEntries(identityKeys.map((key) => [key, descriptor[key]]));

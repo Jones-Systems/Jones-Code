@@ -53,6 +53,33 @@ function check(source: string, fragments: Fragment[] = [fragment()], inv = inven
   );
 }
 describe("Jones boundary", () => {
+  it("records an exact main commit without claiming tag provenance", () => {
+    const input = inventory();
+    input.upstream = {
+      repository: "pingdotgg/t3code",
+      ref: "refs/heads/main",
+      commit: "ede3f2d6ba4943ba0a14aa4af656cfa537a1efe6",
+    };
+    expect(parseInventory(input).upstream).toEqual(input.upstream);
+    expect(() =>
+      parseInventory({
+        ...input,
+        upstream: { ...input.upstream, tag: "v0.0.46-nightly.20261015.3171" },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseInventory({
+        ...input,
+        upstream: { ...input.upstream, ref: "refs/heads/other" },
+      }),
+    ).toThrow("Invalid inventory provenance");
+    expect(() =>
+      parseInventory({
+        ...input,
+        upstream: { ...input.upstream, commit: "ede3f2d" },
+      }),
+    ).toThrow("Expected full commit SHA");
+  });
   it("classifies an explicit feature and verifies its integration edge", () => {
     const result = check('import {value} from "~/jones/usage/view";');
     expect(result.violations).toEqual([]);
