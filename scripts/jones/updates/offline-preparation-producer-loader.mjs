@@ -213,7 +213,7 @@ function uncertainCustody(cause, seen = new Set()) {
 // the fixed raw inputs below. Downloads, children, timers and native qualifiers are deferred
 // to the fixed build methods. These producer permissions never extend the worker policy.
 const reviewedProducer = {
-  sha256: "7ec50e5b3e68f78b378525f8bbbd8dbf8a7fc389056a31c8d5c5706c6e2cd4f8",
+  sha256: "1d33e30cd3a8886ef158d0d5d861fb381655ee26a516a056533706c94c37d9e5",
   size: 851654,
 };
 const reviewedRawSources = {
@@ -252,7 +252,7 @@ const reviewedRawSources = {
   "pnpm-lock.yaml": "6017f11e0032db8fbbc84086cd4cc0ae6f312f4ae99384e91d733f7b3c7f43aa",
   "pnpm-workspace.yaml": "3a93aa85c1edb088a14afba8659404a2a321817ce6590589bb055fa0ecf8d103",
   "scripts/jones/updates/functional-policy.ts":
-    "e05e6c05df8425dd155d82187639b1ecdd22b8520d9cd13c93a3cc646ce9fcbf",
+    "52af68445c7030f63eea1f9fb9d7e2697c6fc5ea204935ed088c69f9f9f897d7",
   "scripts/jones/updates/legacy-bootstrap-bundle.ts":
     "539a2d53107a927047191b9496a3f404d06d74a2abc7962d32f390b52b35e467",
   "scripts/jones/updates/legacy-cold-maintenance-fixture.mjs":
