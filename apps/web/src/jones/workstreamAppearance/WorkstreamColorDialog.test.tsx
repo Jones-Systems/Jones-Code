@@ -19,6 +19,7 @@ vi.mock("react/compiler-runtime", async () => {
   return { c: reactHookHarness.useMemoCache };
 });
 
+import { WorkstreamActionError } from "../workstreams/workstreamActionSnapshot";
 import { WorkstreamColorDialog } from "./WorkstreamColorDialog";
 
 type Props = Parameters<typeof WorkstreamColorDialog>[0];
@@ -170,5 +171,23 @@ describe("Workstream border color dialog interactions", () => {
     });
     await Promise.resolve();
     expect(fixtureData.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("shows a read-only refusal without freezing a retry when the save was never sent", async () => {
+    const fixtureData = fixture();
+    const refusal = new WorkstreamActionError("stale");
+    fixtureData.save.mockRejectedValueOnce(refusal);
+    let tree = render(fixtureData.props);
+    hex(tree, "#123ABC");
+    tree = render(fixtureData.props);
+    click(tree, "Save");
+    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    tree = render(fixtureData.props);
+    const alert = visitElements(tree, (element) => element.props.role === "alert");
+    expect(alert?.props.children).toBe(refusal.message);
+    // No request left an uncertain effect, so the draft stays editable and nothing retries it.
+    expect(control(tree, "Save").props.disabled).toBe(false);
+    expect(control(tree, "Hex color").props.disabled).toBe(false);
+    expect(fixtureData.onClose).not.toHaveBeenCalled();
   });
 });

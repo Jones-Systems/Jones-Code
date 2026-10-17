@@ -15,6 +15,7 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
+import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import {
   data,
   thread,
@@ -22,11 +23,8 @@ import {
   reference,
   now,
 } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
-import {
-  useWorkstreams,
-  nativePlacementInventory,
-  type WorkstreamListView,
-} from "../../state/workstreams";
+import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
+import { routeWorkstreamsHttp } from "./workstreamsHttp.fixtures";
 
 const http = vi.hoisted(() => ({
   run: vi.fn<(effect: unknown, options?: { readonly signal?: AbortSignal }) => Promise<unknown>>(),
@@ -122,7 +120,8 @@ it("recovers list and registration reads after CP outages without replacing the 
   expect(http.run).toHaveBeenCalledTimes(1);
 
   await act(() => vi.advanceTimersByTimeAsync(1_000));
-  expect(latest.data).toEqual(data);
+  // The list commits together with its registration context, never ahead of it.
+  expect(latest.data).toBeNull();
   expect(latest.registrationContext).toBeNull();
   expect(http.run).toHaveBeenCalledTimes(3);
 
@@ -216,6 +215,9 @@ it("shares the finite recovery budget between outages and repeated registry chan
   expect(latest.data?.binding.registryVersion).toBe(data.binding.registryVersion + 4);
   expect(latest.registrationContext).toBeNull();
   expect(latest.loading).toBe(false);
+  // Without a validated context the coherent list is display-only until a fresh context loads.
+  expect(latest.stale).toBe(true);
+  expect(canEditWorkstreams(latest.data)).toBe(false);
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(http.run).toHaveBeenCalledTimes(11);
 });
@@ -245,6 +247,9 @@ it.each([
     expect(http.run).toHaveBeenCalledTimes(2);
     expect(latest.registrationContext).toBeNull();
     expect(latest.loading).toBe(false);
+    // A different authority fails closed instead of publishing the list.
+    expect(latest.data).toBeNull();
+    expect(latest.error).toBeTruthy();
   },
 );
 
@@ -547,11 +552,24 @@ it.each([11, 12])(
       trustedEnvironments: placements.trustedEnvironments,
       readiness: "ready",
     });
-    const memberships = (version: number) => ({
+    const memberships = (version: number, items: readonly unknown[] = []) => ({
       context: readContext(version),
-      items: [],
+      items,
       next_cursor: null,
     });
+    const attached = {
+      membership_id: "membership",
+      workstream_id: "beta",
+      native_reference_id: chosenReference.native_reference_id,
+      kind: "primary",
+      opened: {
+        at: new Date(now).toISOString(),
+        actor: { principal_id: "principal" },
+        command_id: "command-3",
+        registry_version: freshVersion + 3,
+      },
+      closed: null,
+    };
     const receipt = (
       version: number,
       operation: "register_reference" | "verify_reference" | "attach_primary",
@@ -581,41 +599,59 @@ it.each([11, 12])(
         native_settlement: null,
       },
     });
-    const responses = [
-      list(11),
-      context(11),
-      await projection(11, nativePlacementInventory(threads).identities),
-      list(freshVersion),
-      context(freshVersion),
-      await projection(freshVersion, selected),
-      memberships(freshVersion),
-      receipt(freshVersion + 1, "register_reference"),
-      list(freshVersion + 1),
-      context(freshVersion + 1),
-      await projection(freshVersion + 1, selected),
-      { context: readContext(freshVersion + 1), reference: quarantined, latest_observation: null },
-      memberships(freshVersion + 1),
-      receipt(freshVersion + 2, "verify_reference"),
-      list(freshVersion + 2),
-      context(freshVersion + 2),
-      await projection(freshVersion + 2, selected),
-      {
-        context: readContext(freshVersion + 2),
-        reference: chosenReference,
-        latest_observation: null,
-      },
-      memberships(freshVersion + 2),
-      receipt(freshVersion + 3, "attach_primary"),
-      list(freshVersion + 3),
-      context(freshVersion + 3),
-      await projection(
-        freshVersion + 3,
-        nativePlacementInventory(threads, chosen).identities,
-        true,
-      ),
-    ];
-    const initialProjection = responses[2];
-    const refreshedProjection = responses.at(-1);
+    // Index reads run concurrently, so each route keeps its own strict response queue.
+    const responses: Record<string, unknown[]> = {
+      list: [
+        list(11),
+        list(freshVersion),
+        list(freshVersion + 1),
+        list(freshVersion + 2),
+        list(freshVersion + 3),
+      ],
+      registrationContext: [
+        context(11),
+        context(freshVersion),
+        context(freshVersion + 1),
+        context(freshVersion + 2),
+        context(freshVersion + 3),
+      ],
+      references: [
+        { context: readContext(11), items: [], next_cursor: null },
+        { context: readContext(freshVersion + 3), items: [chosenReference], next_cursor: null },
+      ],
+      "memberships:alpha": [memberships(11), memberships(freshVersion + 3)],
+      "memberships:beta": [
+        memberships(11),
+        memberships(freshVersion),
+        memberships(freshVersion + 1),
+        memberships(freshVersion + 2),
+        memberships(freshVersion + 3, [attached]),
+      ],
+      threadPlacements: [
+        await projection(freshVersion, selected),
+        await projection(freshVersion + 1, selected),
+        await projection(freshVersion + 2, selected),
+        await projection(freshVersion + 3, selected, true),
+      ],
+      reference: [
+        {
+          context: readContext(freshVersion + 1),
+          reference: quarantined,
+          latest_observation: null,
+        },
+        {
+          context: readContext(freshVersion + 2),
+          reference: chosenReference,
+          latest_observation: null,
+        },
+      ],
+      submit: [
+        receipt(freshVersion + 1, "register_reference"),
+        receipt(freshVersion + 2, "verify_reference"),
+        receipt(freshVersion + 3, "attach_primary"),
+      ],
+    };
+    const placementRequests: (readonly T3PlacementIdentity[])[] = [];
     const completion = () => {
       let resolve!: () => void;
       const promise = new Promise<void>((done) => {
@@ -633,21 +669,30 @@ it.each([11, 12])(
       });
       assertCommitted();
     };
-    http.run.mockImplementation(async () => {
-      const response = responses.shift();
-      if (!response) throw new Error("Unexpected additional HTTP request");
-      const read =
-        response === initialProjection
-          ? initialRead
-          : response === refreshedProjection
-            ? refreshedRead
-            : null;
-      if (read) {
-        read.requested.resolve();
-        await read.response.promise;
-      }
-      return response;
-    });
+    http.run.mockImplementation(
+      routeWorkstreamsHttp(async (call) => {
+        const key =
+          call.route === "memberships"
+            ? `memberships:${call.request.params?.workstreamId}`
+            : call.route;
+        const response = responses[key]?.shift();
+        if (!response) throw new Error(`Unexpected additional HTTP request: ${key}`);
+        if (call.route === "threadPlacements")
+          placementRequests.push(call.request.payload?.identities as T3PlacementIdentity[]);
+        // The initial read ends with registration context: no indexed identity needs proof yet.
+        const read =
+          key === "registrationContext" && responses.registrationContext!.length === 4
+            ? initialRead
+            : key === "threadPlacements" && responses.threadPlacements!.length === 0
+              ? refreshedRead
+              : null;
+        if (read) {
+          read.requested.resolve();
+          await read.response.promise;
+        }
+        return response;
+      }),
+    );
     try {
       await act(async () => {
         renderer = create(
@@ -658,6 +703,8 @@ it.each([11, 12])(
       });
       await completePlacementRead(initialRead, () => expect(latest.loading).toBe(false));
       expect(latest.placementInventory.identities).not.toContainEqual(selected[0]);
+      expect(latest.assignmentIndex?.entries.size).toBe(0);
+      expect(placementRequests).toEqual([]);
       expect(latest.data?.binding.registryVersion).toBe(11);
       const mountedConnection = registry.get(connection);
       let nextId = 0;
@@ -670,12 +717,17 @@ it.each([11, 12])(
         expect(latest.placements?.items[0]?.native_thread_id).toBe(chosen.id),
       );
       expect(latest.placements?.items[0]?.workstream_id).toBe("beta");
-      expect(latest.placementInventory.identities).toHaveLength(1000);
-      expect(latest.placementInventory.identities).toContainEqual(selected[0]);
+      // Proof is requested only for the indexed identity, outside any capped inventory.
+      expect(placementRequests.at(-1)).toEqual(selected);
+      expect(latest.placementInventory.identities).toEqual(selected);
+      expect(
+        latest.assignmentIndex?.entries.get(JSON.stringify([chosen.environmentId, chosen.id]))
+          ?.primary?.workstreamId,
+      ).toBe("beta");
       expect(latest.data?.binding.registryVersion).toBe(freshVersion + 3);
       expect(nextId).toBe(3);
       expect(registry.get(connection)).toBe(mountedConnection);
-      expect(responses).toHaveLength(0);
+      expect(Object.values(responses).flat()).toHaveLength(0);
     } finally {
       initialRead.response.resolve();
       refreshedRead.response.resolve();
@@ -700,8 +752,11 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
       }),
     ).rejects.toThrow("preflight refused");
   });
-  expect(latest.data).toBeNull();
-  expect(latest.registrationContext).toBeNull();
+  // A refusal that is not lost access keeps the last good list, stale and read-only.
+  expect(latest.data).toEqual({ ...data, stale: true });
+  expect(latest.stale).toBe(true);
+  expect(canEditWorkstreams(latest.data)).toBe(false);
+  expect(latest.registrationContext).toEqual(registration);
   expect(latest.placements).toBeNull();
   expect(latest.error).toBeTruthy();
   expect(http.run).toHaveBeenCalledTimes(2);
@@ -711,6 +766,7 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
     .mockResolvedValueOnce({ ...registration, registry_version: 12 });
   await act(async () => latest.refresh());
   expect(latest.data).toEqual(fresh);
+  expect(latest.stale).toBe(false);
   expect(latest.error).toBeNull();
   expect(http.run).toHaveBeenCalledTimes(4);
 });

@@ -127,7 +127,10 @@
     "packages/contracts/contracts/workstreams-registration-context/v2/manifest.json",
     "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json",
     "apps/web/src/jones/workstreams/nativeThreadAssignment.ts",
-    "apps/web/src/jones/workstreams/nativeThreadAssignment.test.ts"
+    "apps/web/src/jones/workstreams/nativeThreadAssignment.test.ts",
+    "apps/web/src/jones/workstreams/workstreamReadErrors.ts",
+    "apps/web/src/jones/workstreams/workstreamsHttp.fixtures.ts",
+    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

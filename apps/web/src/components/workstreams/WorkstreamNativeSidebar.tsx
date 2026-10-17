@@ -91,17 +91,45 @@ export function WorkstreamNativeSidebar(props: {
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
     ),
   );
-  const assignmentChecked = (thread: EnvironmentThreadShell) =>
-    controller.placements?.readiness === "ready" &&
-    controller.placements.trustedEnvironments.some(
-      (entry) => entry.environmentId === thread.environmentId,
-    ) &&
-    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+  const assuranceOf = (thread: EnvironmentThreadShell) => {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    return statusGrouping.assuranceByKey?.get(key) ?? grouping.assuranceByKey?.get(key);
+  };
+  const conflicted = (thread: EnvironmentThreadShell) => {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    return statusGrouping.conflictingKeys.has(key) || grouping.conflictingKeys.has(key);
+  };
+  // With stored assignments, a recorded member is known; Unassigned needs a complete live index.
+  const assignmentChecked = (thread: EnvironmentThreadShell) => {
+    const assurance = assuranceOf(thread);
+    if (assurance !== undefined)
+      return (
+        assurance === "verified" ||
+        assurance === "recorded" ||
+        (assurance === "unassigned" && controller.stale !== true)
+      );
+    return (
+      controller.placements?.readiness === "ready" &&
+      controller.placements.trustedEnvironments.some(
+        (entry) => entry.environmentId === thread.environmentId,
+      ) &&
+      inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
+    );
+  };
+  // Stale snapshots are read-only; conflicting primaries or a known identity mismatch block
+  // changes until re-verification.
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
+    controller.stale !== true &&
     controller.assignNativeThread !== undefined &&
-    nativeThreadSourceAvailable(controller.registrationContext, thread);
+    nativeThreadSourceAvailable(controller.registrationContext, thread) &&
+    !conflicted(thread);
   const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
+  const hasConflict = grouping.conflictingKeys.size > 0;
+  // Unassigned is a claim only a complete, live index can make for every listed row.
+  const otherThreadsLabel =
+    grouping.assuranceByKey !== undefined ? "Assignment unknown" : "Other threads";
+  const assignmentIndex = controller.assignmentIndex ?? null;
   const run = (operation: () => Promise<void>) => {
     if (busyRef.current || bindingRef.current !== binding) return;
     busyRef.current = true;
@@ -287,13 +315,19 @@ export function WorkstreamNativeSidebar(props: {
         : undefined) ?? [];
     return {
       items: [
-        ...(!nativeThreadSourceAvailable(controller.registrationContext, thread) || !checked
+        ...(!nativeThreadSourceAvailable(controller.registrationContext, thread) ||
+        conflicted(thread) ||
+        !checked
           ? [
               {
                 id: "assign-workstream:status" as const,
                 label: !nativeThreadSourceAvailable(controller.registrationContext, thread)
                   ? "Assignment unavailable for this environment"
-                  : "Assignment not checked",
+                  : conflicted(thread)
+                    ? "Conflicting assignments; changes blocked"
+                    : assuranceOf(thread) === undefined
+                      ? "Assignment not checked"
+                      : "Assignment unknown",
                 disabled: true,
               },
             ]
@@ -340,7 +374,7 @@ export function WorkstreamNativeSidebar(props: {
         aria-label={
           workstreamId === null
             ? hasUnchecked
-              ? "Other threads"
+              ? otherThreadsLabel
               : "Unassigned threads"
             : "Workstream threads"
         }
@@ -401,15 +435,30 @@ export function WorkstreamNativeSidebar(props: {
           Saving Workstream change…
         </p>
       ) : null}
-      {controller.placements === null ? (
+      {controller.stale ? (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          Showing the last loaded Workstreams. Refresh to update.
+        </p>
+      ) : assignmentIndex !== null && !assignmentIndex.complete ? (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          Some thread assignments could not be loaded, so threads outside a group may still belong
+          to one.
+        </p>
+      ) : assignmentIndex === null && controller.placements === null ? (
         <p className="px-2 text-xs text-muted-foreground">
           Thread assignments are unavailable until current placements can be verified.
+        </p>
+      ) : null}
+      {hasConflict ? (
+        <p role="alert" className="px-2 text-xs text-destructive">
+          Some threads have conflicting Workstream assignments. Changes to them are blocked until
+          they are verified again.
         </p>
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
         renderMembers={renderMembers}
-        unassignedLabel={hasUnchecked ? "Other threads" : "Unassigned"}
+        unassignedLabel={hasUnchecked ? otherThreadsLabel : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}
         threadDropTarget={dropTarget && !dropTarget.threadKey ? dropTarget.workstreamId : undefined}
         threadActionBusy={busy}
