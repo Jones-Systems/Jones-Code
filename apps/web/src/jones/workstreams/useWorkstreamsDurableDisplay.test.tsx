@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import { data } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
+import { useWorkstreamAppearance } from "../workstreamAppearance/useWorkstreamAppearance";
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
 import {
   routeWorkstreamsHttp,
@@ -776,6 +777,203 @@ describe("durable Workstream assignment display", () => {
     expect(latest.view.stale).toBe(false);
     expect(latest.view.error).toBeNull();
     expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+    // An older server without the endpoint stays writable, as before registration contexts.
+    expect(canEditWorkstreams(latest.view.data)).toBe(true);
+  });
+
+  const authorityMismatches = [
+    ["owner", { owner_id: "another-owner" }],
+    ["principal", { principal_id: "another-principal" }],
+    ["authorization revision", { authorization_revision: data.binding.authorizationRevision + 1 }],
+    ["server generation", { server_generation: data.binding.serverGeneration + 1 }],
+  ] as const;
+
+  it.each(authorityMismatches)(
+    "shows no snapshot when a cold load's context has a different %s",
+    async (_label, mismatch) => {
+      const threads = nativeThreads(2);
+      const server = syntheticWorkstreams({
+        now: () => Date.now(),
+        assignments: [assign(threads[0]!, "beta")],
+      });
+      server.state.intercept = (call) =>
+        call.route === "registrationContext"
+          ? { ...server.registration(), ...mismatch }
+          : undefined;
+      http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+      await mount(threads);
+      await settle(() => expect(latest.view.loading).toBe(false));
+      expect(latest.view.data).toBeNull();
+      expect(latest.view.assignmentIndex).toBeNull();
+      expect(latest.view.registrationContext).toBeNull();
+      expect(latest.view.error).toBeTruthy();
+      expect(renders.every((render) => render.view.data === null)).toBe(true);
+      // A different authority is never retried into.
+      expect(
+        server.state.calls.filter((call) => call.route === "registrationContext"),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(authorityMismatches)(
+    "purges loaded Workstreams when a reload's context has a different %s",
+    async (_label, mismatch) => {
+      const threads = nativeThreads(2);
+      const server = syntheticWorkstreams({
+        now: () => Date.now(),
+        assignments: [assign(threads[0]!, "beta")],
+      });
+      http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+      await mount(threads);
+      await settle(() => loaded());
+      const contextReads = server.state.calls.filter(
+        (call) => call.route === "registrationContext",
+      ).length;
+      server.state.intercept = (call) =>
+        call.route === "registrationContext"
+          ? { ...server.registration(), ...mismatch }
+          : undefined;
+      await act(async () => {
+        registry.set(connection, AsyncResult.success({ ...connected, generation: 5 }));
+      });
+      await settle(() => expect(latest.view.data).toBeNull());
+      await settle(() => expect(latest.view.loading).toBe(false));
+      expect(latest.view.assignmentIndex).toBeNull();
+      expect(latest.view.placements).toBeNull();
+      expect(latest.view.registrationContext).toBeNull();
+      expect(latest.view.stale).toBe(false);
+      expect(latest.view.error).toBeTruthy();
+      expect(
+        server.state.calls.filter((call) => call.route === "registrationContext"),
+      ).toHaveLength(contextReads + 1);
+      expect(server.state.calls.filter((call) => call.route === "submit")).toHaveLength(0);
+    },
+  );
+
+  it("shows the list read-only without a context after registry-version recovery runs out", async () => {
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    // The same authority keeps reporting a newer registry than the list just read.
+    server.state.intercept = (call) =>
+      call.route === "registrationContext"
+        ? { ...server.registration(), registry_version: server.state.version + 1 }
+        : undefined;
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    await mount(threads);
+    for (let second = 0; second < 32; second += 1) {
+      await act(() => vi.advanceTimersByTimeAsync(1_000));
+      await settle(() => undefined, 1);
+    }
+    await settle(() => loaded());
+    expect(latest.view.registrationContext).toBeNull();
+    expect(latest.grouping.groupedKeys.has(keyOf(threads[0]!))).toBe(true);
+    expect(latest.view.stale).toBe(true);
+    expect(canEditWorkstreams(latest.view.data)).toBe(false);
+    const failures: unknown[] = [];
+    await act(async () => {
+      await latest.view
+        .submit({
+          command_id: "command-without-context",
+          expected_server_generation: data.binding.serverGeneration,
+          expected_registry_version: data.binding.registryVersion,
+          action: { operation: "update_workstream" },
+        } as unknown as Parameters<WorkstreamListView["submit"]>[0])
+        .catch((cause: unknown) => failures.push(cause));
+      await latest.view
+        .runBindingOperation(async () => undefined)
+        .catch((cause: unknown) => failures.push(cause));
+    });
+    expect(failures).toHaveLength(2);
+    for (const failure of failures) expect(failure).toMatchObject({ reason: "stale" });
+    expect(server.state.calls.filter((call) => call.route === "submit")).toHaveLength(0);
+
+    // A fresh context restores writes.
+    server.state.intercept = null;
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.stale).toBe(false));
+    expect(latest.view.registrationContext).not.toBeNull();
+    expect(canEditWorkstreams(latest.view.data)).toBe(true);
+  });
+
+  it("refuses an open color save once the snapshot turns stale", async () => {
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    });
+    vi.stubGlobal("addEventListener", () => undefined);
+    vi.stubGlobal("removeEventListener", () => undefined);
+    const threads = nativeThreads(2);
+    const server = syntheticWorkstreams({
+      now: () => Date.now(),
+      assignments: [assign(threads[0]!, "beta")],
+    });
+    const saves: unknown[] = [];
+    server.state.intercept = (call) => {
+      if (call.route === "appearanceRead") {
+        const ids = call.request.payload?.workstream_ids as readonly string[];
+        return {
+          supported: true,
+          page: {
+            owner_id: data.binding.ownerId,
+            server_generation: data.binding.serverGeneration,
+            permissions: ["workstreams:read", "workstreams:write"],
+            items: ids.map((id) => ({ workstream_id: id, border_color: null, version: 1 })),
+          },
+        };
+      }
+      if (call.route === "appearanceSave") {
+        saves.push(call.request.payload);
+        return { workstream_id: "alpha", border_color: "#2563EB", version: 2 };
+      }
+      return undefined;
+    };
+    http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+    let appearance!: ReturnType<typeof useWorkstreamAppearance>;
+    function WithAppearance() {
+      const view = useWorkstreams(true, threads);
+      const current = useWorkstreamAppearance(view.data);
+      useLayoutEffect(() => {
+        latest = { ...latest, view };
+        appearance = current;
+      });
+      return null;
+    }
+    await act(async () => {
+      renderer = create(
+        <RegistryContext.Provider value={registry}>
+          <WithAppearance />
+        </RegistryContext.Provider>,
+      );
+    });
+    await settle(() => loaded());
+    await settle(() => expect(appearance.writable).toBe(true));
+    // The dialog captured this save while the snapshot was writable.
+    const save = appearance.save;
+    const previous = server.state.intercept;
+    server.state.intercept = (call) => {
+      if (call.route === "list") throw new Error("Connection interrupted");
+      return previous(call);
+    };
+    await act(async () => latest.view.refresh());
+    await settle(() => expect(latest.view.stale).toBe(true));
+    const failures: unknown[] = [];
+    for (const attempt of [save, appearance.save])
+      await act(async () => {
+        await attempt({
+          command_id: "appearance-command-0001",
+          workstream_id: "alpha",
+          expected_server_generation: data.binding.serverGeneration,
+          expected_version: 1,
+          border_color: "#2563EB",
+        }).catch((cause: unknown) => failures.push(cause));
+      });
+    expect(failures).toHaveLength(2);
+    for (const failure of failures) expect(failure).toMatchObject({ reason: "stale" });
+    expect(saves).toHaveLength(0);
   });
 
   it("purges at once when a proof-only refresh rejects authorization", async () => {
@@ -985,7 +1183,8 @@ describe("durable Workstream assignment display", () => {
         });
       });
       // A pending receipt is polled after its retry delay.
-      for (let attempt = 0; failure === undefined && attempt < 200; attempt += 1) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (failure !== undefined) break;
         await act(() => vi.advanceTimersByTimeAsync(250));
         await settle(() => undefined, 1);
       }

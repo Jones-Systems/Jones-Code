@@ -119,6 +119,13 @@ const waitForRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
 
 class WorkstreamRegistryVersionChanged extends Error {}
 
+/** The registration context names a different owner, principal, grant revision or server. */
+class WorkstreamAuthorityChanged extends Error {
+  constructor() {
+    super("Workstream access changed. Refresh to load current access.");
+  }
+}
+
 async function withTransientReadRecovery<A>(
   load: () => Promise<A>,
   signal: AbortSignal,
@@ -777,29 +784,22 @@ export function useWorkstreams(
           if (classifyWorkstreamReadFailure(cause) === "unsupported") return null;
           throw cause;
         });
-        if (loaded === null) return null;
-        if (
-          sameContextAuthority(loaded, core.list.binding) &&
-          loaded.registry_version !== core.list.binding.registryVersion
-        ) {
-          // Refresh both reads within this budget; authority mismatches never trigger recovery.
+        if (loaded === null) return { value: null, required: false };
+        // A different authority is binding loss: fail closed and never retry into it.
+        if (!sameContextAuthority(loaded, core.list.binding))
+          throw new WorkstreamAuthorityChanged();
+        if (loaded.registry_version !== core.list.binding.registryVersion) {
+          // Refresh both reads within this budget.
           reloadList = true;
           throw new WorkstreamRegistryVersionChanged();
         }
-        return loaded;
-      }, controller.signal).then(
-        (loaded) =>
-          loaded !== null &&
-          sameContextAuthority(loaded, core.list.binding) &&
-          loaded.registry_version === core.list.binding.registryVersion
-            ? loaded
-            : null,
-        (cause: unknown) => {
-          // An exhausted registry-version recovery budget publishes the list without a context.
-          if (cause instanceof WorkstreamRegistryVersionChanged) return null;
-          throw cause;
-        },
-      );
+        return { value: loaded, required: true };
+      }, controller.signal).catch((cause: unknown) => {
+        // Same-authority churn outlasted its budget: the coherent list publishes display-only.
+        if (cause instanceof WorkstreamRegistryVersionChanged)
+          return { value: null, required: true };
+        throw cause;
+      });
       if (superseded()) return;
       const batches = core.index === null ? [] : proofBatches(core.index);
       const proofs =
@@ -820,21 +820,27 @@ export function useWorkstreams(
       metadataCache.write(core.list);
       requestedProofKey.current = proofs?.key ?? null;
       setData(metadataCache.read(core.list.binding));
-      setRegistrationContext(context);
+      setRegistrationContext(context.value);
       setAssignmentIndex(core.index);
       setPlacements(proofs?.placements ?? null);
       setPlacementInventory(proofs?.inventory ?? EMPTY_PLACEMENT_INVENTORY);
       setVerificationNow(new Date().toISOString());
-      setStale(false);
+      // Without the context a supporting server requires, writes stay blocked until one loads.
+      const readOnly = context.required && context.value === null;
+      staleRef.current = readOnly;
+      setStale(readOnly);
       setError(null);
     })()
       .catch((cause: unknown) => {
         if (superseded()) return;
-        if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") {
-          // Only lost access hides groups; outages, opaque control-plane failures and an
-          // unconfigured or missing API keep the last good snapshot as stale.
-          markStale();
-        } else purgeAuthorizedState();
+        if (
+          cause instanceof WorkstreamAuthorityChanged ||
+          classifyWorkstreamReadFailure(cause) === "unauthenticated"
+        )
+          purgeAuthorizedState();
+        // Only lost access or a changed authority hides groups; outages, opaque control-plane
+        // failures and an unconfigured or missing API keep the last good snapshot as stale.
+        else markStale();
         setError(workstreamListErrorMessage(cause));
       })
       .finally(() => {

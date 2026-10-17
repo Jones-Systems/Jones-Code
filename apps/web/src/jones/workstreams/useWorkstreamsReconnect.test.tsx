@@ -215,6 +215,9 @@ it("shares the finite recovery budget between outages and repeated registry chan
   expect(latest.data?.binding.registryVersion).toBe(data.binding.registryVersion + 4);
   expect(latest.registrationContext).toBeNull();
   expect(latest.loading).toBe(false);
+  // Without a validated context the coherent list is display-only until a fresh context loads.
+  expect(latest.stale).toBe(true);
+  expect(canEditWorkstreams(latest.data)).toBe(false);
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(http.run).toHaveBeenCalledTimes(11);
 });
@@ -244,6 +247,9 @@ it.each([
     expect(http.run).toHaveBeenCalledTimes(2);
     expect(latest.registrationContext).toBeNull();
     expect(latest.loading).toBe(false);
+    // A different authority fails closed instead of publishing the list.
+    expect(latest.data).toBeNull();
+    expect(latest.error).toBeTruthy();
   },
 );
 
