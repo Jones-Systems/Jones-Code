@@ -122,12 +122,15 @@ native-store-authority directory and the qualified embedded Node/SQLite pair.
 
 ## Control-plane configuration
 
-The supplied Control Plane contract at published revision
-`3861a93be609ec08a67a3b5fec71d48125395179` configures
-`CONTROL_PLANE_WORKSTREAM_PROVIDERS_JSON.native` with exactly `origin`,
-`credential_locator` and `context`. These external configuration and staging
-details were supplied for this procedure, not independently read from Control
-Plane source; resolve the installed revision's contract before operating it.
+The Control Plane [configuration parser at source revision
+`37b33cec8dadf21bf79835234c740c50852c233a`](https://github.com/Jones-Systems/chatgpt-control-plane/blob/37b33cec8dadf21bf79835234c740c50852c233a/src/workstreams/adapters/configuration.ts)
+accepts `CONTROL_PLANE_WORKSTREAM_PROVIDERS_JSON.native_sources` with one
+through four descriptors, each containing exactly `origin`,
+`credential_locator` and `context`. The legacy singleton `native` remains
+accepted but cannot coexist with `native_sources`. Sources share the same
+owner and principal, with distinct source IDs, authority namespaces and
+credential locators. Resolve the installed revision's contract before
+operating it; this source revision does not prove deployment.
 
 `origin` is this server's reachable HTTPS origin, or its loopback origin for a
 same-host control plane, for example `http://127.0.0.1:3774`.
@@ -147,10 +150,17 @@ Keep the request hash as enrollment evidence; it is not an extra descriptor
 field.
 
 The Control Plane enrollment CLI emits `registry_context`, `owner_grants` and
-`source_bindings`; that output is not the native descriptor. Its `stage-runtime`
-step stages signing keys, and `stage-jones` stages the six activation values.
-Neither updates the native descriptor. Do not rewrite unchanged signing or
-activation files solely because the Jones build or native bearer changed.
+`source_bindings`; that output is not the native descriptor. The provisioning
+CLI's `stage-runtime` stages signing keys, and `stage-jones` stages the six
+legacy activation values plus an optional seventh
+`T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=1.0.0|2.0.0` value. Explicit
+`--registration-context-version 2.0.0` selects fleet registration metadata;
+v1 refuses multiple active native sources. When the option is omitted,
+staging preserves an existing selector. Changing activation bytes requires the
+exact existing-file SHA guard. Neither staging command updates native
+descriptors. Preserve the persisted selector, and do not rewrite unchanged
+signing or activation files solely because the Jones build or native bearer
+changed. See the producer's [enrollment and staging guide](https://github.com/Jones-Systems/chatgpt-control-plane/blob/37b33cec8dadf21bf79835234c740c50852c233a/docs/integration/workstreams-provider-enrollment.md).
 
 ## Lifetime and revocation
 
@@ -167,20 +177,33 @@ replacement and proof, and make this procedure part of every source-changing
 update. This runbook does not install a renewal scheduler. With approval for
 the exact installation, private configuration and restart effects:
 
-1. Capture the current descriptor's exact bytes and hash privately, the old
-   session ID, and the existing reference's registration, memberships and
-   workstream versions. Qualify the intended running Jones build and authority.
+1. Capture the complete provider configuration's exact bytes and hash
+   privately, including all native descriptors and any GitHub descriptor.
+   Select exactly one source by its owner, principal and `source_instance_id`,
+   and verify its complete current context before renewal. An array position
+   or native thread ID is not a source selector. Capture its old session ID,
+   the shared owner grant and source bindings, and existing references'
+   registrations, memberships and workstream versions. Qualify the intended
+   running Jones build and authority.
 2. Prepare, plan, apply and read back a replacement enrollment using a new ID
    and credential path. Enroll its context in Control Plane through its
-   qualified enrollment route. Reuse that request on retry and reconcile any
-   unknown result before proceeding.
-3. Separately update the private native descriptor with a compare-and-swap
-   guard on the observed old configuration bytes/hash. Retain the old bytes
-   and credential privately for recovery. A mismatched guard stops the change;
-   the enrollment and staging commands do not perform this switch.
+   qualified per-source enrollment route, using exact current registry-context,
+   shared-grant and selected-source-binding preimages. Retain the existing
+   grant ID and permissions; renewal must preserve the shared grant and other
+   sources' bindings, references and memberships. Reuse that request on retry
+   and reconcile any unknown result before proceeding.
+3. Separately replace only the selected source's credential locator and
+   context, guarding the complete provider configuration's observed bytes/hash
+   with compare-and-swap. Preserve its origin, the other three native
+   descriptors in a four-source fleet, any GitHub descriptor, and the persisted
+   activation selector. Retain the complete old configuration and selected
+   source's credential privately for recovery. A mismatched guard stops the
+   change; the enrollment and staging commands do not perform this switch.
 4. Restart Control Plane through its controlled service route only after
    verifying there are no active jobs. Prove that the actual running adapter
-   loaded the replacement descriptor and bearer using the checks below.
+   loaded the selected source's replacement descriptor and bearer using the
+   checks below. Read back the shared grant and other sources' bindings,
+   references and memberships to confirm preservation.
 5. Only after the new adapter and same-reference verification succeed, revoke
    the old session with `t3 auth session revoke <session_id>` and confirm its
    rejection. On failed proof, retain the old session and private recovery

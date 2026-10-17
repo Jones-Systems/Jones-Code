@@ -38,6 +38,8 @@ import {
   type WorkstreamActionSnapshot,
 } from "../jones/workstreams/workstreamActionSnapshot";
 
+import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
+
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
 import { runPrimaryHttp } from "../lib/runtime";
 
@@ -453,6 +455,7 @@ export function useWorkstreams(
     setRegistrationContext(null);
     setRevision((value) => value + 1);
   }, []);
+  useWorkstreamsReconnectRefresh(refresh);
 
   useEffect(() => {
     for (const operation of commandRequests.current) {
