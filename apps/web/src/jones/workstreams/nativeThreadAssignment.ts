@@ -61,7 +61,9 @@ export async function assignNativeThread(
 ): Promise<void> {
   const now = input.now ?? Date.now;
   const key = nativeWorkstreamThreadKey(input.thread.environmentId, input.thread.id);
-  let expectedBinding = workstreamBindingKey(input.data.binding);
+  const authority = workstreamBindingKey({ ...input.data.binding, registryVersion: 0 });
+  const permissions = JSON.stringify([...input.data.binding.permissions].sort());
+  let expectedBinding: string | undefined;
   let sourceBinding: string | undefined;
   let snapshot: NativeThreadAssignmentSnapshot;
   const load = async (referenceId?: string) => {
@@ -70,7 +72,10 @@ export async function assignNativeThread(
     input.signal?.throwIfAborted();
     if (
       !canEditWorkstreams(fresh.data) ||
-      expectedBinding !== workstreamBindingKey(fresh.data.binding)
+      authority !== workstreamBindingKey({ ...fresh.data.binding, registryVersion: 0 }) ||
+      permissions !== JSON.stringify([...fresh.data.binding.permissions].sort()) ||
+      (expectedBinding !== undefined &&
+        expectedBinding !== workstreamBindingKey(fresh.data.binding))
     )
       throw new WorkstreamActionError("stale");
     for (const context of [fresh.registrationContext, fresh.placements.context]) {
@@ -128,6 +133,7 @@ export async function assignNativeThread(
       )
         throw new WorkstreamActionError("stale");
     } else if (input.destination !== null) throw new WorkstreamActionError("stale");
+    expectedBinding = workstreamBindingKey(fresh.data.binding);
     snapshot = fresh;
     return fresh;
   };

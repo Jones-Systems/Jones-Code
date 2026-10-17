@@ -45,8 +45,8 @@ const quarantined: NativeReference = {
   },
 };
 
-function fixture(initial: NativeReference | null = null, placed = false) {
-  let version = 11;
+function fixture(initial: NativeReference | null = null, placed = false, initialVersion = 11) {
+  let version = initialVersion;
   let current = initial;
   let nextId = 0;
   const operations: WorkstreamCommand[] = [];
@@ -147,6 +147,35 @@ describe("chosen native thread assignment", () => {
       pr_locator: null,
     });
     expect(f.loadSnapshot.mock.calls).toEqual([[undefined], ["reference"], ["reference"]]);
+  });
+
+  it("uses the initial fresh registry version in every command precondition", async () => {
+    const f = fixture(null, false, 12);
+    await f.run();
+    expect(f.operations.map((command) => command.expected_registry_version)).toEqual([12, 13, 14]);
+    expect(f.operations.map((command) => command.action.operation)).toEqual([
+      "register_reference",
+      "verify_reference",
+      "attach_primary",
+    ]);
+  });
+
+  it.each([
+    { ownerId: "other-owner" },
+    { principalId: "other-principal" },
+    { authorizationRevision: 2 },
+    { serverGeneration: 8 },
+    { registryId: "other-registry" },
+    { permissions: ["workstreams:read"] as const },
+  ])("rejects initial authority drift %j before any command", async (changed) => {
+    const f = fixture(null, false, 12);
+    const load = f.loadSnapshot.getMockImplementation()!;
+    f.loadSnapshot.mockImplementation(async (id) => {
+      const value = await load(id);
+      return { ...value, data: { ...value.data, binding: { ...value.data.binding, ...changed } } };
+    });
+    await expect(f.run()).rejects.toMatchObject({ reason: "stale" });
+    expect(f.submit).not.toHaveBeenCalled();
   });
 
   it("uses the register lookup receipt for an existing unplaced reference without re-verifying current evidence", async () => {

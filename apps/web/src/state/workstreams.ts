@@ -753,6 +753,7 @@ export function useWorkstreams(
           metadataCache.purgeAuthorization();
           setData(null);
           setRegistrationContext(null);
+          setError("Workstreams changed or are unavailable. Retry to reload current access.");
           refreshAfterOperation = commandAttempted;
         }
         throw cause;
