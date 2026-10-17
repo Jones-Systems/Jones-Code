@@ -1,4 +1,4 @@
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import * as PullRequestCiStatus from "../jones/pullRequestCi/PullRequestCiStatus.ts";
 import {
   canonicalRepositoryKey,
@@ -591,7 +591,7 @@ export const make = Effect.gen(function* () {
   const rateLimits = yield* SourceControlRateLimit.SourceControlRateLimit;
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
-  const githubCi = yield* Effect.serviceOption(GitHubApi.GitHubApi);
+  const githubCi = yield* Effect.serviceOption(GitHubRest.GitHubRest);
 
   const refineUnknownProjectKinds = (
     projects: ReadonlyArray<OrchestrationProjectShell>,

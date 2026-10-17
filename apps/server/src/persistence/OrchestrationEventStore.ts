@@ -1,3 +1,9 @@
+import type { ApplicationRecordedLifecycleEvent as ApplicationStoredEvent } from "../orchestration-v2/RecordedTypes.ts";
+import {
+  RecordedEventJson as OrchestrationV2RecordedEventJson,
+  RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
+  type RecordedEvent as OrchestrationV2RecordedEvent,
+} from "../orchestration-v2/RecordedTypes.ts";
 import {
   ApplicationEventMetadata,
   ApplicationProjectEvent,
@@ -29,6 +35,9 @@ import {
   type OrchestrationEventStoreError,
 } from "./Errors.ts";
 
+export type ApplicationRecordedEvent = ApplicationProjectEvent | OrchestrationV2RecordedStoredEvent;
+
+/** A project event before the store assigns its sequence. */
 export type UnsequencedProjectEvent = ApplicationProjectEvent extends infer Event
   ? Event extends ApplicationProjectEvent
     ? Omit<Event, "sequence">

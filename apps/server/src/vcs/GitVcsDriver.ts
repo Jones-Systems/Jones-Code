@@ -267,6 +267,9 @@ export interface LegacyBranchRenameHooks {
 }
 
 export interface GitRenameBranchInput {
+  /** Exact private preparation journal, independent of current physical admission. */
+  readonly legacyPreparation?: LegacyBranchRenameHooks;
+  /** Fail on a name collision instead of appending a numeric suffix. */
   exactName?: boolean;
   cwd: string;
   oldBranch: string;

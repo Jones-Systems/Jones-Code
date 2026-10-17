@@ -4,7 +4,7 @@ import * as NodePath from "node:path";
 
 import { BaseSequencer, type TestSpecification } from "vite-plus/test/node";
 
-import { resolveSequencerWeight } from "../../../../scripts/jones/server-shard-weights/envelope.ts";
+import { resolveSequencerWeight, WEIGHTS_PATH_ENV } from "../../../../scripts/jones/server-shard-weights/envelope.ts";
 import shardWeights from "./shardWeights.json" with { type: "json" };
 
 // The median recorded file, for files added since the weights were recorded.
@@ -25,11 +25,13 @@ const recordedSeconds: Readonly<Record<string, number>> = shardWeights;
 export class WeightedShardSequencer extends BaseSequencer {
   override async shard(files: TestSpecification[]) {
     const { index, count } = this.ctx.config.shard ?? { index: 1, count: 1 };
-    const secondsOf = resolveSequencerWeight(process.env, recordedSeconds);
+    const secondsOf = process.env[WEIGHTS_PATH_ENV]
+      ? resolveSequencerWeight(process.env, recordedSeconds)
+      : (key: string) => recordedSeconds[key] ?? UNRECORDED_FILE_SECONDS;
     const weighted = files
       .map((spec) => {
         const key = NodePath.relative(this.ctx.config.root, spec.moduleId).replaceAll("\\", "/");
-        return { spec, key, seconds: recordedSeconds[key] ?? UNRECORDED_FILE_SECONDS };
+        return { spec, key, seconds: secondsOf(key) };
       })
       .toSorted((a, b) => b.seconds - a.seconds || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 

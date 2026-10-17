@@ -196,7 +196,13 @@ it.effect("parks automatic pull until activation without delaying command readin
           NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
         );
 
-        yield* Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled));
+        // Race both receipts and startup failure so a failed phase cannot leave the test waiting.
+        yield* Effect.raceFirst(
+          Effect.raceFirst(Deferred.await(prepared), Deferred.await(statusCalled)),
+          startup.awaitCommandReady.pipe(
+            Effect.andThen(Effect.die("Command readiness completed before trial preparation.")),
+          ),
+        );
         expect(yield* Deferred.isDone(activation)).toBe(false);
         expect(yield* Deferred.isDone(statusCalled)).toBe(false);
         expect(yield* Deferred.isDone(prepared)).toBe(true);

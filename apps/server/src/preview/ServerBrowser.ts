@@ -300,8 +300,15 @@ interface ServerTab {
   readonly control: SessionControl;
 
   readonly isolatedContext: boolean;
-
-  readonly desktop: { readonly close: () => Promise<void> } | null;
+  /**
+   * Set when a local desktop or companion renders this tab. The server drives
+   * its page; that host owns the page's size, storage, and window.
+   */
+  readonly desktop: {
+    readonly close: () => Promise<void>;
+    readonly origin: "local" | RenderPlacement.CompanionOrigin;
+    readonly attachmentGeneration: number | null;
+  } | null;
   readonly profileId: string | undefined;
   readonly openerTabId: string | undefined;
 
@@ -696,7 +703,12 @@ const make = Effect.gen(function* () {
         )
       : Promise.resolve(false);
 
-  const connectDesktop = async (snapshot: PreviewSessionSnapshot) => {
+  /** Connects to the desktop's page for a tab, which it renders and the server drives. */
+  const connectDesktop = async (
+    snapshot: PreviewSessionSnapshot,
+    channel = desktopChannel,
+    origin: "local" | RenderPlacement.CompanionOrigin = "local",
+  ) => {
     const scope = await Effect.runPromise(Scope.make());
     try {
       const evidence = await Effect.runPromise(
@@ -730,9 +742,27 @@ const make = Effect.gen(function* () {
       ? await runPlacement(placement.place(snapshot))
       : { _tag: "local" as const };
     const desktop =
-      adopted === undefined && (await desktopRenders(snapshot))
-        ? await connectDesktop(snapshot)
-        : null;
+      host._tag === "companion" && placement
+        ? await (async () => {
+            await runPlacement(placement.awaitCompanion(host, snapshot));
+            try {
+              return await connectDesktop(
+                snapshot,
+                { ...desktopChannel, ...placement.channel },
+                host,
+              );
+            } catch {
+              await Effect.runPromise(placement.channel.unmount(host.hostId, snapshot));
+              throw new CompanionHostUnavailable({
+                hostId: host.hostId,
+                label: host.label,
+                state: "timeout",
+              });
+            }
+          })()
+        : adopted === undefined && host._tag === "local" && (await desktopRenders(snapshot))
+          ? await connectDesktop(snapshot)
+          : null;
     const isolatedContext =
       adopted === undefined &&
       desktop === null &&
@@ -746,7 +776,8 @@ const make = Effect.gen(function* () {
         isolatedContext ? tabKey(snapshot.threadId, snapshot.tabId) : undefined,
       ));
     if (adopted?.page.isClosed()) throw new Error("The popup closed before it opened.");
-    if (!desktop) await prepareContext(context);
+    // The desktop page already has its own clipboard.
+    if (!desktop || desktop.origin !== "local") await prepareContext(context);
     const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
     const cdp = await context.newCDPSession(page);
     // The desktop's page is already a normal browser. A popup's first request
@@ -1824,34 +1855,46 @@ const make = Effect.gen(function* () {
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
             "dialogPending",
           );
-        return tab.control.agent(request.agentSessionId, async () => {
-          if (tab.dialog)
-            throw new BrowserControlInterrupted(
-              "A browser dialog is pending. Read preview_status and use preview_dialog first.",
-              "dialogPending",
-            );
-          if (existing) {
-            if (url) await navigate(tab, url, "load", navigationTimeout);
-          } else {
-            await tab.initialNavigation;
-          }
-          const reveal = open.open ?? open.show;
-          if (reveal !== false) {
-            await Effect.runPromise(
-              manager.requestReveal({
-                threadId: tab.threadId,
-                tabId: tab.tabId,
-                force: reveal === true,
-              }),
-            );
-          }
-          if (!existing && url) {
-            await tab.page
-              .waitForLoadState("load", { timeout: navigationTimeout })
-              .catch(constVoid);
-          }
-          return statusWithTitle(tab, request.agentSessionId);
-        });
+        return tab.control.agent(
+          request.agentSessionId,
+          async () => {
+            assertCurrentRequest();
+            if (tab.dialog)
+              throw new BrowserControlInterrupted(
+                "A browser dialog is pending. Read preview_status and use preview_dialog first.",
+                "dialogPending",
+              );
+            if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+              throw new BrowserControlInterrupted(
+                "This browser tab is closed or replaced.",
+                "closed",
+              );
+            onStart();
+            if (existing) {
+              if (url) await navigate(tab, url, "load", navigationTimeout);
+            } else {
+              // Await the original navigation failure even though background creation keeps the tab.
+              await tab.initialNavigation;
+            }
+            const reveal = open.open ?? open.show;
+            if (reveal !== false) {
+              await Effect.runPromise(
+                manager.requestReveal({
+                  threadId: tab.threadId,
+                  tabId: tab.tabId,
+                  force: reveal === true,
+                }),
+              );
+            }
+            if (!existing && url) {
+              await tab.page
+                .waitForLoadState("load", { timeout: navigationTimeout })
+                .catch(constVoid);
+            }
+            return statusWithTitle(tab, request.agentSessionId);
+          },
+          deadlineMs,
+        );
       }
       case "recordingStop": {
         const target =
@@ -2234,6 +2277,8 @@ const make = Effect.gen(function* () {
         closedSessions.delete(key);
         return;
       }
+      if (!tab) return;
+      // Any client or agent may change these; the page follows what was published.
       if (event.type === "resized") {
         await tab.control
           .system(async () => {
@@ -2329,8 +2374,9 @@ const make = Effect.gen(function* () {
         }
         const command = editingCommand(key, modifiers);
         const copying =
-          !tab.desktop && (command?.commands[0] === "copy" || command?.commands[0] === "cut");
-
+          (!tab.desktop || tab.desktop.origin !== "local") &&
+          (command?.commands[0] === "copy" || command?.commands[0] === "cut");
+        // Clear what any frame kept from an earlier key, so only this key's copy is read.
         if (copying) await takeCopiedText(tab);
         await session.send("Input.dispatchKeyEvent", {
           type: text ? "keyDown" : "rawKeyDown",
@@ -2620,8 +2666,9 @@ const make = Effect.gen(function* () {
       `This host blocks the sandbox T3's browser runs in, so browser tabs and HTML previews will not start. Run \`${setupCommand}\` once to allow it.`,
     );
   }
-
-  yield* desktopChannel.detached.pipe(
+  // The desktop took its page back (closed, swapped, crashed, or devtools opened).
+  // The session stays; the next viewer or agent reconnects when it re-attaches.
+  yield* Stream.merge(desktopChannel.detached, placement?.channel.detached ?? Stream.empty).pipe(
     Stream.runForEach((key) =>
       Effect.sync(() => {
         const tab = tabs.get(tabKey(key.threadId, key.tabId));

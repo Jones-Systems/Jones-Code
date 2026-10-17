@@ -130,7 +130,11 @@ export class SessionControl {
     return this.agentId === null || this.agentId === agentId;
   }
 
-  agent<A>(agentId: string, run: () => Promise<A>) {
+  /**
+   * An agent action. It may act on its own tab or on one a human opened, but
+   * never while a human controls the tab; taking control interrupts it.
+   */
+  agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(
         new BrowserControlInterrupted("This tab belongs to another agent.", "agentMismatch"),

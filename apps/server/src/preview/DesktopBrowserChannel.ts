@@ -140,7 +140,15 @@ const make = Effect.gen(function* () {
   const inputFd = config.desktopBrowserFd;
   const controlFd = config.desktopBrowserControlFd;
   const changes = yield* PubSub.unbounded<{ key: DesktopTabKey; attached: boolean }>();
-  const attachedTabs = new Set<string>();
+  const attachedTabs = new Map<
+    string,
+    {
+      readonly runtimeIdentity: PreviewAutomationRuntimeIdentity | null;
+      readonly attachmentGeneration: number;
+    }
+  >();
+  let attachmentGeneration = 0;
+  /** CDP frames from the desktop, per tab, for the endpoint connected to it. */
   const inbound = new Map<string, Queue.Queue<string>>();
   const writeLock = yield* Semaphore.make(1);
 

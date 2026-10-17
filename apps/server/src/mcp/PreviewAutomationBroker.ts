@@ -54,6 +54,8 @@ export interface PreviewAutomationInvokeInput {
   readonly timeoutMs?: number;
   /** Background metadata reads must not change the agent's current tab. */
   readonly updateCurrentTab?: boolean;
+  readonly failurePolicy?: "check_liveness" | "request_only";
+  /** Capture the routed tab before another request changes the current assignment. */
   readonly onTargetTab?: (tabId: PreviewTabId | undefined) => void;
 }
 
@@ -63,6 +65,15 @@ export interface PreviewAutomationRuntimeEvidence {
 }
 
 export interface PreviewAutomationConnectOptions {
+  readonly resolveRuntimeEvidence?: (target: {
+    readonly threadId: string;
+    readonly tabId?: PreviewTabId;
+  }) => Effect.Effect<PreviewAutomationRuntimeEvidence | null>;
+  /**
+   * New agent work goes to a preferred host before any desktop. The server's
+   * own headless browser registers this way so a standalone environment keeps
+   * browsing when every desktop disconnects.
+   */
   readonly preferred?: boolean;
 }
 
@@ -112,9 +123,8 @@ interface PendingRequest {
 }
 
 /**
- * It lives exactly as long as the connection it names: `connectionId`/`queue`
- * identity is what makes a lease valid, so a disconnected or replaced host is
- * dropped on the next lookup.
+ * Live leases are independent of MCP credential expiry. Stream loss starts a
+ * bounded affinity hold so reconnecting cannot silently migrate cookie/DOM state.
  */
 interface HostAssignment {
   readonly clientId: ClientConnection["clientId"];
@@ -458,7 +468,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ) {
     const now = yield* Clock.currentTimeMillis;
     yield* SynchronizedRef.modifyEffect(state, (current) => {
-      if (current.clients.get(clientId)?.queue !== queue) {
+      // Retired generations were already closed by their replacement or eviction.
+      if (
+        current.clients.get(clientId)?.queue !== queue ||
+        (replySequenceLimit !== undefined &&
+          current.clients.get(clientId)!.lastReplySequence > replySequenceLimit)
+      ) {
         return Effect.succeed([undefined, current] as const);
       }
       const removed = removeConnectionFromState(current, clientId, queue, now);
@@ -1036,14 +1051,29 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       return yield* Option.match(result, {
         onNone: () =>
           Effect.gen(function* () {
-            // Do not replay actions: the client may have applied them before
-            // becoming unreachable. A background metadata read has a short budget
-            // and changes nothing, so a slow one must not cut the host off from the
-            // agent's next call.
-            if (input.updateCurrentTab !== false) {
-              yield* disconnect(connection.clientId, connection.queue, true);
-            }
-            return yield* new PreviewAutomationTimeoutError(requestContext);
+            // Do not replay timed-out actions: their effects remain unknown.
+            // Quarantine mutations and probe liveness without discarding affinity.
+            const expiredAt = yield* Clock.currentTimeMillis;
+            const expired = yield* SynchronizedRef.modify(state, (current) => {
+              const entry = current.pending.get(requestId);
+              if (!entry) return [undefined, current] as const;
+              const pending = new Map(current.pending);
+              pending.delete(requestId);
+              const tombstones = new Map(
+                Array.from(current.tombstones).filter(([, value]) => value.expiresAt > expiredAt),
+              );
+              tombstones.set(requestId, { ...entry, expiresAt: expiredAt + 60_000 });
+              while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
+              const quarantine = new Map(current.quarantine);
+              if (!readOnlyOperations.has(input.operation)) quarantine.set(requestId, entry);
+              return [entry, { ...current, pending, tombstones, quarantine }] as const;
+            });
+            if (expired && input.failurePolicy !== "request_only")
+              yield* checkLiveness(connection, expired).pipe(Effect.forkDetach);
+            return yield* new PreviewAutomationTimeoutError({
+              ...requestContext,
+              outcome: "unknown",
+            });
           }),
         onSome: (value) => Effect.succeed(value as A),
       });

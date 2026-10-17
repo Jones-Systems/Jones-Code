@@ -1,3 +1,8 @@
+import * as NativeSetup from "./NativeSetupControl.ts";
+import {
+  LegacyOwnedTerminalControl,
+  LegacyNoTerminalControl,
+} from "../orchestration-v2/RecordedTypes.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
@@ -139,12 +144,68 @@ class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSigna
   }
 }
 
+export class LegacyTerminalControlError extends Schema.TaggedError<LegacyTerminalControlError>()(
+  "LegacyTerminalControlError",
+  { operation: Schema.Literals(["open", "write", "close", "guard"]), detail: Schema.String },
+) {}
+
+export class LegacyTerminalInputValidationError extends Schema.TaggedError<LegacyTerminalInputValidationError>()(
+  "LegacyTerminalInputValidationError",
+  {
+    binding: LegacyOwnedTerminalControl,
+    shell: Schema.String,
+    shellArgs: Schema.Array(Schema.String),
+    cwd: Schema.String,
+    detail: Schema.String,
+  },
+) {}
+
+const isLegacyTerminalInputValidationError = Schema.is(LegacyTerminalInputValidationError);
+
+export interface LegacyTerminalPreparationHooks {
+  readonly binding: LegacyOwnedTerminalControl;
+  readonly beforeSpawn: (plan: {
+    readonly binding: LegacyOwnedTerminalControl;
+    readonly shell: string;
+    readonly shellArgs: ReadonlyArray<string>;
+    readonly cwd: string;
+  }) => Effect.Effect<void, Error>;
+  readonly neverInvoked?: (
+    plan: Parameters<LegacyTerminalPreparationHooks["beforeSpawn"]>[0],
+  ) => Effect.Effect<void, Error>;
+  readonly afterSpawn: (proof: {
+    readonly binding: LegacyOwnedTerminalControl;
+    readonly shell: string;
+    readonly shellArgs: ReadonlyArray<string>;
+  }) => Effect.Effect<void, Error>;
+}
+interface LegacyTerminalWriteHooks {
+  readonly legacyOwnedControl: LegacyOwnedTerminalControl;
+  readonly beforeWrite: () => Effect.Effect<void, Error>;
+  readonly afterWrite: (
+    outcome: "accepted" | "unknown",
+    inputCount: number,
+  ) => Effect.Effect<void, Error>;
+}
+interface TerminalCloseOptions {
+  readonly legacyOwnedControl?: LegacyOwnedTerminalControl;
+}
+const sameLegacyOwnedControl = Schema.toEquivalence(LegacyOwnedTerminalControl);
+const decodeLegacyOwnedControl = Schema.decodeUnknownEffect(LegacyOwnedTerminalControl);
+
 export class TerminalManager extends Context.Service<
   TerminalManager,
   {
-    readonly open: (
-      input: TerminalOpenInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+    readonly open: {
+      (input: TerminalOpenInput): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
+      (
+        input: TerminalOpenInput,
+        legacy: LegacyTerminalPreparationHooks,
+      ): Effect.Effect<
+        TerminalSessionSnapshot,
+        TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
+      >;
+    };
 
     readonly attachStream: (
       input: TerminalAttachInput,
@@ -156,7 +217,13 @@ export class TerminalManager extends Context.Service<
       listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
     ) => Effect.Effect<() => void, TerminalError>;
 
-    readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
+    readonly write: {
+      (input: TerminalWriteInput): Effect.Effect<void, TerminalError>;
+      (
+        input: TerminalWriteInput,
+        legacy: LegacyTerminalWriteHooks,
+      ): Effect.Effect<void, TerminalError | LegacyTerminalControlError>;
+    };
 
     readonly resize: (input: TerminalResizeInput) => Effect.Effect<void, TerminalError>;
 

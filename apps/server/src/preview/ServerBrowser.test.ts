@@ -1392,7 +1392,10 @@ it.live("drives the desktop's own page for a tab the desktop renders", () =>
         input: {},
         tabId: PreviewTabId.make(opened.tabId),
       });
-      expect(evaluated).toMatchObject({ tabId: opened.tabId });
+      expect(evaluated).toMatchObject({
+        tabId: opened.tabId,
+        selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
+      });
       yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
       while (releasedDesktopTabs.length === 0) yield* Effect.yieldNow;
       expect(releasedDesktopTabs).toEqual([opened.tabId]);
