@@ -33,9 +33,11 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
+        "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
         "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
       ],
-      "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
+      "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. Display trust also accepts each connected environment's live config descriptor, so remote threads can show as verified; disagreeing descriptors mark that environment's threads as conflicts, and membership changes keep primary placement trust. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
     },
     {
       "id": "client-update-notices",
@@ -461,7 +463,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",

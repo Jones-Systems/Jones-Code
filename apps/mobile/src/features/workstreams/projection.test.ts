@@ -297,3 +297,83 @@ describe("mobile durable assignment projection", () => {
     expect(result.confirmedUnassignedKeys.size).toBe(0);
   });
 });
+
+describe("mobile connected-environment display trust", () => {
+  const remote = { ...thread, environmentId: "env:b" };
+  const key = nativeWorkstreamThreadKey("env:b", "thread");
+  const remoteSnapshot = (overrides: Partial<MobileWorkstreamSnapshot> = {}) =>
+    snapshot("env:b", {
+      placements: null,
+      index: assignmentIndexFor([
+        { environmentId: "env:b", threadId: "thread", workstreamId: "alpha" },
+      ]),
+      ...overrides,
+    });
+  const live = (environmentId: string, authorityNamespace = "authority", storeGeneration = 1) => ({
+    environmentId,
+    config: {
+      environment: { environmentId },
+      nativeStoreAuthority: { environmentId, authorityNamespace, storeGeneration },
+    },
+    live: true,
+  });
+  const keysOf = (result: ReturnType<typeof projectMobileWorkstreams>, workstreamId: string) =>
+    result.groups.find((group) => group.workstream.workstreamId === workstreamId)?.threadKeys ??
+    new Set<string>();
+
+  it("verifies a remote environment's thread from its live descriptor, recorded otherwise", () => {
+    const verified = projectMobileWorkstreams([remoteSnapshot()], [remote], now, [live("env:b")]);
+    expect(keysOf(verified, "alpha")).toEqual(new Set([key]));
+    expect(verified.assuranceByKey.get(key)).toBe("verified");
+
+    const recorded = projectMobileWorkstreams([remoteSnapshot()], [remote], now);
+    expect(keysOf(recorded, "alpha")).toEqual(new Set([key]));
+    expect(recorded.assuranceByKey.get(key)).toBe("recorded");
+
+    const disconnected = projectMobileWorkstreams(
+      [remoteSnapshot({ stale: true })],
+      [remote],
+      now,
+      [{ environmentId: "env:b", config: null, live: false }],
+    );
+    expect(keysOf(disconnected, "alpha")).toEqual(new Set([key]));
+    expect(disconnected.assuranceByKey.get(key)).toBe("recorded");
+  });
+
+  it("never lets one environment's descriptor verify another environment's thread", () => {
+    const result = projectMobileWorkstreams([remoteSnapshot()], [remote], now, [live("env:a")]);
+    expect(result.assuranceByKey.get(key)).toBe("recorded");
+  });
+
+  it("flags a descriptor that disagrees with placement trust and blocks changes", () => {
+    const placed = snapshot("env:b", {
+      index: assignmentIndexFor([
+        { environmentId: "env:b", threadId: "thread", workstreamId: "alpha" },
+      ]),
+    });
+    const loose = { ...remote, id: "loose" };
+    const result = projectMobileWorkstreams([placed], [remote, loose], now, [
+      live("env:b", "authority", 2),
+    ]);
+    expect(result.groups.flatMap((group) => [...group.threadKeys])).toEqual([]);
+    expect(result.assuranceByKey.get(key)).toBe("conflict");
+    expect(result.conflictingThreadKeys).toEqual(
+      new Set([key, nativeWorkstreamThreadKey("env:b", "loose")]),
+    );
+    expect(result.confirmedUnassignedKeys.size).toBe(0);
+  });
+
+  it("conflicts only the remote thread whose stored proof a live descriptor contradicts", () => {
+    const result = projectMobileWorkstreams(
+      [snapshot("env:a", { index: assignmentIndexFor() }), remoteSnapshot()],
+      [thread, remote],
+      now,
+      [live("env:b", "other")],
+    );
+    expect(keysOf(result, "alpha")).toEqual(
+      new Set([nativeWorkstreamThreadKey("env:a", "thread")]),
+    );
+    expect(result.assuranceByKey.get(key)).toBe("conflict");
+    expect(result.conflictingThreadKeys).toEqual(new Set([key]));
+  });
+});

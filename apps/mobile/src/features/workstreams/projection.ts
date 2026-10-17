@@ -1,9 +1,11 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
+  buildConnectedEnvironmentTrust,
   groupNativeThreadsByWorkstream,
   orderWorkstreamMetadata,
   nativeWorkstreamThreadKey,
   workstreamPaletteIndex,
+  type ConnectedEnvironmentTrustInput,
   type LiveT3Placements,
   type NativeWorkstreamThreadAssurance,
   type WorkstreamAssignmentIndex,
@@ -65,10 +67,16 @@ const namespace = (data: T3WorkstreamListResult) =>
     data.binding.contractManifest,
   ]);
 
+/**
+ * `liveEnvironments` are the environments' current-session configs. Their descriptors only add
+ * display trust, so a thread can reach "verified" without current proof; disagreeing descriptors
+ * mark that environment's threads as conflicts. Membership changes keep using placement trust.
+ */
 export function projectMobileWorkstreams(
   snapshots: readonly MobileWorkstreamSnapshot[],
   threads: readonly WorkstreamThreadLike[],
   now: number,
+  liveEnvironments: readonly ConnectedEnvironmentTrustInput[] = [],
 ) {
   const groups = new Map<string, MobileWorkstreamGroup>();
   const conflicts = new Set<string>();
@@ -90,9 +98,19 @@ export function projectMobileWorkstreams(
           snapshot.data.nextCursor !== null
     )
       continue;
+    const trust = buildConnectedEnvironmentTrust({
+      environments: liveEnvironments,
+      placementTrustedEnvironments: proof?.trustedEnvironments,
+    });
     const ownThreads = threads.filter(
       (thread) => thread.environmentId === snapshot.prepared.environmentId,
     );
+    for (const thread of ownThreads) {
+      if (!trust.conflicts.has(thread.environmentId)) continue;
+      const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+      assuranceByKey.set(key, "conflict");
+      conflictingThreadKeys.add(key);
+    }
     const live =
       !snapshot.stale &&
       snapshot.data.source === "live" &&
@@ -100,11 +118,9 @@ export function projectMobileWorkstreams(
       snapshot.data.nextCursor === null;
     const grouped = groupNativeThreadsByWorkstream({
       workstreams: orderWorkstreamMetadata(snapshot.data.items),
-      threads: ownThreads,
+      threads: ownThreads.filter((thread) => !trust.conflicts.has(thread.environmentId)),
       trustedNow: nowIso,
-      trustedEnvironments: new Map(
-        (proof?.trustedEnvironments ?? []).map((trust) => [trust.environmentId, trust]),
-      ),
+      trustedEnvironments: trust.trusted,
       ...(proof ? { placements: proof.items } : {}),
       // Stored assignments group without any proof clock; `now` only decides "verified".
       ...(index !== null
