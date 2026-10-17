@@ -6,6 +6,7 @@
     {
       "id": "thread-status-filter",
       "tests": [
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
@@ -90,6 +91,9 @@
     {
       "id": "workstreams",
       "tests": [
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
@@ -224,6 +228,7 @@
     {
       "id": "direct-desktop-media",
       "tests": [
+        "apps/server/src/device/DeviceService.test.ts",
         "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/SshDeviceHost.test.ts",
@@ -483,6 +488,8 @@
     {
       "id": "persistence-upstream-isolation",
       "tests": [
+        "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+        "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
