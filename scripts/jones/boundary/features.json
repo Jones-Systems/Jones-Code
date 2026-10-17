@@ -765,6 +765,17 @@
         "apps/server/src/cloud/serviceLauncherClient.test.ts"
       ],
       "scope": "Update-bound pointer uncertainty, bounded safe commit diagnostics and launcher/server drift notices. Shared launcher edits preserve its existing state machine and commit guards; focused synthetic lifecycle coverage exercises pointer failure, promotion and sequential updates."
+    },
+    {
+      "id": "decision-snapshot-access",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "packages/shared/src/projectSettings.test.ts"
+      ],
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
     }
   ]
 }
