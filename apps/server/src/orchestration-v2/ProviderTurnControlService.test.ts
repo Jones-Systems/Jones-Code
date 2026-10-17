@@ -142,8 +142,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         id: providerThreadId,
         driver,
         providerInstanceId: replacementInstanceId,
-        // The restart command has already projected this replacement binding
-        // before the process-bound restart effect executes.
+        // The restart command already projected this replacement binding.
         providerSessionId: replacementSessionId,
         appThreadId: threadId,
         ownerNodeId: null,
