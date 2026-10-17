@@ -53,6 +53,8 @@ export interface AdoptInput extends LegacyBootstrap.LegacyBootstrapBinding {
   readonly activeSourceCommit: string;
   readonly launcherArtifactDir: string;
   readonly launcherSourceCommit: string;
+  readonly launchdLabel?: "com.t3tools.t3code.service";
+  readonly retainedExecutable?: string;
   readonly supersedeExecstart?: boolean;
   readonly dryRun?: boolean;
 }
@@ -122,6 +124,15 @@ export interface AdoptionPlan {
   readonly privateSetupProvenance?: {
     readonly archiveDirectory: string;
     readonly preimage: PrivateSetup.PrivateSetupPreimage;
+  };
+  readonly legacyLaunchd?: {
+    readonly label: string;
+    readonly executable: string;
+    readonly executableSha256: string;
+    readonly port: number;
+    readonly archiveDirectory: string;
+    readonly plistSha256: string;
+    readonly plistMode: number;
   };
   readonly recovery?: ReadonlyArray<string>;
 }
@@ -373,6 +384,53 @@ export async function verifyAdoptionArtifact(
   };
 }
 
+function launchdValue(output: string, key: "path" | "program" | "pid"): string {
+  const values = output.split("\n").flatMap((line) => {
+    const match = /^\s*(path|program|pid) = (.+)$/.exec(line);
+    return match?.[1] === key ? [match[2]!] : [];
+  });
+  if (values.length !== 1) return refuse("LaunchAgent observation is missing or ambiguous.");
+  return values[0]!;
+}
+async function assertLaunchdArchiveParent(directory: string, uid: number) {
+  const parent = NodePath.dirname(directory);
+  const stat = await NodeFSP.lstat(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+    return undefined;
+  });
+  if (
+    stat !== undefined &&
+    (!stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      stat.uid !== uid ||
+      (stat.mode & 0o077) !== 0 ||
+      (await NodeFSP.realpath(parent)) !== parent)
+  )
+    return refuse("LaunchAgent recovery parent is not an owned private real directory.");
+}
+async function assertLegacyLaunchdProcess(
+  host: AdoptionHost,
+  unitPath: string,
+  label: string,
+  executable: string,
+  pid: number,
+) {
+  const loaded = await host.run({
+    command: "launchctl",
+    args: ["print", `gui/${host.uid}/${label}`],
+  });
+  if (
+    launchdValue(loaded, "path") !== unitPath ||
+    launchdValue(loaded, "program") !== executable ||
+    launchdValue(loaded, "pid") !== String(pid)
+  )
+    return refuse("Loaded legacy LaunchAgent identity differs from the bound runtime.");
+  const owner = await host.run({ command: "/bin/ps", args: ["-p", String(pid), "-o", "uid="] });
+  const command = await host.run({ command: "/bin/ps", args: ["-p", String(pid), "-o", "comm="] });
+  if (owner.trim() !== String(host.uid) || command.trim() !== executable)
+    return refuse("Legacy LaunchAgent process owner or executable differs.");
+}
+
 async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
   if (
     !NodePath.isAbsolute(input.baseDir) ||
@@ -406,9 +464,31 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     (previousAdoption.schema !== 1 || previousAdoption.status !== "applied")
   )
     return refuse("Previous adoption has a pending or unknown effect; reconcile it before retry.");
+  const legacyMac = input.launchdLabel !== undefined || input.retainedExecutable !== undefined;
+  if (
+    legacyMac &&
+    (host.platform !== "darwin" ||
+      input.launchdLabel !== "com.t3tools.t3code.service" ||
+      input.retainedExecutable === undefined ||
+      input.legacyDirectServe === true ||
+      input.serviceUnit !== undefined ||
+      input.taskOperationId !== undefined ||
+      input.taskHandoffSha256 !== undefined ||
+      input.taskDropin !== undefined ||
+      (input.preserveDropin?.length ?? 0) !== 0 ||
+      input.acceptUnattestedChildCapability === true ||
+      previousAdoption !== undefined)
+  )
+    return refuse(
+      "Legacy LaunchAgent adoption requires explicit Mac bindings and no prior adoption or Linux bootstrap flags.",
+    );
   const stateText = await readText(NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE));
   const classification = LegacyBootstrap.classifyAdoptionServiceState(stateText, input);
   const legacy = classification.kind === "task-handoff";
+  if (legacyMac && (classification.kind !== "native" || classification.state.update !== undefined))
+    return refuse(
+      "Legacy LaunchAgent adoption requires settled native state with no update block.",
+    );
   if (legacy && host.platform !== "linux")
     return refuse("Bound legacy direct-serve bootstrap supports a Linux user unit only.");
   const state = {
@@ -446,7 +526,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     environmentId,
   });
   if (
-    (legacy ? running.serviceManaged : !running.serviceManaged) ||
+    (legacy || legacyMac ? running.serviceManaged : !running.serviceManaged) ||
     running.serverVersion !== state.activeVersion ||
     running.environmentId !== environmentId ||
     !Number.isSafeInteger(running.processId) ||
@@ -474,7 +554,10 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
   )
     return refuse("Different artifacts claim the same version.");
   const unattestedPrivateSetup =
-    !legacy && !continuation && PrivateSetup.isUnattestedPrivateSetupArtifact(active.metadata);
+    !legacy &&
+    !legacyMac &&
+    !continuation &&
+    PrivateSetup.isUnattestedPrivateSetupArtifact(active.metadata);
   if (
     !legacy &&
     !continuation &&
@@ -521,12 +604,13 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     launcher.metadata.version,
     "t3",
   );
+  const launchdLabel = input.launchdLabel ?? identity.launchdLabel;
   const unitPath =
     host.platform === "linux"
       ? NodePath.join(host.home, ".config/systemd/user", serviceUnit)
-      : NodePath.join(host.home, "Library/LaunchAgents", `${identity.launchdLabel}.plist`);
+      : NodePath.join(host.home, "Library/LaunchAgents", `${launchdLabel}.plist`);
   if (
-    (legacy || continuation) &&
+    (legacy || legacyMac || continuation) &&
     (!hash.test(input.serviceUnitSha256 ?? "") ||
       (await hashFile(unitPath)) !== input.serviceUnitSha256)
   )
@@ -537,6 +621,81 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     bootServiceBaseDirOf(unitText) !== baseDir
   )
     return refuse("Existing service belongs to a different or unknown home.");
+  let legacyLaunchd: AdoptionPlan["legacyLaunchd"];
+  if (legacyMac) {
+    const executable = input.retainedExecutable!;
+    const stat = await NodeFSP.lstat(executable);
+    const plistStat = await NodeFSP.lstat(unitPath);
+    if (
+      !NodePath.isAbsolute(executable) ||
+      /[\r\n]/.test(executable) ||
+      !executable.startsWith(`${host.home}/`) ||
+      (await NodeFSP.realpath(executable)) !== executable ||
+      (await NodeFSP.realpath(unitPath)) !== unitPath ||
+      !stat.isFile() ||
+      stat.uid !== host.uid ||
+      (stat.mode & 0o022) !== 0 ||
+      (stat.mode & 0o100) === 0 ||
+      !plistStat.isFile() ||
+      plistStat.uid !== host.uid ||
+      (plistStat.mode & 0o022) !== 0 ||
+      active.metadata.workflow !== ".github/workflows/artifact-cli-mac.yml"
+    )
+      return refuse(
+        "Legacy LaunchAgent requires owned real paths and an exact Mac CLI active artifact.",
+      );
+    const plist = object(
+      JSON.parse(
+        await host.run({
+          command: "/usr/bin/plutil",
+          args: ["-convert", "json", "-o", "-", unitPath],
+        }),
+      ) as unknown,
+    );
+    const environment = object(plist.EnvironmentVariables);
+    if (
+      plist.Label !== launchdLabel ||
+      plist.Program !== undefined ||
+      JSON.stringify(plist.ProgramArguments) !== JSON.stringify([executable, "serve"]) ||
+      environment.T3CODE_HOME !== baseDir ||
+      (environment.T3_BOOT_SERVICE_UNIT !== undefined &&
+        environment.T3_BOOT_SERVICE_UNIT !== `${launchdLabel}.plist`) ||
+      (unitText.match(/<key>ProgramArguments<\/key>/g) ?? []).length !== 1 ||
+      !Number.isSafeInteger(running.port) ||
+      running.port! < 1 ||
+      running.port! > 65535
+    )
+      return refuse("Legacy LaunchAgent label, home, direct-serve arguments or port differs.");
+    const executableSha256 = await LegacyBootstrap.archiveExecutableSha256(active.archive);
+    if ((await hashFile(executable)) !== executableSha256)
+      return refuse("Running executable bytes differ from the authenticated active archive.");
+    await assertLegacyLaunchdProcess(host, unitPath, launchdLabel, executable, running.processId);
+    const archiveDirectory = NodePath.join(
+      baseDir,
+      "runtime/jones-adoption",
+      `launchd-${input.serviceUnitSha256}`,
+    );
+    await assertLaunchdArchiveParent(archiveDirectory, host.uid);
+    if (
+      await NodeFSP.lstat(archiveDirectory).then(
+        () => true,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+          return false;
+        },
+      )
+    )
+      return refuse("LaunchAgent recovery archive already exists; reconcile its prior effect.");
+    legacyLaunchd = {
+      label: launchdLabel,
+      executable,
+      executableSha256,
+      port: running.port!,
+      archiveDirectory,
+      plistSha256: input.serviceUnitSha256!,
+      plistMode: plistStat.mode & 0o777,
+    };
+  }
   const renderedPlan = {
     baseDir,
     program: [launcherPath, "__service-launcher"],
@@ -746,7 +905,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     const existingProgram = program.exec(unitText)?.[0];
     if (
       existingProgram === undefined ||
-      (!existingProgram.includes(oldRuntime) && input.supersedeExecstart !== true)
+      (!legacyMac && !existingProgram.includes(oldRuntime) && input.supersedeExecstart !== true)
     )
       return refuse(
         "Launch agent ProgramArguments has an unknown owner; approve explicit supersession.",
@@ -768,7 +927,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
       : [
           {
             command: "launchctl",
-            args: ["bootout", "--wait", `gui/${host.uid}/${identity.launchdLabel}`],
+            args: ["bootout", "--wait", `gui/${host.uid}/${launchdLabel}`],
           },
           { command: "launchctl", args: ["bootstrap", `gui/${host.uid}`, unitPath] },
         ];
@@ -783,6 +942,18 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     serviceUnit,
     attestation: legacy || continuation || unattestedPrivateSetup ? "launcher-only" : "child",
     ...(privateSetupProvenance === undefined ? {} : { privateSetupProvenance }),
+    ...(legacyLaunchd === undefined
+      ? {}
+      : {
+          legacyLaunchd,
+          recovery: [
+            `Obtain separate recovery approval for gui/${host.uid}/${launchdLabel} and ${baseDir}; an unknown effect requires inspection before retry.`,
+            `Compare current plist bytes with this plan and the pending/applied receipt; stop only this exact LaunchAgent.`,
+            `Restore exact ${NodePath.join(legacyLaunchd.archiveDirectory, "launch-agent.plist")} to ${unitPath} with original mode ${legacyLaunchd.plistMode.toString(8)} only after verifying the archive SHA-256 ${legacyLaunchd.plistSha256}.`,
+            `Run launchctl bootstrap gui/${host.uid} ${unitPath}; verify the retained executable, child version, port and environment. Preserve the adoption receipt and enrolled runtimes for reconciliation.`,
+            "Native service state is unchanged by adoption; undo any separately approved state reconciliation only under its own compare-and-swap recovery.",
+          ],
+        }),
     ...(archiveDirectory === undefined
       ? {}
       : {
@@ -796,6 +967,12 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
           ],
         }),
     effects: [
+      ...(legacyLaunchd === undefined
+        ? []
+        : [
+            `Retain ${legacyLaunchd.executable}, SHA-256 ${legacyLaunchd.executableSha256}, port ${legacyLaunchd.port}; preserve the legacy label ${launchdLabel}.`,
+            `Archive exact plist preimage under ${legacyLaunchd.archiveDirectory} before stop; leave native service state unchanged.`,
+          ]),
       ...(legacy
         ? [
             `Preserve credential drop-ins by metadata only: ${(input.preserveDropin ?? []).join(", ")}; contents are never opened.`,
@@ -813,7 +990,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
         (a) =>
           `Enroll ${NodePath.join(baseDir, "runtime/versions", a.metadata.version)} from Actions ${a.metadata.runId}/${a.metadata.runAttempt}, source ${a.metadata.source}, archive SHA-256 ${a.metadata.sha256}; preserve occupied payloads and append a qualified receipt only after exact comparison.`,
       ),
-      `Stop ${host.platform === "linux" ? serviceUnit : identity.launchdLabel}; preserve database, environment ID, configuration and service-state activeVersion ${state.activeVersion}.`,
+      `Stop ${host.platform === "linux" ? serviceUnit : launchdLabel}; preserve database, environment ID, configuration and service-state activeVersion ${state.activeVersion}.`,
       ...(legacy
         ? [
             `Archive exact handoff and task drop-in bytes exclusively under ${archiveDirectory}, sync and read back their SHA-256 digests, then compare-and-replace only service-state.json with protocol 4 and activeVersion ${state.activeVersion}.`,
@@ -976,6 +1153,41 @@ export async function adoptHost(
       const db = await NodeFSP.lstat(inspected.dbPath);
       if (`${db.dev}:${db.ino}` !== inspected.databaseIdentity)
         return refuse("Native database identity changed.");
+      if (plan.legacyLaunchd !== undefined) {
+        const bound = plan.legacyLaunchd;
+        const executable = await NodeFSP.lstat(bound.executable);
+        const plist = await NodeFSP.lstat(plan.servicePath);
+        if (
+          (await NodeFSP.realpath(bound.executable)) !== bound.executable ||
+          (await NodeFSP.realpath(plan.servicePath)) !== plan.servicePath ||
+          !executable.isFile() ||
+          executable.uid !== host.uid ||
+          (executable.mode & 0o022) !== 0 ||
+          (executable.mode & 0o100) === 0 ||
+          plist.uid !== host.uid ||
+          (plist.mode & 0o777) !== bound.plistMode ||
+          (await hashFile(bound.executable)) !== bound.executableSha256
+        )
+          return refuse("Legacy LaunchAgent preimage or executable changed after planning.");
+        if (!afterStop) {
+          const live = await host.readback(plan);
+          if (
+            live.processId !== inspected.previousProcessId ||
+            live.serviceManaged ||
+            live.serverVersion !== plan.activeVersion ||
+            live.environmentId !== plan.environmentId ||
+            live.port !== bound.port
+          )
+            return refuse("Legacy LaunchAgent child identity changed before stop.");
+          await assertLegacyLaunchdProcess(
+            host,
+            plan.servicePath,
+            bound.label,
+            bound.executable,
+            live.processId,
+          );
+        }
+      }
       if (inspected.legacy) {
         await LegacyBootstrap.assertNoBootstrapHazards(plan.baseDir, host.uid);
         if ((await hashFile(inspected.task!.executable)) !== inspected.task!.executableSha256)
@@ -1106,7 +1318,16 @@ export async function adoptHost(
           }),
           plan.launcherVersion,
         );
-      const pendingMigrationPlan = inspected.legacy ? await migrationPreflight() : undefined;
+      const pendingMigrationPlan =
+        inspected.legacy || plan.legacyLaunchd !== undefined
+          ? await migrationPreflight()
+          : undefined;
+      if (plan.legacyLaunchd !== undefined) {
+        await assertLaunchdArchiveParent(plan.legacyLaunchd.archiveDirectory, host.uid);
+        await archiveBootstrapPreimages(plan.legacyLaunchd.archiveDirectory, [
+          { name: "launch-agent.plist", text: inspected.snapshots.get(plan.servicePath)! },
+        ]);
+      }
       await assertUnchanged();
       await host.run(plan.commands[0]!);
       await assertUnchanged(true);
@@ -1150,7 +1371,8 @@ export async function adoptHost(
             !live.serviceManaged ||
             live.serverVersion !== plan.activeVersion ||
             live.environmentId !== plan.environmentId ||
-            (inspected.task !== undefined && live.port !== inspected.task.port)
+            (inspected.task !== undefined && live.port !== inspected.task.port) ||
+            (plan.legacyLaunchd !== undefined && live.port !== plan.legacyLaunchd.port)
           )
             throw new Error("Native child startup identity has not settled.");
           const capabilityText = await optionalText(
@@ -1251,12 +1473,18 @@ export async function adoptHost(
       } else {
         const executable = await host.run({
           command: "launchctl",
-          args: ["print", `gui/${host.uid}/${identity.launchdLabel}`],
+          args: ["print", `gui/${host.uid}/${plan.legacyLaunchd?.label ?? identity.launchdLabel}`],
         });
         if (
           !executable.includes(
             NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3"),
-          )
+          ) ||
+          (plan.legacyLaunchd !== undefined &&
+            (launchdValue(executable, "path") !== plan.servicePath ||
+              launchdValue(executable, "program") !==
+                NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3") ||
+              !/^[1-9]\d*$/.test(launchdValue(executable, "pid")) ||
+              Number(launchdValue(executable, "pid")) === observed.processId))
         )
           return refuse("Effective launcher readback differs.");
       }
@@ -1278,6 +1506,7 @@ export async function adoptHost(
             ? { capability: { install: true } }
             : { childCapability: "unattested" }),
           processId: observed.processId,
+          ...(plan.legacyLaunchd === undefined ? {} : { pendingMigrationPlan }),
           ...(inspected.privateSetupProvenance === undefined
             ? {}
             : {
