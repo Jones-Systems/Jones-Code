@@ -380,3 +380,37 @@ it.effect(
       });
     }),
 );
+
+it.effect("adopt forwards explicit legacy Mac identity bindings", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "adopt",
+      "--base-dir",
+      baseDir,
+      "--active-artifact-dir",
+      "/approved/active",
+      "--active-source-commit",
+      "a".repeat(40),
+      "--launcher-artifact-dir",
+      "/approved/launcher",
+      "--launcher-source-commit",
+      "b".repeat(40),
+      "--launchd-label",
+      "com.t3tools.t3code.service",
+      "--service-unit-sha256",
+      "c".repeat(64),
+      "--retained-executable",
+      "/approved/home/dated-install/t3",
+      "--dry-run",
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-adoption", "adopt"]);
+    expect(t.calls[1]?.input).toMatchObject({
+      launchdLabel: "com.t3tools.t3code.service",
+      serviceUnitSha256: "c".repeat(64),
+      retainedExecutable: "/approved/home/dated-install/t3",
+      dryRun: true,
+    });
+  }),
+);

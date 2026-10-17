@@ -8,7 +8,7 @@ import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
 import { expect, it, vi } from "vite-plus/test";
 import * as LegacyBootstrap from "./legacyBootstrap.ts";
-import { renderBootServiceUnit } from "../../cloud/bootService.ts";
+import { renderBootServicePlist, renderBootServiceUnit } from "../../cloud/bootService.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "./identity.ts";
@@ -189,6 +189,7 @@ async function fixture(
 }
 type FixtureOptions = {
   readonly legacy?: boolean;
+  readonly legacyMac?: boolean;
   readonly migrationChanged?: boolean;
   readonly privateSetup?: boolean;
 };
@@ -221,7 +222,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     for (const name of ["client", "node_modules", "resource-monitor"])
       await NodeFSP.mkdir(NodePath.join(active, name));
   }
-  if (!options.legacy && !options.privateSetup)
+  if (!options.legacy && !options.privateSetup && !options.legacyMac)
     await NodeFSP.writeFile(
       NodePath.join(active, ".jones-provenance.json"),
       "private provenance is not qualification",
@@ -236,7 +237,9 @@ async function populateFixture(root: string, options: FixtureOptions) {
     "unchanged database bytes",
   );
   const serviceUnit = options.legacy ? "t3code.service" : "jones-code.service";
-  const unit = NodePath.join(home, ".config/systemd/user", serviceUnit);
+  const unit = options.legacyMac
+    ? NodePath.join(home, "Library/LaunchAgents/com.t3tools.t3code.service.plist")
+    : NodePath.join(home, ".config/systemd/user", serviceUnit);
   await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true });
   await NodeFSP.writeFile(
     unit,
@@ -337,6 +340,13 @@ async function populateFixture(root: string, options: FixtureOptions) {
         source: privateArtifact ? privateSetupSource : (index === 0 ? "a" : "b").repeat(40),
         tree: privateArtifact ? privateSetupTree : "c".repeat(40),
         archive: tarPayload(version, privateArtifact),
+        ...(options.legacyMac
+          ? {
+              platform: "darwin" as const,
+              architecture: "arm64" as const,
+              workflow: ".github/workflows/artifact-cli-mac.yml",
+            }
+          : {}),
       }),
     );
   }
@@ -368,7 +378,28 @@ async function populateFixture(root: string, options: FixtureOptions) {
     "30-github-cli-path.conf",
     "40-agent-mail-token.conf",
   ];
-  const directExecutable = NodePath.join(root, "Jones-Code-Install", "t3");
+  const directExecutable = NodePath.join(home, "Jones-Code-Install-20261016", "t3");
+  if (options.legacyMac) {
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true });
+    await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
+    await NodeFSP.writeFile(
+      unit,
+      renderBootServicePlist(
+        {
+          baseDir: base,
+          program: [directExecutable, "serve"],
+          unitPath: unit,
+          logPath: NodePath.join(base, "userdata/logs/boot-service.log"),
+        },
+        { homeDir: home, environmentPath: "/usr/bin:/bin" },
+        {
+          ...JONES_BOOT_SERVICE_IDENTITY,
+          launchdLabel: "com.t3tools.t3code.service",
+        },
+      ),
+    );
+    await NodeFSP.rm(active, { recursive: true });
+  }
   if (options.legacy) {
     await NodeFSP.mkdir(NodePath.dirname(directExecutable));
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
@@ -404,8 +435,8 @@ async function populateFixture(root: string, options: FixtureOptions) {
   let generation = 1;
   let restarted = false;
   const host: AdoptionHost = {
-    platform: "linux",
-    architecture: "x64",
+    platform: options.legacyMac ? "darwin" : "linux",
+    architecture: options.legacyMac ? "arm64" : "x64",
     home,
     uid: NodeOS.userInfo().uid,
     environmentPath: "/usr/bin:/bin",
@@ -481,8 +512,21 @@ async function populateFixture(root: string, options: FixtureOptions) {
       if (args.includes("--property=DropInPaths")) return dropins;
       if (args.includes("--property=ExecStart"))
         return NodePath.join(runtime, "versions", newVersion, "t3");
-      if (command.command === "systemctl") {
-        if (args.includes("restart")) {
+      if (command.command === "/usr/bin/plutil")
+        return JSON.stringify({
+          Label: "com.t3tools.t3code.service",
+          ProgramArguments: [directExecutable, "serve"],
+          EnvironmentVariables: {
+            T3CODE_HOME: base,
+            T3CODE_SERVICE_UNIT: "com.t3tools.t3code.service.plist",
+          },
+        });
+      if (command.command === "/bin/ps")
+        return args.includes("uid=") ? String(host.uid) : directExecutable;
+      if (command.command === "launchctl" && args[0] === "print")
+        return `path = ${unit}\nprogram = ${restarted ? NodePath.join(runtime, "versions", newVersion, "t3") : directExecutable}\npid = ${restarted ? 12347 : 12345}\n`;
+      if (command.command === "systemctl" || command.command === "launchctl") {
+        if (args.includes("restart") || args.includes("bootstrap")) {
           restarted = true;
           if (options.legacy || options.privateSetup)
             await NodeFSP.writeFile(
@@ -539,7 +583,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
     },
     readback: async () => ({
       processId: restarted ? 12346 : 12345,
-      serviceManaged: !options.legacy || restarted,
+      serviceManaged: (!options.legacy && !options.legacyMac) || restarted,
       port: 3774,
       serverVersion: oldVersion,
       environmentId: "fixture-environment",
@@ -552,6 +596,13 @@ async function populateFixture(root: string, options: FixtureOptions) {
     launcherArtifactDir: directories[1]!,
     launcherSourceCommit: "b".repeat(40),
     ...(options.privateSetup ? { acceptUnattestedChildCapability: true } : {}),
+    ...(options.legacyMac
+      ? {
+          launchdLabel: "com.t3tools.t3code.service" as const,
+          serviceUnitSha256: sha(await NodeFSP.readFile(unit)),
+          retainedExecutable: directExecutable,
+        }
+      : {}),
     ...(options.legacy
       ? {
           legacyDirectServe: true,
@@ -1709,4 +1760,227 @@ it("reports observed child Install only after the retained child publishes its m
       ).toMatchObject({ attestation: "child", capability: { install: true } });
     },
     { legacy: true },
+  ));
+
+it("plans explicit legacy Mac adoption without changing the native state or dated executable", () =>
+  fixture(
+    async (f) => {
+      const before = await tree(f.root);
+      const result = await adoptHost({ ...f.input, dryRun: true }, f.host);
+      expect(result.state).toBe("dry-run");
+      expect(result.plan.servicePath).toBe(f.unit);
+      expect(result.plan.serviceContents).toContain("com.t3tools.t3code.service");
+      expect(result.plan.serviceContents).toContain("__service-launcher");
+      expect(result.plan.commands[0]?.args).toContain(
+        `gui/${f.host.uid}/com.t3tools.t3code.service`,
+      );
+      expect(result.plan.recovery?.join("\n")).toContain("launch-agent.plist");
+      expect(await tree(f.root)).toEqual(before);
+    },
+    { legacyMac: true },
+  ));
+
+it("adopts the legacy Mac label with exact recovery bytes and observed child capability", () =>
+  fixture(
+    async (f) => {
+      const plist = await NodeFSP.readFile(f.unit, "utf8");
+      const state = await NodeFSP.readFile(NodePath.join(f.runtime, "service-state.json"), "utf8");
+      const binary = await NodeFSP.readFile(f.directExecutable);
+      const result = await adoptHost(f.input, f.host);
+      expect(result.state).toBe("adopted");
+      expect(result.plan.attestation).toBe("child");
+      expect(
+        await NodeFSP.readFile(
+          NodePath.join(result.plan.legacyLaunchd!.archiveDirectory, "launch-agent.plist"),
+          "utf8",
+        ),
+      ).toBe(plist);
+      expect(await NodeFSP.readFile(f.unit, "utf8")).toBe(result.plan.serviceContents);
+      expect(await NodeFSP.readFile(f.directExecutable)).toEqual(binary);
+      expect(await NodeFSP.readFile(NodePath.join(f.runtime, "service-state.json"), "utf8")).toBe(
+        state,
+      );
+      expect(await NodeFSP.readFile(NodePath.join(f.base, "userdata/statev2.sqlite"), "utf8")).toBe(
+        "unchanged database bytes",
+      );
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8")),
+      ).toMatchObject({
+        status: "applied",
+        capability: { install: true },
+        legacyLaunchd: {
+          label: "com.t3tools.t3code.service",
+          executable: f.directExecutable,
+          executableSha256: sha(binary),
+          plistSha256: sha(plist),
+          port: 3774,
+        },
+      });
+      expect(
+        f.commands
+          .filter((c) => c.command === "launchctl" && c.args[0] !== "print")
+          .map((c) => c.args),
+      ).toEqual([
+        ["bootout", "--wait", `gui/${f.host.uid}/com.t3tools.t3code.service`],
+        ["bootstrap", `gui/${f.host.uid}`, f.unit],
+      ]);
+      await expect(adoptHost(f.input, f.host)).rejects.toThrow("no prior adoption");
+    },
+    { legacyMac: true },
+  ));
+
+it.each([
+  "plist-hash",
+  "binary",
+  "stale-state",
+  "label",
+  "arguments",
+  "program",
+  "home",
+  "pid",
+  "owner",
+  "executable",
+  "loaded-path",
+  "archive-collision",
+  "pending-receipt",
+])("refuses legacy Mac mismatch %s before effects", (kind) =>
+  fixture(
+    async (f) => {
+      if (kind === "binary") await NodeFSP.writeFile(f.directExecutable, "unexpected bytes");
+      if (kind === "stale-state")
+        await NodeFSP.writeFile(
+          NodePath.join(f.runtime, "service-state.json"),
+          JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: newVersion }),
+        );
+      if (kind === "archive-collision")
+        await NodeFSP.mkdir(
+          NodePath.join(f.runtime, "jones-adoption", `launchd-${f.input.serviceUnitSha256}`),
+          { recursive: true },
+        );
+      if (kind === "pending-receipt")
+        await NodeFSP.writeFile(
+          NodePath.join(f.runtime, ADOPTION_RECEIPT),
+          JSON.stringify({ schema: 1, status: "pending" }),
+        );
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const result = await f.host.run(command);
+          if (command.command === "/usr/bin/plutil") {
+            const plist = JSON.parse(result);
+            if (kind === "label") plist.Label = "another.service";
+            if (kind === "arguments") plist.ProgramArguments.push("--unknown");
+            if (kind === "program") plist.Program = "/unexpected";
+            if (kind === "home") plist.EnvironmentVariables.T3CODE_HOME = "/unexpected";
+            return JSON.stringify(plist);
+          }
+          if (command.command === "launchctl" && command.args[0] === "print") {
+            if (kind === "pid") return result.replace("pid = 12345", "pid = 999");
+            if (kind === "loaded-path")
+              return result.replace(`path = ${f.unit}`, "path = /unexpected");
+          }
+          if (command.command === "/bin/ps") {
+            if (kind === "owner" && command.args.includes("uid=")) return "0";
+            if (kind === "executable" && command.args.includes("comm=")) return "/unexpected";
+          }
+          return result;
+        },
+      };
+      const before = await tree(f.root);
+      await expect(
+        adoptHost(
+          {
+            ...f.input,
+            dryRun: true,
+            ...(kind === "plist-hash" ? { serviceUnitSha256: "f".repeat(64) } : {}),
+          },
+          host,
+        ),
+      ).rejects.toThrow();
+      expect(await tree(f.root)).toEqual(before);
+      expect(f.commands.some((c) => c.args[0] === "bootout" || c.args[0] === "bootstrap")).toBe(
+        false,
+      );
+    },
+    { legacyMac: true },
+  ),
+);
+
+it("holds legacy Mac identity drift before stop with the pending receipt retained", () =>
+  fixture(
+    async (f) => {
+      const plist = await NodeFSP.readFile(f.unit, "utf8");
+      let changed = false;
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const result = await f.host.run(command);
+          if (!changed && command.args.includes("__service-preflight")) {
+            changed = true;
+            await NodeFSP.writeFile(f.directExecutable, "changed after planning");
+          }
+          return result;
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow("changed after planning");
+      expect(await NodeFSP.readFile(f.unit, "utf8")).toBe(plist);
+      expect(f.commands.some((c) => c.args[0] === "bootout")).toBe(false);
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8")),
+      ).toMatchObject({ status: "pending" });
+    },
+    { legacyMac: true },
+  ));
+
+it("retains legacy Mac recovery and pending intent after an uncertain bootstrap effect", () =>
+  fixture(
+    async (f) => {
+      const plist = await NodeFSP.readFile(f.unit, "utf8");
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const result = await f.host.run(command);
+          if (command.command === "launchctl" && command.args[0] === "bootstrap")
+            throw new Error("synthetic response lost after bootstrap");
+          return result;
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow("response lost after bootstrap");
+      const receipt = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8"),
+      );
+      expect(receipt.status).toBe("pending");
+      expect(
+        await NodeFSP.readFile(
+          NodePath.join(receipt.legacyLaunchd.archiveDirectory, "launch-agent.plist"),
+          "utf8",
+        ),
+      ).toBe(plist);
+      await expect(adoptHost(f.input, host)).rejects.toThrow("Previous adoption");
+      expect(f.commands.filter((c) => c.args[0] === "bootstrap")).toHaveLength(1);
+    },
+    { legacyMac: true },
+  ));
+
+it("refuses a stale legacy Mac child capability after activation", () =>
+  fixture(
+    async (f) => {
+      const host: AdoptionHost = {
+        ...f.host,
+        run: async (command) => {
+          const result = await f.host.run(command);
+          if (command.command === "launchctl" && command.args[0] === "bootstrap") {
+            const file = NodePath.join(f.runtime, UPDATE_CAPABILITY_RECEIPT);
+            const receipt = JSON.parse(await NodeFSP.readFile(file, "utf8"));
+            await NodeFSP.writeFile(file, JSON.stringify({ ...receipt, processId: 999 }));
+          }
+          return result;
+        },
+      };
+      await expect(adoptHost(f.input, host)).rejects.toThrow("readback is unavailable");
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(f.runtime, ADOPTION_RECEIPT), "utf8")),
+      ).toMatchObject({ status: "pending" });
+    },
+    { legacyMac: true },
   ));
