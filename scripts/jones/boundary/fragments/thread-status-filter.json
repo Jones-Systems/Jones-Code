@@ -1,0 +1,38 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-status-filter",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/threadStatusFilter/model.test.ts",
+    "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts",
+    "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.tsx",
+    "apps/web/src/jones/threadStatusFilter/model.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": ["apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.tsx"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/threadStatusFilter/model.ts"
+    }
+  ]
+}
