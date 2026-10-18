@@ -24,8 +24,14 @@ export function useDeviceStreamRoute(input: {
     input.visible,
   ]);
   // Returning to an earlier configuration must not revive its stopped route.
-  const configuration = { identity };
-  const owner = { configuration, proxy };
+  const [owner, setOwner] = useState(() => ({ configuration: { identity }, proxy }));
+  if (owner.configuration.identity !== identity || owner.proxy !== proxy) {
+    setOwner({
+      configuration: owner.configuration.identity === identity ? owner.configuration : { identity },
+      proxy,
+    });
+  }
+  const configuration = owner.configuration;
   const [selection, setSelection] = useState<{
     owner: typeof owner;
     route: DeviceMediaRoute;

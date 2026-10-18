@@ -38,6 +38,7 @@ import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useStableCallback } from "../hooks/useStableCallback";
 
 import {
   assertWorkstreamActionSnapshot,
@@ -663,17 +664,17 @@ export function useWorkstreams(
     currentBindingKeyRef.current = currentBindingKey;
     dataRef.current = data;
   }, [stableNativeThreads, preferredThread, assignmentIndex, stale, currentBindingKey, data]);
-  const refresh = () => {
+  const refresh = useStableCallback(() => {
     listRequest.current?.abort();
     for (const operation of commandRequests.current) operation.controller.abort();
     generation.current += 1;
     // The last good snapshot stays visible until the reload replaces it as a whole.
     setRevision((value) => value + 1);
-  };
+  });
   useWorkstreamsReconnectRefresh(refresh);
 
   /** Authorization, session or availability loss hides every previously authorized read. */
-  const purgeAuthorizedState = () => {
+  const purgeAuthorizedState = useStableCallback(() => {
     metadataCache.purgeAuthorization();
     setData(null);
     setAssignmentIndex(null);
@@ -681,14 +682,14 @@ export function useWorkstreams(
     setPlacementInventory(EMPTY_PLACEMENT_INVENTORY);
     setRegistrationContext(null);
     setStale(false);
-  };
+  });
 
   /** Keeps the last good snapshot visible and read-only; writes refuse until a reload succeeds. */
-  const markStale = () => {
+  const markStale = useStableCallback(() => {
     if (dataRef.current === null) return;
     staleRef.current = true;
     setStale(true);
-  };
+  });
 
   useEffect(() => {
     for (const operation of commandRequests.current) {
@@ -708,16 +709,19 @@ export function useWorkstreams(
     };
   }, []);
 
-  const proofBatches = (index: WorkstreamAssignmentIndex) =>
+  const proofBatches = useStableCallback((index: WorkstreamAssignmentIndex) =>
     nativePlacementBatches(nativeThreadsSnapshot.current, {
       include: (key) => index.entries.has(key),
       preferred: preferredThreadRef.current,
-    });
-  const requestPlacements = (identities: readonly T3PlacementIdentity[], signal: AbortSignal) =>
-    request(
-      (client) => client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
-      signal,
-    );
+    }),
+  );
+  const requestPlacements = useStableCallback(
+    (identities: readonly T3PlacementIdentity[], signal: AbortSignal) =>
+      request(
+        (client) => client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
+        signal,
+      ),
+  );
 
   useEffect(() => {
     listRequest.current?.abort();

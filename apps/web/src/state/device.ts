@@ -1,4 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
+import { useState } from "react";
 import { createDeviceEnvironmentAtoms } from "@t3tools/client-runtime/state/device";
 import {
   type DeviceHubAccess,
@@ -57,9 +58,20 @@ export function useDeviceHubAccess(
   const result = useAtomValue(
     environmentId === null ? EMPTY_ACCESS_ATOM : deviceHubAccessAtom(environmentId),
   );
-  return AsyncResult.isSuccess(result)
-    ? { ...result.value, query: { ...result.value.query, hostId } }
-    : null;
+  const resolve = () => ({
+    result,
+    hostId,
+    access: AsyncResult.isSuccess(result)
+      ? { ...result.value, query: { ...result.value.query, hostId } }
+      : null,
+  });
+  const [selection, setSelection] = useState(resolve);
+  if (selection.result !== result || selection.hostId !== hostId) {
+    const next = resolve();
+    setSelection(next);
+    return next.access;
+  }
+  return selection.access;
 }
 
 const EMPTY_ACCESS_ATOM = Atom.make(AsyncResult.initial<DeviceHubAccess, never>()).pipe(
