@@ -3,6 +3,7 @@ import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeC
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
 import * as NativeCreationProviderExecutor from "../jones/nativeCreation/NativeCreationProviderExecutor.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
+import * as ProviderConversationReselection from "../jones/runtime/ProviderConversationReselection.ts";
 import * as AuthSessions from "../persistence/AuthSessions.ts";
 import * as NativeWorkstreams from "../jones/workstreams/runtimeIntegration/native.ts";
 import * as UsageLimitRecoveryWorker from "./UsageLimitRecoveryWorker.ts";
@@ -174,6 +175,19 @@ const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
       layerProviderSessionManagerProvided,
       ProjectionStore.layer,
       AuthSessions.layer,
+    ),
+  ),
+);
+
+const providerConversationReselectionProvided = ProviderConversationReselection.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      layerEventSinkProvided,
+      layerCommandReceiptStoreProvided,
+      layerProviderSessionManagerProvided,
+      ProjectionStore.layer,
+      AuthSessions.layer,
+      ThreadCommandExecutor.layer,
     ),
   ),
 );
@@ -410,6 +424,7 @@ export const layer = Layer.mergeAll(
   layerStores,
   layerEventSinkProvided,
   currentRuntimeStopProvided,
+  providerConversationReselectionProvided,
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,
