@@ -387,6 +387,11 @@ export interface NativePlacementInventory {
   readonly identities: readonly T3PlacementIdentity[];
   readonly json: string;
   readonly totalIdentities: number;
+  /**
+   * Every proof request was answered as unsupported (404 or not configured): this server cannot
+   * verify placements, so stored assignments stay recorded and changes stay gated.
+   */
+  readonly proofsUnavailable?: boolean;
 }
 
 export interface NativePlacementThread {
@@ -539,6 +544,7 @@ async function loadPlacementProofs(
     result: LiveT3Placements;
   }[] = [];
   let failed = false;
+  let unsupported = 0;
   for (const identities of batches) {
     throwIfAborted(signal);
     try {
@@ -548,7 +554,9 @@ async function loadPlacementProofs(
       });
     } catch (cause) {
       throwIfAborted(signal);
-      if (classifyWorkstreamReadFailure(cause) === "unauthenticated") throw cause;
+      const failure = classifyWorkstreamReadFailure(cause);
+      if (failure === "unauthenticated") throw cause;
+      if (failure === "unsupported") unsupported += 1;
       failed = true;
     }
   }
@@ -563,6 +571,7 @@ async function loadPlacementProofs(
       identities,
       json: JSON.stringify(identities),
       totalIdentities: batches.reduce((total, batch) => total + batch.length, 0),
+      proofsUnavailable: batches.length > 0 && unsupported === batches.length,
     },
   };
 }

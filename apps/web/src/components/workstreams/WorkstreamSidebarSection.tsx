@@ -411,7 +411,11 @@ export function WorkstreamSidebarSection(props: {
       {!canWrite ? (
         <p className="px-1 pb-1 text-xs text-muted-foreground">Workstreams are read-only.</p>
       ) : null}
-      {placementInventory.coverage === "partial" ? (
+      {placementInventory.proofsUnavailable ? (
+        <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
+          This server cannot verify thread placements, so assignments show as recorded.
+        </p>
+      ) : placementInventory.coverage === "partial" ? (
         <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
           Thread placement lookup scope is partial (
           {placementInventory.identities.length.toLocaleString()} of{" "}

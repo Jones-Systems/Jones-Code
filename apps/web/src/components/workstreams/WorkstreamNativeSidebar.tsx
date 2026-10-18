@@ -151,6 +151,12 @@ export function WorkstreamNativeSidebar(props: {
         }
       });
   };
+  // Retry reconciles unresolved commands by reading their receipts before it reloads.
+  const refreshWorkstreams = () =>
+    run(async () => {
+      if (controller.retry) await controller.retry();
+      else controller.refresh();
+    });
   const move = async (thread: EnvironmentThreadShell, destination: string | null) => {
     if (!canMove(thread) || !controller.assignNativeThread)
       throw new Error("This environment is unavailable for Workstream assignment.");
@@ -419,15 +425,7 @@ export function WorkstreamNativeSidebar(props: {
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
-          <button
-            type="button"
-            onClick={() =>
-              run(async () => {
-                if (controller.retry) await controller.retry();
-                else controller.refresh();
-              })
-            }
-          >
+          <button type="button" onClick={refreshWorkstreams}>
             Refresh
           </button>
         </p>
@@ -439,7 +437,10 @@ export function WorkstreamNativeSidebar(props: {
       ) : null}
       {controller.stale ? (
         <p role="status" className="px-2 text-xs text-muted-foreground">
-          Showing the last loaded Workstreams. Refresh to update.
+          Showing the last loaded Workstreams.{" "}
+          <button type="button" disabled={controller.loading || busy} onClick={refreshWorkstreams}>
+            Refresh
+          </button>
         </p>
       ) : assignmentIndex !== null && !assignmentIndex.complete ? (
         <p role="status" className="px-2 text-xs text-muted-foreground">
