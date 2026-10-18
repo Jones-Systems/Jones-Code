@@ -1870,19 +1870,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           );
         const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
-          Effect.suspend(() =>
-            hasUnknownNativeStart() || !producer.active || producer !== currentProducer
-              ? Effect.fail(
-                  new ProviderRuntimeBindingError({
-                    driver: CODEX_PROVIDER,
-                    detail: "Codex cannot admit a thread to an unconfirmed or replaced runtime.",
-                  }),
-                )
+          Effect.suspend(() => {
+            const detail = hasUnknownNativeStart()
+              ? "Codex cannot admit a thread while a native start is unconfirmed."
+              : !producer.active || producer !== currentProducer
+                ? "Codex cannot admit a thread to an inactive or replaced runtime producer."
+                : undefined;
+            return detail !== undefined
+              ? Effect.fail(new ProviderRuntimeBindingError({ driver: CODEX_PROVIDER, detail }))
               : (input.runtimeLifecycle?.admit({
                   runtimeGeneration: producer.generation,
                   threadId,
-                }) ?? Effect.void),
-          );
+                }) ?? Effect.void);
+          });
         const openProducer = (threadId: ThreadId, runtimePolicy: ProviderAdapterV2RuntimePolicy) =>
           Effect.uninterruptibleMask((restore) =>
             Effect.gen(function* () {

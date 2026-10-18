@@ -15,6 +15,7 @@ import * as Cause from "effect/Cause";
 
 import * as IdAllocator from "./IdAllocator.ts";
 import * as Schema from "effect/Schema";
+import { providerRuntimeBindingFailureCodeFromCause } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 
 export class ContextHandoffBudgetError extends Schema.TaggedError<ContextHandoffBudgetError>()(
   "ContextHandoffBudgetError",
@@ -151,7 +152,11 @@ export function makeProviderFailure(input: {
 }): OrchestrationV2ProviderFailure {
   const rawMessage = input.message ?? causeMessage(input.cause) ?? DEFAULT_PROVIDER_FAILURE_MESSAGE;
   const message = boundedText(rawMessage, MAX_PROVIDER_FAILURE_MESSAGE_LENGTH);
-  const rawCode = input.code ?? stringField(input.cause, "code") ?? null;
+  const rawCode =
+    input.code ??
+    providerRuntimeBindingFailureCodeFromCause(input.cause) ??
+    stringField(input.cause, "code") ??
+    null;
   const code =
     rawCode === null ? null : boundedText(rawCode, MAX_PROVIDER_FAILURE_CODE_LENGTH) || null;
 

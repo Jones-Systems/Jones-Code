@@ -14,7 +14,8 @@
     "packages/provider-opencode/src/server/adapter.ts",
     "packages/provider-core/src/server/ProviderAdapter.ts",
     "apps/server/src/orchestration-v2/RunExecutionService.ts",
-    "apps/server/src/orchestration-v2/assistantStreaming.ts"
+    "apps/server/src/orchestration-v2/assistantStreaming.ts",
+    "packages/provider-core/src/server/failure.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -73,6 +74,10 @@
     {
       "from": "packages/provider-core/src/server/ProviderAdapter.ts",
       "to": "packages/provider-core/src/server/jones/runtimeTypes.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/failure.ts",
+      "to": "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
     }
   ]
 }

@@ -5748,6 +5748,128 @@ it.effect.each(runtimeBoundaryScenarios)(
     }),
 );
 
+it.effect.each(
+  (["abandon", "invalidate"] as const).flatMap((operation) =>
+    [true, false].map((superseded) => ({ operation, superseded })),
+  ),
+)(
+  "$operation preserves the selected conversation when superseded=$superseded",
+  ({ operation, superseded }) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("superseded-runtime-conversation");
+        const sessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        yield* manager.open({
+          threadId,
+          providerSessionId: sessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const lifecycle = yield* Ref.get(controller);
+        if (lifecycle === undefined) return yield* Effect.die(new Error("missing lifecycle"));
+        const generation = yield* lifecycle.reserve(threadId);
+        const oldThread = yield* lifecycle.bind({
+          providerThread: makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId: sessionId,
+            now,
+          }),
+          runtimeGeneration: generation,
+          requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+          observed: {
+            ...unobservedRuntimeIdentity(),
+            model: { status: "observed", value: "original-model", sourceEvent: "thread/start" },
+          },
+        });
+        const replacement = {
+          ...makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId: sessionId,
+            nativeThreadId: "replacement-native-thread",
+            now,
+          }),
+          status: "active" as const,
+        };
+        if (superseded)
+          yield* sink.write({
+            events: [
+              {
+                id: yield* ids.allocate.event({ threadId, providerSessionId: sessionId }),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: now,
+                payload: replacement,
+              },
+            ],
+          });
+        const before = yield* store.getThreadProjection(threadId);
+        const selectedId = superseded ? replacement.id : oldThread.id;
+        assert.equal(before.thread.activeProviderThreadId, selectedId);
+        const storedReplacement = before.providerThreads.find(
+          (value) => value.id === replacement.id,
+        );
+        if (operation === "abandon") yield* lifecycle.abandon(generation);
+        else {
+          const binding = runtimeBinding(oldThread, generation);
+          if (binding === undefined) return yield* Effect.die(new Error("missing binding"));
+          yield* lifecycle.invalidate(binding);
+        }
+        const after = yield* store.getThreadProjection(threadId);
+        assert.equal(after.thread.activeProviderThreadId, selectedId);
+        if (superseded)
+          assert.deepEqual(
+            after.providerThreads.find((value) => value.id === replacement.id),
+            storedReplacement,
+          );
+        else {
+          const retired = after.providerThreads.find((value) => value.id === oldThread.id)!;
+          assert.isUndefined(retired.runtimeIdentity?.runtimeGeneration);
+          assert.deepEqual(retired.runtimeIdentity?.observed, unobservedRuntimeIdentity());
+        }
+        const rebound = yield* lifecycle
+          .bind({
+            providerThread: oldThread,
+            runtimeGeneration: generation,
+            requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: unobservedRuntimeIdentity(),
+          })
+          .pipe(Effect.result);
+        assert.equal(
+          rebound._tag,
+          "Failure",
+          "retired bindings must remain unusable even when no retirement event was written",
+        );
+        assert.equal(
+          (yield* store.getThreadProjection(threadId)).thread.activeProviderThreadId,
+          selectedId,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+          }),
+        ),
+      );
+    }),
+);
+
 it.effect("keeps two native threads' requested and observed models separate in one process", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
