@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -8,9 +9,43 @@ import * as Deletion from "../cleanup/DeletionAdmission.ts";
 import * as Native from "../nativeCreation/NativeCreationRepository.ts";
 import * as NativeAuthority from "../nativeCreation/NativeCreationAuthority.ts";
 import * as Physical from "../nativeCreation/NativeWorkspacePhysicalPorts.ts";
-import { canonical, CheckoutError } from "./CheckoutProtocol.ts";
+import { canonical, CheckoutError, type Admission, type Birth } from "./CheckoutProtocol.ts";
 import * as Target from "./CheckoutTarget.ts";
 import * as Checkout from "./OrdinaryCheckout.ts";
+
+type AcceptanceBound =
+  | "birth"
+  | "leaseId"
+  | "receiptSequence"
+  | "basisEventId"
+  | "basisSequence"
+  | "now"
+  | "expiresAt";
+export interface OrdinaryPreflight extends Omit<Checkout.Accept, AcceptanceBound> {
+  readonly birth: Birth | null;
+  readonly birthEventId: string;
+}
+// The owning receipt transaction supplies bound fields and acceptance authority.
+export type CommitOrdinary = (
+  final: readonly Checkout.Accept[],
+) => Effect.Effect<readonly Admission[], CheckoutError, Checkout.CheckoutAcceptanceAuthority>;
+
+const invariant = (input: OrdinaryPreflight | Checkout.Accept) => {
+  const fields: Record<string, unknown> = { ...input };
+  // Omit only transaction-bound fields: future invariant fields compare by default.
+  for (const key of [
+    "birth",
+    "leaseId",
+    "receiptSequence",
+    "basisEventId",
+    "basisSequence",
+    "now",
+    "expiresAt",
+    "birthEventId",
+  ])
+    delete fields[key];
+  return canonical(fields);
+};
 
 // Inactive composition only. All three receiving owners must use these adapters together.
 // No layer here installs an executor or provides ordinary acceptance/retirement authority.
@@ -18,8 +53,8 @@ export class CheckoutConflictIntegration extends Context.Service<
   CheckoutConflictIntegration,
   {
     readonly prepareOrdinary: (
-      inputs: readonly Checkout.Accept[],
-    ) => Effect.Effect<ReturnType<Checkout.OrdinaryCheckout["Service"]["acceptMany"]>, CheckoutError>;
+      preflight: readonly OrdinaryPreflight[],
+    ) => Effect.Effect<CommitOrdinary, CheckoutError>;
     readonly prepareHandoff: (
       input: Parameters<Checkout.OrdinaryCheckout["Service"]["handoff"]>[0],
     ) => Effect.Effect<ReturnType<Checkout.OrdinaryCheckout["Service"]["handoff"]>, CheckoutError>;
@@ -68,8 +103,7 @@ const make = Effect.gen(function* () {
         const parent = yield* observation.directory(path.dirname(value));
         return path.join(parent.realPath, path.basename(value));
       }
-      if (observed.kind !== "directory")
-        return yield* new CheckoutError({ reason: "identity" });
+      if (observed.kind !== "directory") return yield* new CheckoutError({ reason: "identity" });
       const directory = yield* observation.directory(value);
       const git = yield* observation.git(directory.realPath);
       return git === null ? directory.realPath : git.root;
@@ -97,14 +131,19 @@ const make = Effect.gen(function* () {
     }
     return { rows: canonical(rows), keys };
   });
-  const assertForeign = (snapshot: Effect.Success<typeof prepareForeign>, keys: readonly string[]) =>
+  const assertForeign = (
+    snapshot: Effect.Success<typeof prepareForeign>,
+    keys: readonly string[],
+  ) =>
     Effect.gen(function* () {
       if (canonical(yield* foreignRows()) !== snapshot.rows)
         return yield* new CheckoutError({ reason: "stale" });
       if (keys.some((key) => snapshot.keys.some((other) => Target.overlaps(key, other, path.sep))))
         return yield* new CheckoutError({ reason: "conflict" });
     });
-  const newKeys = (inputs: readonly Checkout.Accept[]) =>
+  const newKeys = (
+    inputs: readonly (Checkout.CommandIdentity & { readonly target: Checkout.Accept["target"] })[],
+  ) =>
     Effect.gen(function* () {
       const keys: string[] = [];
       for (const input of inputs) {
@@ -112,23 +151,56 @@ const make = Effect.gen(function* () {
         if (
           replay.kind !== "accepted" ||
           !replay.admissions.some((row) => row.checkout_key === input.target.checkoutKey)
-        ) keys.push(input.target.checkoutKey);
+        )
+          keys.push(input.target.checkoutKey);
       }
       return keys;
     });
-  // The caller prepares outside EventSink, then runs the returned effect in the
-  // accepted receipt transaction. The prepared effect grants no acceptance authority.
-  const prepareOrdinary = (inputs: readonly Checkout.Accept[]) =>
+  // Freeze outside SQL; the returned closure grants no acceptance authority and
+  // must run inside the transaction that owns the final accepted receipt.
+  const prepareOrdinary = (inputs: readonly OrdinaryPreflight[]) =>
     Effect.gen(function* () {
-      const expected = canonical(inputs);
+      const expected = new Map<
+        string,
+        { invariant: string; birth: string | null; birthEventId: string }
+      >();
+      for (const input of inputs) {
+        if (
+          expected.has(input.admissionId) ||
+          (input.birth !== null && input.birth.eventId !== input.birthEventId)
+        )
+          return yield* new CheckoutError({ reason: "identity" });
+        expected.set(input.admissionId, {
+          invariant: invariant(input),
+          birth: input.birth === null ? null : canonical(input.birth),
+          birthEventId: input.birthEventId,
+        });
+      }
       const keys = yield* newKeys(inputs);
       const snapshot = keys.length === 0 ? null : yield* prepareForeign;
-      return sql.withTransaction(Effect.gen(function* () {
-        if (canonical(inputs) !== expected)
-          return yield* new CheckoutError({ reason: "identity" });
-        if (snapshot !== null) yield* assertForeign(snapshot, keys);
-        return yield* checkout.acceptMany(inputs);
-      })).pipe(Effect.mapError(checkoutError));
+      const commit: CommitOrdinary = (final) =>
+        Effect.gen(function* () {
+          if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
+            return yield* new CheckoutError({ reason: "unavailable" });
+          const seen = new Set<string>();
+          for (const input of final) {
+            const frozen = expected.get(input.admissionId);
+            if (
+              seen.has(input.admissionId) ||
+              frozen === undefined ||
+              invariant(input) !== frozen.invariant ||
+              (frozen.birth === null
+                ? input.birth.eventId !== frozen.birthEventId
+                : canonical(input.birth) !== frozen.birth)
+            )
+              return yield* new CheckoutError({ reason: "identity" });
+            seen.add(input.admissionId);
+          }
+          if (seen.size !== expected.size) return yield* new CheckoutError({ reason: "identity" });
+          if (snapshot !== null) yield* assertForeign(snapshot, keys);
+          return yield* checkout.acceptMany(final);
+        }).pipe(Effect.mapError(checkoutError));
+      return commit;
     }).pipe(Effect.mapError(checkoutError));
 
   const assertNoOrdinary = (keys: readonly string[]) =>
@@ -150,25 +222,31 @@ const make = Effect.gen(function* () {
   const claim: Native.NativeCreationRepository["Service"]["claim"] = (input, authorize) =>
     Effect.gen(function* () {
       const keys = yield* nativeKeys(input.resources.projectCwd, input.resources.worktreePath);
-      return yield* sql.withTransaction(Effect.gen(function* () {
-        yield* assertNoOrdinary(keys);
-        return yield* native.claim(input, authorize);
-      }));
-    }).pipe(Effect.mapError((cause) =>
-      // The existing authority owner retains its typed denial and all 100/101 fences.
-      isNativeError(cause) || isNativeAuthorityError(cause)
-        ? cause
-        : nativeError(cause),
-    ));
-  const admitWorkspace: NonNullable<Native.NativeCreationRepository["Service"]["admitWorkspace"]> =
-    (claimId, basis) => Effect.gen(function* () {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertNoOrdinary(keys);
+          return yield* native.claim(input, authorize);
+        }),
+      );
+    }).pipe(
+      Effect.mapError((cause) =>
+        // The existing authority owner retains its typed denial and all 100/101 fences.
+        isNativeError(cause) || isNativeAuthorityError(cause) ? cause : nativeError(cause),
+      ),
+    );
+  const admitWorkspace: NonNullable<
+    Native.NativeCreationRepository["Service"]["admitWorkspace"]
+  > = (claimId, basis) =>
+    Effect.gen(function* () {
       if (!native.admitWorkspace)
         return yield* nativeError(new CheckoutError({ reason: "unavailable" }));
       const keys = yield* nativeKeys(basis.projectCwd, basis.worktreePath);
-      return yield* sql.withTransaction(Effect.gen(function* () {
-        yield* assertNoOrdinary(keys);
-        return yield* native.admitWorkspace!(claimId, basis);
-      }));
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertNoOrdinary(keys);
+          return yield* native.admitWorkspace!(claimId, basis);
+        }),
+      );
     }).pipe(Effect.mapError(nativeError));
   const deletionKey = (target: { readonly path: string }) =>
     Effect.gen(function* () {
@@ -178,33 +256,44 @@ const make = Effect.gen(function* () {
     });
   return CheckoutConflictIntegration.of({
     prepareOrdinary,
-    prepareHandoff: (input) => Effect.gen(function* () {
-      const snapshot = yield* prepareForeign;
-      const expected = canonical(input);
-      return sql.withTransaction(Effect.gen(function* () {
-        if (canonical(input) !== expected)
-          return yield* new CheckoutError({ reason: "identity" });
-        yield* assertForeign(snapshot, [input.next.target.checkoutKey]);
-        return yield* checkout.handoff(input);
-      })).pipe(Effect.mapError(checkoutError));
-    }).pipe(Effect.mapError(checkoutError)),
+    prepareHandoff: (input) =>
+      Effect.gen(function* () {
+        const snapshot = yield* prepareForeign;
+        const expected = canonical(input);
+        return sql
+          .withTransaction(
+            Effect.gen(function* () {
+              if (canonical(input) !== expected)
+                return yield* new CheckoutError({ reason: "identity" });
+              yield* assertForeign(snapshot, [input.next.target.checkoutKey]);
+              return yield* checkout.handoff(input);
+            }),
+          )
+          .pipe(Effect.mapError(checkoutError));
+      }).pipe(Effect.mapError(checkoutError)),
     native: { ...native, claim, admitWorkspace },
     deletion: {
       ...deletion,
-      start: (input) => Effect.gen(function* () {
-        const key = yield* deletionKey(input.target);
-        return yield* sql.withTransaction(Effect.gen(function* () {
-          yield* assertNoOrdinary([key]);
-          return yield* deletion.start(input);
-        }));
-      }).pipe(Effect.mapError(deletionError)),
-      revalidate: (captured, ordinal, rules, live) => Effect.gen(function* () {
-        const key = yield* deletionKey(captured.target);
-        return yield* sql.withTransaction(Effect.gen(function* () {
-          yield* assertNoOrdinary([key]);
-          return yield* deletion.revalidate(captured, ordinal, rules, live);
-        }));
-      }).pipe(Effect.mapError(deletionError)),
+      start: (input) =>
+        Effect.gen(function* () {
+          const key = yield* deletionKey(input.target);
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* assertNoOrdinary([key]);
+              return yield* deletion.start(input);
+            }),
+          );
+        }).pipe(Effect.mapError(deletionError)),
+      revalidate: (captured, ordinal, rules, live) =>
+        Effect.gen(function* () {
+          const key = yield* deletionKey(captured.target);
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              yield* assertNoOrdinary([key]);
+              return yield* deletion.revalidate(captured, ordinal, rules, live);
+            }),
+          );
+        }).pipe(Effect.mapError(deletionError)),
     },
   });
 });

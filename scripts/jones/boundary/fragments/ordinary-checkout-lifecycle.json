@@ -11,9 +11,24 @@
     "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.ts",
     "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.ts",
-    "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts"
+    "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts"
+    }
+  ]
 }

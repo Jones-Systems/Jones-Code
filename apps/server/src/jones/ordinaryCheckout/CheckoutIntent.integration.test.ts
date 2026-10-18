@@ -33,6 +33,11 @@ import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderR
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import type { ProviderAdapterV2Shape } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ImportedFixture from "../importedHistory/ImportedHistoryFixture.testkit.ts";
+import * as Conflicts from "./CheckoutConflictIntegration.ts";
+import * as NativeSqlite from "../nativeCreation/NativeCreationRepositorySqlite.ts";
+import * as Physical from "../nativeCreation/NativeWorkspacePhysicalPorts.ts";
+import * as Workspace from "../nativeCreation/NativeCreationWorkspacePreparation.ts";
+import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as CheckoutIntent from "./CheckoutIntent.ts";
 import * as CheckoutTarget from "./CheckoutTarget.ts";
 import * as Repository from "./OrdinaryCheckoutSqlite.ts";
@@ -40,6 +45,7 @@ import * as OrdinaryCheckout from "./OrdinaryCheckout.ts";
 import {
   CheckoutError,
   operationId,
+  digest,
   type Admission,
   type Binding,
   type Source,
@@ -59,6 +65,9 @@ class ObservationState extends Context.Service<
   {
     readonly published: Ref.Ref<number>;
     readonly calls: Ref.Ref<number>;
+    readonly preflights: Ref.Ref<number>;
+    readonly commits: Ref.Ref<number>;
+    readonly physical: Ref.Ref<readonly { kind: string; insideTransaction: boolean }[]>;
     readonly unavailable: Ref.Ref<boolean>;
   }
 >()("t3/jones/ordinaryCheckout/CheckoutIntent.integration.test/ObservationState") {}
@@ -68,35 +77,106 @@ const observationState = Layer.effect(
     return {
       published: yield* Ref.make(0),
       calls: yield* Ref.make(0),
+      preflights: yield* Ref.make(0),
+      commits: yield* Ref.make(0),
+      physical: yield* Ref.make<readonly { kind: string; insideTransaction: boolean }[]>([]),
       unavailable: yield* Ref.make(false),
     };
   }),
 );
+const database = SqlitePersistence.layerMemory;
+const recordPhysical = (kind: string) =>
+  Effect.gen(function* () {
+    const state = yield* ObservationState;
+    const sql = yield* SqlClient.SqlClient;
+    const insideTransaction = Option.isSome(yield* Effect.serviceOption(sql.transactionService));
+    yield* Ref.update(state.physical, (calls) => [...calls, { kind, insideTransaction }]);
+    if (yield* Ref.get(state.unavailable))
+      return yield* new CheckoutError({ reason: "unavailable" });
+  });
 const observation = Layer.effect(
   CheckoutTarget.CheckoutTargetObservation,
   Effect.gen(function* () {
     const state = yield* ObservationState;
+    const sql = yield* SqlClient.SqlClient;
+    const record = (kind: string) =>
+      recordPhysical(kind).pipe(
+        Effect.provideService(ObservationState, state),
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
     return CheckoutTarget.CheckoutTargetObservation.of({
       directory: (path) =>
         Effect.gen(function* () {
           yield* Ref.update(state.calls, (n) => n + 1);
-          if (yield* Ref.get(state.unavailable))
-            return yield* new CheckoutError({ reason: "unavailable" });
+          yield* record("directory");
           return { realPath: path, identity: { version: 1, device: "1", inode: path, birth: "1" } };
         }),
-      git: () => Effect.succeed(null),
+      git: () => record("git").pipe(Effect.as(null)),
     });
   }),
-).pipe(Layer.provide(observationState));
-const database = SqlitePersistence.layerMemory;
+).pipe(Layer.provide(observationState), Layer.provide(database));
 const repository = Repository.layer.pipe(Layer.provide(database), Layer.provide(NodePath.layer));
 const targets = CheckoutTarget.layer.pipe(
   Layer.provide(observation),
   Layer.provide(NodePath.layer),
   Layer.provide(Layer.succeed(HostProcess.HomeDirectory, "/synthetic-home")),
 );
+const files = Layer.effect(
+  Physical.NativeWorkspaceFileObservation,
+  Effect.gen(function* () {
+    const state = yield* ObservationState;
+    const sql = yield* SqlClient.SqlClient;
+    return Physical.NativeWorkspaceFileObservation.of({
+      inspect: (path) =>
+        recordPhysical("inspect").pipe(
+          Effect.provideService(ObservationState, state),
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            () =>
+              new Workspace.NativeWorkspaceError({
+                code: "unavailable",
+                message: "Synthetic observation unavailable",
+              }),
+          ),
+          Effect.as({ realPath: path, birth: "synthetic-birth", kind: "directory" as const }),
+        ),
+      readFile: () => Effect.succeed(""),
+    });
+  }),
+).pipe(Layer.provide(observationState), Layer.provide(database));
+const conflicts = Conflicts.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(
+      repository,
+      NativeSqlite.layer.pipe(Layer.provide(database)),
+      Receipts.layer.pipe(Layer.provide(database)),
+      database,
+      NodePath.layer,
+      observation,
+      files,
+    ),
+  ),
+);
+const observedConflicts = Layer.effect(
+  Conflicts.CheckoutConflictIntegration,
+  Effect.gen(function* () {
+    const service = yield* Conflicts.CheckoutConflictIntegration;
+    const state = yield* ObservationState;
+    return {
+      ...service,
+      prepareOrdinary: (inputs: readonly Conflicts.OrdinaryPreflight[]) =>
+        Effect.gen(function* () {
+          yield* Ref.update(state.preflights, (n) => n + 1);
+          const commit = yield* service.prepareOrdinary(inputs);
+          const observedCommit: Conflicts.CommitOrdinary = (final) =>
+            Ref.update(state.commits, (n) => n + 1).pipe(Effect.andThen(commit(final)));
+          return observedCommit;
+        }),
+    };
+  }),
+).pipe(Layer.provide(conflicts), Layer.provide(observationState));
 const intent = CheckoutIntent.layer.pipe(
-  Layer.provide(Layer.mergeAll(database, repository, targets)),
+  Layer.provide(Layer.mergeAll(database, repository, targets, observedConflicts)),
 );
 const observedStore = Layer.effect(
   EventStore.EventStoreV2,
@@ -166,6 +246,7 @@ const command = {
 const state = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return {
+    foreign: yield* sql`SELECT * FROM native_creation_intents ORDER BY claim_id`,
     events: yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`,
     receipts: yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
     threads: yield* sql`SELECT * FROM orchestration_v2_projection_threads ORDER BY thread_id`,
@@ -188,6 +269,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const orchestrator = yield* seed;
+      yield* seedForeign;
       const result = yield* orchestrator.dispatch(command);
       const accepted = yield* state;
       assert.lengthOf(accepted.owners, 1);
@@ -196,9 +278,14 @@ it.effect(
       assert.equal(accepted.owners[0]!.checkout_key, "/ordinary");
       const observation = yield* ObservationState;
       const calls = yield* Ref.get(observation.calls);
+      const preflights = yield* Ref.get(observation.preflights);
+      assert.equal(preflights, 1);
+      yield* Ref.set(observation.physical, []);
       yield* Ref.set(observation.unavailable, true);
       assert.deepEqual(yield* orchestrator.dispatch(command), result);
       assert.equal(yield* Ref.get(observation.calls), calls);
+      assert.equal(yield* Ref.get(observation.preflights), preflights);
+      assert.deepEqual(yield* Ref.get(observation.physical), []);
       assert.deepEqual(yield* state, accepted);
       assert.isTrue(
         Exit.isFailure(
@@ -208,6 +295,8 @@ it.effect(
         ),
       );
       assert.equal(yield* Ref.get(observation.calls), calls);
+      assert.equal(yield* Ref.get(observation.preflights), preflights);
+      assert.deepEqual(yield* Ref.get(observation.physical), []);
       assert.deepEqual(yield* state, accepted);
     }).pipe(Effect.provide(testLayer)),
 );
@@ -278,8 +367,12 @@ it.effect("a direct EventSink retry validates content without target acquisition
     const rows = yield* sql<{
       accepted_at: string;
     }>`SELECT accepted_at FROM orchestration_command_receipts WHERE command_id=${command.commandId}`;
+    yield* seedForeign;
     const before = yield* state;
-    yield* Ref.set((yield* ObservationState).unavailable, true);
+    const observation = yield* ObservationState;
+    const preflights = yield* Ref.get(observation.preflights);
+    yield* Ref.set(observation.physical, []);
+    yield* Ref.set(observation.unavailable, true);
     const input = {
       commandId: command.commandId,
       threadId,
@@ -303,6 +396,8 @@ it.effect("a direct EventSink retry validates content without target acquisition
       ),
     );
     assert.deepEqual(yield* state, before);
+    assert.equal(yield* Ref.get(observation.preflights), preflights);
+    assert.deepEqual(yield* Ref.get(observation.physical), []);
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -490,9 +585,9 @@ it.effect.each(["writeWithEffects", "writeIfRunCurrent"] as const)(
     }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect(
-  "imported-history acceptance commits its choice and ordinary admission in the same transaction",
-  () =>
+it.effect.each(["jones_ordinary_checkout_effect_links", "jones_imported_history_outcomes"])(
+  "imported-history acceptance commits its choice and ordinary admission in the same transaction (%s rollback)",
+  (failureTable) =>
     Effect.gen(function* () {
       yield* ImportedFixture.setup;
       const sink = yield* EventSink.EventSinkV2;
@@ -586,7 +681,9 @@ it.effect(
         ],
       };
       const before = yield* state;
-      yield* sql`CREATE TRIGGER synthetic_import_failure BEFORE INSERT ON jones_ordinary_checkout_effect_links BEGIN SELECT RAISE(ABORT, 'synthetic import failure'); END`;
+      yield* sql.unsafe(
+        `CREATE TRIGGER synthetic_import_failure BEFORE INSERT ON ${failureTable} BEGIN SELECT RAISE(ABORT, 'synthetic import failure'); END`,
+      );
       assert.isTrue(Exit.isFailure(yield* sink.commitCommand(input).pipe(Effect.exit)));
       assert.deepEqual(yield* state, before);
       assert.lengthOf(yield* sql`SELECT * FROM jones_imported_history_choices`, 0);
@@ -760,10 +857,75 @@ it.effect("a parent receipt atomically admits a newly born delegated child subje
     assert.equal(admissions[0]!.receipt_thread_id, threadId);
     assert.equal(admissions[0]!.subject_thread_id, childId);
     assert.equal(admissions[0]!.origin_kind, "delegated");
-    assert.equal(admissions[0]!.birth_sequence, accepted.storedEvents[0]!.sequence);
+    const [birthRow] = yield* sql<{
+      event_id: string;
+      sequence: number;
+    }>`SELECT event_id,sequence FROM orchestration_events WHERE stream_id=${childId} AND event_type='thread.created'`;
+    const [basisRow] = yield* sql<{
+      event_id: string;
+      sequence: number;
+    }>`SELECT event_id,sequence FROM orchestration_events WHERE stream_id=${childId} AND command_id=${delegated.commandId} ORDER BY sequence DESC LIMIT 1`;
+    assert.equal(admissions[0]!.birth_sequence, birthRow!.sequence);
+    assert.equal(admissions[0]!.birth_event_id, birthRow!.event_id);
+    assert.equal(admissions[0]!.receipt_sequence, accepted.receipt.resultSequence);
+    assert.equal(admissions[0]!.basis_sequence, basisRow!.sequence);
+    assert.equal(admissions[0]!.basis_event_id, basisRow!.event_id);
+    assert.equal(
+      admissions[0]!.lease_id,
+      `ordinary-lease:${digest({ commandId: delegated.commandId, subject: childId, checkout: "/delegated", birth: { eventId: birthRow!.event_id, sequence: birthRow!.sequence } })}`,
+    );
+    assert.equal(yield* Ref.get((yield* ObservationState).commits), 3);
     const after = yield* state;
     yield* Ref.set((yield* ObservationState).unavailable, true);
     assert.isFalse((yield* sink.commitCommand(input)).committed);
     assert.deepEqual(yield* state, after);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "foreign claim inserted inside acceptance invalidates preflight and rolls back before publish",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const observation = yield* ObservationState;
+      yield* Ref.set(observation.published, 0);
+      yield* sql`CREATE TRIGGER synthetic_foreign_race AFTER INSERT ON orchestration_command_receipts
+      WHEN NEW.command_id='ordinary-message' BEGIN
+      INSERT INTO native_creation_intents(claim_id,operation_id,preparation_id,command_id,thread_id,message_id,project_cwd,branch,worktree_path,canonical_preparation,intent_json)
+      VALUES('foreign','foreign-op','foreign-prep','foreign-cmd','foreign-thread','foreign-message','/foreign-project','native','/ordinary','{}','{}'); END`;
+      const before = yield* state;
+      const failed = yield* orchestrator.dispatch(command).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(failed));
+      assert.include(String(failed), "stale");
+      assert.deepEqual(yield* state, before);
+      assert.equal(yield* Ref.get(observation.published), 0);
+      yield* sql`DROP TRIGGER synthetic_foreign_race`;
+      yield* orchestrator.dispatch(command);
+      assert.lengthOf((yield* state).admissions, 1);
+      assert.isAbove(yield* Ref.get(observation.published), 0);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+const seedForeign = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO native_creation_intents(claim_id,operation_id,preparation_id,command_id,thread_id,message_id,project_cwd,branch,worktree_path,canonical_preparation,intent_json)
+    VALUES('disjoint','disjoint-op','disjoint-prep','disjoint-cmd','disjoint-thread','disjoint-message','/foreign-project','native','/foreign-worktree','{}','{}')`;
+});
+
+it.effect("target capture and foreign physical inspection both happen outside SQL", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* seed;
+    yield* seedForeign;
+    yield* orchestrator.dispatch(command);
+    const observation = yield* ObservationState;
+    const physical = yield* Ref.get(observation.physical);
+    assert.isTrue(physical.some((call) => call.kind === "directory"));
+    assert.isTrue(physical.some((call) => call.kind === "git"));
+    assert.isTrue(physical.some((call) => call.kind === "inspect"));
+    assert.isTrue(physical.every((call) => !call.insideTransaction));
+    assert.equal(yield* Ref.get(observation.preflights), 1);
+    assert.equal(yield* Ref.get(observation.commits), 1);
+    assert.lengthOf((yield* state).admissions, 1);
   }).pipe(Effect.provide(testLayer)),
 );

@@ -22,6 +22,7 @@ import {
   type Relation,
   type Target,
 } from "./CheckoutProtocol.ts";
+import * as Conflicts from "./CheckoutConflictIntegration.ts";
 import * as CheckoutTarget from "./CheckoutTarget.ts";
 import * as OrdinaryCheckout from "./OrdinaryCheckout.ts";
 
@@ -49,6 +50,8 @@ interface Candidate {
 export interface PreparedIntent {
   readonly plan: IntentPlan;
   readonly candidates: readonly Candidate[];
+  readonly preflight: readonly Conflicts.OrdinaryPreflight[];
+  readonly commit: Conflicts.CommitOrdinary | null;
 }
 interface CommittedEffects {
   readonly storedEvents: readonly OrchestrationV2StoredEvent[];
@@ -110,6 +113,7 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const checkout = yield* OrdinaryCheckout.OrdinaryCheckout;
   const target = yield* CheckoutTarget.CheckoutTarget;
+  const conflicts = yield* Conflicts.CheckoutConflictIntegration;
   const transaction = Effect.gen(function* () {
     if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
       return yield* new CheckoutError({ reason: "unavailable" });
@@ -175,7 +179,8 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.mapError(mapError));
   const prepare = (plan: IntentPlan) =>
     Effect.gen(function* () {
-      if (yield* replay(plan.command, plan.threadId)) return { plan, candidates: [] };
+      if (yield* replay(plan.command, plan.threadId))
+        return { plan, candidates: [], preflight: [], commit: null };
       const subjects = new Set(plan.effects.filter((e) => role(e) !== null).map((e) => e.threadId));
       for (const event of plan.events)
         if (event.type === "run.created") subjects.add(event.threadId);
@@ -306,7 +311,25 @@ const make = Effect.gen(function* () {
             owner === null ? null : { epoch: owner.owner_epoch, revision: owner.revision },
         });
       }
-      return { plan, candidates };
+      const preflight: Conflicts.OrdinaryPreflight[] = candidates.map((candidate) => ({
+        command: plan.command,
+        commandId: plan.command.commandId,
+        commandType: plan.command.type,
+        receiptThreadId: plan.threadId,
+        subjectThreadId: candidate.subjectThreadId,
+        origin: candidate.origin,
+        admissionId: `ordinary-admission:${digest({ commandId: plan.command.commandId, subject: candidate.subjectThreadId, checkout: candidate.target.checkoutKey })}`,
+        target: candidate.target,
+        relation: candidate.relation,
+        expectedOwner: candidate.expectedOwner,
+        birth: candidate.birth,
+        birthEventId: candidate.birthEventId,
+        effects: plan.effects
+          .filter((e) => e.threadId === candidate.subjectThreadId && role(e) !== null)
+          .map((e) => ({ effectId: e.id, request: e.request, role: role(e)! })),
+      }));
+      const commit = preflight.length === 0 ? null : yield* conflicts.prepareOrdinary(preflight);
+      return { plan, candidates, preflight, commit };
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(mapError));
   const validate = (intent: PreparedIntent) =>
     Effect.gen(function* () {
@@ -338,7 +361,7 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "identity" });
       const inputs: OrdinaryCheckout.Accept[] = [];
-      for (const candidate of intent.candidates) {
+      for (const candidate of intent.preflight) {
         const basis = committed.storedEvents
           .filter((e) => e.event.threadId === candidate.subjectThreadId)
           .at(-1);
@@ -365,24 +388,17 @@ const make = Effect.gen(function* () {
         inputs.push({
           ...candidate,
           birth,
-          command: plan.command,
-          commandId: plan.command.commandId,
-          commandType: plan.command.type,
-          receiptThreadId: plan.threadId,
-          admissionId: `ordinary-admission:${digest(identity)}`,
           leaseId: `ordinary-lease:${digest({ ...identity, birth })}`,
           receiptSequence: committed.receipt.resultSequence,
           basisEventId: basis.event.id,
           basisSequence: basis.sequence,
           now,
           expiresAt: now,
-          effects: committed.effects
-            .filter((e) => e.threadId === candidate.subjectThreadId && role(e) !== null)
-            .map((e) => ({ effectId: e.id, request: e.request, role: role(e)! })),
         });
       }
       if (inputs.length === 0) return;
-      yield* checkout.acceptMany(inputs).pipe(
+      if (intent.commit === null) return yield* new CheckoutError({ reason: "identity" });
+      yield* intent.commit(inputs).pipe(
         Effect.provideService(OrdinaryCheckout.CheckoutAcceptanceAuthority, {
           assertNewAcceptance: (input) =>
             inputs.includes(input)
@@ -456,5 +472,8 @@ const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   CheckoutIntent,
   never,
-  SqlClient.SqlClient | OrdinaryCheckout.OrdinaryCheckout | CheckoutTarget.CheckoutTarget
+  | SqlClient.SqlClient
+  | OrdinaryCheckout.OrdinaryCheckout
+  | CheckoutTarget.CheckoutTarget
+  | Conflicts.CheckoutConflictIntegration
 > = Layer.effect(CheckoutIntent, make);
