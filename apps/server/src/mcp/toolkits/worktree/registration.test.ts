@@ -35,6 +35,8 @@ import * as McpSessionRegistry from "../../McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
 
+import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
+
 const layerStubServices = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
@@ -57,6 +59,16 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
+  Layer.mock(WorkstreamGateway.WorkstreamGateway)({
+    purgeAuthorization: () => {},
+    readRegistryCounts: () =>
+      Effect.fail(
+        new WorkstreamGateway.WorkstreamGatewayError({
+          reason: "contract-mismatch",
+          detail: "Tool-list fixture does not provide registry counts.",
+        }),
+      ),
+  }),
 );
 
 const ToolsListPayload = Schema.fromJsonString(

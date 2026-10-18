@@ -138,7 +138,8 @@
     "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
     "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts",
     "apps/web/src/jones/workstreams/remoteThreadAssignment.ts",
-    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+    "packages/contracts/src/workstreams-fixtures/registry-counts.conformance.json.fixture"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

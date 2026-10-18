@@ -7,6 +7,9 @@ import {
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
   WORKSTREAM_MAX_PAGE_ITEMS,
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  WorkstreamCountsCapabilities,
+  WorkstreamRegistryCounts,
   type T3WorkstreamBinding,
   type T3WorkstreamListResult,
   type Workstream,
@@ -103,6 +106,14 @@ import type {
 } from "@t3tools/contracts";
 
 export interface WorkstreamTransport {
+  readonly getCountsCapabilities?: () => Effect.Effect<
+    WorkstreamCountsCapabilities,
+    WorkstreamTransportError
+  >;
+  readonly getRegistryCounts?: () => Effect.Effect<
+    WorkstreamRegistryCounts,
+    WorkstreamTransportError
+  >;
   readonly readAppearance?: (input: {
     readonly workstream_ids: readonly string[];
   }) => Effect.Effect<WorkstreamAppearanceResult, WorkstreamTransportError>;
@@ -174,6 +185,10 @@ export class WorkstreamGateway extends Context.Service<
     readonly readThreadPlacements: (
       input: T3PlacementLoadRequest,
     ) => Effect.Effect<T3PlacementResult, WorkstreamGatewayError>;
+    readonly readRegistryCounts: () => Effect.Effect<
+      { readonly counts: WorkstreamRegistryCounts; readonly binding: T3WorkstreamBinding },
+      WorkstreamGatewayError
+    >;
     readonly readSession: () => Effect.Effect<T3WorkstreamBinding, WorkstreamGatewayError>;
     readonly readMetadata: (input?: {
       readonly limit?: number;
@@ -705,7 +720,84 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         return receipt;
       });
 
+    const readRegistryCounts = Effect.fn("WorkstreamGateway.readRegistryCounts")(function* () {
+      if (!transport.getCountsCapabilities || !transport.getRegistryCounts)
+        return yield* new WorkstreamGatewayError({
+          reason: "contract-mismatch",
+          detail: "Registry counts capability is unavailable.",
+        });
+      const activation = { ...options.binding };
+      const before = yield* readSession();
+      const capabilities = yield* transport.getCountsCapabilities().pipe(
+        Effect.mapError(transportFailure),
+        Effect.flatMap((value) =>
+          Schema.decodeUnknownEffect(WorkstreamCountsCapabilities)(value, {
+            onExcessProperty: "error",
+          }).pipe(
+            Effect.mapError(
+              () =>
+                new WorkstreamGatewayError({
+                  reason: "contract-mismatch",
+                  detail: "Registry counts capability is unsupported.",
+                }),
+            ),
+          ),
+        ),
+      );
+      if (
+        capabilities.manifest_sha256 !== WORKSTREAM_COUNTS_MANIFEST_SHA256 ||
+        capabilities.registry_counts === undefined
+      )
+        return yield* new WorkstreamGatewayError({
+          reason: "contract-mismatch",
+          detail: "Registry counts contract is unsupported.",
+        });
+      if (!capabilities.permissions.includes("workstreams:read"))
+        return yield* new WorkstreamGatewayError({
+          reason: "permission-denied",
+          detail: "Registry counts binding is unauthorized.",
+        });
+      yield* validateContext(capabilities, before);
+      const counts = yield* transport.getRegistryCounts().pipe(
+        Effect.mapError(transportFailure),
+        Effect.flatMap((value) =>
+          Schema.decodeUnknownEffect(WorkstreamRegistryCounts)(value, {
+            onExcessProperty: "error",
+          }).pipe(
+            Effect.mapError(
+              () =>
+                new WorkstreamGatewayError({
+                  reason: "invalid-response",
+                  detail: "Registry counts response is invalid.",
+                }),
+            ),
+          ),
+        ),
+      );
+      yield* validateContext(counts, before);
+      const after = yield* readSession();
+      if (
+        counts.principal_id !== before.principalId ||
+        before.registryId !== after.registryId ||
+        before.ownerId !== after.ownerId ||
+        before.principalId !== after.principalId ||
+        before.serverGeneration !== after.serverGeneration ||
+        before.registryVersion !== after.registryVersion ||
+        before.authorizationRevision !== after.authorizationRevision ||
+        activation.registryId !== before.registryId ||
+        activation.ownerId !== before.ownerId ||
+        activation.principalId !== before.principalId ||
+        activation.authorizationRevision !== before.authorizationRevision
+      )
+        return yield* new WorkstreamGatewayError({
+          reason: "stale",
+          detail: "Registry counts binding changed during observation.",
+        });
+      return { counts, binding: after };
+    });
+
     return WorkstreamGateway.of({
+      readRegistryCounts,
       readAppearance: (ids) =>
         Effect.gen(function* () {
           const authorized = yield* authorize("workstreams:read");

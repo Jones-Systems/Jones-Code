@@ -160,8 +160,12 @@
         "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
         "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/entrypoint.test.ts"
-      ]
+        "apps/server/src/entrypoint.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
+      ],
+      "scope": "Workstreams registry integration. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
     },
     {
       "id": "native-store-authority",
@@ -794,9 +798,14 @@
         "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "packages/shared/src/projectSettings.test.ts"
+        "packages/shared/src/projectSettings.test.ts",
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
       ],
-      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
     },
     {
       "id": "pr-read-efficiency",
