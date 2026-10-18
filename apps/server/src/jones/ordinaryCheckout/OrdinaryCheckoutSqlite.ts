@@ -589,6 +589,10 @@ const make = Effect.gen(function* () {
       if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
       return updated[0]!;
     });
+  // Authorization admits an invocation; it is not an observation of physical work.
+  const admitsInvocation = (evidence: Evidence) =>
+    evidence.outcome === "active" ||
+    (evidence.outcome === "authorized" && evidence.coverage === "unknown");
   const reserve: OrdinaryCheckout["Service"]["reserve"] = (input) =>
     transaction(
       Effect.gen(function* () {
@@ -618,7 +622,7 @@ const make = Effect.gen(function* () {
         yield* verifyClaim(a, input.source, input.now);
         const authority = yield* CheckoutExecutorAuthority;
         yield* decode(Evidence, input.evidence);
-        if (input.evidence.outcome !== "active" || input.evidence.observedAt !== input.now)
+        if (!admitsInvocation(input.evidence) || input.evidence.observedAt !== input.now)
           return yield* new CheckoutError({ reason: "identity" });
         yield* authority.assertCurrent(input.binding);
         yield* authority.reconcile(input.binding, input.evidence);
@@ -670,7 +674,7 @@ const make = Effect.gen(function* () {
         const { row, admission: a } = yield* currentEvent(input);
         if (
           row.state !== "reserved" ||
-          input.evidence.outcome !== "active" ||
+          !admitsInvocation(input.evidence) ||
           !sourceMatches(row, input.binding.source) ||
           (yield* latestAssociations(row.operation_id)).some(
             (event) =>
@@ -705,7 +709,7 @@ const make = Effect.gen(function* () {
           return yield* new CheckoutError({ reason: "stale" });
         if (row.state !== "started" && row.state !== "draining")
           return yield* new CheckoutError({ reason: "stale" });
-        if (input.evidence.outcome !== "active")
+        if (!admitsInvocation(input.evidence))
           return yield* new CheckoutError({ reason: "identity" });
         const existing = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_lifecycle_events
       WHERE operation_id=${row.operation_id} AND association_id=${associationId(input.binding)} LIMIT 1`;
@@ -754,6 +758,8 @@ const make = Effect.gen(function* () {
   const reconcileEvidence: OrdinaryCheckout["Service"]["reconcileEvidence"] = (input) =>
     transaction(
       Effect.gen(function* () {
+        if (input.evidence.outcome === "authorized")
+          return yield* new CheckoutError({ reason: "identity" });
         const candidate = yield* use(input.binding.operationId);
         const cancellingLink =
           candidate.started_at === null &&
