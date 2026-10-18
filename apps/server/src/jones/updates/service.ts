@@ -22,7 +22,11 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import packageJson from "../../../package.json" with { type: "json" };
 import { retainStagedSelection, restoreStagedSelection } from "./stagedSelection.ts";
-import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
+import {
+  NativePreparationRefusal,
+  prepareNativeContinuationReceipt,
+  recordNativePreparationRefusal,
+} from "./nativePreparation.ts";
 import { isJonesRuntime, isPreviewRuntime } from "./qualification.ts";
 import { publishJonesUpdateCapabilityReceipt } from "./capabilityReceipt.ts";
 import { qualifiedServerCapability } from "./serverCapability.ts";
@@ -235,15 +239,29 @@ export const layer = Layer.effect(
         );
       const prepareNative = (input: JonesNativePrepareInput) =>
         Effect.gen(function* () {
-          if (
+          const mismatch =
             !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
-            !/^[a-f0-9]{64}$/.test(input.transactionId) ||
-            state.stagedHandle !== input.stagedHandle ||
-            !state.capability.install ||
-            state.environmentId !== input.environmentId ||
-            state.currentVersion !== input.currentVersion
-          ) {
-            return blocked("Native preparation does not match the staged desktop build.");
+            !/^[a-f0-9]{64}$/.test(input.transactionId)
+              ? "the request is malformed"
+              : state.stagedHandle !== input.stagedHandle
+                ? "the backend has not observed this staged build"
+                : !state.capability.install
+                  ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
+                  : state.environmentId !== input.environmentId ||
+                      state.currentVersion !== input.currentVersion
+                    ? "the environment or running version differs"
+                    : undefined;
+          if (mismatch !== undefined) {
+            const reason = `Native preparation was refused: ${mismatch}.`;
+            yield* Effect.promise(() =>
+              recordNativePreparationRefusal({
+                home: config.baseDir,
+                handle: input.stagedHandle,
+                transactionId: input.transactionId,
+                reason,
+              }),
+            );
+            return blocked(reason);
           }
           yield* Effect.tryPromise({
             try: () =>
@@ -270,9 +288,13 @@ export const layer = Layer.effect(
           });
           return snapshot();
         }).pipe(
-          Effect.catch(() =>
+          Effect.catch((error) =>
             Effect.succeed(
-              blocked("Could not prepare native continuations; the current app remains active."),
+              blocked(
+                error.cause instanceof NativePreparationRefusal
+                  ? `Native preparation was refused: ${error.cause.message}`
+                  : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
+              ),
             ),
           ),
         );
