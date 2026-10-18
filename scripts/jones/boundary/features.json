@@ -552,7 +552,7 @@
         "scripts/jones/preview-companion/packageVariant.test.ts",
         "apps/server/src/persistence/AuthPairingLinks.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",
