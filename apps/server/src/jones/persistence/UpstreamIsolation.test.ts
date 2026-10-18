@@ -313,6 +313,7 @@ it.effect(
       const upstreamLedger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [108, "PhysicalProcessEvidence"],
+        [109, "OrdinaryCheckoutLifecycle"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

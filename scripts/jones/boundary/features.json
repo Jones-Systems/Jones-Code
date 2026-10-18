@@ -822,6 +822,19 @@
         "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
       ],
       "scope": "Typed PR read pauses terminate alternate routing; bounded qualified-head REST discovery preserves shared cooldown; PR focus reuse and held-data pause presentation. Shared contract/service/router/hook edits are small extensions of existing mechanisms; integration tests retain existing private harnesses."
+    },
+    {
+      "id": "ordinary-checkout-lifecycle",
+      "tests": [
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/persistence/Migrations/109_JonesOrdinaryCheckoutLifecycle.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Physical integration and reciprocal native/deletion hooks remain separate."
     }
   ]
 }
