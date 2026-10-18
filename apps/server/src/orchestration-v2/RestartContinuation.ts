@@ -16,6 +16,7 @@ import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { restartContinuationBlocked } from "./RestartContinuationPolicy.ts";
 import {
   isRestartContinuationSource,
+  cancelledBeforeStart,
   isRestartNoteSource,
   restartCancelledBackgroundWorkNote,
   restartContinuationNote,
@@ -64,7 +65,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
       return;
     if (
       projection.runs.some(
-        (run) => run.id !== source.id && run.status !== "queued" && runRanAfter(run, source),
+        (run) =>
+          run.id !== source.id &&
+          run.status !== "queued" &&
+          !cancelledBeforeStart(run) &&
+          runRanAfter(run, source),
       )
     )
       return;

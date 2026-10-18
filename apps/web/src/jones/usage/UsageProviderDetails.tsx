@@ -1,13 +1,47 @@
 import { formatCount, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import type { ModelTotals, ProviderTotals } from "@t3tools/shared/usageMerge";
 import { XIcon } from "lucide-react";
+import type { UsageProviderKind } from "@t3tools/contracts";
+import type { ReactNode, Ref } from "react";
+import { cn } from "../../lib/utils";
 
 import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
 
 import { Button } from "../../components/ui/button";
 import { PROVIDER_PRESENTATION } from "../../components/usage/usageProviders";
 
-export const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
+const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
+
+export function UsageProviderSummary({
+  provider,
+  selected,
+  ref,
+  onClick,
+  children,
+}: {
+  readonly provider: UsageProviderKind;
+  readonly selected: boolean;
+  readonly ref: Ref<HTMLButtonElement>;
+  readonly onClick: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      ref={ref}
+      aria-label={`${PROVIDER_PRESENTATION[provider].label} usage details`}
+      aria-expanded={selected}
+      aria-controls={selected ? USAGE_PROVIDER_DETAILS_ID : undefined}
+      onClick={onClick}
+      className={cn(
+        "flex flex-col gap-1 rounded-md text-left outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+        selected && "bg-muted/50",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
 
 export function UsageTokenDetails({
   detail,

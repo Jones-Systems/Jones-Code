@@ -424,7 +424,45 @@ describe("durable Workstream assignment display", () => {
       totalIdentities: 1_500,
     });
     expect(latest.view.placementInventory.identities).toHaveLength(1_000);
+    expect(latest.view.placementInventory.proofsUnavailable).toBe(false);
   });
+
+  it.each([
+    [
+      "not configured",
+      () => new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
+    ],
+    [
+      "missing (404)",
+      () =>
+        Object.assign(new Error("Not Found"), { _tag: "ResponseError", response: { status: 404 } }),
+    ],
+  ])(
+    "keeps recorded groups and reports proofs unavailable when placements are %s",
+    async (_label, failure) => {
+      const threads = nativeThreads(2);
+      const server = syntheticWorkstreams({
+        now: () => Date.now(),
+        assignments: [assign(threads[0]!, "beta")],
+      });
+      server.state.intercept = (call) => {
+        if (call.route === "threadPlacements") throw failure();
+        return undefined;
+      };
+      http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+      await mount(threads);
+      await settle(() => loaded());
+      expect(latest.view.stale).toBe(false);
+      expect(latest.view.error).toBeNull();
+      expect(latest.view.placements).toBeNull();
+      expect(latest.grouping.assuranceByKey!.get(keyOf(threads[0]!))).toBe("recorded");
+      expect(latest.view.placementInventory).toMatchObject({
+        coverage: "partial",
+        proofsUnavailable: true,
+        identities: [],
+      });
+    },
+  );
 
   it("displays a newly attested assignment immediately after the post-command reload", async () => {
     vi.setSystemTime(Date.parse("2026-09-30T12:00:45Z"));

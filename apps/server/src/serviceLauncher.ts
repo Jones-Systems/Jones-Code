@@ -89,9 +89,8 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 /**
- * Migrations and the open-time `PRAGMA optimize` count toward it and scale with the database:
- * tens of GB on a cold page cache take minutes. A missed window rolls back the database, so
- * the next attempt pays the same cost.
+ * Migrations count toward it and can scale with the database: tens of GB on a cold page cache
+ * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone

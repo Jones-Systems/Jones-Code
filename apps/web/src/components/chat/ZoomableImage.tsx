@@ -1,15 +1,7 @@
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { observeResize } from "~/lib/observeResize";
-import {
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type Ref,
-} from "react";
+import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
@@ -100,7 +92,7 @@ export function ZoomableImage({
     [],
   );
 
-  const changeZoom = useCallback((next: number, point?: { x: number; y: number }) => {
+  const changeZoom = (next: number, point?: { x: number; y: number }) => {
     const viewport = viewportRef.current;
     const previous = zoomRef.current;
     const clamped = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
@@ -117,7 +109,7 @@ export function ZoomableImage({
     zoomRef.current = clamped;
     setZoom(clamped);
     setPercentInput(String(Math.round(clamped * 100)));
-  }, []);
+  };
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;

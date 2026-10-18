@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy } from "pdfjs-dist";
 import {
   EventBus,
@@ -25,6 +25,19 @@ const assetDirectories: Record<string, string> = {
 const interactive = (target: EventTarget | null) =>
   target instanceof Element &&
   !!target.closest("a,button,input,textarea,select,[contenteditable=true]");
+
+function localBinaryDataFactory(signal: AbortSignal) {
+  return class LocalBinaryDataFactory {
+    async fetch({ kind, filename }: { kind: string; filename: string }) {
+      const directory = assetDirectories[kind];
+      const url = assets[`../../../node_modules/pdfjs-dist/${directory}/${filename}`];
+      if (!url) throw new Error("PDF resource is unavailable");
+      const response = await fetch(url, { signal: signal });
+      if (!response.ok) throw new Error("PDF resource could not be loaded");
+      return new Uint8Array(await response.arrayBuffer());
+    }
+  };
+}
 
 export default function PdfPreview({
   src,
@@ -53,8 +66,19 @@ export default function PdfPreview({
   const [attempt, setAttempt] = useState(0);
   const [retrying, setRetrying] = useState(false);
   const retryGeneration = useRef(0);
+  const [documentIdentity, setDocumentIdentity] = useState({ src, attempt });
+  if (documentIdentity.src !== src || documentIdentity.attempt !== attempt) {
+    setDocumentIdentity({ src, attempt });
+    setPercent(100);
+    setInput("100");
+    setStatus("loading");
+    setRetrying(false);
+    setSearchOpen(false);
+    setQuery("");
+    setMatches("");
+  }
 
-  const zoomTo = useCallback((value: number, origin?: [number, number]) => {
+  const zoomTo = (value: number, origin?: [number, number]) => {
     const viewer = viewerRef.current;
     if (!viewer || !readyRef.current) return;
     const next = Math.min(800, Math.max(60, Math.round(value)));
@@ -73,7 +97,7 @@ export default function PdfPreview({
     zoomRef.current = next;
     setPercent(next);
     setInput(String(next));
-  }, []);
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -81,16 +105,7 @@ export default function PdfPreview({
     if (!container || !pages) return;
     let disposed = false;
     const abort = new AbortController();
-    class LocalBinaryDataFactory {
-      async fetch({ kind, filename }: { kind: string; filename: string }) {
-        const directory = assetDirectories[kind];
-        const url = assets[`../../../node_modules/pdfjs-dist/${directory}/${filename}`];
-        if (!url) throw new Error("PDF resource is unavailable");
-        const response = await fetch(url, { signal: abort.signal });
-        if (!response.ok) throw new Error("PDF resource could not be loaded");
-        return new Uint8Array(await response.arrayBuffer());
-      }
-    }
+    const LocalBinaryDataFactory = localBinaryDataFactory(abort.signal);
     GlobalWorkerOptions.workerSrc = workerUrl;
     const eventBus = new EventBus();
     const linkService = new PDFLinkService({
@@ -115,13 +130,7 @@ export default function PdfPreview({
     linkService.setViewer(viewer);
     readyRef.current = false;
     zoomRef.current = 100;
-    setPercent(100);
-    setInput("100");
-    setStatus("loading");
-    setRetrying(false);
-    setSearchOpen(false);
-    setQuery("");
-    setMatches("");
+
     const fail = () => {
       if (!disposed) {
         readyRef.current = false;
@@ -151,7 +160,7 @@ export default function PdfPreview({
     eventBus.on("pagesinit", initialize);
     eventBus.on("pagerendered", rendered);
     const task = getDocument({
-      url: src,
+      url: documentIdentity.src,
       BinaryDataFactory: LocalBinaryDataFactory,
       useWorkerFetch: false,
     });
@@ -201,7 +210,7 @@ export default function PdfPreview({
       clearLinks.call(linkService, null);
       void task.destroy().catch(() => {});
     };
-  }, [src, attempt, zoomTo]);
+  }, [documentIdentity, zoomTo]);
 
   const retry = async () => {
     if (!onRetry) {
@@ -215,9 +224,8 @@ export default function PdfPreview({
       await onRetry();
     } catch {
       // Keep the failure and external-open fallback available when reauthorization fails.
-    } finally {
-      if (generation === retryGeneration.current) setRetrying(false);
     }
+    if (generation === retryGeneration.current) setRetrying(false);
   };
 
   const find = (value: string, previous = false, again = false) => {

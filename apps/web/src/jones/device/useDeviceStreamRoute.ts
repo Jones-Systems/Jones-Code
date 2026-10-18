@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import {
   createDeviceMediaRouteManager,
@@ -24,8 +24,14 @@ export function useDeviceStreamRoute(input: {
     input.visible,
   ]);
   // Returning to an earlier configuration must not revive its stopped route.
-  const configuration = useMemo(() => ({ identity }), [identity]);
-  const owner = useMemo(() => ({ configuration, proxy }), [configuration, proxy]);
+  const [owner, setOwner] = useState(() => ({ configuration: { identity }, proxy }));
+  if (owner.configuration.identity !== identity || owner.proxy !== proxy) {
+    setOwner({
+      configuration: owner.configuration.identity === identity ? owner.configuration : { identity },
+      proxy,
+    });
+  }
+  const configuration = owner.configuration;
   const [selection, setSelection] = useState<{
     owner: typeof owner;
     route: DeviceMediaRoute;
@@ -85,18 +91,16 @@ export function useDeviceStreamRoute(input: {
     input.platform,
     input.visible,
   ]);
-  const report = useCallback(
-    (access: DeviceHubAccess, channel: "video" | "input", connected: boolean, detail?: string) =>
-      manager.current?.report(access, channel, connected, detail),
-    [],
-  );
-  const unauthorized = useCallback(
-    (access: DeviceHubAccess) => manager.current?.unauthorized(access),
-    [],
-  );
-  const retryAccess = useCallback(() => {
+  const report = (
+    access: DeviceHubAccess,
+    channel: "video" | "input",
+    connected: boolean,
+    detail?: string,
+  ) => manager.current?.report(access, channel, connected, detail);
+  const unauthorized = (access: DeviceHubAccess) => manager.current?.unauthorized(access);
+  const retryAccess = () => {
     if (refreshes.current?.configuration === configuration) refreshes.current.count = 0;
     refreshDeviceHubAccess(input.environmentId);
-  }, [configuration, input.environmentId]);
+  };
   return { route, proxy, report, unauthorized, retryAccess };
 }

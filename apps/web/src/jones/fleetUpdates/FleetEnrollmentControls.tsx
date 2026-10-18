@@ -56,7 +56,7 @@ export function FleetEnrollmentControls({
     const bridge = window.desktopBridge?.fleetUpdates;
     if (bridge === undefined) return;
     setBusy(true);
-    try {
+    await (async () => {
       if (enrollment?.enabled) {
         // Stop local automatic dispatch before contacting an offline host.
         await bridge({ action: "enroll", enrollment: { ...enrollment, enabled: false } });
@@ -98,15 +98,17 @@ export function FleetEnrollmentControls({
           "Automatic updates on. This host follows this laptop’s exact source after each committed laptop update.",
         );
       }
-    } catch {
-      setMessage(
-        enrollment?.enabled
-          ? "The host didn’t confirm. Automatic dispatch from this laptop is stopped if its local save succeeded; refresh before retrying."
-          : "Enrollment wasn’t confirmed and saved, so no automatic update was started. Refresh before retrying.",
-      );
-    } finally {
-      setBusy(false);
-    }
+    })()
+      .catch(() => {
+        setMessage(
+          enrollment?.enabled
+            ? "The host didn’t confirm. Automatic dispatch from this laptop is stopped if its local save succeeded; refresh before retrying."
+            : "Enrollment wasn’t confirmed and saved, so no automatic update was started. Refresh before retrying.",
+        );
+      })
+      .finally(() => {
+        setBusy(false);
+      });
   };
   const readiness: FleetHostReadiness = statusUnavailable
     ? "unavailable"
