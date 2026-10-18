@@ -112,7 +112,10 @@ scope. Owner substitution and repeated claims fail closed. Copied argv or JSON
 has no annotation. This is command-local provenance, not a lifetime registry.
 
 `jones/runtime/RuntimeOperationPermit.ts` defines a source-only operation port.
-Production providers and the ordinary-checkout consumer are not wired to it.
+The session owner exposes a deny-only request: resident Codex and Claude return
+`warm_runtime`; missing or unsupported residents return `unsupported`. This
+request never opens, probes or stops a provider. No production available issuer
+or ordinary-checkout consumer is wired to the port.
 The existing executor must supply its captured binding, issuer, generation,
 evidence revision/reference, exact participant writer coverage, serialized
 current-runtime invocation, and retained old-scope observation. A successful
@@ -123,6 +126,10 @@ The permit captures one native invocation and linearizes its claim against
 revocation. The consumer's durable-start effect runs before invocation. The
 runtime owner must hold its existing lifecycle guard while rechecking the exact
 binding and performing invocation; an earlier currentness check is insufficient.
+The admission composer runs inside that existing guard and must not acquire it
+again: Codex already holds a non-reentrant lifecycle permit around start. Its
+capacity path may return an acknowledgement before native execution begins, and
+steer has no admission hook. Neither path supplies operation writer coverage.
 Coverage is frozen at issuance and covers only the declared participant writers.
 The consumer still accounts for every other association and derived effect.
 

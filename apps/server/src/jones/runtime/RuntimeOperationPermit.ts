@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 
 export class RuntimePermitError extends Schema.TaggedError<RuntimePermitError>()(
   "RuntimePermitError",
-  { reason: Schema.Literals(["revoked", "consumed", "not_current"]) },
+  { reason: Schema.Literals(["revoked", "consumed", "not_current", "identity_mismatch"]) },
 ) {}
 
 export interface RuntimeOperationIdentity {
@@ -134,7 +134,10 @@ export function makeRuntimeOperationPermit<A, E>(
           }).pipe(
             Effect.ensuring(
               Effect.sync(() => {
-                if (ownsClaim) { observationRevision += 1; inFlight = false; }
+                if (ownsClaim) {
+                  observationRevision += 1;
+                  inFlight = false;
+                }
               }),
             ),
           );
@@ -163,8 +166,51 @@ export function makeRuntimeOperationPermit<A, E>(
           Effect.as(true),
           Effect.catchCause(() => Effect.succeed(false)),
         );
-        return current && revision === observationRevision ? evidence("active", "complete") : evidence("unknown", "partial");
+        return current && revision === observationRevision
+          ? evidence("active", "complete")
+          : evidence("unknown", "partial");
       }).pipe(Effect.catchCause(() => Effect.succeed(evidence("unknown", "partial")))),
     }),
   };
+}
+
+/** Resident sessions are reusable; their stop handle is not an operation writer lease. */
+export function unavailableResidentOperationPermit(
+  driver: string | undefined,
+): RuntimePermitAvailability<never, never> {
+  return {
+    status: "unavailable",
+    reason: driver === "codex" || driver === "claudeAgent" ? "warm_runtime" : "unsupported",
+  };
+}
+
+/** Run inside the executor's existing admission lock; never acquire that lock again here. */
+export function revalidateRuntimeOperationStartAdmission<A, E, F, R>(
+  permit: RuntimeOperationPermit<A, E>,
+  expected: RuntimeOperationIdentity,
+  previous: Effect.Effect<void, F, R>,
+): Effect.Effect<void, F | RuntimePermitError, R> {
+  const identity = permit.identity;
+  const matches =
+    permit[permitBrand] === true &&
+    identity.issuerId === expected.issuerId &&
+    identity.operationId === expected.operationId &&
+    identity.admissionId === expected.admissionId &&
+    identity.participantId === expected.participantId &&
+    identity.evidenceRevision === expected.evidenceRevision &&
+    identity.evidenceReference === expected.evidenceReference &&
+    identity.writerReferences.length === expected.writerReferences.length &&
+    identity.writerReferences.every(
+      (writer, index) => writer === expected.writerReferences[index],
+    ) &&
+    identity.binding.threadId === expected.binding.threadId &&
+    identity.binding.providerThreadId === expected.binding.providerThreadId &&
+    identity.binding.providerSessionId === expected.binding.providerSessionId &&
+    identity.binding.providerInstanceId === expected.binding.providerInstanceId &&
+    identity.binding.driver === expected.binding.driver &&
+    identity.binding.nativeThreadId === expected.binding.nativeThreadId &&
+    identity.binding.runtimeGeneration === expected.binding.runtimeGeneration;
+  return matches
+    ? previous.pipe(Effect.andThen(permit.assertCurrent))
+    : Effect.fail(new RuntimePermitError({ reason: "identity_mismatch" }));
 }

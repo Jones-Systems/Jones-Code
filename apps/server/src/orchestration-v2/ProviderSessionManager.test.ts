@@ -5144,6 +5144,21 @@ it.effect("ProviderSessionManagerV2 rejects unloaded runtime reads without nativ
           });
           const attachment = yield* manager.readCurrentThreadRuntimeAttachment!(threadA);
           assert.equal(attachment.status, "attached");
+          if (attachment.status !== "attached") return yield* Effect.die("Expected attachment");
+          const operationIdentity = {
+            issuerId: "synthetic-issuer",
+            operationId: "operation",
+            admissionId: "admission",
+            participantId: "participant",
+            binding: attachment.binding,
+            evidenceRevision: attachment.evidenceRevision ?? 0,
+            evidenceReference: "synthetic-evidence",
+            writerReferences: ["synthetic-writer"],
+          };
+          assert.deepEqual(yield* manager.requestRuntimeOperationPermit!(operationIdentity), {
+            status: "unavailable",
+            reason: "warm_runtime",
+          });
           yield* endTurn(threadA, 1);
           yield* TestClock.adjust("1 second");
           if (attachment.status === "attached") assert.isFalse(yield* attachment.isCurrent);
@@ -5156,6 +5171,10 @@ it.effect("ProviderSessionManagerV2 rejects unloaded runtime reads without nativ
             reason: "runtime_not_loaded",
           });
           assert.isNull(yield* manager.captureCurrentThreadRuntimeStop!(threadA));
+          assert.deepEqual(yield* manager.requestRuntimeOperationPermit!(operationIdentity), {
+            status: "unavailable",
+            reason: "unsupported",
+          });
           assert.equal(yield* Ref.get(probes), 0);
           yield* resume(threadA);
           assert.equal(

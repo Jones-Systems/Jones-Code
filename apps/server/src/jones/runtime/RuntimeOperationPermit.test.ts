@@ -8,8 +8,11 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Semaphore from "effect/Semaphore";
 import {
   makeRuntimeOperationPermit,
+  unavailableResidentOperationPermit,
+  revalidateRuntimeOperationStartAdmission,
   RuntimePermitError,
   type RuntimeOperationIdentity,
   type ScopeObservation,
@@ -60,7 +63,9 @@ function fixture(nativeEffect: Effect.Effect<void, string> = Effect.void) {
       starts += 1;
     }),
     counts: () => ({ invoked, starts }),
-    onRead: (hook: Effect.Effect<void>) => { readHook = hook; },
+    onRead: (hook: Effect.Effect<void>) => {
+      readHook = hook;
+    },
     expire: () => {
       current = false;
     },
@@ -192,10 +197,112 @@ it.effect("an empty scope cannot retire an invocation that may still start", () 
   }),
 );
 
-it.effect("an observation crossing invocation cannot retire from a stale empty scope", () => Effect.gen(function* () {
-  const f = fixture();
-  f.observe({ state: "quiescent", coverage: "complete" });
-  f.onRead(f.permit.invoke(f.commit).pipe(Effect.ignoreCause));
-  expect(yield* f.permit.observe).toMatchObject({ outcome: "unknown" });
-  expect(f.counts()).toEqual({ invoked: 1, starts: 1 });
-}));
+it.effect("an observation crossing invocation cannot retire from a stale empty scope", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    f.observe({ state: "quiescent", coverage: "complete" });
+    f.onRead(f.permit.invoke(f.commit).pipe(Effect.ignoreCause));
+    expect(yield* f.permit.observe).toMatchObject({ outcome: "unknown" });
+    expect(f.counts()).toEqual({ invoked: 1, starts: 1 });
+  }),
+);
+
+it.effect("resident Codex and Claude never grant an operation writer capability", () =>
+  Effect.sync(() => {
+    for (const driver of ["codex", "claudeAgent"])
+      expect(unavailableResidentOperationPermit(driver)).toEqual({
+        status: "unavailable",
+        reason: "warm_runtime",
+      });
+    for (const driver of [undefined, "grok", "opencode", "pi", "cursor", "antigravity"])
+      expect(unavailableResidentOperationPermit(driver)).toEqual({
+        status: "unavailable",
+        reason: "unsupported",
+      });
+  }),
+);
+
+it.effect("in-lock admission preserves prior denial and rechecks expiry after it", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    const rejected = yield* revalidateRuntimeOperationStartAdmission(
+      f.permit,
+      f.identity,
+      Effect.fail("prior denial"),
+    ).pipe(Effect.exit);
+    expect(Exit.isFailure(rejected)).toBe(true);
+    const expired = yield* revalidateRuntimeOperationStartAdmission(
+      f.permit,
+      f.identity,
+      Effect.sync(f.expire),
+    ).pipe(Effect.exit);
+    expect(Exit.isFailure(expired)).toBe(true);
+    expect(f.counts()).toEqual({ invoked: 0, starts: 0 });
+  }),
+);
+
+it.effect("admission rejects mismatched issuer, operation, generation, evidence and coverage", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    const mismatches = [
+      { ...f.identity, issuerId: "other" },
+      { ...f.identity, operationId: "other" },
+      { ...f.identity, admissionId: "other" },
+      { ...f.identity, participantId: "other" },
+      { ...f.identity, evidenceRevision: 8 },
+      { ...f.identity, evidenceReference: "other" },
+      { ...f.identity, writerReferences: ["other"] },
+      { ...f.identity, binding: { ...f.identity.binding, runtimeGeneration: "other" } },
+    ];
+    let previousCalls = 0;
+    for (const identity of mismatches) {
+      const result = yield* revalidateRuntimeOperationStartAdmission(
+        f.permit,
+        identity,
+        Effect.sync(() => {
+          previousCalls += 1;
+        }),
+      ).pipe(Effect.exit);
+      expect(Exit.isFailure(result)).toBe(true);
+    }
+    expect(previousCalls).toBe(0);
+    yield* revalidateRuntimeOperationStartAdmission(f.permit, f.identity, Effect.void);
+    yield* f.permit.revoke;
+    expect(
+      Exit.isFailure(
+        yield* revalidateRuntimeOperationStartAdmission(f.permit, f.identity, Effect.void).pipe(
+          Effect.exit,
+        ),
+      ),
+    ).toBe(true);
+  }),
+);
+
+it.effect("exclusive executor revalidates inside its existing lock without reacquiring it", () =>
+  Effect.gen(function* () {
+    const f = fixture();
+    const lock = yield* Semaphore.make(1);
+    let inside = false;
+    let invoked = 0;
+    const admission = revalidateRuntimeOperationStartAdmission(
+      f.permit,
+      f.identity,
+      Effect.sync(() => {
+        expect(inside).toBe(true);
+      }),
+    );
+    yield* lock.withPermits(1)(
+      Effect.gen(function* () {
+        inside = true;
+        yield* admission;
+        invoked += 1;
+        inside = false;
+      }),
+    );
+    expect(invoked).toBe(1);
+    yield* f.permit.revoke;
+    inside = true;
+    expect(Exit.isFailure(yield* lock.withPermits(1)(admission.pipe(Effect.exit)))).toBe(true);
+    expect(f.counts()).toEqual({ invoked: 0, starts: 0 });
+  }),
+);

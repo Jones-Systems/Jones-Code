@@ -45,6 +45,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/processPlacement/scopedCommand.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeOperationPermit.ts"
     }
   ]
 }
