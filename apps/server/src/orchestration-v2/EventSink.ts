@@ -1,3 +1,4 @@
+import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import {
   makeDeletionAdmission,
   type DeletionAdmissionInput,
@@ -311,6 +312,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
@@ -425,6 +427,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
@@ -744,6 +747,11 @@ const layerBase: Layer.Layer<
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(committed);
           yield* effectOutbox.enqueue(input.effects);
+          if (Option.isSome(checkoutIntent))
+            yield* checkoutIntent.value.linkEffects({
+              storedEvents: committed,
+              effects: input.effects,
+            });
           return committed;
         }).pipe(Effect.withTracerEnabled(false)),
         (storedEvents) =>
@@ -810,6 +818,11 @@ const layerBase: Layer.Layer<
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             yield* applyStoredEvents(storedEvents);
             yield* effectOutbox.enqueue(input.effects ?? []);
+            if (Option.isSome(checkoutIntent))
+              yield* checkoutIntent.value.linkEffects({
+                storedEvents,
+                effects: input.effects ?? [],
+              });
             return { committed: true as const, storedEvents };
           }),
           (result) =>
@@ -942,6 +955,18 @@ const layerBase: Layer.Layer<
     const commitCommandEffect = Effect.fn("orchestrationV2.EventSink.commitCommand")(function* (
       input: Parameters<EventSinkV2Shape["commitCommand"]>[0],
     ) {
+      const ordinaryCommand = input.ordinaryCheckoutCommand ?? input.importedHistory?.command;
+      const ordinary =
+        Option.isSome(checkoutIntent) &&
+        ordinaryCommand !== undefined &&
+        input.nativeCreation === undefined
+          ? yield* checkoutIntent.value.prepare({
+              command: ordinaryCommand,
+              threadId: input.threadId,
+              events: input.events,
+              effects: input.effects,
+            })
+          : undefined;
       const result = yield* commitThenPublish(
         Effect.gen(function* () {
           yield* runtimeStops.assertIdentity(input.commandId, input.runtimeStop);
@@ -1037,6 +1062,8 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (Option.isSome(checkoutIntent) && ordinaryCommand !== undefined)
+              yield* checkoutIntent.value.replay(ordinaryCommand, input.threadId);
             if (imported !== undefined) {
               const outcome = yield* ImportedChoice.readImportedHistoryChoice({
                 threadId: input.threadId,
@@ -1100,6 +1127,8 @@ const layerBase: Layer.Layer<
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
             return { receipt, storedEvents: [], committed: true as const, cancelledEffectIds: [] };
           }
+          if (ordinary !== undefined && Option.isSome(checkoutIntent))
+            yield* checkoutIntent.value.validate(ordinary);
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore
             .append({
@@ -1126,6 +1155,16 @@ const layerBase: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           yield* captureSettlementProof(receipt, storedEvents);
+          if (Option.isSome(checkoutIntent)) {
+            if (ordinary !== undefined)
+              yield* checkoutIntent.value.accept(ordinary, {
+                receipt,
+                storedEvents,
+                effects: input.effects,
+              });
+            else if (input.nativeCreation === undefined)
+              yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
+          }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
           if (imported !== undefined && choice !== undefined) {
             if (choice.duplicate)
