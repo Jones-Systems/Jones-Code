@@ -15,14 +15,5 @@
   ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": [
-    {
-      "from": "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
-      "to": "apps/server/src/persistence/Migrations.ts"
-    },
-    {
-      "from": "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
-      "to": "apps/server/src/orchestration-v2/CommandReceiptStore.ts"
-    }
-  ]
+  "allowedImports": []
 }
