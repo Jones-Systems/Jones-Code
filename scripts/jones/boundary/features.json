@@ -4,6 +4,15 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "sqlite-checkpoint-lifecycle",
+      "tests": [
+        "packages/shared/src/nodeSqliteClient.test.ts",
+        "apps/server/src/persistence/Sqlite.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+      ],
+      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. A small generic shared repair avoids duplicating the client; real-worker regressions remain in its existing mock harness. Preserves WAL setup order, checkpoint thresholds, fallback warnings and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+    },
+    {
       "id": "usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
@@ -580,9 +589,13 @@
         "apps/server/src/persistence/DatabaseMaintenance.test.ts",
         "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
-        "apps/server/src/jones/persistence/Migrations.test.ts"
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/persistence/JonesTablePresence.test.ts",
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts"
       ],
-      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows."
+      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows; 110 adds only Jones thread indexes. Receiving startup preserves populated foreign 7-13 history. Ordinary outbox success reads no Jones table; native success keeps the strict envelope decode and confirmed-lease proof. Event sink hooks keep their key lookups without per-command schema reads."
     },
     {
       "id": "composer-thread-query",
@@ -853,6 +866,10 @@
         "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
       ],
       "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Includes inactive accepted-intent transaction hooks and reciprocal native/deletion adapters. Production composition and physical execution remain separate; no positive executor authority is installed."
+    },
+    {
+      "id": "runtime-operation-permit",
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     }
   ]
 }

@@ -1609,3 +1609,197 @@ it.effect(
       }),
     ),
 );
+
+it.effect("authorization admits reserve, start and join without claiming observed activity", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const authorized: Evidence = { ...evidence("authorized"), coverage: "unknown" };
+      const reservation = yield* checkout.reserve({
+        admissionId: "admission",
+        source,
+        now,
+        binding,
+        evidence: authorized,
+      });
+      const active = yield* checkout.start({
+        binding,
+        evidence: authorized,
+        expectedRevision: reservation.revision,
+        target,
+      });
+      const joined = yield* checkout.join({
+        binding: { ...binding, executor: "background" },
+        evidence: authorized,
+        expectedRevision: active.revision,
+        target,
+      });
+      assert.equal(reservation.state, "reserved");
+      assert.equal(active.state, "started");
+      assert.equal(joined.state, "draining");
+      const journal = yield* checkout.events(binding.operationId);
+      assert.deepEqual(
+        journal.map((event) => JSON.parse(event.evidence_json).outcome),
+        ["authorized", "authorized", "authorized"],
+      );
+      assert.deepEqual(
+        journal.map((event) => JSON.parse(event.evidence_json).coverage),
+        ["unknown", "unknown", "unknown"],
+      );
+      const before = yield* checkout.listUnsettled(null, 10);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            checkout.reconcileEvidence({
+              binding,
+              evidence: authorized,
+              expectedRevision: joined.revision,
+            }),
+          ),
+        ),
+      );
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            checkout.renew({
+              binding,
+              evidence: authorized,
+              expectedRevision: joined.revision,
+              target,
+              expectedOwnerRevision: 0,
+              expiresAt: later,
+            }),
+          ),
+        ),
+      );
+      assert.deepEqual(yield* checkout.listUnsettled(null, 10), before);
+      assert.deepEqual(yield* checkout.events(binding.operationId), journal);
+    }),
+  ),
+);
+
+it.effect("authorization cannot claim physical coverage at reserve, start or join", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      for (const coverage of ["complete", "partial"] as const) {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              checkout.reserve({
+                admissionId: "admission",
+                source,
+                now,
+                binding,
+                evidence: { ...evidence("authorized"), coverage },
+              }),
+            ),
+          ),
+        );
+      }
+      assert.deepEqual(yield* checkout.listUnsettled(null, 10), []);
+      const reservation = yield* checkout.reserve({
+        admissionId: "admission",
+        source,
+        now,
+        binding,
+        evidence: { ...evidence("authorized"), coverage: "unknown" },
+      });
+      for (const coverage of ["complete", "partial"] as const) {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              checkout.start({
+                binding,
+                target,
+                expectedRevision: reservation.revision,
+                evidence: { ...evidence("authorized"), coverage },
+              }),
+            ),
+          ),
+        );
+      }
+      const active = yield* checkout.start({
+        binding,
+        target,
+        expectedRevision: reservation.revision,
+        evidence: { ...evidence("authorized"), coverage: "unknown" },
+      });
+      for (const coverage of ["complete", "partial"] as const) {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              checkout.join({
+                binding: { ...binding, executor: "background" },
+                target,
+                expectedRevision: active.revision,
+                evidence: { ...evidence("authorized"), coverage },
+              }),
+            ),
+          ),
+        );
+      }
+      assert.equal((yield* checkout.events(binding.operationId)).length, 2);
+    }),
+  ),
+);
+
+it.effect("authorization still requires the exact executor owner's reconciliation", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const authorized: Evidence = { ...evidence("authorized"), coverage: "unknown" };
+      const denied = CheckoutExecutorAuthority.of({
+        assertCurrent: () => Effect.void,
+        reconcile: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+      });
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            checkout
+              .reserve({
+                admissionId: "admission",
+                source,
+                now,
+                binding,
+                evidence: authorized,
+              })
+              .pipe(Effect.provideService(CheckoutExecutorAuthority, denied)),
+          ),
+        ),
+      );
+      assert.deepEqual(yield* checkout.listUnsettled(null, 10), []);
+      const reservation = yield* checkout.reserve({
+        admissionId: "admission",
+        source,
+        now,
+        binding,
+        evidence: authorized,
+      });
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            checkout
+              .start({
+                binding,
+                target,
+                expectedRevision: reservation.revision,
+                evidence: authorized,
+              })
+              .pipe(Effect.provideService(CheckoutExecutorAuthority, denied)),
+          ),
+        ),
+      );
+      assert.equal((yield* checkout.events(binding.operationId)).length, 1);
+      const retired = yield* checkout.reconcileEvidence({
+        binding,
+        expectedRevision: reservation.revision,
+        evidence: evidence("not_invoked"),
+      });
+      assert.equal(retired.state, "reserved");
+    }),
+  ),
+);
