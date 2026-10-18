@@ -555,14 +555,24 @@ function makeLocalCommandHarness(input: {
       ),
     ),
   );
+  const unknownResumeFailure = new ProviderAdapter.ProviderRuntimeBindingError({
+    driver: providerThread.driver,
+    detail:
+      "Failed to establish the actual provider runtime binding; native effects must not be replayed.",
+    cause: new ProviderAdapter.ProviderRuntimeBindingError({
+      driver: providerThread.driver,
+      detail: "Codex has an unconfirmed native effect; another resume is not safe.",
+    }),
+  });
   const resumeFallbackSession = {
     driver: providerThread.driver,
     resumeThread: () =>
       Effect.fail(
         input.unknownResumeBinding === true
-          ? new ProviderAdapter.ProviderRuntimeBindingError({
+          ? new ProviderAdapter.ProviderAdapterEventStreamError({
               driver: providerThread.driver,
-              detail: "Native launch succeeded but its binding is unknown.",
+              providerSessionId,
+              cause: unknownResumeFailure,
             })
           : new ProviderAdapter.ProviderAdapterEventStreamError({
               driver: providerThread.driver,
@@ -816,6 +826,7 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
+    unknownResumeFailure,
     writeIfRunCurrent,
     startRootRun,
     dispatched,
@@ -1370,6 +1381,24 @@ effectIt.effect(
         (event) => event.type === "run.updated" && event.payload.status === "failed",
       );
       expect(failure).toBeDefined();
+      expect(ProviderAdapter.hasUnknownRuntimeBinding(harness.unknownResumeFailure)).toBe(true);
+      expect(harness.projection().turnItems).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "error",
+            failure: expect.objectContaining({
+              code: "provider_runtime_binding_native_effect_unconfirmed_resume",
+            }),
+          }),
+        ]),
+      );
+      const retry = makeLocalCommandHarness({ text: "Continue once", unknownResumeBinding: true });
+      const retryResult = yield* retry.startWithRetry.pipe(Effect.result);
+      expect(retryResult._tag).toBe("Failure");
+      expect(retry.projection().runs.at(-1)?.status).toBe("starting");
+      expect(retry.fallbackEnsure).not.toHaveBeenCalled();
+      expect(retry.startRootRun).not.toHaveBeenCalled();
+      expect(retry.events).toHaveLength(0);
     }),
 );
 

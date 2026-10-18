@@ -1110,7 +1110,8 @@
     "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx": "jones-tests-in-upstream",
     "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned"
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned",
+    "packages/provider-core/src/server/failure.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1594,6 +1595,10 @@
     {
       "from": "apps/server/src/bin.ts",
       "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/failure.ts",
+      "to": "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
     }
   ]
 }

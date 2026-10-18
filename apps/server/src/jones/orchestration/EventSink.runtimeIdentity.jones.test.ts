@@ -130,6 +130,55 @@ const seedOwner = (revision: number, generation = "producer-1") =>
 
 it.effect.each([
   {
+    title: "rejects retirement after the active conversation changes",
+    expected: "provider-thread",
+  },
+  {
+    title: "rejects a retirement guard naming a different provider record",
+    expected: "replacement-thread",
+  },
+])("$title", ({ expected }) =>
+  Effect.gen(function* () {
+    const { sink, projection, app, owner } = yield* seedOwner(1);
+    const replacement = { ...owner, id: ProviderThreadId.make("replacement-thread") };
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make("replacement-selected"),
+          type: "provider-thread.updated",
+          threadId: app.id,
+          occurredAt: now,
+          payload: replacement,
+        },
+      ],
+    });
+    const stored = yield* sink.write({
+      runtimeIdentityBoundary: {
+        expectedGeneration: "producer-1",
+        expectedActiveProviderThreadId: ProviderThreadId.make(expected),
+      },
+      events: [
+        {
+          id: EventId.make("old-runtime-retired"),
+          type: "provider-thread.updated",
+          threadId: app.id,
+          occurredAt: now,
+          payload: { ...owner, runtimeIdentity: undefined },
+        },
+      ],
+    });
+    assert.equal(stored.length, 0);
+    const records = yield* projection.getThreadRecords(app.id, ["providerThreads"]);
+    assert.equal(records.thread.activeProviderThreadId, replacement.id);
+    assert.deepEqual(
+      records.providerThreads.find((row) => row.id === owner.id),
+      owner,
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  {
     title: "allows pinned generation evidence revision advance without blocking terminal state",
     revision: 2,
     pinned: true,
