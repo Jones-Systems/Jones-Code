@@ -28,7 +28,7 @@ const systemPlan = {
     launcher: { version: "new" },
     active: { version: "old" },
   },
-  bootstrap: { worker: "installed", policy: "installed", observer: "installed", socket: "absent" },
+  bootstrap: { worker: "installed", policy: "installed" },
   manifest: {
     files: [
       {
@@ -39,7 +39,7 @@ const systemPlan = {
         text: "policy\n",
       },
     ],
-    enable: ["observer.socket"],
+    enable: [],
   },
 } as unknown as SystemAdoption.SystemAdoptionPlanResult;
 
@@ -310,7 +310,7 @@ it.effect("adopt-system dry-run prints the plan digest and root manifest without
       acceptUnattestedChildCapability: true,
     });
     expect(t.printed.join("\n")).toContain(`plan SHA-256: ${planSha256}`);
-    expect(t.printed.join("\n")).toContain("socket absent");
+    expect(t.printed.join("\n")).toContain("worker installed, policy installed");
     expect(t.printed.join("\n")).toContain("adoption installs none");
   }),
 );
@@ -379,4 +379,38 @@ it.effect(
         acceptUnattestedChildCapability: true,
       });
     }),
+);
+
+it.effect("adopt forwards explicit legacy Mac identity bindings", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "adopt",
+      "--base-dir",
+      baseDir,
+      "--active-artifact-dir",
+      "/approved/active",
+      "--active-source-commit",
+      "a".repeat(40),
+      "--launcher-artifact-dir",
+      "/approved/launcher",
+      "--launcher-source-commit",
+      "b".repeat(40),
+      "--launchd-label",
+      "com.t3tools.t3code.service",
+      "--service-unit-sha256",
+      "c".repeat(64),
+      "--retained-executable",
+      "/approved/home/dated-install/t3",
+      "--dry-run",
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-adoption", "adopt"]);
+    expect(t.calls[1]?.input).toMatchObject({
+      launchdLabel: "com.t3tools.t3code.service",
+      serviceUnitSha256: "c".repeat(64),
+      retainedExecutable: "/approved/home/dated-install/t3",
+      dryRun: true,
+    });
+  }),
 );

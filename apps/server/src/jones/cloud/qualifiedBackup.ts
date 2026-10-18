@@ -4,7 +4,13 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { QUALIFIED_STARTUP_STATE_FILES } from "./qualifiedQuiescence.ts";
+export const QUALIFIED_STARTUP_STATE_FILES = [
+  "settings.json",
+  "keybindings.json",
+  "server-runtime.json",
+  "environment-id",
+  "anonymous-id",
+] as const;
 
 const SUFFIXES = ["", "-wal", "-shm"] as const;
 const METADATA_RESERVE_BYTES = 1024 * 1024;

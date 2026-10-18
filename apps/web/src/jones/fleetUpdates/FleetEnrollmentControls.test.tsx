@@ -1,4 +1,4 @@
-import { act, type ComponentProps } from "react";
+import { act, cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -23,6 +23,12 @@ vi.mock("../../components/ui/button", () => ({
   Button: ({ children, ...props }: ComponentProps<"button">) => (
     <button {...props}>{children}</button>
   ),
+}));
+vi.mock("../../components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
+  TooltipTrigger: ({ render, children }: { render: ReactElement; children: ReactNode }) =>
+    cloneElement(render, {}, children),
+  TooltipPopup: () => null,
 }));
 import { FleetEnrollmentControls } from "./FleetEnrollmentControls";
 const environmentId = EnvironmentId.make("selected-service");
@@ -73,10 +79,27 @@ describe("fleet enrollment settings", () => {
   it("does not enroll from pairing or discovery and requires actual operation protocol support", async () => {
     h.host.mockResolvedValue({ ...status, operationProtocol: null });
     await mount();
-    expect(button("Enroll this host").props.disabled).toBe(true);
+    expect(button("Turn on").props.disabled).toBe(true);
     expect(h.host.mock.calls.every(([, request]) => request.action === "status")).toBe(true);
     expect(h.bridge).not.toHaveBeenCalled();
-    expect(JSON.stringify(tree!.toJSON())).toContain("Setup required");
+    expect(JSON.stringify(tree!.toJSON())).toContain("host setup required");
+  });
+  it("reports an unreachable host as unavailable rather than as needing setup", async () => {
+    h.host.mockRejectedValue(new Error("offline"));
+    await mount();
+    const text = JSON.stringify(tree!.toJSON());
+    expect(text).toContain("host status unavailable");
+    expect(text).not.toContain("host setup required");
+    expect(button("Turn on").props.disabled).toBe(true);
+    h.host.mockResolvedValue(status);
+    await act(async () => {
+      tree!.root
+        .findAllByType("button")
+        .find((node) => node.props["aria-label"]?.startsWith("Refresh"))!
+        .props.onClick();
+    });
+    expect(JSON.stringify(tree!.toJSON())).not.toContain("host status unavailable");
+    expect(button("Turn on").props.disabled).toBe(false);
   });
   it("enrolls only the selected service after an explicit click", async () => {
     h.host.mockImplementation(async (_id, request) =>
@@ -85,7 +108,7 @@ describe("fleet enrollment settings", () => {
     await mount();
     expect(h.bridge).not.toHaveBeenCalled();
     await act(async () => {
-      button("Enroll this host").props.onClick();
+      button("Turn on").props.onClick();
     });
     const call = h.host.mock.calls.find(([, request]) => request.action === "enroll")!;
     expect(call[0]).toBe(environmentId);
@@ -120,7 +143,7 @@ describe("fleet enrollment settings", () => {
     });
     await mount();
     await act(async () => {
-      button("Disable automatic updates").props.onClick();
+      button("Turn off").props.onClick();
     });
     expect(h.bridge).toHaveBeenCalledWith({
       action: "enroll",

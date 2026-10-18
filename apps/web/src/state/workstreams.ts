@@ -1,4 +1,5 @@
 import type {
+  T3PlacementResult,
   T3WorkstreamListResult,
   T3PlacementIdentity,
   WorkstreamDeclarationPage,
@@ -11,10 +12,11 @@ import type {
   WorkstreamReferencePage,
   WorkstreamCommand,
   WorkstreamReceipt,
-  WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextAcceptedResponse,
 } from "@t3tools/contracts";
 import {
   EnvironmentHttpConflictError,
+  EnvironmentInternalError,
   T3_PLACEMENT_MAX_IDENTITIES,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
@@ -22,24 +24,51 @@ import {
   appendWorkstreamDtoPage,
   appendWorkstreamListResult,
   LiveWorkstreamMetadataCache,
+  loadWorkstreamAssignmentIndex,
+  nativeWorkstreamThreadKey,
   orderWorkstreamMetadata,
   type WorkstreamDtoPage,
   loadLiveT3Placements,
   type LiveT3Placements,
+  type WorkstreamAssignmentIndex,
+  type WorkstreamAssignmentIndexFetchers,
   workstreamBindingKey,
 } from "@t3tools/client-runtime/state/workstreams";
+import { useAtomValue } from "@effect/atom-react";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   assertWorkstreamActionSnapshot,
+  assertWorkstreamReadContext,
   WorkstreamActionError,
   type WorkstreamActionSnapshot,
 } from "../jones/workstreams/workstreamActionSnapshot";
+import {
+  assignNativeThread,
+  type NativeThreadAssignmentOptions,
+  type NativeThreadAssignmentSnapshot,
+} from "../jones/workstreams/nativeThreadAssignment";
+
+import { requestEnvironmentWorkstreams } from "../jones/workstreams/environmentWorkstreamsRequest";
+import {
+  assignRemoteNativeThread,
+  environmentWorkstreamsRoutes,
+  hasUnresolvedRemoteCommand,
+  ownerRegistryKey,
+  reconcileRemoteWorkstreamCommands,
+  type RemoteWorkstreamCommandLedger,
+} from "../jones/workstreams/remoteThreadAssignment";
+import { useWorkstreamsReconnectRefresh } from "../jones/workstreams/useWorkstreamsReconnectRefresh";
+import {
+  classifyWorkstreamReadFailure,
+  isWorkstreamsNotConfigured,
+} from "../jones/workstreams/workstreamReadErrors";
 
 import { PrimaryEnvironmentHttpClient } from "../environments/primary/httpClient";
 import { runPrimaryHttp } from "../lib/runtime";
+import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
 
 type PrimaryClient = Effect.Success<typeof PrimaryEnvironmentHttpClient>;
 
@@ -47,12 +76,25 @@ const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, sign
   runPrimaryHttp(PrimaryEnvironmentHttpClient.pipe(Effect.flatMap(run)), { signal });
 
 const metadataCache = new LiveWorkstreamMetadataCache();
-const isCursorStale = Schema.is(EnvironmentHttpConflictError);
+const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
+const isInternalReadError = Schema.is(EnvironmentInternalError);
 const CURSOR_RESTART_ATTEMPTS = 3;
+const INDEX_PAGE_LIMIT = 100;
 const EMPTY_NATIVE_THREADS: readonly { readonly environmentId: string; readonly id: string }[] = [];
 
 const isRestartableCursorStale = (cause: unknown): boolean =>
-  isCursorStale(cause) && cause.message === "workstream_cursor_stale";
+  isHttpConflict(cause) && cause.message === "workstream_cursor_stale";
+
+/**
+ * Error text for a failed list read, or null when Workstreams are simply not configured on the
+ * server: retrying cannot succeed, so the sidebar shows ungrouped threads without an error.
+ */
+export const workstreamListErrorMessage = (cause: unknown): string | null =>
+  isWorkstreamsNotConfigured(cause)
+    ? null
+    : cause instanceof Error
+      ? cause.message
+      : "Workstreams are unavailable.";
 
 export interface CursorRestartOptions {
   readonly signal?: AbortSignal;
@@ -74,6 +116,39 @@ const waitForRetry = (delayMs: number, signal?: AbortSignal): Promise<void> =>
     }, delayMs);
     signal?.addEventListener("abort", abort, { once: true });
   });
+
+class WorkstreamRegistryVersionChanged extends Error {}
+
+/** The registration context names a different owner, principal, grant revision or server. */
+class WorkstreamAuthorityChanged extends Error {
+  constructor() {
+    super("Workstream access changed. Refresh to load current access.");
+  }
+}
+
+async function withTransientReadRecovery<A>(
+  load: () => Promise<A>,
+  signal: AbortSignal,
+): Promise<A> {
+  for (let retry = 0; ; retry += 1) {
+    throwIfAborted(signal);
+    try {
+      const value = await load();
+      throwIfAborted(signal);
+      return value;
+    } catch (cause) {
+      throwIfAborted(signal);
+      // CP outages share the opaque internal-error response; never retry reads indefinitely.
+      if (
+        retry === 5 ||
+        (!(cause instanceof WorkstreamRegistryVersionChanged) &&
+          (!isInternalReadError(cause) || cause.reason !== "internal_error"))
+      )
+        throw cause;
+      await waitForRetry(1_000 * 2 ** retry, signal);
+    }
+  }
+}
 
 async function withCursorRestart<A>(
   load: () => Promise<A>,
@@ -236,13 +311,36 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
-  readonly registrationContext?: WorkstreamsRegistrationContextResponse | null;
+  /**
+   * True for a thread whose own environment server, rather than the primary's, registers and
+   * assigns it. That server's fences still decide whether the change is possible.
+   */
+  readonly assignsThroughOwnEnvironment?: (environmentId: string) => boolean;
+  readonly assignNativeThread?: (
+    thread: { readonly environmentId: string; readonly id: string },
+    destination: string | null,
+    options: NativeThreadAssignmentOptions,
+  ) => Promise<void>;
+  readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
     readonly signal?: AbortSignal;
   }) => Promise<WorkstreamActionSnapshot>;
   readonly retry?: () => Promise<void>;
+  /** Identities whose proof requests succeeded for the current placements. */
   readonly placementInventory: NativePlacementInventory;
   readonly placements: LiveT3Placements | null;
+  /**
+   * Stored assignments read with `data` at one registry version. Durable display evidence
+   * only: proofs in `placements` still gate every change.
+   */
+  readonly assignmentIndex?: WorkstreamAssignmentIndex | null;
+  /**
+   * The last good `data` and `assignmentIndex` are shown because a later read failed. `data` is
+   * then marked stale and every write refuses until a reload succeeds.
+   */
+  readonly stale?: boolean;
+  /** Clock for proof assurance; advances when a loaded proof or attestation expires. */
+  readonly verificationNow?: string;
   readonly data: T3WorkstreamListResult | null;
   readonly error: string | null;
   readonly loading: boolean;
@@ -291,8 +389,17 @@ export interface NativePlacementInventory {
   readonly totalIdentities: number;
 }
 
+export interface NativePlacementThread {
+  readonly environmentId: string;
+  readonly id: string;
+  readonly settledOverride?: "settled" | "active" | null;
+  readonly settledAt?: string | null;
+}
+
 interface PlacementCandidate {
   readonly key: string;
+  readonly settled: boolean;
+  readonly settledAt: number;
   readonly identity: T3PlacementIdentity;
 }
 
@@ -301,93 +408,192 @@ interface BindingOperationRequest {
   readonly acceptedBindingKeys: Set<string>;
 }
 
-const addBoundedPlacementCandidate = (
-  heap: PlacementCandidate[],
-  candidate: PlacementCandidate,
-): void => {
-  const replacingMaximum = heap.length === T3_PLACEMENT_MAX_IDENTITIES;
-  if (replacingMaximum && candidate.key >= heap[0]!.key) return;
-  if (replacingMaximum) heap[0] = candidate;
-  else heap.push(candidate);
-
-  if (!replacingMaximum) {
-    let index = heap.length - 1;
-    while (index > 0) {
-      const parent = Math.floor((index - 1) / 2);
-      if (heap[parent]!.key >= heap[index]!.key) break;
-      [heap[parent], heap[index]] = [heap[index]!, heap[parent]!];
-      index = parent;
-    }
-    return;
-  }
-
-  let index = 0;
-  while (true) {
-    const left = index * 2 + 1;
-    if (left >= heap.length) return;
-    const right = left + 1;
-    const child = right < heap.length && heap[right]!.key > heap[left]!.key ? right : left;
-    if (heap[index]!.key >= heap[child]!.key) return;
-    [heap[index], heap[child]] = [heap[child]!, heap[index]!];
-    index = child;
-  }
+const EMPTY_PLACEMENT_INVENTORY: NativePlacementInventory = {
+  coverage: "complete",
+  identities: [],
+  json: "[]",
+  totalIdentities: 0,
 };
 
-export function nativePlacementInventory(
-  nativeThreads: readonly { readonly environmentId: string; readonly id: string }[],
-): NativePlacementInventory {
-  const identityKeys = new Set<string>();
-  const candidates: PlacementCandidate[] = [];
+const comparePlacementCandidates = (a: PlacementCandidate, b: PlacementCandidate): number =>
+  Number(a.settled) - Number(b.settled) ||
+  (a.settled ? b.settledAt - a.settledAt : 0) ||
+  (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+
+const compareIdentities = (a: T3PlacementIdentity, b: T3PlacementIdentity): number => {
+  const left = JSON.stringify([a.source_instance_id, a.native_thread_id]);
+  const right = JSON.stringify([b.source_instance_id, b.native_thread_id]);
+  return left < right ? -1 : left > right ? 1 : 0;
+};
+
+/**
+ * Splits proof requests for the native threads accepted by `include` (and the preferred
+ * thread) so every request stays within the identity and encoded-byte ceilings. The preferred
+ * thread is requested first, then unsettled and recently settled conversations; identities
+ * within a request keep canonical order.
+ */
+export function nativePlacementBatches(
+  nativeThreads: readonly NativePlacementThread[],
+  options: {
+    readonly include?: (key: string) => boolean;
+    readonly preferred?: { readonly environmentId: string; readonly id: string } | null;
+  } = {},
+): readonly (readonly T3PlacementIdentity[])[] {
+  const preferredKey = options.preferred
+    ? nativeWorkstreamThreadKey(options.preferred.environmentId, options.preferred.id)
+    : null;
+  const candidates = new Map<string, PlacementCandidate>();
   for (const thread of nativeThreads) {
-    const key = JSON.stringify([thread.environmentId, thread.id]);
-    if (identityKeys.has(key)) continue;
-    identityKeys.add(key);
-    addBoundedPlacementCandidate(candidates, {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    if (key !== preferredKey && options.include && !options.include(key)) continue;
+    const candidate: PlacementCandidate = {
       key,
-      identity: {
-        source_instance_id: thread.environmentId,
-        native_thread_id: thread.id,
-      },
-    });
+      settled: thread.settledOverride === "settled",
+      settledAt: Date.parse(thread.settledAt ?? "") || 0,
+      identity: { source_instance_id: thread.environmentId, native_thread_id: thread.id },
+    };
+    const previous = candidates.get(key);
+    if (!previous || comparePlacementCandidates(candidate, previous) < 0)
+      candidates.set(key, candidate);
   }
-  const totalIdentities = identityKeys.size;
-  const selected: T3PlacementIdentity[] = [];
+  const ordered = [...candidates.values()].sort(
+    (a, b) =>
+      Number(b.key === preferredKey) - Number(a.key === preferredKey) ||
+      comparePlacementCandidates(a, b),
+  );
   const encoder = new TextEncoder();
-  let requestBytes = encoder.encode(JSON.stringify({ identities: selected })).byteLength;
-  candidates.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  for (const { identity: value } of candidates) {
-    const nextBytes =
-      requestBytes +
-      encoder.encode(JSON.stringify(value)).byteLength +
-      (selected.length > 0 ? 1 : 0);
-    if (nextBytes > T3_PLACEMENT_MAX_REQUEST_BYTES) break;
-    selected.push(value);
-    requestBytes = nextBytes;
+  const emptyRequestBytes = encoder.encode(JSON.stringify({ identities: [] })).byteLength;
+  const batches: T3PlacementIdentity[][] = [];
+  let batch: T3PlacementIdentity[] = [];
+  let requestBytes = emptyRequestBytes;
+  for (const { identity } of ordered) {
+    const identityBytes = encoder.encode(JSON.stringify(identity)).byteLength;
+    // An identity too large for any request stays unproven rather than failing the others.
+    if (emptyRequestBytes + identityBytes > T3_PLACEMENT_MAX_REQUEST_BYTES) continue;
+    if (
+      batch.length === T3_PLACEMENT_MAX_IDENTITIES ||
+      requestBytes + identityBytes + (batch.length > 0 ? 1 : 0) > T3_PLACEMENT_MAX_REQUEST_BYTES
+    ) {
+      batches.push(batch);
+      batch = [];
+      requestBytes = emptyRequestBytes;
+    }
+    requestBytes += identityBytes + (batch.length > 0 ? 1 : 0);
+    batch.push(identity);
   }
+  if (batch.length > 0) batches.push(batch);
+  return batches.map((identities) => identities.sort(compareIdentities));
+}
+
+const sameTrustedEnvironments = (left: LiveT3Placements, right: LiveT3Placements): boolean => {
+  const canonical = (value: LiveT3Placements) =>
+    JSON.stringify(
+      value.trustedEnvironments
+        .map((entry) => [entry.environmentId, entry.authorityNamespace, entry.storeGeneration])
+        .sort(),
+    );
+  return canonical(left) === canonical(right);
+};
+
+/**
+ * Combines independently validated proof batches. Batches answered under different contexts
+ * or trust snapshots cannot be combined, so none of them verifies anything.
+ */
+export function mergeLivePlacements(batches: readonly LiveT3Placements[]): LiveT3Placements | null {
+  const [first, ...rest] = batches;
+  if (first === undefined) return null;
+  for (const batch of rest) {
+    if (
+      batch.context.owner_id !== first.context.owner_id ||
+      batch.context.principal_id !== first.context.principal_id ||
+      batch.context.authorization_revision !== first.context.authorization_revision ||
+      batch.context.server_generation !== first.context.server_generation ||
+      batch.context.registry_version !== first.context.registry_version ||
+      batch.readiness !== first.readiness ||
+      !sameTrustedEnvironments(first, batch)
+    )
+      return null;
+  }
+  return { ...first, items: batches.flatMap((batch) => batch.items) };
+}
+
+interface LoadedPlacementProofs {
+  readonly key: string;
+  readonly placements: LiveT3Placements | null;
+  readonly inventory: NativePlacementInventory;
+}
+
+/**
+ * Requests proof for each batch with its own inventory hash. A failed batch leaves its
+ * identities without proof (recorded) and does not discard the other batches.
+ */
+async function loadPlacementProofs(
+  list: T3WorkstreamListResult,
+  batches: readonly (readonly T3PlacementIdentity[])[],
+  load: (identities: readonly T3PlacementIdentity[]) => Promise<T3PlacementResult>,
+  signal: AbortSignal,
+): Promise<LoadedPlacementProofs> {
+  const key = JSON.stringify(batches);
+  const proven: {
+    readonly identities: readonly T3PlacementIdentity[];
+    result: LiveT3Placements;
+  }[] = [];
+  let failed = false;
+  for (const identities of batches) {
+    throwIfAborted(signal);
+    try {
+      proven.push({
+        identities,
+        result: await loadLiveT3Placements(list, identities, () => load(identities)),
+      });
+    } catch (cause) {
+      throwIfAborted(signal);
+      if (classifyWorkstreamReadFailure(cause) === "unauthenticated") throw cause;
+      failed = true;
+    }
+  }
+  const placements = mergeLivePlacements(proven.map((entry) => entry.result));
+  const identities =
+    placements === null ? [] : proven.flatMap((entry) => entry.identities).sort(compareIdentities);
   return {
-    coverage: totalIdentities > selected.length ? "partial" : "complete",
-    identities: selected,
-    json: JSON.stringify(selected),
-    totalIdentities,
+    key,
+    placements,
+    inventory: {
+      coverage: failed || (placements === null && proven.length > 0) ? "partial" : "complete",
+      identities,
+      json: JSON.stringify(identities),
+      totalIdentities: batches.reduce((total, batch) => total + batch.length, 0),
+    },
   };
 }
 
-export function nativePlacementInventoryJson(
-  nativeThreads: readonly { readonly environmentId: string; readonly id: string }[],
-): string {
-  return nativePlacementInventory(nativeThreads).json;
-}
+const normalizeWorkstreamList = (value: T3WorkstreamListResult): T3WorkstreamListResult => ({
+  ...value,
+  items: [...orderWorkstreamMetadata(value.items)],
+});
 
-export function reuseNativePlacementIdentitySnapshot<
-  Thread extends { readonly environmentId: string; readonly id: string },
->(previous: readonly Thread[], next: readonly Thread[]): readonly Thread[] {
+const sameContextAuthority = (
+  context: WorkstreamsRegistrationContextAcceptedResponse,
+  binding: T3WorkstreamListResult["binding"],
+): boolean =>
+  context.owner_id === binding.ownerId &&
+  context.principal_id === binding.principalId &&
+  context.authorization_revision === binding.authorizationRevision &&
+  context.server_generation === binding.serverGeneration;
+
+export function reuseNativePlacementIdentitySnapshot<Thread extends NativePlacementThread>(
+  previous: readonly Thread[],
+  next: readonly Thread[],
+): readonly Thread[] {
   if (previous === next || previous.length !== next.length) return next;
   for (let index = 0; index < previous.length; index += 1) {
     const previousThread = previous[index]!;
     const nextThread = next[index]!;
     if (
       previousThread.environmentId !== nextThread.environmentId ||
-      previousThread.id !== nextThread.id
+      previousThread.id !== nextThread.id ||
+      previousThread.settledOverride !== nextThread.settledOverride ||
+      previousThread.settledAt !== nextThread.settledAt
     )
       return next;
   }
@@ -396,10 +602,7 @@ export function reuseNativePlacementIdentitySnapshot<
 
 export function useWorkstreams(
   placementsEnabled = true,
-  nativeThreads: readonly {
-    readonly environmentId: string;
-    readonly id: string;
-  }[] = EMPTY_NATIVE_THREADS,
+  nativeThreads: readonly NativePlacementThread[] = EMPTY_NATIVE_THREADS,
 ): WorkstreamListView {
   const nativeThreadsSnapshot = useRef(nativeThreads);
   nativeThreadsSnapshot.current = reuseNativePlacementIdentitySnapshot(
@@ -407,25 +610,36 @@ export function useWorkstreams(
     nativeThreads,
   );
   const stableNativeThreads = nativeThreadsSnapshot.current;
-  const inventory = useMemo(
-    () => nativePlacementInventory(placementsEnabled ? stableNativeThreads : EMPTY_NATIVE_THREADS),
-    [placementsEnabled, stableNativeThreads],
-  );
-  const identities = useMemo(
-    () => JSON.parse(inventory.json) as readonly T3PlacementIdentity[],
-    [inventory.json],
-  );
+  const [preferredThread, setPreferredThread] = useState<{
+    readonly environmentId: string;
+    readonly id: string;
+  } | null>(null);
+  const preferredThreadRef = useRef(preferredThread);
+  preferredThreadRef.current = preferredThread;
   const [registrationContext, setRegistrationContext] =
-    useState<WorkstreamsRegistrationContextResponse | null>(null);
+    useState<WorkstreamsRegistrationContextAcceptedResponse | null>(null);
   const unresolvedCommands = useRef(new Map<string, string>());
+  const remoteCommands = useRef<RemoteWorkstreamCommandLedger>(new Map());
+  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const dataRef = useRef<T3WorkstreamListResult | null>(null);
   const [placements, setPlacements] = useState<LiveT3Placements | null>(null);
+  const [placementInventory, setPlacementInventory] =
+    useState<NativePlacementInventory>(EMPTY_PLACEMENT_INVENTORY);
+  const [assignmentIndex, setAssignmentIndex] = useState<WorkstreamAssignmentIndex | null>(null);
+  const assignmentIndexRef = useRef(assignmentIndex);
+  assignmentIndexRef.current = assignmentIndex;
+  const [stale, setStale] = useState(false);
+  const staleRef = useRef(stale);
+  staleRef.current = stale;
+  const [verificationNow, setVerificationNow] = useState(() => new Date().toISOString());
   const [data, setData] = useState<T3WorkstreamListResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [revision, setRevision] = useState(0);
   const generation = useRef(0);
   const listRequest = useRef<AbortController | null>(null);
+  const proofRequest = useRef<AbortController | null>(null);
+  const requestedProofKey = useRef<string | null>(null);
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
@@ -433,10 +647,29 @@ export function useWorkstreams(
   dataRef.current = data;
   const refresh = useCallback(() => {
     listRequest.current?.abort();
+    for (const operation of commandRequests.current) operation.controller.abort();
     generation.current += 1;
-    setPlacements(null);
-    setRegistrationContext(null);
+    // The last good snapshot stays visible until the reload replaces it as a whole.
     setRevision((value) => value + 1);
+  }, []);
+  useWorkstreamsReconnectRefresh(refresh);
+
+  /** Authorization, session or availability loss hides every previously authorized read. */
+  const purgeAuthorizedState = useCallback(() => {
+    metadataCache.purgeAuthorization();
+    setData(null);
+    setAssignmentIndex(null);
+    setPlacements(null);
+    setPlacementInventory(EMPTY_PLACEMENT_INVENTORY);
+    setRegistrationContext(null);
+    setStale(false);
+  }, []);
+
+  /** Keeps the last good snapshot visible and read-only; writes refuse until a reload succeeds. */
+  const markStale = useCallback(() => {
+    if (dataRef.current === null) return;
+    staleRef.current = true;
+    setStale(true);
   }, []);
 
   useEffect(() => {
@@ -457,75 +690,158 @@ export function useWorkstreams(
     };
   }, []);
 
+  const proofBatches = useCallback(
+    (index: WorkstreamAssignmentIndex) =>
+      nativePlacementBatches(nativeThreadsSnapshot.current, {
+        include: (key) => index.entries.has(key),
+        preferred: preferredThreadRef.current,
+      }),
+    [],
+  );
+  const requestPlacements = useCallback(
+    (identities: readonly T3PlacementIdentity[], signal: AbortSignal) =>
+      request(
+        (client) => client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
+        signal,
+      ),
+    [],
+  );
+
   useEffect(() => {
     listRequest.current?.abort();
+    proofRequest.current?.abort();
     const controller = new AbortController();
     listRequest.current = controller;
     const current = ++generation.current;
-    setPlacements(null);
-    setRegistrationContext(null);
     setLoading(true);
-    void loadCompleteWorkstreamList(
-      (cursor) =>
+    const loadList = () =>
+      loadCompleteWorkstreamList(
+        (cursor) =>
+          request(
+            (client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            controller.signal,
+          ),
+        { signal: controller.signal },
+      );
+    const indexFetchers: WorkstreamAssignmentIndexFetchers = {
+      listWorkstreams: ({ cursor, signal }) =>
         request(
           (client) =>
             client.workstreams.list({
               headers: {},
               payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
             }),
-          controller.signal,
+          signal,
         ),
-      { signal: controller.signal },
-    )
-      .then(async (value) => {
-        if (generation.current !== current) return;
-        const normalized = { ...value, items: [...orderWorkstreamMetadata(value.items)] };
-        metadataCache.write(normalized);
-        setData(metadataCache.read(normalized.binding));
-        setError(null);
-        void request(
+      references: ({ cursor, signal }) =>
+        request(
+          (client) =>
+            client.workstreams.references({
+              headers: {},
+              payload: { limit: INDEX_PAGE_LIMIT, ...(cursor === undefined ? {} : { cursor }) },
+            }),
+          signal,
+        ),
+      memberships: ({ workstreamId, cursor, signal }) =>
+        request(
+          (client) =>
+            client.workstreams.memberships({
+              headers: {},
+              params: { workstreamId },
+              payload: { limit: INDEX_PAGE_LIMIT, ...(cursor === undefined ? {} : { cursor }) },
+            }),
+          signal,
+        ),
+    };
+    // Grouped display reads the list together with its stored assignments at one version.
+    const loadCore = async (): Promise<{
+      readonly list: T3WorkstreamListResult;
+      readonly index: WorkstreamAssignmentIndex | null;
+    }> => {
+      if (!placementsEnabled)
+        return { list: normalizeWorkstreamList(await loadList()), index: null };
+      const loaded = await loadWorkstreamAssignmentIndex(indexFetchers, {
+        signal: controller.signal,
+      });
+      return { list: normalizeWorkstreamList(loaded.list), index: loaded.index };
+    };
+    const superseded = () => generation.current !== current || controller.signal.aborted;
+    void (async () => {
+      let core = await withTransientReadRecovery(loadCore, controller.signal);
+      let reloadList = false;
+      const context = await withTransientReadRecovery(async () => {
+        if (reloadList) core = await loadCore();
+        // A server without the endpoint keeps its pre-context behavior: no context, no error.
+        // Every other failure rejects this load, so no snapshot publishes without its context.
+        const loaded = await request(
           (client) => client.workstreams.registrationContext({ headers: {} }),
           controller.signal,
-        ).then(
-          (context) => {
-            if (generation.current !== current || controller.signal.aborted) return;
-            if (
-              context.owner_id === normalized.binding.ownerId &&
-              context.principal_id === normalized.binding.principalId &&
-              context.authorization_revision === normalized.binding.authorizationRevision &&
-              context.server_generation === normalized.binding.serverGeneration &&
-              context.registry_version === normalized.binding.registryVersion
-            )
-              setRegistrationContext(context);
-          },
-          () => {
-            if (generation.current === current) setRegistrationContext(null);
-          },
-        );
-        if (placementsEnabled) {
-          try {
-            const projection = await loadLiveT3Placements(normalized, identities, () =>
-              request(
-                (client) =>
-                  client.workstreams.threadPlacements({
-                    headers: {},
-                    payload: { identities },
-                  }),
-                controller.signal,
-              ),
-            );
-            if (generation.current === current) setPlacements(projection);
-          } catch {
-            if (generation.current === current) setPlacements(null);
-          }
+        ).catch((cause: unknown) => {
+          if (classifyWorkstreamReadFailure(cause) === "unsupported") return null;
+          throw cause;
+        });
+        if (loaded === null) return { value: null, required: false };
+        // A different authority is binding loss: fail closed and never retry into it.
+        if (!sameContextAuthority(loaded, core.list.binding))
+          throw new WorkstreamAuthorityChanged();
+        if (loaded.registry_version !== core.list.binding.registryVersion) {
+          // Refresh both reads within this budget.
+          reloadList = true;
+          throw new WorkstreamRegistryVersionChanged();
         }
-      })
-      .catch((cause: unknown) => {
-        if (generation.current !== current || controller.signal.aborted) return;
-        // Authorization/session lifecycle failures must hide previously authorized content.
+        return { value: loaded, required: true };
+      }, controller.signal).catch((cause: unknown) => {
+        // Same-authority churn outlasted its budget: the coherent list publishes display-only.
+        if (cause instanceof WorkstreamRegistryVersionChanged)
+          return { value: null, required: true };
+        throw cause;
+      });
+      if (superseded()) return;
+      const batches = core.index === null ? [] : proofBatches(core.index);
+      const proofs =
+        core.index === null
+          ? null
+          : await loadPlacementProofs(
+              core.list,
+              batches,
+              (identities) => requestPlacements(identities, controller.signal),
+              controller.signal,
+            );
+      if (superseded()) return;
+      // Commit the whole snapshot at once so no render mixes versions or clears groups.
+      if (listRequest.current === controller) listRequest.current = null;
+      const previous = dataRef.current?.binding;
+      if (previous && actionAuthorityKey(previous) !== actionAuthorityKey(core.list.binding))
         metadataCache.purgeAuthorization();
-        setData(null);
-        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+      metadataCache.write(core.list);
+      requestedProofKey.current = proofs?.key ?? null;
+      setData(metadataCache.read(core.list.binding));
+      setRegistrationContext(context.value);
+      setAssignmentIndex(core.index);
+      setPlacements(proofs?.placements ?? null);
+      setPlacementInventory(proofs?.inventory ?? EMPTY_PLACEMENT_INVENTORY);
+      setVerificationNow(new Date().toISOString());
+      // Without the context a supporting server requires, writes stay blocked until one loads.
+      const readOnly = context.required && context.value === null;
+      staleRef.current = readOnly;
+      setStale(readOnly);
+      setError(null);
+    })()
+      .catch((cause: unknown) => {
+        if (superseded()) return;
+        if (
+          cause instanceof WorkstreamAuthorityChanged ||
+          classifyWorkstreamReadFailure(cause) === "unauthenticated"
+        )
+          purgeAuthorizedState();
+        // Only lost access or a changed authority hides groups; outages, opaque control-plane
+        // failures and an unconfigured or missing API keep the last good snapshot as stale.
+        else markStale();
+        setError(workstreamListErrorMessage(cause));
       })
       .finally(() => {
         if (listRequest.current === controller) listRequest.current = null;
@@ -536,17 +852,94 @@ export function useWorkstreams(
       if (listRequest.current === controller) listRequest.current = null;
       generation.current += 1;
     };
-  }, [revision, placementsEnabled, identities]);
+  }, [
+    revision,
+    placementsEnabled,
+    markStale,
+    proofBatches,
+    purgeAuthorizedState,
+    requestPlacements,
+  ]);
 
+  // Native identity changes only refresh proofs for the committed snapshot; they never clear it.
   useEffect(() => {
-    if (!placements || placements.items.length === 0) return;
-    const expiry = Math.min(...placements.items.map((item) => Date.parse(item.expires_at)));
+    if (!placementsEnabled || data === null || assignmentIndex === null) return;
+    if (listRequest.current !== null) return;
+    const batches = proofBatches(assignmentIndex);
+    if (JSON.stringify(batches) === requestedProofKey.current) return;
+    proofRequest.current?.abort();
+    const controller = new AbortController();
+    proofRequest.current = controller;
+    const startedGeneration = generation.current;
+    const current = () =>
+      !controller.signal.aborted &&
+      generation.current === startedGeneration &&
+      assignmentIndexRef.current === assignmentIndex;
+    const previousKey = requestedProofKey.current;
+    const key = JSON.stringify(batches);
+    let settled = false;
+    requestedProofKey.current = key;
+    void loadPlacementProofs(
+      data,
+      batches,
+      (identities) => requestPlacements(identities, controller.signal),
+      controller.signal,
+    ).then(
+      (proofs) => {
+        if (!current()) return;
+        settled = true;
+        setPlacements(proofs.placements);
+        setPlacementInventory(proofs.inventory);
+        setVerificationNow(new Date().toISOString());
+      },
+      (cause: unknown) => {
+        if (!current()) return;
+        settled = true;
+        // Lost access hides groups at once, whatever a later read returns; any other failure
+        // reloads the coherent snapshot, which classifies it.
+        if (classifyWorkstreamReadFailure(cause) === "unauthenticated") {
+          generation.current += 1;
+          purgeAuthorizedState();
+          setError(workstreamListErrorMessage(cause));
+        } else refresh();
+      },
+    );
+    return () => {
+      controller.abort();
+      if (proofRequest.current === controller) proofRequest.current = null;
+      // An interrupted request did not prove anything; let the next run request it again.
+      if (!settled && requestedProofKey.current === key) requestedProofKey.current = previousKey;
+    };
+  }, [
+    placementsEnabled,
+    data,
+    assignmentIndex,
+    stableNativeThreads,
+    preferredThread,
+    proofBatches,
+    purgeAuthorizedState,
+    requestPlacements,
+    refresh,
+  ]);
+
+  // Expiry downgrades verified proof to recorded; it never removes a stored assignment.
+  useEffect(() => {
+    const nowMs = Date.parse(verificationNow);
+    let next = Number.POSITIVE_INFINITY;
+    const consider = (value: string | null | undefined) => {
+      const expiresAt = Date.parse(value ?? "");
+      if (expiresAt > nowMs && expiresAt < next) next = expiresAt;
+    };
+    for (const item of placements?.items ?? []) consider(item.expires_at);
+    for (const entry of assignmentIndex?.entries.values() ?? [])
+      consider(entry.primary?.reference.registration.expires_at);
+    if (!Number.isFinite(next)) return;
     const timer = window.setTimeout(
-      () => setPlacements(null),
-      Math.max(0, Math.min(2_147_483_647, expiry - Date.now())),
+      () => setVerificationNow(new Date(Math.max(Date.now(), next)).toISOString()),
+      Math.max(0, Math.min(2_147_483_647, next - Date.now())),
     );
     return () => window.clearTimeout(timer);
-  }, [placements]);
+  }, [placements, assignmentIndex, verificationNow]);
 
   const runBindingOperation = useCallback(
     async <A>(
@@ -554,8 +947,14 @@ export function useWorkstreams(
     ) => {
       const startedBinding = data?.binding;
       if (startedBinding === undefined) throw new Error("Workstream binding is unavailable.");
+      // A stale snapshot is display evidence only; every write refuses before any request.
+      if (staleRef.current) throw new WorkstreamActionError("stale");
       const authority = actionAuthorityKey(startedBinding);
+      const startedGeneration = generation.current;
       if ([...unresolvedCommands.current.values()].includes(authority))
+        throw new WorkstreamActionError("unknown");
+      // A command sent through another environment can still change this same owner registry.
+      if (hasUnresolvedRemoteCommand(remoteCommands.current, startedBinding))
         throw new WorkstreamActionError("unknown");
       const controller = new AbortController();
       const operationRequest: BindingOperationRequest = {
@@ -570,7 +969,11 @@ export function useWorkstreams(
         return key !== null && operationRequest.acceptedBindingKeys.has(key);
       };
       const assertCurrentBinding = () => {
-        if (!currentBindingIsAccepted() && !controller.signal.aborted) controller.abort();
+        if (
+          (!currentBindingIsAccepted() || generation.current !== startedGeneration) &&
+          !controller.signal.aborted
+        )
+          controller.abort();
         controller.signal.throwIfAborted();
       };
       const acceptReceiptBinding = (receipt: WorkstreamReceipt) => {
@@ -581,6 +984,15 @@ export function useWorkstreams(
       };
       const submitCommand = async (command: WorkstreamCommand) => {
         assertCurrentBinding();
+        if (staleRef.current) throw new WorkstreamActionError("stale");
+        // Checked again at the POST: an overlapping operation may have sent a command since entry.
+        if (
+          [...unresolvedCommands.current].some(
+            ([commandId, key]) => commandId !== command.command_id && key === authority,
+          ) ||
+          hasUnresolvedRemoteCommand(remoteCommands.current, startedBinding)
+        )
+          throw new WorkstreamActionError("unknown");
         commandAttempted = true;
         unresolvedCommands.current.set(command.command_id, authority);
         let receipt = await request(
@@ -620,10 +1032,12 @@ export function useWorkstreams(
       } catch (cause) {
         if (!controller.signal.aborted && currentBindingIsAccepted()) {
           generation.current += 1;
-          setPlacements(null);
-          metadataCache.purgeAuthorization();
-          setData(null);
-          setRegistrationContext(null);
+          // Only lost access hides groups. A failed read, refusal or unknown effect keeps the
+          // last good snapshot stale and read-only; unresolved commands stay fenced until a
+          // retry reconciles them by reading their receipts.
+          if (classifyWorkstreamReadFailure(cause) === "unauthenticated") purgeAuthorizedState();
+          else markStale();
+          setError("Workstreams changed or are unavailable. Retry to reload current access.");
           refreshAfterOperation = commandAttempted;
         }
         throw cause;
@@ -633,11 +1047,194 @@ export function useWorkstreams(
           refresh();
       }
     },
-    [data?.binding, refresh],
+    [data?.binding, markStale, purgeAuthorizedState, refresh],
   );
   const submit = useCallback(
     (command: WorkstreamCommand) => runBindingOperation((submitCommand) => submitCommand(command)),
     [runBindingOperation],
+  );
+
+  const assignThread = useCallback(
+    async (
+      thread: { readonly environmentId: string; readonly id: string },
+      destination: string | null,
+      options: NativeThreadAssignmentOptions,
+    ) => {
+      const started = dataRef.current;
+      // Stale stored assignments are display evidence only and never plan a change.
+      if (!started || !placementsEnabled || staleRef.current)
+        throw new WorkstreamActionError("stale");
+      const authority = actionAuthorityKey(started.binding);
+      const startedGeneration = generation.current;
+      const threadKey = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+      const stored = assignmentIndexRef.current?.entries.get(threadKey);
+      if (stored?.state === "conflict") throw new WorkstreamActionError("ambiguous");
+      const check = () => {
+        options.signal?.throwIfAborted();
+        if (
+          generation.current !== startedGeneration ||
+          !dataRef.current ||
+          actionAuthorityKey(dataRef.current.binding) !== authority
+        )
+          throw new WorkstreamActionError("stale");
+      };
+      if (primaryEnvironmentId !== null && thread.environmentId !== primaryEnvironmentId) {
+        if ([...unresolvedCommands.current.values()].includes(authority))
+          throw new WorkstreamActionError("unknown");
+        // Only the thread's own server can register its native threads; the primary snapshot
+        // still has to stay current, live and unconflicted for the whole operation.
+        await assignRemoteNativeThread({
+          ...options,
+          primary: started,
+          thread,
+          destination,
+          stored,
+          routes: environmentWorkstreamsRoutes(thread.environmentId, requestEnvironmentWorkstreams),
+          check: () => {
+            check();
+            if (staleRef.current) throw new WorkstreamActionError("stale");
+          },
+          commands: remoteCommands.current,
+          loadCompleteList: (load) => loadCompleteWorkstreamList(load, options),
+          refreshPrimary: refresh,
+          primaryCommandUnresolved: () =>
+            [...unresolvedCommands.current.values()].includes(authority),
+          // Remote access loss says nothing about primary access, so nothing is purged here.
+          commandFailed: () => {
+            // A superseded or unmounted snapshot is replaced by its own reload instead.
+            if (
+              generation.current !== startedGeneration ||
+              !dataRef.current ||
+              actionAuthorityKey(dataRef.current.binding) !== authority
+            )
+              return;
+            markStale();
+            setError("Workstreams changed or are unavailable. Retry to reload current access.");
+          },
+        });
+        options.signal?.throwIfAborted();
+        return;
+      }
+      const loadSnapshot = async (
+        referenceId?: string,
+      ): Promise<NativeThreadAssignmentSnapshot> => {
+        check();
+        const load = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) =>
+          request(run, options.signal);
+        const live = await loadCompleteWorkstreamList(
+          (cursor) =>
+            load((client) =>
+              client.workstreams.list({
+                headers: {},
+                payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+              }),
+            ),
+          options,
+        );
+        check();
+        if (actionAuthorityKey(live.binding) !== authority)
+          throw new WorkstreamActionError("stale");
+        const context = await load((client) =>
+          client.workstreams.registrationContext({ headers: {} }),
+        );
+        check();
+        const selected = [
+          { source_instance_id: thread.environmentId, native_thread_id: thread.id },
+        ];
+        const projection = await loadLiveT3Placements(live, selected, () =>
+          load((client) =>
+            client.workstreams.threadPlacements({
+              headers: {},
+              payload: { identities: selected },
+            }),
+          ),
+        );
+        check();
+        const referenceIds = new Set(projection.items.map((item) => item.native_reference_id));
+        if (
+          referenceIds.size > 1 ||
+          (referenceId !== undefined && [...referenceIds].some((id) => id !== referenceId))
+        )
+          throw new WorkstreamActionError("ambiguous");
+        // An expired proof drops out of the projection. Unassigning then falls back to the exact
+        // recorded reference, so the plan re-verifies it instead of silently succeeding; a move
+        // re-registers the reference idempotently instead.
+        const selectedReference =
+          referenceId ??
+          [...referenceIds][0] ??
+          (destination === null ? stored?.primary?.referenceId : undefined);
+        const reference =
+          selectedReference === undefined
+            ? null
+            : await load((client) =>
+                client.workstreams.reference({
+                  headers: {},
+                  params: { nativeReferenceId: selectedReference },
+                }),
+              );
+        check();
+        const destinationMemberships =
+          destination === null
+            ? null
+            : await loadAllPages(
+                (cursor) =>
+                  load((client) =>
+                    client.workstreams.memberships({
+                      headers: {},
+                      params: { workstreamId: destination },
+                      payload: { limit: 50, ...(cursor === undefined ? {} : { cursor }) },
+                    }),
+                  ),
+                options.signal,
+              );
+        check();
+        assertWorkstreamReadContext(live, context);
+        // Once the reference is current, its proof must agree with the stored primary, so a
+        // missing proof can never plan a first attach for an already assigned thread.
+        const registration = reference?.reference.registration;
+        const proven = projection.items.filter((item) => item.kind === "primary");
+        if (
+          stored?.primary &&
+          (proven.length > 0 ||
+            (registration?.state === "attested" &&
+              Date.parse(registration.expires_at ?? "") > Date.now())) &&
+          (proven.length !== 1 ||
+            proven[0]!.membership_id !== stored.primary.membershipId ||
+            proven[0]!.workstream_id !== stored.primary.workstreamId)
+        )
+          throw new WorkstreamActionError("stale");
+        return {
+          data: live,
+          registrationContext: context,
+          placements: projection,
+          reference,
+          destinationMemberships,
+        };
+      };
+      await assignNativeThread({
+        data: started,
+        thread,
+        destination,
+        loadSnapshot,
+        runBindingOperation,
+        ...options,
+      });
+      options.signal?.throwIfAborted();
+      setPreferredThread({ environmentId: thread.environmentId, id: thread.id });
+    },
+    [placementsEnabled, primaryEnvironmentId, runBindingOperation, refresh, markStale],
+  );
+
+  const readFailed = useCallback(
+    (cause: unknown) => {
+      if (classifyWorkstreamReadFailure(cause) !== "unauthenticated") markStale();
+      else {
+        generation.current += 1;
+        purgeAuthorizedState();
+      }
+      setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+    },
+    [markStale, purgeAuthorizedState],
   );
 
   const loadDetail = useCallback(
@@ -695,15 +1292,11 @@ export function useWorkstreams(
         );
       } catch (cause) {
         if (options.signal?.aborted) throw cause;
-        generation.current += 1;
-        setPlacements(null);
-        metadataCache.purgeAuthorization();
-        setData(null);
-        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+        readFailed(cause);
         throw cause;
       }
     },
-    [],
+    [readFailed],
   );
 
   const loadReference = useCallback(
@@ -715,15 +1308,11 @@ export function useWorkstreams(
         );
       } catch (cause) {
         if (options.signal?.aborted) throw cause;
-        generation.current += 1;
-        setPlacements(null);
-        metadataCache.purgeAuthorization();
-        setData(null);
-        setError(cause instanceof Error ? cause.message : "Workstreams are unavailable.");
+        readFailed(cause);
         throw cause;
       }
     },
-    [],
+    [readFailed],
   );
 
   const loadActionSnapshot = useCallback(
@@ -805,20 +1394,41 @@ export function useWorkstreams(
       },
       resolved: (id) => unresolvedCommands.current.delete(id),
     });
-    const snapshot = await loadActionSnapshot();
-    metadataCache.write(snapshot.data);
-    setData(metadataCache.read(snapshot.data.binding));
-    setRegistrationContext(snapshot.registrationContext);
-    setError(null);
-  }, [loadActionSnapshot]);
+    // Commands sent to another environment are observed on that environment only.
+    await reconcileRemoteWorkstreamCommands({
+      commands: remoteCommands.current,
+      ownerRegistry: ownerRegistryKey(started),
+      routesFor: (environmentId) =>
+        environmentWorkstreamsRoutes(environmentId, requestEnvironmentWorkstreams),
+    });
+    // Reload through the coherent path so list, context, index and proofs install together.
+    refresh();
+  }, [loadActionSnapshot, refresh]);
+
+  // Edit gates read `data`; a stale snapshot must not look current to them.
+  const view = useMemo(
+    () => (data !== null && stale && !data.stale ? { ...data, stale: true } : data),
+    [data, stale],
+  );
+
+  const assignsThroughOwnEnvironment = useCallback(
+    (environmentId: string) =>
+      primaryEnvironmentId !== null && environmentId !== primaryEnvironmentId,
+    [primaryEnvironmentId],
+  );
 
   return {
+    assignsThroughOwnEnvironment,
+    assignNativeThread: assignThread,
     registrationContext,
     loadActionSnapshot,
     retry,
-    placementInventory: inventory,
+    placementInventory,
     placements,
-    data,
+    assignmentIndex,
+    stale,
+    verificationNow,
+    data: view,
     error,
     loading,
     refresh,

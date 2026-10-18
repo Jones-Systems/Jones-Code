@@ -451,6 +451,50 @@ describe("Workstream sidebar binding cancellation", () => {
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
+  it("keeps membership details read-only while the hook shows a stale snapshot", async () => {
+    // The hook marks its retained list stale when a later read fails.
+    const controller = {
+      placementInventory: {
+        coverage: "complete" as const,
+        identities: [],
+        json: "[]",
+        totalIdentities: 0,
+      },
+      placements: null,
+      data: { ...writableData, stale: true },
+      stale: true,
+      error: "Connection interrupted",
+      loading: false,
+      refresh: vi.fn(),
+      submit: vi.fn(),
+      runBindingOperation: vi.fn(),
+      loadDetail: vi.fn(async () => detailWithReference),
+      loadReference: vi.fn(async () => ({
+        context: detailWithReference.detail.context,
+        reference: detailWithReference.references.items[0]!,
+        latest_observation: null,
+      })),
+    } as WorkstreamListView;
+
+    hooks.beginRender();
+    const initial = WorkstreamSidebarSection({ controller });
+    const alpha = visitElements(
+      initial,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    ) as ReactElement<{ onClick: () => void }> | undefined;
+    alpha?.props.onClick();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    hooks.beginRender();
+    const current = WorkstreamSidebarSection({ controller });
+    expect(containsText(current, "Alpha detail")).toBe(true);
+    for (const action of ["Move", "Remove", "Link"])
+      expect(containsText(current, action)).toBe(false);
+    expect(controller.submit).not.toHaveBeenCalled();
+    expect(controller.runBindingOperation).not.toHaveBeenCalled();
+  });
+
   it("removes an open rename control when write authority is revoked", () => {
     let controller = {
       placementInventory: {

@@ -24,6 +24,15 @@ export const currentT3Placement = (item: T3ThreadPlacement, now: number): boolea
   Date.parse(item.expires_at) > now &&
   Date.parse(item.expires_at) > Date.parse(item.attested_at);
 
+// Well-formed proof issued no later than `now`. Expiry is checked separately: an expired item
+// is dropped on its own, while malformed or future-attested evidence invalidates the response.
+const wellFormedT3Placement = (item: T3ThreadPlacement, now: number): boolean =>
+  Number.isFinite(now) &&
+  Number.isFinite(Date.parse(item.attested_at)) &&
+  Number.isFinite(Date.parse(item.expires_at)) &&
+  Date.parse(item.attested_at) <= now &&
+  Date.parse(item.expires_at) > Date.parse(item.attested_at);
+
 export type WorkstreamSha256 = (bytes: Uint8Array) => Promise<Uint8Array>;
 
 const browserSha256: WorkstreamSha256 = async (bytes) =>
@@ -70,9 +79,10 @@ export async function loadLiveT3Placements(
   const memberships = new Set<string>();
   const referenceRouting = new Map<string, string>();
   let previous: readonly [string, string] | undefined;
+  const checkedAt = now();
   for (const item of page.items) {
     if (
-      !currentT3Placement(item, now()) ||
+      !wellFormedT3Placement(item, checkedAt) ||
       memberships.has(item.membership_id) ||
       !requested.has(
         t3PlacementIdentityKey({
@@ -81,7 +91,7 @@ export async function loadLiveT3Placements(
         }),
       )
     )
-      throw new Error("Stale, repeated, or unrelated placement.");
+      throw new Error("Malformed, repeated, or unrelated placement.");
     const tuple = [item.native_reference_id, item.membership_id] as const;
     if (
       previous &&
@@ -102,11 +112,10 @@ export async function loadLiveT3Placements(
     referenceRouting.set(item.native_reference_id, serialized);
     memberships.add(item.membership_id);
   }
-  if (page.items.some((item) => !currentT3Placement(item, now())))
-    throw new Error("Placement expired while loading.");
+  const filteredAt = now();
   return {
     context: page.context,
-    items: page.items,
+    items: page.items.filter((item) => currentT3Placement(item, filteredAt)),
     trustedEnvironments: result.trustedEnvironments,
     readiness: result.readiness,
   };

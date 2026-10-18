@@ -1,3 +1,4 @@
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -7,6 +8,9 @@ import {
   T3_PLACEMENT_MAX_REQUEST_BYTES,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Context from "effect/Context";
+import { ServerConfig } from "../config.ts";
+import { resolveWorkstreamActivation } from "../jones/workstreams/activation.ts";
 import * as Layer from "effect/Layer";
 import * as ByteSize from "effect/ByteSize";
 import * as HttpEffect from "effect/http/HttpEffect";
@@ -82,11 +86,27 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
   { global: true },
 );
 
+class WorkstreamControlPlane extends Context.Service<
+  WorkstreamControlPlane,
+  ReturnType<typeof makeControlPlaneWorkstreamTransport>
+>()("t3/workstreams/http/WorkstreamControlPlane") {}
+
+// Both consumers provide this same layer identity, so one server layer graph owns one snapshot.
+const workstreamControlPlaneLayer = Layer.effect(
+  WorkstreamControlPlane,
+  Effect.gen(function* () {
+    const { baseDir } = yield* ServerConfig;
+    return makeControlPlaneWorkstreamTransport(
+      yield* Effect.sync(() => resolveWorkstreamActivation(baseDir)),
+    );
+  }),
+);
+
 const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrustProvider) =>
   Layer.effect(
     WorkstreamGateway,
     Effect.gen(function* () {
-      const configured = makeControlPlaneWorkstreamTransport();
+      const configured = yield* WorkstreamControlPlane;
       const nativeAuthority =
         placementTrustProvider === undefined
           ? yield* NativeStoreAuthority.NativeStoreAuthority
@@ -102,21 +122,26 @@ const makeWorkstreamGatewayLayerLive = (placementTrustProvider?: T3PlacementTrus
     }),
   );
 export const workstreamNativeAuthorityLayerLive = NativeStoreAuthority.layer.pipe(
+  Layer.provideMerge(DesktopNativeOwner.layer),
   Layer.provide(ServerEnvironment.layerIdentity),
 );
 
 export const workstreamGatewayLayerLive = makeWorkstreamGatewayLayerLive().pipe(
   Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(workstreamControlPlaneLayer),
 );
 
 export const workstreamRegistrationContextLayerLive = Layer.effect(
   WorkstreamsRegistrationContext,
   Effect.gen(function* () {
-    const configured = makeControlPlaneWorkstreamTransport();
+    const configured = yield* WorkstreamControlPlane;
     const authority = yield* NativeStoreAuthority.NativeStoreAuthority;
     return makeWorkstreamsRegistrationContext({ ...configured.registrationContext, authority });
   }),
-).pipe(Layer.provide(workstreamNativeAuthorityLayerLive));
+).pipe(
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(workstreamControlPlaneLayer),
+);
 
 const internal = <A>(
   operation: string,
@@ -138,6 +163,11 @@ const restartable = <A>(
         if (error.reason === "cursor-stale")
           return Effect.fail(
             new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
+          );
+        // Unconfigured activation is a stable server state, not an outage clients should retry.
+        if (error.reason === "not-configured")
+          return Effect.fail(
+            new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
           );
         return failEnvironmentInternal("internal_error", { operation, reason: error.reason });
       },

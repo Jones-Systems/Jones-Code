@@ -5,6 +5,10 @@ import {
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WorkstreamsRegistrationContextBuild,
   WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextV2Response,
+  type WorkstreamsRegistrationContextAcceptedResponse,
+  type WorkstreamsRegistrationContextT3Source,
+  type WorkstreamsRegistrationContextVersion,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -35,6 +39,8 @@ export type RegistrationContextBinding = Pick<
 >;
 
 export interface RegistrationContextPorts {
+  readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
+  readonly activationState?: "enabled" | "disabled" | "invalid";
   readonly readRegistrationContext: Effect.Effect<string, WorkstreamTransportError>;
   readonly configuredBinding: RegistrationContextBinding | null;
   readonly authority: Pick<NativeStoreAuthority["Service"], "readCurrent">;
@@ -57,7 +63,7 @@ export type T3RegistrationAvailability =
     };
 
 export interface QualifiedRegistrationContext {
-  readonly context: WorkstreamsRegistrationContextResponse;
+  readonly context: WorkstreamsRegistrationContextAcceptedResponse;
   readonly t3Availability: T3RegistrationAvailability;
 }
 
@@ -86,7 +92,10 @@ const withinDepth = (value: Schema.Json): boolean => {
   return true;
 };
 
-const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function* (text: string) {
+const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function* (
+  text: string,
+  version: WorkstreamsRegistrationContextVersion,
+) {
   if (typeof text !== "string")
     return yield* new RegistrationContextError({ reason: "invalid_response" });
   if (
@@ -100,7 +109,11 @@ const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function*
   );
   if (!withinDepth(json))
     return yield* new RegistrationContextError({ reason: "response_too_deep" });
-  return yield* Schema.decodeUnknownEffect(WorkstreamsRegistrationContextResponse)(json).pipe(
+  const schema =
+    version === "2.0.0"
+      ? WorkstreamsRegistrationContextV2Response
+      : WorkstreamsRegistrationContextResponse;
+  return yield* Schema.decodeUnknownEffect(schema)(json).pipe(
     Effect.mapError(() => new RegistrationContextError({ reason: "invalid_response" })),
   );
 });
@@ -110,19 +123,16 @@ export const makeWorkstreamsRegistrationContext = (
 ): WorkstreamsRegistrationContext["Service"] => {
   const build = ports.build ?? readRegistrationContextBuild;
   const qualifyT3 = Effect.fn("RegistrationContext.qualifyT3")(function* (
-    context: WorkstreamsRegistrationContextResponse,
-  ): Effect.fn.Return<T3RegistrationAvailability> {
-    const source = context.sources.find((entry) => entry.provider === "t3");
-    if (source === undefined) return { state: "unavailable", reason: "descriptor_absent" };
-    const actualBuild = yield* build;
-    if (Option.isNone(actualBuild)) return { state: "unavailable", reason: "build_unavailable" };
-    if (
-      source.build.repository !== actualBuild.value.repository ||
-      source.build.sha !== actualBuild.value.sha ||
-      source.build.tree !== actualBuild.value.tree
-    ) {
-      return { state: "unavailable", reason: "contract_mismatch" };
-    }
+    context: WorkstreamsRegistrationContextAcceptedResponse,
+  ): Effect.fn.Return<{
+    readonly availability: T3RegistrationAvailability;
+    readonly source: WorkstreamsRegistrationContextT3Source | null;
+  }> {
+    const unavailable = (
+      reason: Extract<T3RegistrationAvailability, { state: "unavailable" }>["reason"],
+    ) => ({ availability: { state: "unavailable" as const, reason }, source: null });
+    const sources = context.sources.filter((entry) => entry.provider === "t3");
+    if (sources.length === 0) return unavailable("descriptor_absent");
     const current = yield* ports.authority.readCurrent.pipe(
       Effect.map((tuple) => ({ state: "read" as const, tuple })),
       Effect.catch((error) =>
@@ -135,26 +145,39 @@ export const makeWorkstreamsRegistrationContext = (
         }),
       ),
     );
-    if (current.state === "unavailable") return current;
-    if (source.source_instance_id !== current.tuple.environmentId) {
-      return { state: "unavailable", reason: "source_mismatch" };
-    }
-    if (source.authority_namespace !== current.tuple.authorityNamespace) {
-      return { state: "unavailable", reason: "authority_mismatch" };
-    }
-    if (source.store_generation !== current.tuple.storeGeneration) {
-      return { state: "unavailable", reason: "generation_mismatch" };
-    }
-    return { state: "ready" };
+    if (current.state === "unavailable") return unavailable(current.reason);
+    const source = sources.find(
+      (entry) => entry.source_instance_id === current.tuple.environmentId,
+    );
+    if (source === undefined) return unavailable("source_mismatch");
+    const actualBuild = yield* build;
+    if (Option.isNone(actualBuild)) return unavailable("build_unavailable");
+    if (
+      source.build.repository !== actualBuild.value.repository ||
+      source.build.sha !== actualBuild.value.sha ||
+      source.build.tree !== actualBuild.value.tree
+    )
+      return unavailable("contract_mismatch");
+    if (source.authority_namespace !== current.tuple.authorityNamespace)
+      return unavailable("authority_mismatch");
+    if (source.store_generation !== current.tuple.storeGeneration)
+      return unavailable("generation_mismatch");
+    return { availability: { state: "ready" }, source };
   });
 
   const read = Effect.fn("RegistrationContext.read")(function* () {
+    if (ports.activationState === "invalid")
+      return yield* new RegistrationContextError({ reason: "registry_unavailable" });
     const binding = ports.configuredBinding;
     if (binding === null) return yield* new RegistrationContextError({ reason: "unconfigured" });
+    const version =
+      ports.registrationContextVersion === undefined ? "1.0.0" : ports.registrationContextVersion;
+    if (version !== "1.0.0" && version !== "2.0.0")
+      return yield* new RegistrationContextError({ reason: "registry_unavailable" });
     const text = yield* ports.readRegistrationContext.pipe(
       Effect.mapError(() => new RegistrationContextError({ reason: "registry_unavailable" })),
     );
-    const context = yield* decodeResponse(text);
+    const context = yield* decodeResponse(text, version);
     if (
       context.owner_id !== binding.ownerId ||
       context.principal_id !== binding.principalId ||
@@ -162,13 +185,18 @@ export const makeWorkstreamsRegistrationContext = (
     ) {
       return yield* new RegistrationContextError({ reason: "binding_mismatch" });
     }
-    const t3Availability = yield* qualifyT3(context);
+    const qualified = yield* qualifyT3(context);
     // Omission records local qualification failure, not absence from the registry.
-    const qualified =
-      t3Availability.state === "ready"
-        ? context
-        : { ...context, sources: context.sources.filter((source) => source.provider !== "t3") };
-    return { context: qualified, t3Availability };
+    // Remote descriptors are not authority for this environment.
+    return {
+      context: {
+        ...context,
+        sources: context.sources.filter(
+          (source) => source.provider !== "t3" || source === qualified.source,
+        ),
+      },
+      t3Availability: qualified.availability,
+    };
   });
 
   return WorkstreamsRegistrationContext.of({ read });

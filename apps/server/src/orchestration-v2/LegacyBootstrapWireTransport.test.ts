@@ -100,11 +100,14 @@ import * as WsServerSelfUpdate from "../cloud/selfUpdate.ts";
 import * as WsServerConfig from "../config.ts";
 import * as WsServerLifecycleEvents from "../serverLifecycleEvents.ts";
 import * as WsStorageCleanup from "../storageCleanup.ts";
+import * as WsDatabaseStorage from "../persistence/DatabaseStorage.ts";
+import * as WsCommandOutputHub from "./CommandOutputHub.ts";
 import * as WsServerSettings from "../serverSettings.ts";
 import * as WsServerRuntimeStartup from "../serverRuntimeStartup.ts";
 import * as WsWorkspaceEntries from "../workspace/WorkspaceEntries.ts";
 import * as WsWorkspaceFileSystem from "../workspace/WorkspaceFileSystem.ts";
 import * as WsServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as WsNativeStoreAuthority from "../environment/NativeStoreAuthority.ts";
 import * as WsBackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as WsEnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as WsSourceControlRepositoryService from "../sourceControl/SourceControlRepositoryService.ts";
@@ -544,6 +547,8 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       reports: Stream.fromEffect(denyRpcWork()),
       drain: denyRpcWork(),
     }),
+    Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+    Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
     Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
     Layer.mock(WsDeviceService.DeviceService)({}),
     Layer.mock(WsOrchestrator.OrchestratorV2)({ dispatch: denyRpcWork }),
@@ -588,6 +593,14 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsRelayClient.RelayClient)({}),
     Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
     Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
+    Layer.mock(WsNativeStoreAuthority.NativeStoreAuthority)({
+      trustProvider: {
+        readTrustSnapshot: () => ({
+          trustedEnvironments: [],
+          readiness: "trust-provider-required",
+        }),
+      },
+    }),
     Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
       managedDirectory: "/synthetic-unused-antigravity",
     }),
@@ -1309,6 +1322,8 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
             ),
             drain: Effect.die("Legacy bootstrap must not drain storage cleanup."),
           }),
+          Layer.mock(WsDatabaseStorage.DatabaseStorage)({}),
+          Layer.mock(WsCommandOutputHub.CommandOutputHub)({}),
           Layer.mock(WsPullRequestSyncReactor.PullRequestSyncReactor)({}),
           Layer.mock(WsDeviceService.DeviceService)({}),
           Layer.mock(WsOrchestrator.OrchestratorV2)({
@@ -1362,6 +1377,14 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsRelayClient.RelayClient)({}),
           Layer.mock(WsPreviewAutomationBroker.PreviewAutomationBroker)({}),
           Layer.mock(WsServerEnvironment.ServerEnvironment)({}),
+          Layer.mock(WsNativeStoreAuthority.NativeStoreAuthority)({
+            trustProvider: {
+              readTrustSnapshot: () => ({
+                trustedEnvironments: [],
+                readiness: "trust-provider-required",
+              }),
+            },
+          }),
           Layer.mock(WsAntigravityInstallation.AntigravityInstallation)({
             managedDirectory: "/synthetic-unused-antigravity",
           }),

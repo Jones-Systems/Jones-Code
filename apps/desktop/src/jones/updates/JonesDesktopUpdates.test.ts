@@ -275,7 +275,7 @@ async function fixture(
 }
 
 describe("Jones desktop updates", () => {
-  it("adopts a source-qualified stable bundle without a helper generation or full-app scan", async () => {
+  it("re-adopts a mismatched stable bundle and leaves Check, Download and Install usable", async () => {
     const f = await fixture(false);
     const nativeCommand = vi.mocked(NodeChildProcess.execFile);
     try {
@@ -283,6 +283,24 @@ describe("Jones desktop updates", () => {
       const executable = NodePath.join(contents, "MacOS", "Jones");
       const infoPlist = NodePath.join(contents, "Info.plist");
       nativeCommand.mockImplementation((command, args, options, callback) => {
+        if (args?.[3] === "--reconcile-running") {
+          const requestPath = args[4];
+          if (typeof requestPath !== "string" || typeof callback !== "function")
+            throw new Error("Missing recovery request.");
+          void (async () => {
+            const request = JSON.parse(await NodeFSP.readFile(requestPath, "utf8"));
+            const file = NodePath.join(f.home, "runtime", "jones-active-install.json");
+            const old = await NodeFSP.readFile(file, "utf8");
+            await NodeFSP.writeFile(file + ".superseded", old);
+            await NodeFSP.writeFile(file, JSON.stringify(request.observed));
+            callback(
+              null,
+              JSON.stringify({ protocol: 1, status: "reconciled", active: request.observed }),
+              "",
+            );
+          })().catch((cause) => callback(cause, "", ""));
+          return new NodeChildProcess.ChildProcess();
+        }
         expect(command).toBe("/usr/bin/plutil");
         expect(args).toEqual(["-convert", "json", "-o", "-", infoPlist]);
         expect(options).toEqual({ encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 });
@@ -317,12 +335,24 @@ describe("Jones desktop updates", () => {
         NodePath.join(f.home, "userdata", "environment-id"),
         "native-environment\n",
       );
-      await NodeFSP.unlink(NodePath.join(f.home, "runtime", "jones-active-install.json"));
+      const stale = JSON.stringify({ ...f.active, sourceSha: "0".repeat(40) });
+      await NodeFSP.writeFile(NodePath.join(f.home, "runtime", "jones-active-install.json"), stale);
       // An escaping payload link would fail a complete app hash. Configure reads only bound metadata.
       await NodeFSP.symlink(f.home, NodePath.join(f.app, "opaque-link"));
       const controller = new JonesDesktopUpdateController({
         ...f.options,
         executablePath: executable,
+        stageApp: async (artifact, stageRoot, platform) => {
+          const staged = {
+            ...(await f.options.stageApp!(artifact, stageRoot, platform)),
+            startupGateProtocol: 1 as const,
+          };
+          await NodeFSP.writeFile(
+            staged.receiptPath,
+            JSON.stringify({ app: staged, artifact, candidate: artifact.candidate }),
+          );
+          return staged;
+        },
       });
       await controller.configure();
       expect(controller.state.jones?.capability.install).toBe(true);
@@ -341,20 +371,120 @@ describe("Jones desktop updates", () => {
       });
       await restarted.configure();
       expect(restarted.state.jones?.capability.install).toBe(true);
-      expect(nativeCommand).toHaveBeenCalledTimes(3);
+      expect(await NodeFSP.readFile(controller.manifestPath + ".superseded", "utf8")).toBe(stale);
+      await controller.check();
+      expect(await controller.download()).toEqual({ accepted: true, completed: true });
+      expect(controller.state.jones?.capability).toEqual({
+        check: true,
+        download: true,
+        install: true,
+      });
       expect(await NodeFSP.readFile(active.databasePath, "utf8")).toBe("live-state");
-      await NodeFSP.writeFile(
-        infoPlist,
-        (await NodeFSP.readFile(infoPlist, "utf8")).replace("com.jones.code", "com.other.code"),
-      );
-      await restarted.configure();
-      expect(restarted.state.jones?.capability.install).toBe(false);
-      expect(restarted.state.jones?.message).toBe(
-        "The native manifest does not match the running bundle identity.",
-      );
-      expect(nativeCommand).toHaveBeenCalledTimes(4);
+      const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+      const spawn = vi.mocked(NodeChildProcess.spawn);
+      let transactionId = "";
+      const installing = new JonesDesktopUpdateController({
+        ...f.options,
+        executablePath: executable,
+        prepareNative: async (stagedHandle, id) => {
+          transactionId = id;
+          await NodeFSP.writeFile(
+            NodePath.join(controller.updaterRoot, "transactions", id, "continuation.json"),
+            JSON.stringify({
+              prepared: true,
+              preparationClaimProtocol: 2,
+              stagedHandle,
+              transactionId: id,
+            }),
+          );
+        },
+      });
+      await installing.configure();
+      preflight.mockResolvedValueOnce(undefined);
+      nativeCommand.mockImplementation((_command, args, _options, callback) => {
+        if (typeof callback !== "function") throw new Error("Missing callback.");
+        if (args?.[0] === "--version") callback(null, "Python3", "");
+        else if (args?.[3] === "--claim-preparation")
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-preparation",
+              handle,
+              transactionId: args[6],
+              status: "preparation-claimed",
+            }),
+            "",
+          );
+        else
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-activation",
+              handle,
+              transactionId,
+              status: "claimed",
+              intentPath: NodePath.join(
+                controller.updaterRoot,
+                "transactions",
+                transactionId,
+                "intent.json",
+              ),
+            }),
+            "",
+          );
+        return new NodeChildProcess.ChildProcess();
+      });
+      spawn.mockImplementation(() => {
+        const child = new NodeChildProcess.ChildProcess();
+        void Promise.resolve().then(() => child.emit("spawn"));
+        return child;
+      });
+      try {
+        expect(await installing.install(handle)).toMatchObject({ accepted: true, failed: false });
+      } finally {
+        preflight.mockReset();
+        spawn.mockReset();
+      }
     } finally {
       nativeCommand.mockReset();
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    [
+      Object.assign(new Error("secret /private/download"), { code: "ENOSPC" }),
+      "not enough disk space",
+    ],
+    [
+      new Error("secret https://token@example.test", {
+        cause: Object.assign(new Error("private"), { code: "EACCES" }),
+      }),
+      "file access denied",
+    ],
+    [new Error("Digest mismatch at /private/token"), "artifact integrity check failed"],
+    [new Error("private unclassified credential"), "artifact staging failed"],
+  ])("shows a safe download cause for %s", async (cause, category) => {
+    const f = await fixture();
+    try {
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        client: {
+          ...f.options.client!,
+          stage: async () => {
+            throw cause;
+          },
+        },
+      });
+      await controller.configure();
+      await controller.check();
+      expect(await controller.download()).toEqual({ accepted: true, completed: false });
+      expect(controller.state.message).toBe(
+        `Download failed (${category}). Check for builds and retry; the active app is still running.`,
+      );
+    } finally {
       await f.cleanup();
     }
   });

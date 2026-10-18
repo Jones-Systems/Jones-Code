@@ -70,6 +70,58 @@ path checks checksums only and does not establish Jones provenance. Prefer local
 staging; an existing cache without matching Jones provenance is refused and
 preserved. An update prompt in a client does not prove a Jones artifact is available.
 
+## Adopt an existing Mac direct-serve installation
+
+For an existing user LaunchAgent named `com.t3tools.t3code.service` that runs
+an owned executable under your home as `t3 serve`, adoption can retain that
+label, active version, port and environment while adding the qualified Jones
+launcher. It preserves the dated installation and archives the exact plist for
+recovery. This interrupts active work and requires an approved host operation.
+
+First obtain the exact active Mac CLI artifact and the launcher artifact, each
+with its retained `github-artifact.zip` and source commit. Adoption verifies
+both against their successful Jones Actions generation and main-source CI.
+The native `runtime/service-state.json` must have no update block and its active
+version must already match the running server and active artifact. A stale
+state file requires a separately approved, backed-up reconciliation; adoption
+refuses it and does not rewrite it.
+
+Run the qualified CLI on the host, replacing every placeholder with the reviewed
+absolute path or full digest:
+
+```sh
+t3 jones host adopt --base-dir /absolute/service/home \
+  --active-artifact-dir /absolute/active-artifact --active-source-commit ACTIVE_COMMIT \
+  --launcher-artifact-dir /absolute/launcher-artifact --launcher-source-commit LAUNCHER_COMMIT \
+  --launchd-label com.t3tools.t3code.service --service-unit-sha256 PLIST_SHA256 \
+  --retained-executable /absolute/user/home/dated-install/t3 --dry-run
+```
+
+Review the effect plan and recovery instructions. The plist hash binds its exact
+bytes; the executable must match the authenticated active archive, the loaded
+LaunchAgent and the running process. Only the two arguments `t3 serve` are
+supported for this legacy shape. The existing plist's other settings remain in
+place. Apply the same command without `--dry-run` only under the approved
+operation, with a current state backup and enough space for both qualified
+runtimes. Do not add the Linux `--legacy-direct-serve` flags or accept unattested
+child capability for this Mac path.
+
+Success requires a new service-managed child with the same version, environment
+and port, a matching `jones-update-capability.json` reporting qualified launcher
+and Install support, and an applied `runtime/jones-host-adoption.json` receipt.
+Use `launchctl print gui/USER_ID/com.t3tools.t3code.service` for this retained
+legacy label; the ordinary Jones service commands above target the Jones label.
+A pending receipt, missing readback or lost command response requires inspection
+before another attempt; adoption never retries service effects automatically.
+
+Recovery is a separate approved operation: verify the current plist against the
+adoption receipt, stop that exact legacy LaunchAgent, restore the archived
+`launch-agent.plist` only after checking its recorded SHA-256 and original mode,
+then run `launchctl bootstrap gui/USER_ID /absolute/path/to/original.plist`.
+Confirm the old executable, port, version and environment. Keep the adoption
+receipt and enrolled runtimes for reconciliation. Any earlier state-file repair
+has its own compare-and-swap recovery; restoring the plist does not undo it.
+
 ## Follow laptop updates automatically
 
 In the Jones desktop app, open **Settings → Connections** and choose **Enroll
@@ -140,3 +192,27 @@ Access to Desktop, Documents, or Downloads may need Full Disk Access for the
 `t3` executable listed in the Jones LaunchAgent's `ProgramArguments`.
 For T3 Connect failures, see
 [connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).
+
+## Reclaim database space
+
+T3 Code removes superseded internal history on its own while it runs; your
+conversations are kept. Databases created before this shrank automatically
+still hold the freed space on disk until a one-time offline repair returns it
+and turns on automatic shrinking. Settings > Storage (web and desktop) or
+Settings > Maintenance (mobile) suggests the repair when at least 1 GiB can be
+reclaimed.
+
+Run `t3 doctor` on the machine that hosts the environment. It reports the
+database size and the space it can reclaim, then asks which repairs to run;
+pass `--fix` to run the recommended ones without a prompt (for scripts), or
+`--dry-run` to only report. An installed background service for the same data
+directory is stopped for the repair and started again afterwards, also when
+the repair fails. Quit a server you started by hand, or the desktop app, first:
+the repair refuses to touch a database that is in use. Use `--base-dir` for a
+different data directory.
+
+The repair can take several minutes on a large database. It rebuilds the
+database through a temporary copy, so it needs free space of about the
+database's size twice over: once in the system temporary directory (`TMPDIR`
+or `/tmp` on Linux and macOS) and once next to the database for its
+write-ahead log.

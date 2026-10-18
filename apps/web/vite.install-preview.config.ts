@@ -57,6 +57,9 @@ export default defineConfig(async (environment) => {
     base: "./",
     define: {
       "import.meta.env.JONES_INSTALL_FIXTURE_SOURCE_SHA": JSON.stringify(sourceSha),
+      // Synthetic older-client input for renderer guidance; source remains the exact build revision.
+      "import.meta.env.APP_VERSION": JSON.stringify("0.0.45-preview.20261011.1.1"),
+      "import.meta.env.APP_SOURCE_SHA": JSON.stringify(sourceSha),
       "import.meta.env.VITE_HTTP_URL": JSON.stringify(""),
       "import.meta.env.VITE_WS_URL": JSON.stringify(""),
       "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(""),

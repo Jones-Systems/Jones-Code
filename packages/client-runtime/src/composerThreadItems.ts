@@ -1,5 +1,7 @@
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 
+import { rankComposerThreadCandidates } from "./jones/composerThreadMatching.ts";
+
 const COMPOSER_THREAD_RESULT_LIMIT = 5;
 
 export interface ComposerThreadCandidate {
@@ -19,9 +21,8 @@ export interface ComposerThreadItem {
 }
 
 /**
- * Threads the `@` picker offers next to file paths. The agent can only read threads on its
- * own server, so candidates stay within the composer's environment. A query is required:
- * bare `@` stays a file picker.
+ * The agent can only read threads on its own server, so candidates stay within the
+ * composer's environment.
  */
 export function matchComposerThreadItems(input: {
   shells: ReadonlyArray<ComposerThreadCandidate>;
@@ -29,17 +30,15 @@ export function matchComposerThreadItems(input: {
   excludeThreadId: ThreadId | null;
   query: string;
 }): ComposerThreadItem[] {
-  const query = input.query.trim().toLowerCase();
-  if (query.length === 0) return [];
-  return input.shells
-    .filter(
+  return rankComposerThreadCandidates(
+    input.shells.filter(
       (shell) =>
         shell.environmentId === input.environmentId &&
         shell.id !== input.excludeThreadId &&
-        shell.archivedAt === null &&
-        shell.title.toLowerCase().includes(query),
-    )
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        shell.archivedAt === null,
+    ),
+    input.query,
+  )
     .slice(0, COMPOSER_THREAD_RESULT_LIMIT)
     .map((shell) => ({
       id: `thread:${shell.environmentId}:${shell.id}`,

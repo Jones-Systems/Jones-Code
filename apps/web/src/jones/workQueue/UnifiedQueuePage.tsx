@@ -64,9 +64,16 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
   );
   const unresolved = environments.filter((environment) => {
     const source = sources.get(environment.environmentId);
+    return !source || source.voice === "unknown" || source.queue === "unknown" || source.checking;
+  });
+  const unconfigured = environments.filter((environment) => {
+    const source = sources.get(environment.environmentId);
     return (
-      !configured.includes(environment) &&
-      (!source || source.voice === "unknown" || source.queue === "unknown" || source.checking)
+      environment.entry.enabled &&
+      environment.connection.phase === "connected" &&
+      source?.voice === "absent" &&
+      source.queue === "absent" &&
+      !source.checking
     );
   });
   const reportDirty = useCallback((environmentId: EnvironmentId, dirty: boolean) => {
@@ -234,6 +241,12 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
               </Button>
             </div>
           ) : null}
+          {configured.length === 0 && unresolved.length > 0 && unconfigured.length > 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No prompt review or queue is configured on{" "}
+              {unconfigured.map((environment) => environment.label).join(", ")}.
+            </p>
+          ) : null}
           {blocker.status === "blocked" || pendingScope !== null ? (
             <Alert variant="warning">
               <AlertTitle>Leave Prompts?</AlertTitle>
@@ -278,7 +291,7 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
                 {requestedId !== null
                   ? "The selected prompt source is unavailable. Choose another source."
                   : unresolved.length > 0
-                    ? "Prompt sources have not all been checked."
+                    ? "Prompts from available sources appear as each check finishes. Reconnect unavailable servers to access their prompts."
                     : "No prompt sources configured. Connect to the server that hosts your queue or prompt review."}
               </p>
             ) : (
@@ -348,7 +361,7 @@ function EnvironmentPrompts({
           This environment is disconnected. Previously observed prompts may be stale.
         </p>
       ) : null}
-      {sources.voice !== "absent" || preserveEditor ? (
+      {sources.voice === "configured" || preserveEditor ? (
         <EnvironmentVoiceReview
           environmentId={environmentId}
           pane={pane}
@@ -359,11 +372,22 @@ function EnvironmentPrompts({
         />
       ) : pane === "pending" ? (
         <p className="text-sm text-muted-foreground">
-          No pending prompt review configured on this source.
+          {sources.voice === "absent"
+            ? "No pending prompt review configured on this source."
+            : sources.voiceChecking
+              ? "Checking prompt review on this source…"
+              : "Prompt review could not be checked on this source. Retry sources."}
         </p>
       ) : null}
       <div hidden={pane !== "queued"}>
-        {unavailable || sources.queue === "absent" ? null : (
+        {!unavailable && sources.queue === "unknown" ? (
+          <p className="text-sm text-muted-foreground">
+            {sources.queueChecking
+              ? "Checking the queue on this source…"
+              : "The queue could not be checked on this source. Retry sources."}
+          </p>
+        ) : null}
+        {unavailable || sources.queue !== "configured" ? null : (
           <EnvironmentWorkQueue
             environmentId={environmentId}
             onResult={setMetadata}
@@ -453,6 +477,8 @@ type SourcePresence = "configured" | "absent" | "unknown";
 type PromptSources = {
   voice: SourcePresence;
   queue: SourcePresence;
+  voiceChecking: boolean;
+  queueChecking: boolean;
   checking: boolean;
 };
 
@@ -475,11 +501,13 @@ function PromptSourceDiscovery({
   const [sources, setSources] = useState<{
     voice: SourcePresence;
     queue: SourcePresence;
-    observedFor: string | null;
+    voiceObservedFor: string | null;
+    queueObservedFor: string | null;
   }>({
     voice: "unknown",
     queue: "unknown",
-    observedFor: null,
+    voiceObservedFor: null,
+    queueObservedFor: null,
   });
 
   useEffect(
@@ -487,40 +515,38 @@ function PromptSourceDiscovery({
       onChange(environmentId, {
         voice: sources.voice,
         queue: sources.queue,
-        checking: connected && sources.observedFor !== requestKey,
+        voiceChecking: connected && sources.voiceObservedFor !== requestKey,
+        queueChecking: connected && sources.queueObservedFor !== requestKey,
+        checking:
+          connected &&
+          (sources.voiceObservedFor !== requestKey || sources.queueObservedFor !== requestKey),
       }),
     [connected, environmentId, onChange, requestKey, sources],
   );
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
-    void Promise.allSettled([
-      fetchList("pending"),
-      supportsQueue
-        ? loadQueue(controller.signal)
-        : Promise.resolve({ status: "unconfigured" } as const),
-    ]).then(([voice, queue]) => {
+    const publish = (kind: "voice" | "queue", presence: SourcePresence) => {
       if (controller.signal.aborted) return;
       setSources((current) => ({
-        voice:
-          voice.status === "fulfilled"
-            ? "configured"
-            : voice.reason?._tag === "VoiceReviewNotConfiguredError"
-              ? "absent"
-              : current.voice === "configured"
-                ? "configured"
-                : "unknown",
-        queue:
-          queue.status === "fulfilled"
-            ? queue.value.status === "unconfigured"
-              ? "absent"
-              : "configured"
-            : current.queue === "configured"
-              ? "configured"
-              : "unknown",
-        observedFor: requestKey,
+        ...current,
+        [kind]: presence === "unknown" && current[kind] === "configured" ? "configured" : presence,
+        [kind === "voice" ? "voiceObservedFor" : "queueObservedFor"]: requestKey,
       }));
-    });
+    };
+    void fetchList("pending").then(
+      () => publish("voice", "configured"),
+      (error) =>
+        publish("voice", error?._tag === "VoiceReviewNotConfiguredError" ? "absent" : "unknown"),
+    );
+    void (
+      supportsQueue
+        ? loadQueue(controller.signal)
+        : Promise.resolve({ status: "unconfigured" } as const)
+    ).then(
+      (result) => publish("queue", result.status === "unconfigured" ? "absent" : "configured"),
+      () => publish("queue", "unknown"),
+    );
     return () => controller.abort();
   }, [connected, fetchList, loadQueue, requestKey, supportsQueue]);
   return null;

@@ -1,4 +1,4 @@
-import type { ResourceTelemetryProcessOwner } from "@t3tools/contracts";
+import type { PhysicalProcessIdentity, ResourceTelemetryProcessOwner } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -25,11 +25,20 @@ export class ProcessAttribution extends Context.Service<
       readonly threadId: string;
       readonly provider: string;
     }) => Effect.Effect<void, never, Scope.Scope>;
+    readonly bindLauncher: (
+      client: object,
+      identity: PhysicalProcessIdentity | null,
+    ) => Effect.Effect<void, never, Scope.Scope>;
+    readonly launcherFor: (client: object) => Effect.Effect<PhysicalProcessIdentity | null>;
     readonly snapshot: Effect.Effect<ReadonlyMap<number, ProcessAttributionRecord>>;
   }
 >()("t3/jones/resourceTelemetry/ProcessAttribution") {}
 
 export const make = Effect.fn("resourceTelemetry.processAttribution.make")(function* () {
+  const launchers = new WeakMap<
+    object,
+    { identity: PhysicalProcessIdentity | null; token: object }
+  >();
   const registrations = yield* Ref.make(new Map<number, RegisteredProcessAttribution>());
 
   const registerProviderRoot: ProcessAttribution["Service"]["registerProviderRoot"] = (input) =>
@@ -64,6 +73,17 @@ export const make = Effect.fn("resourceTelemetry.processAttribution.make")(funct
 
   return ProcessAttribution.of({
     registerProviderRoot,
+    bindLauncher: (client, identity) =>
+      Effect.gen(function* () {
+        const token = {};
+        launchers.set(client, { identity, token });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            if (launchers.get(client)?.token === token) launchers.delete(client);
+          }),
+        );
+      }),
+    launcherFor: (client) => Effect.sync(() => launchers.get(client)?.identity ?? null),
     snapshot: Ref.get(registrations).pipe(
       Effect.map(
         (current) =>
