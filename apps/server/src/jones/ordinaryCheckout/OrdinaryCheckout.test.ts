@@ -1,3 +1,17 @@
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ProviderThreadId,
+  ThreadId,
+} from "@t3tools/contracts";
+import {
+  makeRuntimeOperationPermit,
+  RuntimePermitError,
+  type RuntimeOperationIdentity,
+  type ScopeObservation,
+} from "../runtime/RuntimeOperationPermit.ts";
+import { makeCheckoutPermitAdapter } from "./CheckoutPermitAdapter.ts";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -5,6 +19,8 @@ import { assert, it } from "@effect/vitest";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -1800,6 +1816,372 @@ it.effect("authorization still requires the exact executor owner's reconciliatio
         evidence: evidence("not_invoked"),
       });
       assert.equal(retired.state, "reserved");
+    }),
+  ),
+);
+
+function adapterFixture(
+  native: Effect.Effect<void, string> = Effect.void,
+  executorKind: Binding["executor"] = "outbox",
+) {
+  const ownedBinding: Binding = {
+    ...binding,
+    executor: executorKind,
+    provider: {
+      instanceId: "codex",
+      sessionId: "session",
+      threadId: "thread",
+      driver: "codex",
+      generation: "generation",
+      evidenceRevision: 7,
+    },
+  };
+  const identity: RuntimeOperationIdentity = {
+    issuerId: ownedBinding.issuerId,
+    operationId: ownedBinding.operationId,
+    admissionId: ownedBinding.admissionId,
+    participantId: associationId(ownedBinding),
+    binding: {
+      threadId: ThreadId.make("thread"),
+      providerThreadId: ProviderThreadId.make("provider-thread"),
+      providerSessionId: ProviderSessionId.make("session"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      driver: ProviderDriverKind.make("codex"),
+      nativeThreadId: "native",
+      runtimeGeneration: "generation",
+    },
+    evidenceRevision: 7,
+    evidenceReference: "owner-observation",
+    writerReferences: ["synthetic-writer"],
+  };
+  let current = true;
+  let expireOnLock = false;
+  let calls = 0;
+  let observation: ScopeObservation | (() => ScopeObservation) = {
+    state: "active",
+    coverage: "complete",
+  };
+  const availability = makeRuntimeOperationPermit({
+    mode: "exclusive-operation",
+    identity,
+    isCurrent: Effect.sync(() => current),
+    withCurrent: <V, F, R>(effect: Effect.Effect<V, F, R>) =>
+      Effect.suspend((): Effect.Effect<V, F | RuntimePermitError, R> => {
+        if (expireOnLock) current = false;
+        return current ? effect : Effect.fail(new RuntimePermitError({ reason: "not_current" }));
+      }),
+    invoke: Effect.sync(() => {
+      calls += 1;
+    }).pipe(Effect.andThen(native)),
+    observe: Effect.sync(() => (typeof observation === "function" ? observation() : observation)),
+  });
+  return {
+    ownedBinding,
+    identity,
+    availability,
+    adapter: makeCheckoutPermitAdapter(ownedBinding, identity, availability),
+    calls: () => calls,
+    expire: () => {
+      current = false;
+    },
+    replaceAtLock: () => {
+      expireOnLock = true;
+    },
+    observe: (next: ScopeObservation | (() => ScopeObservation)) => {
+      observation = next;
+    },
+  };
+}
+
+it.effect("permit adapter journals authorization before the actual call and rejects replay", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const f = adapterFixture();
+      const adapter = yield* f.adapter;
+      assert.equal(adapter.status, "available");
+      if (adapter.status !== "available") return;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(f.adapter)));
+      const reservedUse = yield* adapter.reserve(now);
+      assert.equal(f.calls(), 0);
+      assert.equal((yield* adapter.observe(now)).outcome, "unknown");
+      yield* adapter.start({ target, now, expectedRevision: reservedUse.revision });
+      assert.equal(f.calls(), 1);
+      const events = yield* checkout.events(binding.operationId);
+      assert.deepEqual(
+        events.map((e) => e.event_kind),
+        ["bind", "activate"],
+      );
+      assert.deepEqual(
+        events.map((e) => JSON.parse(e.evidence_json).outcome),
+        ["authorized", "authorized"],
+      );
+      assert.equal((yield* adapter.observe(now)).outcome, "active");
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            adapter.start({ target, now, expectedRevision: reservedUse.revision }),
+          ),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(adapter.reserve(now))));
+      assert.equal(f.calls(), 1);
+      const use = (yield* checkout.listUnsettled(null, 10))[0]!;
+      yield* adapter.renew({
+        target,
+        now,
+        expectedRevision: use.revision,
+        expectedOwnerRevision: 0,
+        expiresAt: later,
+      });
+    }),
+  ),
+);
+
+it.effect(
+  "permit adapter revocation before start proves no effect without requiring currentness",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql } = yield* seed;
+        yield* checkout.accept(acceptedInput);
+        const f = adapterFixture();
+        const adapter = yield* f.adapter;
+        if (adapter.status !== "available") return assert.fail("available fixture");
+        const use = yield* adapter.reserve(now);
+        yield* adapter.revoke;
+        f.expire();
+        assert.equal((yield* adapter.observe(now)).outcome, "not_invoked");
+        const retired = yield* adapter.reconcile(use.revision, now);
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL WHERE effect_id='effect'`;
+        const done = yield* checkout.complete({
+          operationId: use.operation_id,
+          expectedRevision: retired.revision,
+          now,
+          target,
+        });
+        assert.equal(done.state, "no_effect");
+        assert.equal(f.calls(), 0);
+      }),
+    ),
+);
+
+it.effect("permit adapter retains unknown after commit failure or native response loss", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const f = adapterFixture(Effect.fail("response lost"));
+      const adapter = yield* f.adapter;
+      if (adapter.status !== "available") return assert.fail("available fixture");
+      const use = yield* adapter.reserve(now);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(adapter.start({ target, now, expectedRevision: use.revision })),
+        ),
+      );
+      assert.equal(f.calls(), 1);
+      assert.equal((yield* adapter.observe(now)).outcome, "unknown");
+      const currentUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+      assert.equal(currentUse.state, "started");
+      const unknown = yield* adapter.reconcile(currentUse.revision, now);
+      assert.equal(unknown.state, "unknown");
+    }),
+  ),
+);
+
+it.effect("permit adapter cannot infer not-invoked from a failed durable start attempt", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const f = adapterFixture();
+      const adapter = yield* f.adapter;
+      if (adapter.status !== "available") return assert.fail("available fixture");
+      const use = yield* adapter.reserve(now);
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(adapter.start({ target, now, expectedRevision: use.revision + 1 })),
+        ),
+      );
+      assert.equal(f.calls(), 0);
+      assert.equal((yield* adapter.observe(now)).outcome, "unknown");
+      assert.equal((yield* adapter.reconcile(use.revision, now)).state, "unknown");
+    }),
+  ),
+);
+
+it.effect("permit adapter retires a complete old scope after replacement without invoking", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const f = adapterFixture();
+      const adapter = yield* f.adapter;
+      if (adapter.status !== "available") return assert.fail("available fixture");
+      const use = yield* adapter.reserve(now);
+      f.replaceAtLock();
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(adapter.start({ target, now, expectedRevision: use.revision })),
+        ),
+      );
+      assert.equal(f.calls(), 0);
+      assert.equal((yield* adapter.observe(now)).outcome, "unknown");
+      f.observe({ state: "quiescent", coverage: "complete" });
+      const currentUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+      assert.equal((yield* adapter.reconcile(currentUse.revision, now)).state, "draining");
+    }),
+  ),
+);
+
+it.effect("permit adapter preserves unavailable and rejects full identity mismatches", () =>
+  Effect.gen(function* () {
+    const f = adapterFixture();
+    for (const mode of ["warm_runtime", "unsupported", "restart"] as const) {
+      assert.deepEqual(
+        yield* makeCheckoutPermitAdapter(
+          f.ownedBinding,
+          f.identity,
+          makeRuntimeOperationPermit({ mode }),
+        ),
+        { status: "unavailable", reason: mode },
+      );
+    }
+    for (const altered of [
+      { ...f.identity, issuerId: "other" },
+      { ...f.identity, participantId: "other" },
+      { ...f.identity, evidenceRevision: 8 },
+      { ...f.identity, binding: { ...f.identity.binding, nativeThreadId: "other" } },
+      {
+        ...f.identity,
+        binding: { ...f.identity.binding, providerThreadId: ProviderThreadId.make("other") },
+      },
+      { ...f.identity, writerReferences: ["other"] },
+    ])
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(makeCheckoutPermitAdapter(f.ownedBinding, altered, f.availability)),
+        ),
+      );
+    assert.equal(f.calls(), 0);
+  }),
+);
+
+it.effect(
+  "permit adapter keeps joined partial writers unsettled until each owner proves retirement",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql } = yield* seed;
+        yield* checkout.accept(acceptedInput);
+        const root = adapterFixture();
+        const child = adapterFixture(Effect.void, "background");
+        const a = yield* root.adapter;
+        const b = yield* child.adapter;
+        if (a.status !== "available" || b.status !== "available")
+          return assert.fail("available fixtures");
+        const reservedUse = yield* a.reserve(now);
+        yield* a.start({ target, now, expectedRevision: reservedUse.revision });
+        const startedUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+        yield* b.join({ target, now, expectedRevision: startedUse.revision });
+        assert.equal(child.calls(), 1);
+        assert.deepEqual(
+          (yield* checkout.events(binding.operationId)).map((e) => e.event_kind),
+          ["bind", "activate", "join"],
+        );
+        const joinedUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+        child.observe({ state: "quiescent", coverage: "partial" });
+        assert.equal((yield* b.observe(now)).outcome, "unknown");
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              b.renew({
+                target,
+                now,
+                expectedRevision: joinedUse.revision,
+                expectedOwnerRevision: 0,
+                expiresAt: later,
+              }),
+            ),
+          ),
+        );
+        root.observe({ state: "quiescent", coverage: "complete" });
+        const rootDone = yield* a.reconcile(joinedUse.revision, now);
+        yield* sql`UPDATE orchestration_v2_effect_outbox SET status='succeeded',lease_owner=NULL,lease_expires_at=NULL WHERE effect_id='effect'`;
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              checkout.complete({
+                operationId: binding.operationId,
+                expectedRevision: rootDone.revision,
+                now,
+                target,
+              }),
+            ),
+          ),
+        );
+        child.observe({ state: "quiescent", coverage: "complete" });
+        child.expire();
+        const childDone = yield* b.reconcile(rootDone.revision, later);
+        assert.equal(
+          (yield* checkout.complete({
+            operationId: binding.operationId,
+            expectedRevision: childDone.revision,
+            now: later,
+            target,
+          })).state,
+          "completed",
+        );
+      }),
+    ),
+);
+
+it.effect("permit adapter revokes an interrupted invocation without claiming no effect", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const entered = yield* Deferred.make<void>();
+      const f = adapterFixture(
+        Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never)),
+      );
+      const adapter = yield* f.adapter;
+      if (adapter.status !== "available" || f.availability.status !== "available")
+        return assert.fail("available fixture");
+      const use = yield* adapter.reserve(now);
+      const running = yield* adapter
+        .start({ target, now, expectedRevision: use.revision })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* Fiber.interrupt(running);
+      assert.equal(f.calls(), 1);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(f.availability.permit.assertCurrent)));
+      assert.equal((yield* adapter.observe(now)).outcome, "unknown");
+      const activeUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+      assert.equal((yield* adapter.reconcile(activeUse.revision, now)).state, "unknown");
+    }),
+  ),
+);
+
+it.effect("permit adapter rejects retirement when a fresh owner observation changes", () =>
+  provide(
+    Effect.gen(function* () {
+      const { checkout } = yield* seed;
+      yield* checkout.accept(acceptedInput);
+      const f = adapterFixture();
+      const adapter = yield* f.adapter;
+      if (adapter.status !== "available") return assert.fail("available fixture");
+      const use = yield* adapter.reserve(now);
+      yield* adapter.start({ target, now, expectedRevision: use.revision });
+      const activeUse = (yield* checkout.listUnsettled(null, 10))[0]!;
+      let reads = 0;
+      f.observe(() => ({ state: ++reads === 1 ? "quiescent" : "active", coverage: "complete" }));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(adapter.reconcile(activeUse.revision, now))));
+      assert.equal(reads, 2);
+      assert.equal((yield* checkout.events(binding.operationId)).length, 2);
+      assert.equal((yield* checkout.listUnsettled(null, 10))[0]!.revision, activeUse.revision);
     }),
   ),
 );

@@ -842,15 +842,14 @@
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
-        "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
+        "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
       ],
-      "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Includes inactive accepted-intent transaction hooks and reciprocal native/deletion adapters. Production composition and physical execution remain separate; no positive executor authority is installed."
+      "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Includes inactive accepted-intent transaction hooks and reciprocal native/deletion adapters. Production composition and physical execution remain separate; no positive executor authority is installed. The inactive typed permit adapter scopes authorization to exact checkout calls and reconciles fresh owner observations; it requires exclusive transfer of a fresh permit and supplies no production issuer."
     },
     {
       "id": "runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ]
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     }
   ]
 }

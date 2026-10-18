@@ -13,7 +13,8 @@
     "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
     "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.ts",
-    "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
+    "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

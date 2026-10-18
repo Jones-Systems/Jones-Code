@@ -1106,7 +1106,8 @@
     "apps/web/src/hooks/useLiveRefresh.test.ts": "jones-tests-in-upstream",
     "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx": "jones-tests-in-upstream",
-    "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream"
+    "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
