@@ -9,9 +9,20 @@
     "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.ts",
     "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckoutSqlite.ts",
     "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.ts",
-    "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts"
+    "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
+      "to": "apps/server/src/persistence/Migrations.ts"
+    },
+    {
+      "from": "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
+      "to": "apps/server/src/orchestration-v2/CommandReceiptStore.ts"
+    }
+  ]
 }
