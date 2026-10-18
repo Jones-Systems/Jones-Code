@@ -1,3 +1,12 @@
+import {
+  activationFromEnvironment,
+  decodeSigningSecret,
+  hasCanonicalActivation,
+  type ControlPlaneWorkstreamActivation,
+  type WorkstreamActivation,
+} from "../jones/workstreams/activation.ts";
+export type { WorkstreamActivation } from "../jones/workstreams/activation.ts";
+
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 
@@ -25,6 +34,9 @@ import {
   T3PlacementRequest,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+  type WorkstreamsRegistrationContextVersion,
   WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
@@ -33,7 +45,11 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { WorkstreamTransportError, type WorkstreamTransport } from "./WorkstreamGateway.ts";
+import {
+  WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
+  WorkstreamTransportError,
+  type WorkstreamTransport,
+} from "./WorkstreamGateway.ts";
 
 import {
   WORKSTREAM_APPEARANCE_CONTRACT,
@@ -49,6 +65,8 @@ const TIMEOUT_MS = 15_000;
 const REGISTRATION_CONTEXT_ROUTE = "/workstreams/v1/t3/registration-context";
 
 export interface WorkstreamRegistrationTransport {
+  readonly registrationContextVersion: WorkstreamsRegistrationContextVersion | null;
+  readonly activationState?: WorkstreamActivation["state"];
   readonly configuredBinding: Pick<
     T3WorkstreamBinding,
     "ownerId" | "principalId" | "authorizationRevision"
@@ -77,93 +95,18 @@ class BoundedTransportFailure extends Error {
   }
 }
 
-export interface ControlPlaneWorkstreamActivation {
-  readonly baseUrl: URL;
-  readonly ownerId: string;
-  readonly principalId: string;
-  readonly authorizationRevision: number;
-  readonly keyId: string;
-  readonly signingSecret: string;
-}
-
-export type WorkstreamActivation =
-  | { readonly state: "disabled" }
-  | { readonly state: "enabled"; readonly value: ControlPlaneWorkstreamActivation };
-
 export type WorkstreamFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
 
-function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation): boolean {
-  const headerValues = [config.ownerId, config.principalId, config.keyId, config.signingSecret];
-  return (
-    config.baseUrl.protocol === "https:" &&
-    !config.baseUrl.username &&
-    !config.baseUrl.password &&
-    !config.baseUrl.hash &&
-    !config.baseUrl.search &&
-    (config.baseUrl.pathname === "/" || config.baseUrl.pathname === "") &&
-    Number.isSafeInteger(config.authorizationRevision) &&
-    config.authorizationRevision > 0 &&
-    headerValues.every((value) => value.length > 0 && !/[\r\n]/.test(value)) &&
-    decodeSigningSecret(config.signingSecret) !== null
-  );
-}
-
-function decodeSigningSecret(value: string): Buffer | null {
-  if (!/^[A-Za-z0-9+/]{43}=$/.test(value)) return null;
-  const key = Buffer.from(value, "base64");
-  return key.length === 32 && key.toString("base64") === value ? key : null;
-}
-
-function activationFromEnvironment(
-  environment: NodeJS.ProcessEnv = process.env,
-): WorkstreamActivation {
-  const raw = environment.T3_WORKSTREAM_CONTROL_PLANE_URL;
-  const ownerId = environment.T3_WORKSTREAM_OWNER_ID;
-  const principalId = environment.T3_WORKSTREAM_PRINCIPAL_ID;
-  const keyId = environment.T3_WORKSTREAM_KEY_ID;
-  const signingSecret = environment.T3_WORKSTREAM_SIGNING_SECRET;
-  const revision = Number(environment.T3_WORKSTREAM_AUTHORIZATION_REVISION);
-  if (!raw && !ownerId && !principalId && !keyId && !signingSecret) return { state: "disabled" };
-  if (
-    !raw ||
-    !ownerId ||
-    !principalId ||
-    !keyId ||
-    !signingSecret ||
-    !Number.isSafeInteger(revision) ||
-    revision < 1
-  ) {
-    return { state: "disabled" };
-  }
-  try {
-    const baseUrl = new URL(raw);
-    const activation = {
-      state: "enabled",
-      value: {
-        baseUrl,
-        ownerId,
-        principalId,
-        authorizationRevision: revision,
-        keyId,
-        signingSecret,
-      },
-    } as const;
-    return hasCanonicalActivation(activation.value) ? activation : { state: "disabled" };
-  } catch {
-    return { state: "disabled" };
-  }
-}
-
-const disabled = (): WorkstreamTransport => {
+const disabled = (detail: string): WorkstreamTransport => {
   const unavailable = (operation: string) =>
     Effect.fail(
       new WorkstreamTransportError({
         operation,
         effect: "no-effect",
-        detail: "Workstream control-plane activation is disabled.",
+        detail,
       }),
     );
   return {
@@ -192,7 +135,8 @@ export function signWorkstreamRequest(input: {
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
     | typeof WORKSTREAM_APPEARANCE_CONTRACT
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
+    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL;
   readonly requestId: string;
   readonly idempotencyKey?: string;
   readonly sentAt: string;
@@ -271,6 +215,7 @@ async function readBoundedResponse(
 async function performRequest(input: {
   readonly fetch: WorkstreamFetch;
   readonly config: ControlPlaneWorkstreamActivation;
+  readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
   readonly method: "GET" | "POST";
   readonly target: string;
   readonly body: string;
@@ -279,6 +224,18 @@ async function performRequest(input: {
   readonly signal: AbortSignal;
 }): Promise<string> {
   const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
+  const registrationVersion =
+    input.registrationContextVersion === undefined ? "1.0.0" : input.registrationContextVersion;
+  if (registration && registrationVersion !== "1.0.0" && registrationVersion !== "2.0.0")
+    throw new BoundedTransportFailure("invalid_target");
+  const registrationProtocol =
+    registrationVersion === "2.0.0"
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL
+      : WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
+  const registrationManifest =
+    registrationVersion === "2.0.0"
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256
+      : WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256;
   const appearance =
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
@@ -307,7 +264,7 @@ async function performRequest(input: {
       : NodeCrypto.createHash("sha256").update(input.body).digest("hex");
   const signature = signWorkstreamRequest({
     contractVersion: registration
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+      ? registrationProtocol
       : appearance
         ? WORKSTREAM_APPEARANCE_CONTRACT
         : placement
@@ -333,14 +290,14 @@ async function performRequest(input: {
       "content-type": "application/json; charset=utf-8",
       "x-control-algorithm": "hmac-sha256-v1",
       "x-control-contract-version": registration
-        ? WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
+        ? registrationProtocol
         : appearance
           ? WORKSTREAM_APPEARANCE_CONTRACT
           : placement
             ? T3_PLACEMENT_CONTRACT
             : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
       "x-control-contract-manifest": registration
-        ? WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256
+        ? registrationManifest
         : appearance
           ? WORKSTREAM_APPEARANCE_MANIFEST
           : placement
@@ -380,10 +337,8 @@ async function performRequest(input: {
   }
   if (
     registration &&
-    (response.headers.get("x-control-contract-version") !==
-      WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL ||
-      response.headers.get("x-control-contract-manifest") !==
-        WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256)
+    (response.headers.get("x-control-contract-version") !== registrationProtocol ||
+      response.headers.get("x-control-contract-manifest") !== registrationManifest)
   ) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
@@ -400,6 +355,7 @@ export function makeControlPlaneWorkstreamTransport(
   activation: WorkstreamActivation = activationFromEnvironment(),
   fetchPort: WorkstreamFetch = globalThis.fetch.bind(globalThis),
 ): {
+  readonly activationState: WorkstreamActivation["state"];
   readonly transport: WorkstreamTransport;
   readonly registrationContext: WorkstreamRegistrationTransport;
   readonly binding: Pick<
@@ -407,16 +363,24 @@ export function makeControlPlaneWorkstreamTransport(
     "registryId" | "ownerId" | "principalId" | "authorizationRevision"
   >;
 } {
-  if (activation.state === "disabled" || !hasCanonicalActivation(activation.value)) {
+  if (activation.state !== "enabled" || !hasCanonicalActivation(activation.value)) {
+    const activationState = activation.state === "disabled" ? "disabled" : "invalid";
+    const detail =
+      activationState === "disabled"
+        ? WORKSTREAM_ACTIVATION_DISABLED_DETAIL
+        : "Workstream control-plane activation is invalid.";
     return {
-      transport: disabled(),
+      activationState,
+      transport: disabled(detail),
       registrationContext: {
+        registrationContextVersion: null,
+        activationState,
         configuredBinding: null,
         readRegistrationContext: Effect.fail(
           new WorkstreamTransportError({
             operation: "registration_context",
             effect: "no-effect",
-            detail: "Workstream control-plane activation is disabled.",
+            detail,
           }),
         ),
       },
@@ -429,6 +393,7 @@ export function makeControlPlaneWorkstreamTransport(
     };
   }
   const config = activation.value;
+  const registrationContextVersion = config.registrationContextVersion ?? "1.0.0";
   const request = <S extends Schema.Top>(
     operation: string,
     method: "GET" | "POST",
@@ -500,7 +465,10 @@ export function makeControlPlaneWorkstreamTransport(
       );
     });
   return {
+    activationState: "enabled",
     registrationContext: {
+      registrationContextVersion,
+      activationState: "enabled",
       configuredBinding: {
         ownerId: config.ownerId,
         principalId: config.principalId,
@@ -515,6 +483,7 @@ export function makeControlPlaneWorkstreamTransport(
               config,
               method: "GET",
               target: REGISTRATION_CONTEXT_ROUTE,
+              registrationContextVersion,
               body: "",
               sentAt,
               signal,

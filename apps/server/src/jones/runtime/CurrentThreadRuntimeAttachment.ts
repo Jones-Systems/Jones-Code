@@ -1,4 +1,4 @@
-import type { ProviderRuntimeBinding } from "@t3tools/contracts";
+import type { PhysicalProcessObservation, ProviderRuntimeBinding } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
 export type CurrentThreadRuntimeAttachment =
@@ -9,10 +9,13 @@ export type CurrentThreadRuntimeAttachment =
       readonly observedAt: string;
       readonly isCurrent: Effect.Effect<boolean>;
       // A session lease validates reads; it cannot authorize physical stop or native creation.
-      readonly physicalIncarnation: {
-        readonly status: "unknown";
-        readonly reason: "physical_incarnation_capture_unavailable";
-      };
+      readonly physicalIncarnation:
+        | PhysicalProcessObservation
+        | {
+            readonly status: "unknown";
+            readonly reason: "physical_incarnation_capture_unavailable";
+          };
+      readonly physicalIsCurrent?: Effect.Effect<boolean>;
     }
   | {
       readonly status: "stopped";

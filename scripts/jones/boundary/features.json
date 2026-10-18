@@ -4,6 +4,66 @@
   "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
   "features": [
     {
+      "id": "physical-process-evidence",
+      "tests": [
+        "apps/server/src/jones/runtime/PhysicalProcessEvidence.test.ts",
+        "apps/server/src/jones/runtime/PhysicalRuntimeEvidence.test.ts",
+        "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts"
+      ],
+      "scope": "Captured initialized Codex client diagnostics with local OS incarnation and generation fences; sparse Jones-only history, restart noncurrentness, explicitly bound shared children, and observation without stop or creation authority. Synthetic qualification only; MCP connection incarnation and installed support remain unresolved."
+    },
+    {
+      "id": "workstream-thread-controls",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
+        "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/components/threadActionMenu.logic.test.ts",
+        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "packages/client-runtime/src/state/workstreams/placements.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
+        "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
+      ],
+      "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. Display trust also accepts each connected environment's live config descriptor, so remote threads can show as verified; disagreeing descriptors mark that environment's threads as conflicts, and membership changes keep primary placement trust. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
+    },
+    {
+      "id": "client-update-notices",
+      "tests": [
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx"
+      ],
+      "scope": "Passive client guidance for ordered newer server versions and neutral unequal Jones preview sources. Full source identities scope per-environment dismissals; active and automatic eligible environments share the web/desktop renderer. ChatView adds only the notice hook and stack entries; versionSkew adapter tests stay shared to prove branded config forwarding. No server update action, source ancestry inference, connection block, or mobile version comparison. Synthetic renderer fixture exercises the production hook and stack with isolated descriptors."
+    },
+    {
+      "id": "thread-status-filter",
+      "tests": [
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+    },
+    {
+      "id": "provider-order",
+      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
+      "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
+    },
+    {
       "id": "provider-restart-identity",
       "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
@@ -76,20 +136,41 @@
     {
       "id": "workstreams",
       "tests": [
+        "apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts",
         "packages/contracts/src/workstreams.conformance.test.ts",
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "packages/client-runtime/src/state/workstreams/workstreams.test.ts",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/mobile/src/features/workstreams/projection.test.ts",
         "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
-        "apps/mobile/src/features/workstreams/gateway.test.ts"
+        "apps/mobile/src/features/workstreams/gateway.test.ts",
+        "packages/shared/src/jones/desktopNativeOwner.test.ts",
+        "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts",
+        "packages/shared/src/jones/nativeWriterFence.test.ts",
+        "apps/server/src/environment/NativeStoreAuthority.test.ts",
+        "apps/desktop/src/backend/DesktopBackendManager.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
+        "apps/desktop/scripts/main-process-bundle.test.mjs",
+        "packages/contracts/src/jones/workstreamsNativeOwner.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/entrypoint.test.ts"
       ]
     },
     {
       "id": "native-store-authority",
       "tests": [
         "apps/server/src/environment/NativeStoreAuthority.test.ts",
-        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts"
+        "apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts",
+        "apps/server/src/jones/workstreams/nativeAuthorityTransition.test.ts",
+        "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.test.ts",
+        "packages/contracts/src/jones/serverConfigNativeStoreAuthority.test.ts"
       ]
     },
     {
@@ -126,6 +207,7 @@
         "apps/server/src/jones/processPlacement/processPlacement.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
         "native/process-placement/build.test.mjs"
       ]
     },
@@ -215,6 +297,7 @@
     {
       "id": "direct-desktop-media",
       "tests": [
+        "apps/server/src/device/DeviceService.test.ts",
         "apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts",
         "apps/server/src/device/DeviceHubProxy.test.ts",
         "apps/server/src/device/SshDeviceHost.test.ts",
@@ -385,7 +468,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
@@ -474,6 +557,8 @@
     {
       "id": "persistence-upstream-isolation",
       "tests": [
+        "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+        "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
@@ -481,8 +566,11 @@
     },
     {
       "id": "composer-thread-query",
-      "tests": ["apps/web/src/jones/composer/threadMentionTrigger.test.ts"],
-      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; preserves matcher identities and legacy file chip delimiters."
+      "tests": [
+        "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
+        "packages/client-runtime/src/jones/composerThreadMatching.test.ts"
+      ],
+      "scope": "Web/desktop and shared mobile @ queries allow separated single spaces and close on two consecutive spaces; thread titles match punctuation-normalized words in any order, rank stronger matches before weaker matches, then recent activity within equal relevance; preserves file matching, matcher identities and legacy file chip delimiters."
     },
     {
       "id": "design-requests",
@@ -511,14 +599,6 @@
         "apps/server/src/jones/updates/nativePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
         "scripts/jones/updates/native-startup-fixture.node-test.mjs",
-        "apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.test.ts",
-        "scripts/jones/updates/legacy-bootstrap-bundle.test.ts",
-        "scripts/jones/updates/legacy-bootstrap-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-bootstrap-after-pack.node-test.mjs",
-        "scripts/jones/updates/legacy-admission-native-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-maintenance-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-process-custody-fixture.node-test.mjs",
-        "scripts/jones/updates/legacy-identity-native-fixture.node-test.mjs",
         "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "scope": "Local desktop update actions, including sidebar and Update Everything downloads through the Jones staged path, and manual sidebar check completion feedback. The existing sidebar completion hook and its integration harness retain a small shared-file exception to reuse upstream pending state and toast behavior without duplicating the component. Background checks remain quiet."
@@ -550,9 +630,10 @@
       "id": "codex-capacity-continuation",
       "tests": [
         "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
       ],
-      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded."
+      "scope": "Codex capacity errors continue the same logical turn with twelve five-second promptless retries, including exact model-capacity messages, completion-only failures and acknowledged native goal followups; native retry ownership, settings, cancellation and unknown starts remain bounded. The original turn/start RPC remains owned by its exact producer after caller timeout. A bounded Jones ledger lifts admission only after matching late acknowledgement and terminal evidence, without replaying or reviving the failed attempt. Shared adapter hooks retain producer scope and admission ownership; integration tests stay in the upstream replay harness to prove real RPC correlation and new/resumed sibling admission."
     },
     {
       "id": "connection-diagnostics",
@@ -639,36 +720,22 @@
     {
       "id": "qualified-updates",
       "tests": [
-        "apps/server/src/jones/cloud/qualifiedWriterObserver.test.ts",
-        "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
-        "apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.test.ts",
-        "scripts/jones/updates/legacy-cold-maintenance-fixture.node-test.mjs",
         "apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
-        "apps/server/src/jones/updates/offlinePreparation.test.ts",
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdPairSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdReceiverSource.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationEntry.test.ts",
-        "scripts/jones/updates/offline-preparation-build.test.ts",
-        "scripts/jones/updates/functional-policy.test.ts",
-        "scripts/jones/updates/offline-preparation-qualification.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationPlan.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationCore.test.ts",
-        "apps/desktop/src/jones/updates/jonesPreparationWorkerSource.test.ts",
-        "apps/server/src/jones/updates/offlinePreparationWorker.test.ts",
-        "scripts/jones/updates/legacy-preparation-native-fixture.node-test.mjs",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
         "apps/desktop/src/jones/updates/jonesColdBackendCustody.test.ts",
-        "apps/desktop/src/jones/updates/jonesColdTrialCustodySource.test.ts",
         "apps/desktop/src/backend/DesktopBackendManager.test.ts",
         "apps/desktop/src/backend/DesktopBackendConfiguration.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
         "apps/desktop/src/jones/updates/jonesNativeStartup.test.ts",
         "apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
-        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs"
+        "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
+        "apps/server/src/entrypoint.test.ts",
+        "scripts/jones/updates/native-fixture-support.node-test.mjs",
+        "apps/server/src/jones/cloud/capturedProcess.test.ts",
+        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
       ],
-      "scope": "Qualified update writer-observer sudo and socket transports retain one shared protocol parser, exact endpoint trust, bounded response lifecycle, and fail-closed incomplete observations. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
+      "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
     },
     {
       "id": "server-shard-weights",
@@ -697,6 +764,39 @@
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
+    },
+    {
+      "id": "startup-access-logging",
+      "tests": [
+        "apps/server/src/startupAccess.logging.test.ts",
+        "apps/server/src/startupAccess.test.ts",
+        "apps/server/src/jones/startupAccessLogging.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/cli/pair.test.ts"
+      ],
+      "scope": "Startup console and structured logs withhold pairing credentials and token-bearing URLs unconditionally while preserving browser launch and explicit pair commands. Synthetic logging and existing runtime integration fixtures prove both paths."
+    },
+    {
+      "id": "launcher-commit-diagnostics",
+      "tests": [
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts"
+      ],
+      "scope": "Update-bound pointer uncertainty, bounded safe commit diagnostics and launcher/server drift notices. Shared launcher edits preserve its existing state machine and commit guards; focused synthetic lifecycle coverage exercises pointer failure, promotion and sequential updates."
+    },
+    {
+      "id": "decision-snapshot-access",
+      "tests": [
+        "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/mcp/McpSessionRegistry.test.ts",
+        "packages/shared/src/projectSettings.test.ts"
+      ],
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
     }
   ]
 }

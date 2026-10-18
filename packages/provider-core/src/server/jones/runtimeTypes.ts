@@ -1,4 +1,5 @@
-import type { ProviderRuntimeBinding } from "@t3tools/contracts";
+import type * as Effect from "effect/Effect";
+import type { PhysicalProcessObservation, ProviderRuntimeBinding } from "@t3tools/contracts";
 
 declare const privateGuard: unique symbol;
 export interface NativeProviderExecutionGuard {
@@ -32,4 +33,9 @@ export interface ProviderGoalReadResult {
   readonly nativeThreadId: string | null;
   readonly state: "inactive" | "active" | "unknown";
   readonly reasonCode: ProviderGoalReasonCode;
+}
+
+export interface PhysicalProcessLease {
+  readonly runtimeGeneration: string;
+  readonly capture: Effect.Effect<PhysicalProcessObservation>;
 }

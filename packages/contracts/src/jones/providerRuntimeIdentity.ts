@@ -62,3 +62,51 @@ export const ProviderRuntimeEvidenceCapture = Schema.Struct({
   evidenceRevision: Schema.optional(NonNegativeInt),
 });
 export type ProviderRuntimeEvidenceCapture = typeof ProviderRuntimeEvidenceCapture.Type;
+
+// OS units and namespace are explicit; executable metadata is not a build attestation.
+export const PhysicalProcessIdentity = Schema.Struct({
+  platform: Schema.Literal("linux"),
+  bootId: Schema.String,
+  pidNamespace: Schema.String,
+  pid: NonNegativeInt,
+  startTime: Schema.String,
+  startTimeUnit: Schema.Literal("linux-clock-ticks-since-boot"),
+  executableIdentity: Schema.String,
+  build: Schema.Literal("unknown"),
+});
+export type PhysicalProcessIdentity = typeof PhysicalProcessIdentity.Type;
+
+export const PhysicalProcessObservation = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("observed"),
+    runtimeGeneration: Schema.String,
+    launcherPid: NonNegativeInt,
+    responder: PhysicalProcessIdentity,
+    source: Schema.Literal("codex.server/diagnostics+local-os"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unknown"),
+    runtimeGeneration: Schema.String,
+    reason: Schema.Literals([
+      "unsupported",
+      "capability_disabled",
+      "malformed",
+      "transport",
+      "timeout",
+      "retired",
+      "os_unavailable",
+      "process_absent",
+      "launcher_unavailable",
+      "provenance_unavailable",
+      "responder_mismatch",
+      "incarnation_changed",
+      "storage_unavailable",
+      "not_captured",
+    ]),
+    diagnostics: Schema.optional(
+      Schema.Struct({ status: Schema.Literal("supported"), reportedPid: NonNegativeInt }),
+    ),
+    localLauncher: Schema.optional(PhysicalProcessIdentity),
+  }),
+]);
+export type PhysicalProcessObservation = typeof PhysicalProcessObservation.Type;

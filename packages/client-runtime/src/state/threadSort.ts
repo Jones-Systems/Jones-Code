@@ -20,8 +20,6 @@ export type SettledThreadTimestampInput = Pick<
   "settledAt" | "latestUserMessageAt" | "latestRun" | "updatedAt"
 >;
 
-/** The timestamp a settled row sorts and labels by on every client: settledAt
-    when stamped, otherwise the latest message or turn stamp, then updatedAt. */
 export function resolveSettledThreadTimestamp(thread: SettledThreadTimestampInput): string | null {
   if (thread.settledAt != null && toSortableTimestamp(thread.settledAt) !== null) {
     return thread.settledAt;
@@ -45,9 +43,6 @@ export function resolveSettledThreadTimestamp(thread: SettledThreadTimestampInpu
   return toSortableTimestamp(thread.updatedAt) === null ? null : thread.updatedAt;
 }
 
-/** Settled rows are history, so they order by when the work ENDED, newest
-    first, with an id tiebreak. Each key resolves once per sort, not once
-    per comparison. Shared by web and mobile so both render the same order. */
 export function sortSettledThreads<T extends SettledThreadTimestampInput & { readonly id: string }>(
   threads: readonly T[],
 ): T[] {
@@ -113,14 +108,6 @@ export function getThreadSortTimestamp(
   return getLatestUserMessageTimestamp(thread);
 }
 
-/**
- * Sort anchor for the active thread list: creation time, re-anchored to
- * unsettledAt when the thread last re-entered the active list (an explicit
- * un-settle, or a settled thread waking on activity). The list stays static
- * between lifecycle transitions, but an un-settled thread surfaces at the
- * top instead of sinking back to its creation-order slot. Shared by web and
- * mobile so both render the same order. Malformed timestamps sink to 0.
- */
 export function activeThreadAnchorTimestampMs(thread: {
   readonly createdAt: string;
   readonly unsettledAt?: string | null | undefined;
@@ -180,8 +167,6 @@ export {
   toSortableTimestamp,
 } from "@t3tools/shared/jones/pinOrder";
 
-/** New and reopened threads lead the active list. Arranged threads follow
-    their saved keys; activity leaves both groups in place. */
 export function sortActiveThreadsByOrderKey<
   T extends {
     readonly id: string;
@@ -217,14 +202,7 @@ export function sortActiveThreadsByOrderKey<
   });
 }
 
-/**
- * planPinnedReorder specialized for mobile's Move up / Move down menu
- * actions: swap the moved thread with its displayed neighbor. Null when the
- * move falls off either end of the list. Same single-write-per-move
- * semantics as a web drag.
- */
 export function planPinnedMove(input: {
-  /** Reorder-capable pinned thread ids in displayed order. */
   readonly orderedIds: readonly string[];
   readonly keysById: ReadonlyMap<string, string | null | undefined>;
   readonly movedId: string;

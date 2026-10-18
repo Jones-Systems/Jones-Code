@@ -34,8 +34,11 @@ const RegistryOrigin = Schema.String.check(
   Schema.makeFilter((value) => {
     try {
       const url = new URL(value);
+      // Mirrors the control-plane transport: plain HTTP only for an IP-literal loopback registry.
       return (
-        url.protocol === "https:" &&
+        (url.protocol === "https:" ||
+          (url.protocol === "http:" &&
+            (url.hostname === "127.0.0.1" || url.hostname === "[::1]"))) &&
         url.origin === value &&
         url.username === "" &&
         url.password === ""
@@ -82,7 +85,7 @@ const canonicalJson = (value: unknown): string => {
 // UTF-8 JSON, recursively sorted object keys, no whitespace or trailing newline; all request fields are closed.
 export const canonicalNativeEnrollmentRequest = (request: NativeEnrollmentRequest): string =>
   canonicalJson(Schema.decodeUnknownSync(NativeEnrollmentRequest)(request));
-const sha256EnrollmentBytes = (bytes: string | Uint8Array): string =>
+export const sha256EnrollmentBytes = (bytes: string | Uint8Array): string =>
   NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const nativeEnrollmentRequestSha256 = (request: NativeEnrollmentRequest): string =>
   sha256EnrollmentBytes(canonicalNativeEnrollmentRequest(request));

@@ -172,7 +172,7 @@ describe("host status metrics", () => {
     (id) => {
       const mac = { ...available, id, availableMemoryBytes: 0, swapIoBytesPerSecond: 0 };
       expect(hostStatusMetrics(mac)).toMatchObject({
-        ram: "Swap 0.0 MiB/s",
+        ram: "0.0 mb/s",
         ramHealth: "healthy",
         health: "healthy",
       });
@@ -182,7 +182,7 @@ describe("host status metrics", () => {
         ramHealth: "healthy",
       });
       expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10.01 * 1024 ** 2 })).toMatchObject({
-        ram: "Swap 10.0 MiB/s",
+        ram: "10.0 mb/s",
         ramHealth: "warning",
         health: "warning",
       });
@@ -193,7 +193,7 @@ describe("host status metrics", () => {
       });
       const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
       expect(hostStatusMetrics(olderMac)).toMatchObject({
-        ram: "Swap —",
+        ram: "— mb/s",
         ramHealth: "unavailable",
         health: "healthy",
       });

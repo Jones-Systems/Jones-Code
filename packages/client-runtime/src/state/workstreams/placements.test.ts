@@ -178,10 +178,6 @@ describe("live complete placement assembly", () => {
       { ...page(0), page: { ...page(0).page, next_cursor: "next" } },
       { ...page(0), page: { ...page(0).page, items: [item(0), item(0)] } },
       { ...page(0), page: { ...page(0).page, items: [item(1), item(0)] } },
-      {
-        ...page(0),
-        page: { ...page(0).page, items: [{ ...item(0), expires_at: "2026-09-12T12:00:00Z" }] },
-      },
       { ...page(0), page: { ...page(0).page, items: [item(2)] } },
       { ...page(0), page: { ...page(0).page, items: [{ ...item(0), content: "private" }] } },
       { ...page(0), content: "private" },
@@ -199,6 +195,63 @@ describe("live complete placement assembly", () => {
         ),
       ).rejects.toThrow();
       expect(calls).toBe(1);
+    }
+  });
+  it("drops an individually expired placement while keeping valid ones", async () => {
+    const expired = { ...item(0), expires_at: "2026-09-12T12:00:00.000Z" };
+    const result = await loadLiveT3Placements(
+      metadata,
+      identities,
+      async () => ({ ...page(0), page: { ...page(0).page, items: [expired, item(1)] } }),
+      () => now,
+    );
+    expect(result.items).toEqual([item(1)]);
+    const onlyExpired = await loadLiveT3Placements(
+      metadata,
+      identities,
+      async () => ({ ...page(0), page: { ...page(0).page, items: [expired] } }),
+      () => now,
+    );
+    expect(onlyExpired.items).toEqual([]);
+  });
+  it("drops a placement that expires while loading", async () => {
+    let clock = now;
+    const result = await loadLiveT3Placements(
+      metadata,
+      identities,
+      async () => ({
+        ...page(0),
+        page: {
+          ...page(0).page,
+          items: [{ ...item(0), expires_at: "2026-09-12T12:00:00.001Z" }, item(1)],
+        },
+      }),
+      () => (clock += 1),
+    );
+    expect(result.items).toEqual([item(1)]);
+  });
+  it("still rejects malformed, future-attested, inverted, unordered, or unrelated expired items", async () => {
+    const expired = { expires_at: "2026-09-12T11:30:00.000Z" };
+    for (const items of [
+      [{ ...item(0), attested_at: "not-a-time" }],
+      [{ ...item(0), expires_at: "not-a-time" }],
+      [{ ...item(0), attested_at: "2026-09-12T12:00:00.001Z" }],
+      [{ ...item(0), attested_at: "2026-09-12T11:30:00.000Z", ...expired }],
+      [item(1), { ...item(0), ...expired }],
+      [
+        { ...item(0), ...expired },
+        { ...item(0), ...expired },
+      ],
+      [{ ...item(2), ...expired }],
+    ]) {
+      await expect(
+        loadLiveT3Placements(
+          metadata,
+          identities,
+          async () => ({ ...page(0), page: { ...page(0).page, items } }),
+          () => now,
+        ),
+      ).rejects.toThrow();
     }
   });
   it("rejects invalid trust snapshots and stale metadata without loading", async () => {

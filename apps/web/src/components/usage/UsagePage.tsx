@@ -169,19 +169,16 @@ export function UsagePage() {
     isPartial,
     refresh,
   } = useUsage(window, selectedEnvironmentIds, hiddenProviders);
-  // Until a new window's first answer, the previous one stays on screen, muted.
   const merged = shown?.merged ?? answeredUsage;
   const shownWindow = shown?.window ?? window;
   const shownHourly = shownWindow.resolution === "hour";
   const refreshingUsage = isRefreshing && !showingLimits;
-  // Usage kept from another window is all old, so every figure stays muted.
   const showingKept = shown !== null && shown.window !== window;
   const loading = useMemo(() => {
     if (showingKept) {
       return { partial: true, everyProvider: true, providers: new Set<UsageProviderKind>() };
     }
     const state = usageLoadingState(selectedEnvironments, refreshingUsage);
-    // A hidden provider still refreshing must not add its row or mute the totals.
     const providers = new Set([...state.providers].filter((p) => !hiddenProviders.has(p)));
     return {
       partial: state.everyProvider || providers.size > 0,
@@ -238,8 +235,6 @@ export function UsagePage() {
     setExpandedModelKey,
     selectProvider,
   } = useUsageProviderDetails(merged, loading.partial);
-  // Newest first: the window can run 90 days, so the interesting end
-  // belongs at the top of the table.
   const breakdownPeriods = useMemo<readonly (DailyTotals | HourlyTotals)[]>(
     () => (shownHourly ? detailBreakdown.hourly : detailBreakdown.daily).toReversed(),
     [shownHourly, detailBreakdown.daily, detailBreakdown.hourly],
@@ -252,7 +247,6 @@ export function UsagePage() {
     [breakdown, detailBreakdown.models, metric],
   );
   const providersWithData = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
-  // A provider still refreshing keeps its row and line before its usage lands.
   const activeProviders = useMemo(
     () =>
       PROVIDER_ORDER.filter(
@@ -377,7 +371,6 @@ export function UsagePage() {
     if (showingLimits && connectedLimitsEnvironments) autoRefreshLimits();
   }, [showingLimits, connectedLimitsEnvironments]);
 
-  // Names the period on screen, which is the previous one until the new one answers.
   const windowLabel =
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
       ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone)}`
@@ -455,8 +448,6 @@ export function UsagePage() {
             </Toggle>
           ))}
         </ToggleGroup>
-        {/* The period does not apply to Limits, so it stays in place but
-            disabled; unmounting it shifted the metric toggle ~300px. */}
         <ToggleGroup
           aria-label="Usage period"
           variant="segmented"
@@ -746,7 +737,6 @@ export function UsagePage() {
                                   : formatTokens(totals?.totalTokens ?? 0)}
                             </span>
                           </span>
-                          {/* Kept while awaiting data so the row does not grow when it lands. */}
                           <span
                             className={cn(
                               "text-xs text-muted-foreground",
@@ -1261,7 +1251,6 @@ function CursorEnableLimits({
   );
 }
 
-/** Brand mark for the harness a row belongs to. */
 function ProviderMark({
   provider,
   className,
@@ -1279,7 +1268,6 @@ function ProviderMark({
   );
 }
 
-/** Mutes a figure that is still coming in. The delay keeps a quick answer from flashing. */
 function figureClass(loading: boolean) {
   return cn("transition-opacity", loading && "opacity-40 delay-150");
 }
@@ -1305,10 +1293,6 @@ function Metric({
   );
 }
 
-/**
- * Explains failed or incompatible environments and deduplicated transcripts.
- * Shown inside the environment filter so arriving results do not move the page.
- */
 function UsageCoverageNotice({
   environments,
   duplicateSources,
@@ -1352,7 +1336,6 @@ function UsageCoverageNotice({
   );
 }
 
-/** Environment selection, with each environment's scan status in the menu. */
 function UsageEnvironmentFilter({
   environments,
   selectedEnvironments,
@@ -1489,7 +1472,6 @@ function UsageEnvironmentFilter({
   );
 }
 
-/** Provider visibility shared by every tab. Stored as the hidden set. */
 function UsageProviderFilter({
   hiddenProviders,
   onChange,
@@ -1549,11 +1531,6 @@ function UsageProviderFilter({
   );
 }
 
-/**
- * Stand-in with the loaded page's shape, using the shared `Skeleton` bars so it
- * breathes with the same `animate-skeleton` pulse as every other loading state.
- * Replaced by results as soon as the first environment answers.
- */
 function UsageSkeleton() {
   return (
     <>

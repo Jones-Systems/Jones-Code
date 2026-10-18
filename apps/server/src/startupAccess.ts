@@ -6,6 +6,7 @@ import { HttpServer } from "effect/http";
 
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
+import { formatHeadlessStartupOutput } from "./jones/startupAccessLogging.ts";
 
 export interface HeadlessServeAccessInfo {
   readonly connectionString: string;
@@ -120,15 +121,7 @@ export const renderTerminalQrCode = (value: string, margin = 2): string => {
 };
 
 export const formatHeadlessServeOutput = (accessInfo: HeadlessServeAccessInfo): string =>
-  [
-    "T3 Code server is ready.",
-    `Connection string: ${accessInfo.connectionString}`,
-    `Token: ${accessInfo.token}`,
-    `Pairing URL: ${accessInfo.pairingUrl}`,
-    "",
-    renderTerminalQrCode(accessInfo.pairingUrl),
-    "",
-  ].join("\n");
+  formatHeadlessStartupOutput(accessInfo.connectionString);
 
 export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessInfo")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;

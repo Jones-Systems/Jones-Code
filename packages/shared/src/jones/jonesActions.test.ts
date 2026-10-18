@@ -346,6 +346,16 @@ describe("Jones Actions qualification", () => {
       });
     },
   );
+  it("reports pending main CI as building but a completed CI failure as blocked", async () => {
+    expect(
+      await check(fixture({ ci: { status: "in_progress", conclusion: null } }).client),
+    ).toEqual({ state: "building", retryAfterMs: 240000 });
+    expect(await check(fixture({ ci: { conclusion: "failure" } }).client)).toEqual({
+      state: "blocked",
+      reason: "unavailable",
+      retryAfterMs: 240000,
+    });
+  });
   it("reports building and authentication without exposing transport details", async () => {
     expect(
       await check(fixture({ run: { status: "in_progress", conclusion: null } }).client),

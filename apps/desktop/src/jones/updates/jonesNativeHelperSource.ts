@@ -6,7 +6,7 @@ import argparse, fcntl, hashlib, json, os, pathlib, signal, sqlite3, subprocess,
 
 PROTOCOL = 1
 STARTUP_GATE_PROTOCOL = 1
-SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json')
+SETTINGS = ('settings.json', 'desktop-settings.json', 'client-settings.json', 'saved-environments.json', 'environment-id')
 TRANSIENT_PROFILE = {'SingletonLock', 'SingletonCookie', 'SingletonSocket'}
 RECOVERY_HEADROOM = 256 * 1024 * 1024
 
@@ -113,8 +113,8 @@ def prove_quiescence(expected):
     files += [database.parent / name for name in SETTINGS]
     existing = [str(path) for path in files if path.exists()]
     if not existing: raise RuntimeError('Native database files are missing; writer inspection held.')
-    # Chromium stores are not a fixed filename list. Inspect the copied profile
-    # tree as well as SQLite/settings; this observes outsiders without excluding them.
+    # Chromium stores are not a fixed filename list. Inspect the profile tree
+    # as well as SQLite/settings; this observes outsiders without excluding them.
     result = subprocess.run(['/usr/sbin/lsof', '-F', 'pfa', '+D', str(profile), '--'] + existing, capture_output=True, text=True, timeout=30)
     if result.returncode not in (0, 1): raise RuntimeError('Native file-writer inspection failed.')
     if result.stderr.strip() and (any(path in result.stderr for path in existing + [str(profile)]) or not all(line.startswith("lsof: WARNING: can't stat()") or line.strip() == 'Output information may be incomplete.' for line in result.stderr.splitlines() if line.strip())):
@@ -252,9 +252,9 @@ def asar_metadata(archive):
         stream.seek(position)
         return json.loads(stream.read(length))
 
-def bundle_identity(active):
+def bundle_identity(active, stable=True):
     app = pathlib.Path(active['appPath'])
-    if app.is_symlink() or not app.is_dir() or any(part in ('AppTranslocation', 'Volumes', 'tmp', 'jones-updates') for part in app.parts):
+    if app.is_symlink() or not app.is_dir() or (stable and any(part in ('AppTranslocation', 'Volumes', 'tmp', 'jones-updates') for part in app.parts)):
         raise RuntimeError('Move Jones Code to a stable writable Applications folder before updating.')
     with open(app / 'Contents/Info.plist', 'rb') as stream: info = plistlib.load(stream)
     executable = app / 'Contents/MacOS' / info['CFBundleExecutable']
@@ -266,6 +266,68 @@ def bundle_identity(active):
         raise RuntimeError('Native app source or version changed; launch held.')
     if not os.access(app.parent, os.W_OK): raise RuntimeError('The stable app folder is not writable; native authorization is required.')
     return info['CFBundleIdentifier']
+
+def native_authority_transition(expected, candidate, operation, guard=None):
+    # Only the source-qualified candidate backend is executed; the stopped old
+    # bundle may predate this command. No shell or ordinary server startup runs.
+    bundle_identity(candidate, stable=False)
+    if app_digest(candidate['appPath']) != candidate['appDigest']:
+        raise RuntimeError('Native authority backend changed; restore held.')
+    app = pathlib.Path(candidate['appPath'])
+    executable = pathlib.Path(candidate['executablePath'])
+    resources = app / 'Contents/Resources'
+    for path in (app, app / 'Contents', app / 'Contents/MacOS', resources, executable, resources / 'app.asar'):
+        info = path.lstat()
+        if path.is_symlink() or path.resolve(strict=True) != path or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise RuntimeError('Native authority backend is not owner-controlled.')
+        if path in (executable, resources / 'app.asar'):
+            if not stat.S_ISREG(info.st_mode): raise RuntimeError('Native authority backend is not regular.')
+        elif not stat.S_ISDIR(info.st_mode): raise RuntimeError('Native authority backend directory changed.')
+    if not os.access(executable, os.X_OK): raise RuntimeError('Native authority backend is not executable.')
+    request = {'protocol': 1, 'operation': operation, 'baseDir': expected['home'],
+               'databasePath': expected['databasePath'], 'environmentId': expected['environmentId'],
+               'candidate': {key: candidate[key] for key in ('version', 'sourceSha', 'sourceTree')}}
+    if operation == 'advance': request['guard'] = guard
+    payload = json.dumps(request).encode('utf8')
+    if len(payload) > 16384: raise RuntimeError('Native authority request exceeds its bound.')
+    env = dict(os.environ, ELECTRON_RUN_AS_NODE='1')
+    for name in ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR'):
+        env.pop(name, None)
+    try:
+        result = subprocess.run([str(executable), str(resources / 'app.asar/apps/server/dist/bin.mjs'),
+                                 '__jones-native-authority-transition'], input=payload, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, env=env, timeout=30, check=False)
+        if result.returncode != 0 or len(result.stdout) > 16384: raise ValueError('unknown result')
+        response = json.loads(result.stdout.decode('utf8'))
+        if not isinstance(response, dict) or type(response.get('protocol')) is not int or response['protocol'] != 1 or response.get('operation') != operation:
+            raise ValueError('unknown result')
+        if operation == 'fence':
+            if set(response) != {'protocol', 'operation', 'guard'}: raise ValueError('unknown result')
+            observed = response['guard']
+            if not isinstance(observed, dict): raise ValueError('unknown guard')
+            if observed == {'kind': 'absent'}: return observed
+            fields = {'kind', 'environmentId', 'authorityNamespace', 'storeGeneration', 'transitionId', 'recordSha256'}
+            if set(observed) != fields or observed['kind'] != 'fenced' or observed['environmentId'] != expected['environmentId']:
+                raise ValueError('unknown guard')
+            if type(observed['storeGeneration']) is not int or not 1 <= observed['storeGeneration'] < 9007199254740991:
+                raise ValueError('unknown generation')
+            for value, prefix in ((observed['authorityNamespace'], 't3-native:'), (observed['transitionId'], '')):
+                if not isinstance(value, str) or not value.startswith(prefix): raise ValueError('unknown guard')
+                identity = uuid.UUID(value[len(prefix):])
+                if identity.version != 4 or str(identity) != value[len(prefix):]: raise ValueError('unknown guard')
+            digest_value = observed['recordSha256']
+            if not isinstance(digest_value, str) or len(digest_value) != 64 or any(char not in '0123456789abcdef' for char in digest_value):
+                raise ValueError('unknown guard')
+            return observed
+        if guard == {'kind': 'absent'}:
+            if response != {'protocol': 1, 'operation': 'advance', 'state': 'absent'}: raise ValueError('unknown result')
+        elif set(response) != {'protocol', 'operation', 'state', 'authorityNamespace', 'storeGeneration'} or response['state'] != 'advanced' or response['authorityNamespace'] != guard['authorityNamespace'] or type(response['storeGeneration']) is not int or response['storeGeneration'] != guard['storeGeneration'] + 1:
+            raise ValueError('unknown result')
+        return response
+    except Exception:
+        # A lost response can follow a committed transition. Never replay it or
+        # infer that the old generation is safe to launch.
+        raise RuntimeError('Native authority transition outcome is unknown; restore held.') from None
 
 def prepare_bundle(expected, staged, transaction_id):
     stable = pathlib.Path(expected['appPath'])
@@ -312,7 +374,9 @@ def launch(active, descriptor=None):
     if descriptor:
         env['T3CODE_JONES_TRIAL_DESCRIPTOR'] = str(descriptor)
         env['T3CODE_PORT'] = str(read(descriptor)['listener'].rsplit(':', 1)[1])
-    else: env.pop('T3CODE_JONES_TRIAL_DESCRIPTOR', None)
+    else:
+        for name in ('T3CODE_JONES_TRIAL_DESCRIPTOR', 'T3CODE_JONES_COLD_CHANNEL_FD', 'T3CODE_JONES_COLD_TRIAL_DESCRIPTOR'):
+            env.pop(name, None)
     child = subprocess.Popen([active['executablePath']], env=env, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     identity = process_identity(child.pid)
@@ -387,6 +451,112 @@ def inspect_selection_transactions(active, transaction_id=None, claiming=False, 
                     raise SelectionRefused('activation-pending')
         elif intent.exists() or preparation.exists() or prepared:
             raise SelectionRefused('activation-pending')
+
+def reconcile_running(request_path, request_sha256):
+    result = {'protocol': PROTOCOL, 'status': 'refused'}
+    try:
+        request, raw, _ = bounded_native_json(request_path)
+        if hashlib.sha256(raw).hexdigest() != request_sha256: raise SelectionRefused('running-changed')
+        active, manifest_raw, _ = bounded_native_json(manifest_path)
+        if hashlib.sha256(manifest_raw).hexdigest() != request.get('manifestSha256'):
+            raise SelectionRefused('running-changed')
+        observed = request['observed']
+        if observed.get('protocol') != PROTOCOL or observed.get('owner') != 'desktop': raise SelectionRefused('running-changed')
+        for key in ('home', 'databasePath', 'profile', 'appPath', 'executablePath'):
+            if str(pathlib.Path(observed[key]).resolve(strict=True)) != observed[key]: raise SelectionRefused('running-changed')
+        if pathlib.Path(observed['home']) / 'runtime' / 'jones-active-install.json' != manifest_path:
+            raise SelectionRefused('running-changed')
+        if pathlib.Path(observed['databasePath']).parent != pathlib.Path(observed['home']) / 'userdata':
+            raise SelectionRefused('running-changed')
+        if (pathlib.Path(observed['databasePath']).parent / 'environment-id').read_text().strip() != observed['environmentId']:
+            raise SelectionRefused('running-changed')
+        bundle_identity(observed)
+        if (manifest_path.parent / 'jones-maintenance').exists(): raise SelectionRefused('unknown-transaction')
+        root = manifest_path.parent / 'jones-updates' / 'transactions'
+        pending, resolved = [], None
+        entries = list(root.iterdir()) if root.exists() else []
+        if root.is_symlink() or len(entries) > 1000: raise SelectionRefused('unknown-transaction')
+        observed_digest = None
+        for tx in entries:
+            if tx.is_symlink() or not tx.is_dir() or len(tx.name) != 64 or any(char not in '0123456789abcdef' for char in tx.name):
+                raise SelectionRefused('unknown-transaction')
+            journal_path, intent_path = tx / 'journal.json', tx / 'intent.json'
+            journal = bounded_native_json(journal_path)[0] if journal_path.exists() else None
+            if journal is not None:
+                recorded = journal.get('intent', {})
+                if not isinstance(recorded, dict) or recorded.get('protocol') != PROTOCOL or recorded.get('transactionId') != tx.name or any(key in recorded for key in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction')):
+                    raise SelectionRefused('unknown-transaction')
+                if journal.get('phase') in ('resumed', 'rolled-back'): continue
+            if (tx / 'retirement-intent.json').exists() and not (tx / 'retirement-receipt.json').exists():
+                raise SelectionRefused('restore-incomplete')
+            retained = tx / 'advanced-state' / 'retained.json'
+            guard_path = tx / 'advanced-state-authority-guard.json'
+            if (guard_path.exists() or (tx / 'advanced-state').exists()) and not retained.exists():
+                raise SelectionRefused('restore-incomplete')
+            if not intent_path.exists():
+                if journal is not None or any((tx / name).exists() for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json')):
+                    raise SelectionRefused('preparation-incomplete')
+                continue
+            intent, _, _ = bounded_native_json(intent_path)
+            if intent.get('protocol') != PROTOCOL or intent.get('transactionId') != tx.name or any(key in intent for key in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction')) or (journal is not None and journal.get('intent') != intent):
+                raise SelectionRefused('unknown-transaction')
+            previous, staged = intent['expected'], intent['staged']
+            if any(previous.get(key) != observed[key] for key in ('home', 'databasePath', 'profile', 'environmentId', 'appPath')):
+                raise SelectionRefused('unknown-transaction')
+            target = dict(previous, generation=tx.name, transactionId=tx.name,
+                          **{key: staged[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest')},
+                          executablePath=str(pathlib.Path(previous['appPath']) / pathlib.Path(staged['executablePath']).relative_to(staged['appPath'])))
+            identity = ('version', 'sourceSha', 'sourceTree', 'appPath', 'executablePath')
+            matches_old = all(previous.get(key) == observed[key] for key in identity)
+            matches_target = all(target.get(key) == observed[key] for key in identity)
+            if observed_digest is None: observed_digest = app_digest(observed['appPath'])
+            matches_old = matches_old and (previous.get('appDigest') is None or previous['appDigest'] == observed_digest)
+            matches_target = matches_target and target['appDigest'] == observed_digest
+            if matches_old == matches_target or active not in (previous, target): raise SelectionRefused('running-changed')
+            if matches_target and (type(staged.get('startupGateProtocol')) is not int or staged['startupGateProtocol'] != STARTUP_GATE_PROTOCOL):
+                raise SelectionRefused('running-changed')
+            phase = journal.get('phase') if journal is not None else None
+            restored = False
+            if retained.exists():
+                retained_state, _, _ = bounded_native_json(retained)
+                if retained_state != {'protocol': PROTOCOL, 'previous': previous} or not guard_path.exists():
+                    raise SelectionRefused('restore-incomplete')
+                guard_record, _, _ = bounded_native_json(guard_path)
+                guard = guard_record.get('guard')
+                configured_authority = os.environ.get('T3CODE_NATIVE_AUTHORITY_STATE_DIR', '').strip()
+                if configured_authority == '~': configured_authority = os.path.expanduser('~')
+                elif configured_authority.startswith(('~/', '~\\')): configured_authority = os.path.join(os.path.expanduser('~'), configured_authority[2:])
+                authority_directory = pathlib.Path(os.path.abspath(configured_authority)) if configured_authority else pathlib.Path(previous['home']) / 'native-store-authority'
+                authority_path = authority_directory / 'native-store-authority-v1.json'
+                if guard == {'kind': 'absent'}:
+                    restored = not authority_path.exists()
+                elif isinstance(guard, dict) and guard.get('kind') == 'fenced' and guard.get('environmentId') == previous['environmentId']:
+                    authority, _, _ = bounded_native_json(authority_path)
+                    restored = authority.get('state') == 'active' and authority.get('transition_id') is None and authority.get('authority_namespace') == guard.get('authorityNamespace') and authority.get('store_generation') == guard.get('storeGeneration', 0) + 1
+                if not restored: raise SelectionRefused('restore-incomplete')
+            before_swap = phase in (None, 'intent', 'preparing', 'quiescent', 'paired', 'swap-intent')
+            if matches_old:
+                if active != previous or not (restored or before_swap): raise SelectionRefused('activation-incomplete')
+            elif active != target or phase not in ('committed', 'resume-intent', 'resumed'):
+                raise SelectionRefused('activation-incomplete')
+            terminal, binding = ('rolled-back', previous) if matches_old else ('resumed', target)
+            if resolved is not None and resolved != binding: raise SelectionRefused('unknown-transaction')
+            resolved = binding
+            pending.append((journal_path, dict(journal or {}, intent=intent, phase=terminal,
+                message='Interrupted update resolved from the running app; ' + ('previous version remains active.' if matches_old else 'target version is active.'))))
+        next_active = resolved or observed
+        if manifest_path.read_bytes() != manifest_raw: raise SelectionRefused('running-changed')
+        if next_active != active:
+            # Keep one preimage under the same helper lock as activation and adoption.
+            durable(manifest_path.with_name(manifest_path.name + '.superseded'), active)
+            if manifest_path.read_bytes() != manifest_raw: raise SelectionRefused('running-changed')
+            durable(manifest_path, next_active)
+        for journal_path, journal in pending: durable(journal_path, journal)
+        return dict(result, status='reconciled', active=next_active)
+    except SelectionRefused as error:
+        return dict(result, reason=error.reason)
+    except Exception:
+        return dict(result, reason='unknown-transaction')
 
 def preparation_claim(active, staged_handle, transaction_id, selection_path, selection_digest):
     return dict(protocol=PROTOCOL, preparationClaimProtocol=2, stagedHandle=staged_handle, transactionId=transaction_id,
@@ -767,8 +937,8 @@ def activate(intent_file):
         record('resumed')
     except Exception as failure:
         try:
-            # Error evidence has its own small reserve. Candidate writers cannot
-            # consume the bulk rollback capacity while shutdown is unresolved.
+            # Error evidence has its own small reserve. Keep recovery headroom
+            # reserved until candidate shutdown is proved.
             release_recovery_reserve(recovery_reserves, 'journal')
         except Exception:
             record('blocked', message='Recovery reserve ownership or release is uncertain; state retained.')
@@ -803,7 +973,7 @@ def activate(intent_file):
             if not exclusive_writers: exclusive_writers = acquire_writer_exclusion(expected)
             release_recovery_reserve(recovery_reserves)
             recovery_capacity_before_restore(expected, tx / 'previous-pair')
-            restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state')
+            restore_pair(expected, tx / 'previous-pair', tx / 'advanced-state', staged)
             if incoming is not None and previous is not None: restore_bundle(expected, incoming, previous)
             record('rolled-back', message='Update rolled back: ' + str(failure))
             release_writer_exclusion(exclusive_writers)
@@ -813,10 +983,134 @@ def activate(intent_file):
     finally:
         release_writer_exclusion(exclusive_writers)
 
+def manual_install_plan(plan_path, plan_sha256):
+    plan, raw, _ = bounded_native_json(pathlib.Path(plan_path))
+    if hashlib.sha256(raw).hexdigest() != plan_sha256 or plan.get('protocol') != 1 or plan.get('restart') != 'ordinary':
+        raise RuntimeError('Manual installation plan changed or restart mode is unsupported.')
+    expected, manifest_raw, _ = bounded_native_json(manifest_path)
+    if hashlib.sha256(manifest_raw).hexdigest() != plan.get('expectedManifestSha256') or expected.get('owner') != 'desktop' or expected.get('protocol') != PROTOCOL:
+        raise RuntimeError('Manual installation admission preimage changed.')
+    if (manifest_path.parent / 'jones-maintenance').exists():
+        raise RuntimeError('Cold maintenance requires its own reconciliation.')
+    inspect_selection_transactions(expected)
+    transactions = manifest_path.parent / 'jones-updates' / 'transactions'
+    for transaction in transactions.iterdir() if transactions.exists() else ():
+        if (transaction / 'intent.json').exists():
+            prior = read(transaction / 'intent.json')
+            if any(key in prior for key in ('kind', 'maintenanceGeneration', 'handoffSha256', 'stateTransaction')):
+                raise RuntimeError('Cold or unknown native transaction requires reconciliation.')
+    manual_root = manifest_path.parent / 'jones-manual-installs'
+    if manual_root.exists():
+        if manual_root.is_symlink() or not manual_root.is_dir(): raise RuntimeError('Manual recovery root is unknown.')
+        for directory in manual_root.iterdir():
+            if directory.is_symlink() or not directory.is_dir() or not (directory / 'receipt.json').is_file():
+                raise RuntimeError('Unfinished manual installation requires reconciliation.')
+            if read(directory / 'receipt.json').get('phase') != 'launched':
+                raise RuntimeError('Unfinished manual installation requires reconciliation.')
+    installed, candidate = plan['installed'], plan['candidate']
+    if any(not isinstance(value.get('bundleIdentifier'), str) or not value['bundleIdentifier'].strip() for value in (installed, candidate)):
+        raise RuntimeError('Manual bundle identity is required before installation.')
+    for key in ('home', 'databasePath', 'profile', 'environmentId', 'appPath', 'executablePath'):
+        if installed.get(key) != expected.get(key):
+            raise RuntimeError('The actual installed bundle must retain the existing state paths.')
+    bundle_identity(installed)
+    bundle_identity(candidate, stable=False)
+    if installed.get('bundleIdentifier') != candidate.get('bundleIdentifier'):
+        raise RuntimeError('Manual candidate bundle identity differs.')
+    if pathlib.Path(candidate['appPath']).resolve() == pathlib.Path(installed['appPath']).resolve():
+        raise RuntimeError('Manual candidate must be separate from the installed app.')
+    for value in (installed, candidate):
+        if app_digest(value['appPath']) != value.get('appDigest'):
+            raise RuntimeError('Manual bundle bytes changed.')
+    artifact = plan['artifact']
+    if digest(artifact['path']) != artifact.get('sha256'):
+        raise RuntimeError('Manual artifact bytes changed.')
+    proofs = plan['processes']
+    if not isinstance(proofs, list) or not proofs or len(proofs) > 100:
+        raise RuntimeError('Manual installation requires captured owned process identities.')
+    for proof in proofs:
+        if set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity']:
+            raise RuntimeError('Manual process identity is invalid.')
+        alive(proof)
+    return plan, expected, manifest_raw
+
+def manual_install(plan_path, plan_sha256, apply=False):
+    # This explicit operator route uses ordinary restart, never forged warm
+    # preparation/continuation receipts. Legacy relaunchers must be stopped by
+    # the operator; lsof and cooperative leases do not establish universal exclusion.
+    plan, expected, manifest_raw = manual_install_plan(plan_path, plan_sha256)
+    if not apply:
+        return {'protocol': 1, 'operation': 'manual-install', 'status': 'ready',
+                'automaticContinuationRequested': False, 'sourceSha': plan['candidate']['sourceSha']}
+    transaction_id = uuid.uuid4().hex + uuid.uuid4().hex
+    directory = manifest_path.parent / 'jones-manual-installs' / transaction_id
+    directory.mkdir(parents=True, mode=0o700)
+    sync_parent(directory)
+    receipt_path = directory / 'receipt.json'
+    receipt = {'protocol': 1, 'operation': 'manual-install', 'transactionId': transaction_id,
+               'planSha256': plan_sha256, 'originalManifest': manifest_raw.decode(),
+               'installed': plan['installed'], 'candidate': plan['candidate'],
+               'automaticContinuationRequested': False, 'phase': 'preparing'}
+    def record(phase, **fields):
+        receipt.update(fields, phase=phase)
+        durable(receipt_path, receipt)
+    record('preparing')
+    writers = []
+    try:
+        storage = storage_preflight(expected, plan['candidate'], directory)
+        record('preparing', storage=storage)
+        stop_exact(plan['processes'])
+        prove_quiescence(expected)
+        writers = acquire_writer_exclusion(expected)
+        # Refresh observations after acquiring the leases and before the pair.
+        prove_quiescence(expected)
+        if any(alive(proof) for proof in plan['processes']):
+            raise RuntimeError('The captured old writers have not stopped.')
+        if manifest_path.read_bytes() != manifest_raw or app_digest(plan['installed']['appPath']) != plan['installed']['appDigest']:
+            raise RuntimeError('Manual installation preimage changed after shutdown.')
+        pair_state(expected, directory / 'previous-pair')
+        record('paired', pairedState=str(directory / 'previous-pair'))
+        incoming, previous = prepare_bundle(expected, plan['candidate'], transaction_id)
+        record('swap-intent', incomingBundle=str(incoming), previousBundle=str(previous))
+        if manifest_path.read_bytes() != manifest_raw:
+            raise RuntimeError('Admission changed before manual replacement.')
+        swap_bundle(expected, incoming, previous)
+        record('swapped')
+        candidate = plan['candidate']
+        next_active = dict(expected, generation=transaction_id, transactionId='manual-' + transaction_id,
+                           **{key: candidate[key] for key in ('version', 'sourceSha', 'sourceTree', 'appDigest', 'bundleIdentifier')},
+                           executablePath=str(pathlib.Path(expected['appPath']) / pathlib.Path(candidate['executablePath']).relative_to(candidate['appPath'])))
+        bundle_identity(next_active)
+        if app_digest(next_active['appPath']) != next_active['appDigest'] or manifest_path.read_bytes() != manifest_raw:
+            raise RuntimeError('Manual candidate or admission changed before publication.')
+        record('admission-intent', nextActive=next_active)
+        durable(manifest_path, next_active)
+        if read(manifest_path) != next_active:
+            raise RuntimeError('Manual admission readback failed.')
+        record('launch-intent')
+        release_writer_exclusion(writers)
+        writers = []
+        process = launch(next_active)
+        record('launched', process=process)
+        return {'protocol': 1, 'operation': 'manual-install', 'status': 'launched',
+                'sourceSha': next_active['sourceSha'], 'process': process, 'receiptPath': str(receipt_path),
+                'automaticContinuationRequested': False, 'readinessVerified': False}
+    except Exception as failure:
+        # An ordinary candidate may already have migrated state. Preserve both
+        # generations; a failed response never authorizes replay or stale restore.
+        record('held', stoppedAt=receipt['phase'], message=str(failure))
+        raise
+    finally:
+        release_writer_exclusion(writers)
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--manifest', required=True)
 action = parser.add_mutually_exclusive_group(required=True)
 action.add_argument('--activate')
+action.add_argument('--reconcile-running')
+action.add_argument('--inspect-manual-install')
+action.add_argument('--manual-install')
 action.add_argument('--launch', action='store_true')
 action.add_argument('--cli', action='store_true')
 action.add_argument('--discard-staged')
@@ -852,6 +1146,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
+        if args.reconcile_running:
+            print(json.dumps({'protocol': PROTOCOL, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
         if retirement_operation:
             print(json.dumps({'protocol': PROTOCOL, 'operation': retirement_operation, 'transactionId': args.inspect_retirement or args.retire_transaction, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
@@ -861,9 +1158,16 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
             print(json.dumps(result))
             raise SystemExit(0)
         raise
+    if args.reconcile_running:
+        print(json.dumps(reconcile_running(args.reconcile_running, args.plan_sha256)))
+        raise SystemExit(0)
     active = read(manifest_path)
     if active.get('protocol') != PROTOCOL or active.get('owner') != 'desktop':
         raise SystemExit('Native launcher bootstrap is required.')
+    manual_plan = args.inspect_manual_install or args.manual_install
+    if manual_plan:
+        print(json.dumps(manual_install(manual_plan, args.plan_sha256, apply=args.manual_install is not None)))
+        raise SystemExit(0)
     bundle_identity(active)
     if retirement_operation:
         print(json.dumps(retirement_command(retirement_operation, active, args.inspect_retirement or args.retire_transaction, args.plan_sha256)))
