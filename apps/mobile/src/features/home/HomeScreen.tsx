@@ -1,3 +1,8 @@
+import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -55,6 +60,7 @@ import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
+  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -262,6 +268,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const columnMetrics = useNativeColumnLayoutMetrics();
   const selectedThreadKey = primaryColumn?.selectedThreadKey ?? null;
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
+  const workstreams = useMobileWorkstreams(props.threads);
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const homeScrollGesture = useNativeGesture();
@@ -646,7 +653,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
     [props.pendingTasks, props.selectedEnvironmentId, v2ScopedProjectKeys, v2SearchQuery],
   );
-  const threadListV2Items = useMemo(
+  const nativeThreadListV2Items = useMemo(
     () =>
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
@@ -680,6 +687,38 @@ export function HomeScreen(props: HomeScreenProps) {
     ],
   );
 
+  const threadListV2Items = useMemo(
+    () =>
+      projectMobileWorkstreamList(nativeThreadListV2Items, {
+        enabled: workstreams.enabled,
+        groups: workstreams.groups,
+        collapsedKeys: workstreams.collapsedKeys,
+        secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+        confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+        selectedThreadKey,
+        searching: props.searchQuery.trim().length > 0,
+      }),
+    [
+      nativeThreadListV2Items,
+      workstreams.enabled,
+      workstreams.groups,
+      workstreams.collapsedKeys,
+      workstreams.secondaryLabelsByKey,
+      workstreams.confirmedUnassignedKeys,
+      selectedThreadKey,
+      props.searchQuery,
+    ],
+  );
+  const moveWithinWorkstream = useCallback(
+    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
+      const target = workstreams.enabled
+        ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
+        : direction;
+      if (target !== null) handleMoveThread(thread, target);
+    },
+    [workstreams.enabled, threadListV2Items, handleMoveThread],
+  );
+
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
   useEffect(() => {
     if (swipeEnabled) activateVisibleRows(threadListV2Items);
@@ -687,6 +726,15 @@ export function HomeScreen(props: HomeScreenProps) {
 
   const renderV2Item = useCallback(
     ({ item }: { readonly item: ThreadListV2ListItem }) => {
+      if (item.type === "v2-workstream") {
+        return (
+          <ThreadListV2WorkstreamHeader
+            {...item}
+            onToggle={() => workstreams.toggleGroup(item.groupKey)}
+            onOpen={() => workstreams.openGroup(item.groupKey)}
+          />
+        );
+      }
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -749,6 +797,8 @@ export function HomeScreen(props: HomeScreenProps) {
           fullSwipeWidth={fullSwipeWidth}
           onNewThreadOnBranch={props.onNewThreadOnBranch}
           thread={thread}
+          onOpenWorkstreams={workstreams.openThread}
+          secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
           variant={item.item.variant}
           hasQueuedMessages={item.hasQueuedMessages}
           snoozed={item.item.snoozed}
@@ -803,7 +853,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onPinThread={handlePinThread}
           onUnpinThread={handleUnpinThread}
           onSetThreadAutoSettle={handleSetThreadAutoSettle}
-          onMoveThread={handleMoveThread}
+          onMoveThread={moveWithinWorkstream}
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
           simultaneousSwipeGesture={homeScrollGesture}
@@ -813,6 +863,10 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [
       handleDeleteThread,
+      workstreams.toggleGroup,
+      workstreams.openGroup,
+      workstreams.openThread,
+      moveWithinWorkstream,
       handleOpenThreadPullRequests,
       activeReorderEnvironmentIds,
       handleMoveThread,
@@ -865,6 +919,7 @@ export function HomeScreen(props: HomeScreenProps) {
   // the same reason: the clock text is precomputed per item instead.
   const v2ExtraData = useMemo(
     () => ({
+      workstreamBindingRevision: workstreams.bindingRevision,
       projectByKey,
       projectTitleByProjectKey: v2ProjectTitleByProjectKey,
       listEnvironments,
@@ -875,6 +930,7 @@ export function HomeScreen(props: HomeScreenProps) {
       workingShelfEnabled,
     }),
     [
+      workstreams.bindingRevision,
       projectByKey,
       props.searchQuery,
       selectedThreadKey,
@@ -901,6 +957,7 @@ export function HomeScreen(props: HomeScreenProps) {
   if (!hasAnyThreads) {
     return (
       <View className={containerClassName}>
+        {workstreams.sheet}
         <View
           className={cn(
             "flex-1 items-center justify-center px-8",
@@ -915,6 +972,7 @@ export function HomeScreen(props: HomeScreenProps) {
           }}
         >
           <View className="w-full max-w-[430px]">
+            {workstreams.controls}
             <EmptyState
               title={emptyState.title}
               detail={emptyState.detail}
@@ -949,6 +1007,7 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
+      {workstreams.controls}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}
@@ -1004,6 +1063,7 @@ export function HomeScreen(props: HomeScreenProps) {
 
   return (
     <View className={containerClassName}>
+      {workstreams.sheet}
       <View
         className={
           Platform.OS === "android"

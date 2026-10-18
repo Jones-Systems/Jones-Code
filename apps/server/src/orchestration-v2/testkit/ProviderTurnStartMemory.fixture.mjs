@@ -30,6 +30,7 @@ const [
   Auth,
   Config,
   Settings,
+  Instances,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
   app("orchestration-v2/ProjectionStore"),
@@ -44,6 +45,7 @@ const [
   app("provider/ProviderAuthService"),
   app("config"),
   app("serverSettings"),
+  app("provider/ProviderInstanceRegistry"),
 ]);
 let current;
 let fullReads = 0;
@@ -67,10 +69,11 @@ const dependencies = Layer.mergeAll(
   FileSystem.layerNoop({}),
   Path.layer,
   Layer.mock(Git.GitWorkflowService)({}),
-  Layer.mock(Project.ProjectService)({}),
+  Layer.mock(Project.ProjectService)({ getById: () => Effect.succeedNone }),
   Layer.mock(Auth.ProviderAuthService)({}),
   Layer.mock(Config.ServerConfig)({ worktreesDir: "/synthetic-worktrees" }),
   Settings.layerTest(),
+  Layer.mock(Instances.ProviderInstanceRegistry)({ getInstance: () => Effect.succeed(undefined) }),
   Layer.mock(Projection.ProjectionStoreV2)({
     getThreadProjection: () =>
       Effect.sync(() => {
@@ -112,6 +115,8 @@ const dependencies = Layer.mergeAll(
       }),
   }),
   Layer.mock(Sink.EventSinkV2)({
+    assertImportedHistoryStartAllowed: () => Effect.void,
+    assertRuntimeStopStartAllowed: () => Effect.void,
     write: () => Effect.succeed([]),
     writeIfRunCurrent: ({ events }) =>
       Effect.sync(() => {

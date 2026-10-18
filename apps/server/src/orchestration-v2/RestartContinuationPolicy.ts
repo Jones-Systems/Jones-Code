@@ -2,6 +2,8 @@ import { latestProviderTurnForAttempt, type OrchestrationV2Run } from "@t3tools/
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import {
+  awaitingProviderThreadId,
+  neverStarted,
   cancelledRosterTaskWork,
   cancelledTurnItemWork,
   isAwaitedWork,
@@ -81,10 +83,11 @@ function hasOpenAwaitedWork(
     if (item.type === "subagent" && item.origin === "app_owned" && item.childThreadId !== null)
       return false;
     const work = cancelledTurnItemWork(item);
-    const providerThreadId =
-      item.providerThreadId ??
-      projection.runs.find((run) => run.id === item.runId)?.providerThreadId;
-    return work !== undefined && isAwaitedWork(work) && providerThreadId === providerThread.id;
+    return (
+      work !== undefined &&
+      isAwaitedWork(work) &&
+      awaitingProviderThreadId(item, projection.runs) === providerThread.id
+    );
   });
   return (
     openItem ||
@@ -117,7 +120,9 @@ export function restartContinuationRun(
   // Queued runs never started; recovery holds them behind the cut run.
   const run = projection.runs.reduce<OrchestrationV2Run | undefined>(
     (latest, candidate) =>
-      candidate.status !== "queued" && (!latest || runRanAfter(candidate, latest))
+      candidate.status !== "queued" &&
+      !neverStarted(candidate) &&
+      (!latest || runRanAfter(candidate, latest))
         ? candidate
         : latest,
     undefined,

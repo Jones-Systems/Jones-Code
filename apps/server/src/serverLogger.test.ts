@@ -19,11 +19,7 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as ServerConfig from "./config.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ServerLogger from "./serverLogger.ts";
-import {
-  announceStartupPairingUrl,
-  logBrowserAutoOpenUnavailable,
-  maybeOpenBrowser,
-} from "./serverRuntimeStartup.ts";
+import { logStartupPairingIssued, maybeOpenBrowser } from "./jones/startupAccessLogging.ts";
 
 interface ExportedRequest {
   readonly url: string;
@@ -244,11 +240,9 @@ describe("ServerLoggerLive", () => {
   describe("startup pairing URL", () => {
     const pairingToken = "PAIRTOKEN7Q4K9";
     const pairingUrl = `http://localhost:3773/pair#token=${pairingToken}`;
-    const announce = announceStartupPairingUrl(pairingUrl).pipe(
-      Effect.andThen(logBrowserAutoOpenUnavailable),
-    );
+    const announce = logStartupPairingIssued;
 
-    it.effect("prints the full URL but keeps its token out of exported log records", () =>
+    it.effect("withholds pairing credentials from console and exported log records", () =>
       Effect.gen(function* () {
         const { requests } = yield* logInSpanThrough(
           { otlpLogsUrl: "https://collector.example.com/v1/logs" },
@@ -256,12 +250,13 @@ describe("ServerLoggerLive", () => {
         );
 
         const body = requests.map((request) => request.body).join("\n");
-        assert.include(body, "Authentication required");
+        assert.include(body, "Startup pairing credential issued; credential output withheld.");
         assert.notInclude(body, pairingToken);
         const printed = (yield* TestConsole.logLines).map((line) =>
           Array.isArray(line) ? line.join(" ") : String(line),
         );
-        assert.isTrue(printed.some((line) => line.includes(`pairingUrl: ${pairingUrl}`)));
+        assert.notInclude(printed.join("\n"), pairingUrl);
+        assert.notInclude(printed.join("\n"), pairingToken);
       }).pipe(Effect.provide(TestConsole.layer)),
     );
 
@@ -272,7 +267,7 @@ describe("ServerLoggerLive", () => {
         const events = JSON.stringify(
           spans.flatMap((span) => span.events.map(([name, , attributes]) => [name, attributes])),
         );
-        assert.include(events, "Authentication required");
+        assert.include(events, "Startup pairing credential issued; credential output withheld.");
         assert.notInclude(events, pairingToken);
       }).pipe(Effect.provide(TestConsole.layer)),
     );

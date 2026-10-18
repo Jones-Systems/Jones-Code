@@ -27,7 +27,15 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, Pressable, Text } from "react-native";
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentCatalog } from "../../connection/catalog";
 import { runtime } from "../../lib/runtime";
@@ -124,13 +132,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return (id: EnvironmentId) => enrolled.has(id) && !signedOut.has(id);
   }, [idsKey, signedOutKey]);
   const retainedRef = useRef(retained);
-  retainedRef.current = retained;
   // The last good load per environment. Refreshes and reconnects replace it only on success.
   const [loaded, setLoaded] = useState<ReadonlyMap<EnvironmentId, MobileWorkstreamSnapshot>>(
     () => new Map(),
   );
   const loadedRef = useRef(loaded);
-  loadedRef.current = loaded;
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(new Set());
@@ -143,7 +149,6 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   const pendingConnections = useRef(connections);
   const controllers = useRef(new Set<AbortController>());
   const current = useRef(connections);
-  current.current = connections;
   const inventory = JSON.stringify(mobilePlacementInventory(threads));
   const snapshots = useMemo(
     () =>
@@ -161,7 +166,12 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     [loaded, connections, retained],
   );
   const snapshotsRef = useRef(snapshots);
-  snapshotsRef.current = snapshots;
+  useLayoutEffect(() => {
+    retainedRef.current = retained;
+    loadedRef.current = loaded;
+    current.current = connections;
+    snapshotsRef.current = snapshots;
+  }, [retained, loaded, connections, snapshots]);
   const request = useCallback(
     <A, E>(
       prepared: PreparedConnection,
@@ -317,7 +327,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               { signal: controller.signal, listOnlyFallback: !previous?.index },
             );
             let appearance: WorkstreamAppearancePage | null = null;
-            try {
+            await (async () => {
               const items: WorkstreamAppearancePage["items"][number][] = [];
               const ids = data.items.map((item) => item.workstreamId);
               for (let start = 0; start < Math.max(1, ids.length); start += 100) {
@@ -338,13 +348,13 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 items.push(...result.page.items);
                 appearance = { ...result.page, items };
               }
-            } catch (cause) {
+            })().catch((cause: unknown) => {
               // Lost authorization fails the whole load so the settled round purges it.
               if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
               appearance = null;
-            }
+            });
             let placements: LiveT3Placements | null = null;
-            try {
+            await (async () => {
               placements = await loadLiveT3Placements(
                 data,
                 identities,
@@ -363,10 +373,10 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                     Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
                   ),
               );
-            } catch (cause) {
+            })().catch((cause: unknown) => {
               if (classifyMobileWorkstreamFailure(cause) === "authorization") throw cause;
               /* Without current proof, stored assignments still group; changes stay blocked. */
-            }
+            });
             return [
               environmentId,
               {
@@ -422,7 +432,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       if (loading || AppState.currentState !== "active") return;
       loading = true;
       let reading: MobileWorkstreamSnapshot | undefined;
-      try {
+      await (async () => {
         for (const snapshot of snapshotsRef.current) {
           if (!snapshot.appearance || snapshot.stale) continue;
           reading = snapshot;
@@ -455,25 +465,27 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 ),
             );
         }
-      } catch (cause) {
-        // Lost authorization drops that environment; anything else keeps the last display.
-        if (
-          reading !== undefined &&
-          !abort.signal.aborted &&
-          classifyMobileWorkstreamFailure(cause) === "authorization"
-        ) {
-          const environmentId = reading.prepared.environmentId;
-          setLoaded((previous) =>
-            settleMobileWorkstreamSnapshots(
-              previous,
-              new Map([[environmentId, { kind: "failed", cause }]]),
-              retainedRef.current,
-            ),
-          );
-        }
-      } finally {
-        loading = false;
-      }
+      })()
+        .catch((cause: unknown) => {
+          // Lost authorization drops that environment; anything else keeps the last display.
+          if (
+            reading !== undefined &&
+            !abort.signal.aborted &&
+            classifyMobileWorkstreamFailure(cause) === "authorization"
+          ) {
+            const environmentId = reading.prepared.environmentId;
+            setLoaded((previous) =>
+              settleMobileWorkstreamSnapshots(
+                previous,
+                new Map([[environmentId, { kind: "failed", cause }]]),
+                retainedRef.current,
+              ),
+            );
+          }
+        })
+        .finally(() => {
+          loading = false;
+        });
     };
     const timer = setInterval(() => void updateColors(), 30_000);
     const subscription = AppState.addEventListener("change", (state) => {
@@ -502,27 +514,29 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     assertCurrent(snapshot);
     const controller = new AbortController();
     controllers.current.add(controller);
-    try {
+    return await (async () => {
       const result = await request(snapshot.prepared, "GET", url, run, controller.signal);
       assertCurrent(snapshot);
       return result;
-    } catch (cause) {
-      if (!controller.signal.aborted) {
-        // Lost authorization drops this environment's Workstreams now, not after a reload.
-        if (classifyMobileWorkstreamFailure(cause) === "authorization")
-          setLoaded((previous) =>
-            settleMobileWorkstreamSnapshots(
-              previous,
-              new Map([[snapshot.prepared.environmentId, { kind: "failed", cause }]]),
-              retainedRef.current,
-            ),
-          );
-        refresh();
-      }
-      throw cause;
-    } finally {
-      controllers.current.delete(controller);
-    }
+    })()
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          // Lost authorization drops this environment's Workstreams now, not after a reload.
+          if (classifyMobileWorkstreamFailure(cause) === "authorization")
+            setLoaded((previous) =>
+              settleMobileWorkstreamSnapshots(
+                previous,
+                new Map([[snapshot.prepared.environmentId, { kind: "failed", cause }]]),
+                retainedRef.current,
+              ),
+            );
+          refresh();
+        }
+        throw cause;
+      })
+      .finally(() => {
+        controllers.current.delete(controller);
+      });
   };
   const pages = async <Item>(
     snapshot: MobileWorkstreamSnapshot,
@@ -599,7 +613,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     let lastReceipt: WorkstreamReceipt | undefined;
     const controller = new AbortController();
     controllers.current.add(controller);
-    try {
+    return await (async () => {
       for (const action of actions) {
         const command_id = await runtime.runPromise(
           Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
@@ -651,9 +665,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       if (!lastReceipt) throw new Error("No Workstream change was requested.");
       refreshMountedWorkstreams();
       return lastReceipt;
-    } finally {
+    })().finally(() => {
       controllers.current.delete(controller);
-    }
+    });
   };
   const submit = (snapshot: MobileWorkstreamSnapshot, action: WorkstreamCommand["action"]) =>
     submitActions(snapshot, [action]);
@@ -690,7 +704,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       throw new Error("Color editing unavailable.");
     const controller = new AbortController();
     controllers.current.add(controller);
-    try {
+    return await (async () => {
       const result = await request(
         snapshot.prepared,
         "POST",
@@ -701,9 +715,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       assertCurrent(snapshot);
       refreshMountedWorkstreams();
       return result;
-    } finally {
+    })().finally(() => {
       controllers.current.delete(controller);
-    }
+    });
   };
   const api: MobileWorkstreams = {
     saveAppearance,

@@ -4,14 +4,17 @@ import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
@@ -19,7 +22,6 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as SshAuth from "./auth.ts";
-import { SshCommandError } from "./errors.ts";
 import * as SshTunnel from "./tunnel.ts";
 
 const TEST_NODE_ENGINE_RANGE = "^22.16 || ^23.11 || >=24.10";
@@ -96,11 +98,28 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 }
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
+const HOST_MANAGED = { hostManagedRuntime: true } as const;
 const NODE_SCRIPT = {
   nodeScriptPath: "/Users/julius/Development/Work/codething-mvp/apps/server/dist/bin.mjs",
 } as const;
 
 describe("ssh tunnel scripts", () => {
+  it("attaches Jones to the host runtime without downloading or starting a server", () => {
+    const launch = SshTunnel.buildRemoteLaunchScript(HOST_MANAGED);
+    assert.include(launch, "service-state.json");
+    assert.include(launch, '"serverKind":"external"');
+    assert.notInclude(launch, "nohup");
+    assert.notInclude(launch, "t3_fetch");
+    assert.notInclude(launch, "pick-port");
+    const pairing = SshTunnel.buildRemotePairingScript("test-host", HOST_MANAGED);
+    assert.include(pairing, "service-state.json");
+    assert.notInclude(pairing, "t3_fetch");
+    assert.notInclude(
+      SshTunnel.buildRemoteT3RunnerScript({ ...HOST_MANAGED, ...ARCHIVE }),
+      ARCHIVE.archiveVersion,
+    );
+  });
+
   it("installs and runs the release archive without Node, npm, or npx", () => {
     const script = SshTunnel.buildRemoteT3RunnerScript(ARCHIVE);
 
@@ -243,11 +262,8 @@ describe("ssh tunnel scripts", () => {
       nodeEngineRange: TEST_NODE_ENGINE_RANGE,
     });
 
-    assert.include(
-      launch,
-      '[ -n "$REMOTE_PID" ] && [ -n "$REMOTE_PORT" ] && server_running "$REMOTE_PID"',
-    );
-    assert.include(launch, "RUNNER_CHANGED=1");
+    assert.include(launch, 'elif [ -n "$REMOTE_PID" ] && server_running "$REMOTE_PID"; then');
+    assert.notInclude(launch, "RUNNER_CHANGED=1");
     assert.include(launch, "ensure_remote_node_path()");
     assert.include(launch, "if ! ensure_remote_node_path; then");
     assert.include(devLaunch, `T3_NODE_ENGINE_RANGE='${TEST_NODE_ENGINE_RANGE}'`);
@@ -276,36 +292,20 @@ describe("ssh tunnel scripts", () => {
       "T3_ARCHIVE_VERSION='1.2.3-preview.20260911.4'",
     );
     assert.include(
-      SshTunnel.buildRemoteStopScript(stateKey),
-      'if [ "$REMOTE_MANAGED" != "external" ] && [ -n "$REMOTE_PID" ]',
-    );
-    assert.include(
-      SshTunnel.buildRemoteStopScript(stateKey),
-      'kill "$REMOTE_PID" 2>/dev/null || true',
-    );
-    assert.include(
-      SshTunnel.buildRemoteStopScript(stateKey),
-      'rm -f "$PID_FILE" "$PORT_FILE" "$MANAGED_FILE"',
-    );
-    assert.include(
       launch,
       'DEFAULT_RUNTIME_FILE="$DEFAULT_SERVER_HOME/userdata/server-runtime.json"',
     );
     assert.include(launch, "resolve_default_runtime_port()");
     assert.include(launch, 'DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port');
     assert.include(launch, "if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(port))");
+    assert.include(launch, 'if [ -n "$DEFAULT_REMOTE_PORT" ]; then');
+    assert.include(launch, 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
     assert.include(
       launch,
-      'if [ -n "$DEFAULT_REMOTE_PORT" ] && [ "$REMOTE_MANAGED" = "managed" ] && [ "$DEFAULT_RUNTIME_PID" = "$REMOTE_PID" ]; then',
+      'if [ "$REMOTE_MANAGED" != "managed" ] || [ "$REMOTE_PID" != "$DEFAULT_RUNTIME_PID" ]; then',
     );
-    assert.include(launch, 'REMOTE_PORT="$DEFAULT_REMOTE_PORT"');
-    assert.include(launch, 'rm -f "$PID_FILE"');
-    assert.include(launch, "printf 'external\\n' >\"$MANAGED_FILE\"");
     assert.include(launch, 'if [ -z "$REMOTE_PORT" ]; then');
-    assert.isBelow(
-      launch.indexOf('if [ "$REMOTE_MANAGED" = "managed" ]'),
-      launch.indexOf("printf 'external\\n' >\"$MANAGED_FILE\""),
-    );
+    assert.include(launch, "readiness failure never grants replacement");
     assert.isBelow(
       launch.indexOf('DEFAULT_RUNTIME_INFO="$(resolve_default_runtime_port'),
       launch.indexOf('elif [ -n "$REMOTE_PID" ]'),
@@ -539,43 +539,132 @@ describe("ssh tunnel scripts", () => {
         assert.equal(kills, 1);
         assert.equal(stops, 0);
         yield* manager.disconnectEnvironment(target);
-        assert.equal(stops, 1);
+        assert.equal(stops, 0);
+        assert.equal(kills, 2);
       }).pipe(Effect.provide(layer), Effect.scoped);
     }),
   );
 
-  it.effect.each(["successful stop", "failed stop"] as const)(
-    "closes the tunnel scope and starts fresh after a %s",
-    (mode) => {
-      const spawnedCommands: Array<ReadonlyArray<string>> = [];
-      let tunnelKillCount = 0;
-      let stopCommandCount = 0;
-      const spawner = ChildProcessSpawner.make((command) =>
+  it.effect("disconnect and scope closure preserve the remote server", () => {
+    const spawnedCommands: Array<ReadonlyArray<string>> = [];
+    let tunnelKillCount = 0;
+    let stopCommandCount = 0;
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.sync(() => {
+        const args = commandArgs(command);
+        spawnedCommands.push(args);
+        if (args.includes("-N")) {
+          return makeRunningProcess(() => {
+            tunnelKillCount += 1;
+          });
+        }
+        if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }
+        if (args.includes("sh")) {
+          stopCommandCount += 1;
+          return makeSuccessfulProcess('{"stopped":true}\n');
+        }
+        return makeSuccessfulProcess("\n");
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, testHttpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshAuth.SshPasswordPrompt.disabledLayer,
+      SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+    );
+    const target = {
+      alias: "devbox",
+      hostname: "devbox.example.com",
+      username: "julius",
+      port: 2222,
+    } as const;
+
+    return Effect.gen(function* () {
+      const manager = yield* SshTunnel.SshEnvironmentManager;
+
+      const first = yield* manager.ensureEnvironment(target);
+      assert.equal(first.httpBaseUrl, "http://127.0.0.1:41773/");
+      const firstTunnelArgs = spawnedCommands.find((args) => args.includes("-N"));
+      assert.isDefined(firstTunnelArgs);
+      assert.include(firstTunnelArgs, "ControlMaster=no");
+      assert.include(firstTunnelArgs, "ControlPath=none");
+      assert.include(firstTunnelArgs, "ControlPersist=no");
+      assert.deepEqual(firstTunnelArgs?.slice(-2), ["--", "julius@devbox"]);
+
+      const disconnected = yield* Effect.result(manager.disconnectEnvironment(target));
+      assert.isTrue(Result.isSuccess(disconnected));
+      assert.equal(tunnelKillCount, 1);
+      assert.equal(stopCommandCount, 0);
+      yield* manager.disconnectEnvironment(target);
+      assert.equal(stopCommandCount, 0);
+
+      yield* manager.ensureEnvironment(target);
+
+      assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 2);
+      assert.equal(tunnelKillCount, 1);
+    }).pipe(
+      Effect.provide(layer),
+      Effect.scoped,
+      Effect.andThen(
         Effect.sync(() => {
+          assert.equal(tunnelKillCount, 2);
+          assert.equal(stopCommandCount, 0);
+        }),
+      ),
+    );
+  });
+
+  it.effect("waits for local tunnel shutdown before reconnecting the same target", () =>
+    Effect.gen(function* () {
+      const shutdownStarted = yield* Deferred.make<void>();
+      const finishShutdown = yield* Deferred.make<void>();
+      const reconnectsStarted = yield* Deferred.make<void>();
+      const pauseShutdown = Deferred.succeed(shutdownStarted, undefined).pipe(
+        Effect.andThen(Deferred.await(finishShutdown)),
+      );
+      let resolutions = 0;
+      let launches = 0;
+      let tunnels = 0;
+      let stops = 0;
+      let remoteRunning = false;
+      const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.gen(function* () {
           const args = commandArgs(command);
-          spawnedCommands.push(args);
+          const isTarget = args.includes(target.alias);
+          if (args.includes("-G")) {
+            if (isTarget && ++resolutions === 4) {
+              yield* Deferred.succeed(reconnectsStarted, undefined);
+            }
+            return makeSuccessfulProcess("");
+          }
           if (args.includes("-N")) {
-            return makeRunningProcess(() => {
-              tunnelKillCount += 1;
-            });
-          }
-          if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
-            return makeSuccessfulProcess('{"remotePort":3773}\n');
-          }
-          if (args.includes("sh")) {
-            stopCommandCount += 1;
-            if (mode === "failed stop" && stopCommandCount === 1) {
+            const tunnel = makeRunningProcess(() => undefined);
+            if (isTarget && ++tunnels === 1) {
               return {
-                ...makeSuccessfulProcess(""),
-                exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(1)),
-                stderr: Stream.make(
-                  new TextEncoder().encode("Remote T3 server did not stop within 2 seconds.\n"),
-                ),
+                ...tunnel,
+                kill: (options?: ChildProcess.KillOptions) =>
+                  pauseShutdown.pipe(Effect.andThen(tunnel.kill(options))),
               };
             }
-            return makeSuccessfulProcess('{"stopped":true}\n');
+            return tunnel;
           }
-          return makeSuccessfulProcess("\n");
+          if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
+            if (isTarget) {
+              launches += 1;
+              remoteRunning = true;
+            }
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          if (isTarget) {
+            stops += 1;
+            remoteRunning = false;
+          }
+          return makeSuccessfulProcess("");
         }),
       );
       const layer = Layer.mergeAll(
@@ -586,164 +675,119 @@ describe("ssh tunnel scripts", () => {
         SshAuth.SshPasswordPrompt.disabledLayer,
         SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
       );
-      const target = {
-        alias: "devbox",
-        hostname: "devbox.example.com",
-        username: "julius",
-        port: 2222,
-      } as const;
-
-      return Effect.gen(function* () {
+      yield* Effect.gen(function* () {
         const manager = yield* SshTunnel.SshEnvironmentManager;
-
-        const first = yield* manager.ensureEnvironment(target);
-        assert.equal(first.httpBaseUrl, "http://127.0.0.1:41773/");
-        const firstTunnelArgs = spawnedCommands.find((args) => args.includes("-N"));
-        assert.isDefined(firstTunnelArgs);
-        assert.include(firstTunnelArgs, "ControlMaster=no");
-        assert.include(firstTunnelArgs, "ControlPath=none");
-        assert.include(firstTunnelArgs, "ControlPersist=no");
-        assert.deepEqual(firstTunnelArgs?.slice(-2), ["--", "julius@devbox"]);
-
-        const disconnected = yield* Effect.result(manager.disconnectEnvironment(target));
-        if (mode === "failed stop") {
-          assert.isTrue(Result.isFailure(disconnected));
-          if (Result.isFailure(disconnected)) {
-            assert.instanceOf(disconnected.failure, SshCommandError);
-            assert.equal(
-              disconnected.failure.message,
-              "Remote T3 server did not stop within 2 seconds.",
-            );
-          }
-        } else {
-          assert.isTrue(Result.isSuccess(disconnected));
-        }
-        assert.equal(tunnelKillCount, 1);
-        assert.equal(stopCommandCount, 1);
-
-        if (mode === "failed stop") {
-          yield* manager.disconnectEnvironment(target);
-          assert.equal(tunnelKillCount, 1);
-          assert.equal(stopCommandCount, 2);
-        }
-
         yield* manager.ensureEnvironment(target);
+        const disconnect = yield* Effect.forkChild(manager.disconnectEnvironment(target));
+        yield* Deferred.await(shutdownStarted);
+        const firstReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
+        const secondReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
+        yield* Deferred.await(reconnectsStarted);
 
-        assert.equal(spawnedCommands.filter((args) => args.includes("-N")).length, 2);
-        assert.equal(tunnelKillCount, 1);
+        yield* manager.ensureEnvironment({
+          alias: "other",
+          hostname: "other",
+          username: null,
+          port: null,
+        });
+        yield* TestClock.adjust(Duration.zero);
+        const launchesBeforeShutdown = launches;
+        yield* Deferred.succeed(finishShutdown, undefined);
+        yield* Fiber.join(disconnect);
+        const first = yield* Fiber.join(firstReconnect);
+        const second = yield* Fiber.join(secondReconnect);
+
+        assert.equal(launchesBeforeShutdown, 1);
+        assert.equal(launches, 2);
+        assert.equal(tunnels, 2);
+        assert.isTrue(remoteRunning);
+        assert.equal(stops, 0);
+        assert.equal(first.httpBaseUrl, second.httpBaseUrl);
       }).pipe(
+        Effect.ensuring(Deferred.succeed(finishShutdown, undefined)),
         Effect.provide(layer),
         Effect.scoped,
-        Effect.andThen(
-          Effect.sync(() => {
-            assert.equal(tunnelKillCount, 2);
-            assert.equal(stopCommandCount, mode === "failed stop" ? 3 : 2);
-          }),
-        ),
       );
-    },
+    }),
   );
+});
 
-  it.effect.each(["local tunnel", "remote server"] as const)(
-    "waits for %s shutdown before reconnecting the same target",
-    (stalledStep) =>
+describe("client tunnel lifetime", () => {
+  it.effect.each(["scope close", "disconnect", "stale reconnect"] as const)(
+    "%s leaves a second client's host and tunnel usable",
+    (action) =>
       Effect.gen(function* () {
-        const shutdownStarted = yield* Deferred.make<void>();
-        const finishShutdown = yield* Deferred.make<void>();
-        const reconnectsStarted = yield* Deferred.make<void>();
-        const pauseShutdown = Deferred.succeed(shutdownStarted, undefined).pipe(
-          Effect.andThen(Deferred.await(finishShutdown)),
-        );
-        let resolutions = 0;
-        let launches = 0;
-        let tunnels = 0;
-        let stops = 0;
-        let remoteRunning = false;
-        const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+        const killed: number[] = [];
+        const remoteCommands: ReadonlyArray<string>[] = [];
+        let stalePort: string | undefined;
+        let port = 41773;
+        const target = { alias: "fixture", hostname: "fixture", username: null, port: null };
         const spawner = ChildProcessSpawner.make((command) =>
-          Effect.gen(function* () {
+          Effect.sync(() => {
             const args = commandArgs(command);
-            const isTarget = args.includes(target.alias);
-            if (args.includes("-G")) {
-              if (isTarget && ++resolutions === 4) {
-                yield* Deferred.succeed(reconnectsStarted, undefined);
-              }
-              return makeSuccessfulProcess("");
-            }
             if (args.includes("-N")) {
-              const tunnel = makeRunningProcess(() => undefined);
-              if (isTarget && ++tunnels === 1 && stalledStep === "local tunnel") {
-                return {
-                  ...tunnel,
-                  kill: (options?: ChildProcess.KillOptions) =>
-                    pauseShutdown.pipe(Effect.andThen(tunnel.kill(options))),
-                };
-              }
-              return tunnel;
+              const localPort = Number(args[args.indexOf("-L") + 1]?.split(":")[0]);
+              return makeRunningProcess(() => killed.push(localPort));
             }
-            if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
-              if (isTarget) {
-                launches += 1;
-                remoteRunning = true;
-              }
-              return makeSuccessfulProcess('{"remotePort":3773}\n');
+            if (args.includes("sh")) {
+              remoteCommands.push(args);
+              return makeSuccessfulProcess('{"remotePort":3773,"serverKind":"managed"}\n');
             }
-            const stop = makeSuccessfulProcess('{"stopped":true}\n');
-            if (!isTarget) return stop;
-            const pause = ++stops === 1 && stalledStep === "remote server";
-            return {
-              ...stop,
-              exitCode: (pause ? pauseShutdown : Effect.void).pipe(
-                Effect.andThen(
-                  Effect.sync(() => {
-                    remoteRunning = false;
-                    return ChildProcessSpawner.ExitCode(0);
-                  }),
-                ),
-              ),
-            };
+            return makeSuccessfulProcess("");
           }),
         );
-        const layer = Layer.mergeAll(
+        const http = HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response("", { status: new URL(request.url).port === stalePort ? 503 : 200 }),
+            ),
+          ),
+        );
+        const services = Layer.mergeAll(
           NodeServices.layer,
           Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
-          Layer.succeed(HttpClient.HttpClient, testHttpClient),
-          Layer.succeed(NetService.NetService, testNetService),
+          Layer.succeed(HttpClient.HttpClient, http),
+          Layer.succeed(NetService.NetService, {
+            ...testNetService,
+            reserveLoopbackPort: () => Effect.sync(() => port++),
+          }),
           SshAuth.SshPasswordPrompt.disabledLayer,
-          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
         );
         yield* Effect.gen(function* () {
-          const manager = yield* SshTunnel.SshEnvironmentManager;
-          yield* manager.ensureEnvironment(target);
-          const disconnect = yield* Effect.forkChild(manager.disconnectEnvironment(target));
-          yield* Deferred.await(shutdownStarted);
-          const firstReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
-          const secondReconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
-          yield* Deferred.await(reconnectsStarted);
-
-          yield* manager.ensureEnvironment({
-            alias: "other",
-            hostname: "other",
-            username: null,
-            port: null,
-          });
-          yield* TestClock.adjust(Duration.zero);
-          const launchesBeforeShutdown = launches;
-          yield* Deferred.succeed(finishShutdown, undefined);
-          yield* Fiber.join(disconnect);
-          const first = yield* Fiber.join(firstReconnect);
-          const second = yield* Fiber.join(secondReconnect);
-
-          assert.equal(launchesBeforeShutdown, 1);
-          assert.equal(launches, 2);
-          assert.equal(tunnels, 2);
-          assert.isTrue(remoteRunning);
-          assert.equal(first.httpBaseUrl, second.httpBaseUrl);
-        }).pipe(
-          Effect.ensuring(Deferred.succeed(finishShutdown, undefined)),
-          Effect.provide(layer),
-          Effect.scoped,
-        );
+          const firstScope = yield* Scope.make();
+          const secondScope = yield* Scope.make();
+          yield* Effect.addFinalizer(() => Scope.close(firstScope, Exit.void));
+          yield* Effect.addFinalizer(() => Scope.close(secondScope, Exit.void));
+          const makeManager = (scope: Scope.Scope) =>
+            Layer.buildWithScope(
+              SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+              scope,
+            ).pipe(Effect.map((context) => Context.get(context, SshTunnel.SshEnvironmentManager)));
+          const first = yield* makeManager(firstScope);
+          const second = yield* makeManager(secondScope);
+          const firstConnection = yield* first.ensureEnvironment(target);
+          const secondConnection = yield* second.ensureEnvironment(target);
+          if (action === "scope close") {
+            yield* Scope.close(firstScope, Exit.void);
+          } else if (action === "disconnect") {
+            yield* first.disconnectEnvironment(target);
+          } else {
+            stalePort = new URL(firstConnection.httpBaseUrl).port;
+            const reconnect = yield* Effect.forkChild(first.ensureEnvironment(target));
+            yield* TestClock.adjust(Duration.seconds(2));
+            const replacement = yield* Fiber.join(reconnect);
+            assert.notEqual(replacement.httpBaseUrl, firstConnection.httpBaseUrl);
+          }
+          assert.deepEqual(killed, [41773]);
+          assert.deepEqual(yield* second.ensureEnvironment(target), secondConnection);
+          assert.equal(remoteCommands.length, action === "stale reconnect" ? 3 : 2);
+          assert.isTrue(
+            remoteCommands.every((args) =>
+              args.some((arg, index) => arg === "-s" && args[index + 1] === "--"),
+            ),
+          );
+        }).pipe(Effect.provide(services), Effect.scoped);
       }),
   );
 });
@@ -1068,11 +1112,11 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
   });
 
   it.effect.skipIf(windowsHost)(
-    "reuses its own managed server and yields only to a different default-home server",
+    "reuses its managed server and attaches to a different default-home owner",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const { stateDir, readManagedPid, runLaunch, launchManaged, startDefaultHomeServer } =
+        const { home, stateDir, readManagedPid, runLaunch, launchManaged, startDefaultHomeServer } =
           yield* prepareLaunch;
         const { launched, pid: managedPid } = yield* launchManaged;
 
@@ -1093,8 +1137,13 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
           remotePort: servicePort,
           serverKind: "external",
         });
-        assert.isFalse(yield* isListening(launched.remotePort));
-        assert.isFalse(yield* fs.exists(`${stateDir}/pid`));
+        assert.isTrue(yield* isListening(launched.remotePort));
+        assert.equal(
+          (yield* fs.readFileString(`${stateDir}/pid`)).trim(),
+          JSON.parse(
+            yield* fs.readFileString(`${home}/.t3/userdata/server-runtime.json`),
+          ).pid.toString(),
+        );
       }).pipe(Effect.provide(NodeServices.layer)),
     60_000,
   );
@@ -1108,7 +1157,7 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         const { launched, pid } = yield* launchManaged;
 
         process.kill(pid, "SIGSTOP");
-        yield* spawner.spawn(ChildProcess.make("sh", ["-c", `sleep 5; kill -CONT ${pid}`]));
+        yield* spawner.spawn(ChildProcess.make("sh", ["-c", `sleep 1; kill -CONT ${pid}`]));
         assert.deepEqual(yield* runLaunch, launched);
         assert.equal(yield* readManagedPid, pid);
         assert.isTrue(isAlive(pid));
@@ -1126,15 +1175,15 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         const { launched, pid } = yield* launchManaged;
 
         const script = yield* fs.readFileString(launch);
-        assert.include(script, 'wait_ready "60000"');
+        assert.include(script, 'wait_ready "2000"');
         yield* fs.writeFileString(
           launch,
-          script.replaceAll('wait_ready "60000"', 'wait_ready "1500"'),
+          script.replaceAll('wait_ready "2000"', 'wait_ready "1500"'),
         );
         process.kill(pid, "SIGSTOP");
         const result = yield* runLaunchScript;
         assert.equal(result.exitCode, 1, result.stdout);
-        assert.include(result.stderr, "the server was left running");
+        assert.include(result.stderr, "already running");
         assert.isTrue(isAlive(pid));
         assert.equal(yield* readManagedPid, pid);
         assert.equal(
@@ -1147,7 +1196,7 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
   );
 
   it.effect.skipIf(windowsHost)(
-    "still replaces its managed server when the runner changes",
+    "preserves its managed server when the client runner changes",
     () =>
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -1157,8 +1206,8 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         yield* fs.writeFileString(`${stateDir}/run-t3.sh`, "# previous runner\n");
         assert.equal((yield* runLaunch).serverKind, "managed");
         const replacementPid = yield* readManagedPid;
-        assert.notEqual(replacementPid, previousPid);
-        assert.isFalse(isAlive(previousPid));
+        assert.equal(replacementPid, previousPid);
+        assert.isTrue(isAlive(previousPid));
         assert.isTrue(isAlive(replacementPid));
       }).pipe(Effect.provide(NodeServices.layer)),
     60_000,
@@ -1184,6 +1233,18 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
             yield* parent.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
           ),
         );
+        // The shell prints the PID before it execs and can still reap a child
+        // that dies in between. Kill it only once the parent is sleep, which
+        // never reaps. An empty image means the parent itself is gone.
+        let parentImage = "";
+        for (let attempt = 0; attempt < 20; attempt++) {
+          parentImage = (yield* runScript(home, [
+            "-c",
+            `ps -o comm= -p ${parent.pid}`,
+          ])).stdout.trim();
+          if (parentImage === "" || /(^|\/)sleep$/.test(parentImage)) break;
+        }
+        assert.match(parentImage, /(^|\/)sleep$/);
         process.kill(zombie, "SIGKILL");
         assert.include((yield* runScript(home, ["-c", `ps -o stat= -p ${zombie}`])).stdout, "Z");
         yield* fs.writeFileString(`${stateDir}/pid`, `${zombie}\n`);
@@ -1234,13 +1295,13 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         const servicePort = yield* startDefaultHomeServer(["--answer-once"]);
 
         assert.deepEqual(yield* runLaunch, { remotePort: servicePort, serverKind: "external" });
-        assert.isFalse(yield* fs.exists(`${stateDir}/pid`));
+        assert.isTrue(yield* fs.exists(`${stateDir}/pid`));
       }).pipe(Effect.provide(NodeServices.layer)),
     60_000,
   );
 
   it.effect.skipIf(windowsHost)(
-    "launches a replacement when the adopted server exits during the handover",
+    "preserves the previous owner when the adopted server exits after readiness",
     () =>
       Effect.gen(function* () {
         const { readManagedPid, runLaunch, launchManaged, startDefaultHomeServer } =
@@ -1249,10 +1310,9 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         yield* startDefaultHomeServer(["--exit-after-answer"], { unreaped: true });
 
         const result = yield* runLaunch;
-        assert.equal(result.serverKind, "managed");
-        const replacementPid = yield* readManagedPid;
-        assert.notEqual(replacementPid, previousPid);
-        assert.isTrue(isAlive(replacementPid));
+        assert.equal(result.serverKind, "external");
+        assert.notEqual(yield* readManagedPid, previousPid);
+        assert.isTrue(isAlive(previousPid));
       }).pipe(Effect.provide(NodeServices.layer)),
     60_000,
   );

@@ -575,6 +575,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     variant,
     onSelectThread,
     onOpenThreadPullRequests,
+    onOpenWorkstreams,
     onDeleteThread,
     onRenameThread,
     onRegenerateThreadTitle,
@@ -837,7 +838,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const handleMenuAction = useCallback(
     ({ nativeEvent }: { readonly nativeEvent: { readonly event: string } }) => {
-      if (nativeEvent.event === "workstreams") props.onOpenWorkstreams?.(thread);
+      if (nativeEvent.event === "workstreams") onOpenWorkstreams?.(thread);
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
       if (nativeEvent.event === "unsettle") handleUnsettle();
@@ -876,7 +877,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     },
     [
       onNewThreadOnBranch,
-      props.onOpenWorkstreams,
+      onOpenWorkstreams,
       thread,
       handleArchive,
       handleDelete,

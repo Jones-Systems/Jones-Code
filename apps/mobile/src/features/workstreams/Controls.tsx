@@ -3,7 +3,7 @@ import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/Workstre
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { WorkstreamThreadLike } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -28,7 +28,10 @@ export function MobileWorkstreamControls({
   onClose: () => void;
 }) {
   const binding = useRef(api.bindingRevision);
-  binding.current = api.bindingRevision;
+  const bindingRevision = api.bindingRevision;
+  useLayoutEffect(() => {
+    binding.current = bindingRevision;
+  }, [bindingRevision]);
   const [colorOpen, setColorOpen] = useState(false);
   const [name, setName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
