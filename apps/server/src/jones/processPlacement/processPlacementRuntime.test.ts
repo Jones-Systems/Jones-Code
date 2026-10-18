@@ -1,3 +1,4 @@
+import { makeCodexAppServerSpawnCommand } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -86,6 +87,15 @@ it.effect(
       expect(calls[1]?.command).toBe("/synthetic/systemd-run");
       expect(calls[1]?.args).toContain("--verify-descendant");
       expect(calls[1]?.args.slice(-2)).toEqual(["/synthetic/git", "status"]);
+      const command = yield* makeCodexAppServerSpawnCommand({
+        command: "/synthetic/codex",
+        args: ["app-server"],
+      });
+      yield* (yield* ChildProcessSpawner.ChildProcessSpawner).spawn(command).pipe(Effect.ignore);
+      expect(calls).toHaveLength(3);
+      expect(calls[2]?.command).toBe("/synthetic/systemd-run");
+      expect(calls[2]?.args.filter((arg) => arg === "--verify-descendant")).toHaveLength(1);
+      expect(calls[2]?.args.slice(-2)).toEqual(["/synthetic/codex", "app-server"]);
     }).pipe(Effect.provide(Layer.merge(NodeServices.layer, runtime)), Effect.scoped);
   },
 );
