@@ -1,11 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import { expect, it, vi } from "vite-plus/test";
 import { it as effectIt } from "@effect/vitest";
 import {
   CheckpointScopeId,
-  ContextHandoffId,
-  DEFAULT_SERVER_SETTINGS,
   MessageId,
   NodeId,
   ProviderSessionId,
@@ -17,8 +14,6 @@ import {
   RunId,
   ThreadId,
   ProjectId,
-  type ModelSelection,
-  type ServerProviderModel,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -31,13 +26,14 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
+import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
-import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -52,7 +48,31 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
-it("does not commit running state when inherited background routing cannot be read", async () => {
+const managedWorktreesDir = "/tmp/provider-turn-start-worktrees";
+// fs.realpath applies `..` and `.` before following symlinks.
+const normalize = (target: string) => {
+  const parts: Array<string> = [];
+  for (const part of target.split("/")) {
+    if (part === "..") parts.pop();
+    else if (part !== "" && part !== ".") parts.push(part);
+  }
+  return `/${parts.join("/")}`;
+};
+const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+  Layer.mergeAll(
+    Path.layer,
+    Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
+    ServerSettings.layerTest(),
+  );
+
+/** Starts a run on a thread whose worktree folder is missing, with routing reads failing after. */
+function startWithMissingWorktree(
+  worktreePath: string,
+  realPaths: Record<string, string> = {
+    [managedWorktreesDir]: managedWorktreesDir,
+    [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
+  },
+) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
   const attemptId = RunAttemptId.make("attempt_provider_turn_start_projection_failure");
@@ -72,7 +92,7 @@ it("does not commit running state when inherited background routing cannot be re
       id: threadId,
       projectId: ProjectId.make("project_provider_turn_start_projection_failure"),
       branch: "feature/restore",
-      worktreePath: "/tmp/missing-provider-turn-start-worktree",
+      worktreePath,
     },
     runs: [
       {
@@ -105,14 +125,24 @@ it("does not commit running state when inherited background routing cannot be re
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
-        Layer.mock(EventSink.EventSinkV2)({
-          writeIfRunCurrent,
-          assertRuntimeStopStartAllowed: () => Effect.void,
-          assertImportedHistoryStartAllowed: () => Effect.void,
-        }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        Path.layer,
-        FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
+        Layer.succeed(FileSystem.FileSystem, {
+          exists: () => Effect.succeed(false),
+          // Paths that exist on the fake disk, mapped to where their symlinks lead.
+          realPath: (target: string) =>
+            normalize(target) in realPaths
+              ? Effect.succeed(realPaths[normalize(target)])
+              : Effect.fail(
+                  PlatformError.systemError({
+                    _tag: "NotFound",
+                    module: "FileSystem",
+                    method: "realPath",
+                    pathOrDescriptor: target,
+                  }),
+                ),
+        } as never),
+        layerWorktreeLocation(),
         Layer.mock(GitWorkflow.GitWorkflowService)({ pruneWorktrees, createWorktree }),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
@@ -151,52 +181,109 @@ it("does not commit running state when inherited background routing cannot be re
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-        Layer.mock(ServerSettings.ServerSettingsService)({}),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
       ),
     ),
   );
 
-  await Effect.gen(function* () {
-    const error = yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
+  const start = Effect.gen(function* () {
+    return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId })
       .pipe(Effect.flip);
-
-    expect(error._tag).toBe("ProviderTurnStartError");
-    expect(projectionReadCount).toBe(3);
-    expect(pruneWorktrees).toHaveBeenCalledWith({ cwd: "/tmp/provider-turn-start-project" });
-    expect(createWorktree).toHaveBeenCalledWith({
-      cwd: "/tmp/provider-turn-start-project",
-      refName: "feature/restore",
-      path: "/tmp/missing-provider-turn-start-worktree",
-    });
-    expect(writeIfRunCurrent).not.toHaveBeenCalled();
-    expect(startRootRun).not.toHaveBeenCalled();
   }).pipe(Effect.provide(layer), Effect.runPromise);
+  return {
+    start,
+    pruneWorktrees,
+    createWorktree,
+    writeIfRunCurrent,
+    startRootRun,
+    projectionReads: () => projectionReadCount,
+  };
+}
+
+it("does not commit running state when inherited background routing cannot be read", async () => {
+  const worktreePath = `${managedWorktreesDir}/project/feature-restore`;
+  const harness = startWithMissingWorktree(worktreePath);
+  const error = await harness.start;
+
+  expect(error._tag).toBe("ProviderTurnStartError");
+  expect(harness.projectionReads()).toBe(3);
+  expect(harness.pruneWorktrees).toHaveBeenCalledWith({ cwd: "/tmp/provider-turn-start-project" });
+  expect(harness.createWorktree).toHaveBeenCalledWith({
+    cwd: "/tmp/provider-turn-start-project",
+    refName: "feature/restore",
+    path: worktreePath,
+  });
+  expect(harness.writeIfRunCurrent).not.toHaveBeenCalled();
+  expect(harness.startRootRun).not.toHaveBeenCalled();
+});
+
+it.each([
+  {
+    label: "<managed>/<repo>/<branch>",
+    worktreePath: `${managedWorktreesDir}/project/feature-restore`,
+    recreated: true,
+  },
+  {
+    label: "the real path of a symlinked managed folder",
+    worktreePath: "/real-worktrees/project/feature-restore",
+    realPaths: { [managedWorktreesDir]: "/real-worktrees", "/real-worktrees": "/real-worktrees" },
+    recreated: true,
+  },
+  {
+    label: "a path outside the managed folder",
+    worktreePath: "/tmp/provider-turn-start-project/.git/hooks",
+    recreated: false,
+  },
+  {
+    label: "a symlink inside the managed folder that leads out",
+    worktreePath: `${managedWorktreesDir}/project/hooks`,
+    realPaths: {
+      [managedWorktreesDir]: managedWorktreesDir,
+      [`${managedWorktreesDir}/project`]: "/tmp/provider-turn-start-project/.git",
+    },
+    recreated: false,
+  },
+  {
+    label: "a folder nested below a worktree",
+    worktreePath: `${managedWorktreesDir}/project/feature-restore/link/hooks`,
+    recreated: false,
+  },
+  {
+    label: "'..' out of the managed folder",
+    worktreePath: `${managedWorktreesDir}/project/../../outside`,
+    recreated: false,
+  },
+  {
+    // Left raw on purpose: git follows `link` before applying `..`.
+    label: "'..' after a symlink inside the managed folder",
+    worktreePath: `${managedWorktreesDir}/project/x/link/../../hooks`,
+    realPaths: {
+      [managedWorktreesDir]: managedWorktreesDir,
+      [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
+      [`${managedWorktreesDir}/project/x`]: `${managedWorktreesDir}/project/x`,
+      [`${managedWorktreesDir}/project/x/link`]: "/tmp/provider-turn-start-project/.git/refs/heads",
+    },
+    recreated: false,
+  },
+  { label: "a relative path", worktreePath: "project/feature-restore", recreated: false },
+])("recreates a missing worktree only at the managed location: $label", async (input) => {
+  const harness = startWithMissingWorktree(input.worktreePath, input.realPaths);
+  await harness.start;
+  expect(harness.createWorktree).toHaveBeenCalledTimes(input.recreated ? 1 : 0);
 });
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
   readonly worktreePath?: string;
+  readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
-  readonly keepWarm?: boolean;
-  readonly liveKeepWarmSession?: boolean;
-  readonly plannedResume?: "same" | "changed";
-  readonly effortProof?: {
-    readonly selection?: ModelSelection;
-    readonly models: ReadonlyArray<ServerProviderModel>;
-    readonly getSettings: ServerSettings.ServerSettingsService["Service"]["getSettings"];
-    readonly beforeDispatch?: Effect.Effect<void>;
-    readonly duringHandoff?: Effect.Effect<void>;
-  };
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
-  readonly unknownResumeBinding?: boolean;
   readonly interruptOpen?: boolean;
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
@@ -213,15 +300,13 @@ function makeLocalCommandHarness(input: {
   const oldInstanceId = ProviderInstanceId.make("antigravity-personal");
   const newInstanceId = ProviderInstanceId.make("codex-personal");
   const checkpointScopeId = CheckpointScopeId.make("scope-native-account-command");
-  const messageId = MessageId.make(
-    input.keepWarm ? "work-mode:thread:generation" : "message-native-account-command",
-  );
+  const messageId = MessageId.make("message-native-account-command");
   const run: OrchestrationV2ThreadProjection["runs"][number] = {
     id: runId,
     threadId,
     ordinal: 2,
     providerInstanceId: newInstanceId,
-    modelSelection: input.effortProof?.selection ?? { instanceId: newInstanceId, model: "gpt-5.4" },
+    modelSelection: { instanceId: newInstanceId, model: "gpt-5.4" },
     providerThreadId,
     userMessageId: messageId,
     rootNodeId,
@@ -240,14 +325,7 @@ function makeLocalCommandHarness(input: {
     providerSessionId,
     appThreadId: threadId,
     ownerNodeId: null,
-    nativeThreadRef:
-      input.plannedResume === undefined
-        ? null
-        : {
-            driver: ProviderDriverKind.make("codex"),
-            nativeId: "planned-native-thread",
-            strength: "strong",
-          },
+    nativeThreadRef: null,
     nativeConversationHeadRef: null,
     status: "not_loaded",
     firstRunOrdinal: 2,
@@ -353,12 +431,7 @@ function makeLocalCommandHarness(input: {
         id: MessageId.make(`previous-message-${index}`),
         text,
       })),
-      {
-        ...message,
-        ...(input.keepWarm
-          ? { createdBy: "system" as const, creationSource: "server" as const }
-          : {}),
-      },
+      message,
     ],
     checkpointScopes: [
       {
@@ -377,26 +450,7 @@ function makeLocalCommandHarness(input: {
     ],
     providerSessions: [],
     providerTurns: [],
-    contextHandoffs:
-      input.effortProof?.duringHandoff === undefined
-        ? []
-        : [
-            {
-              id: ContextHandoffId.make("effort-handoff"),
-              threadId,
-              targetRunId: runId,
-              fromProviderThreadIds: [oldProviderThreadId],
-              toProviderThreadId: providerThreadId,
-              coveredRunOrdinals: { from: 1, to: 1 },
-              strategy: "full_thread_summary",
-              status: "ready",
-              summaryMessageId: null,
-              summaryText: "Prior synthetic account context",
-              createdByProviderInstanceId: null,
-              createdAt: now,
-              updatedAt: now,
-            },
-          ],
+    contextHandoffs: [],
     contextTransfers: [],
     turnItems: [],
     visibleTurnItems: [],
@@ -406,7 +460,7 @@ function makeLocalCommandHarness(input: {
     checkpoints: [],
     updatedAt: now,
   };
-  if ("historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true) {
+  if ("historyReadFailureAfterFallback" in input) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -449,106 +503,60 @@ function makeLocalCommandHarness(input: {
     driver: providerThread.driver,
     resumeThread: () =>
       Effect.fail(
-        input.unknownResumeBinding === true
-          ? new ProviderAdapter.ProviderRuntimeBindingError({
-              driver: providerThread.driver,
-              detail: "Native launch succeeded but its binding is unknown.",
-            })
-          : new ProviderAdapter.ProviderAdapterEventStreamError({
-              driver: providerThread.driver,
-              providerSessionId,
-              cause: "native thread is gone",
-            }),
+        new ProviderAdapter.ProviderAdapterEventStreamError({
+          driver: providerThread.driver,
+          providerSessionId,
+          cause: "native thread is gone",
+        }),
       ),
-    ensureThread: vi.fn(() => Effect.succeed(providerThread)),
+    ensureThread: () => Effect.succeed(providerThread),
   };
-  const dispatched: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
-  const open = vi.fn(
-    (
-      _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
-    ) =>
-      input.interruptOpen === true
-        ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true
-          ? Effect.succeed(resumeFallbackSession as never)
-          : "ensureThreadFailure" in input
-            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-            : "openFailure" in input
-              ? Effect.sync(() => {
-                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: newInstanceId,
-                        providerSessionId,
-                        cause: input.openFailure,
-                      }),
-                    ),
+  const open = vi.fn(() =>
+    input.interruptOpen === true
+      ? Effect.interrupt
+      : "historyReadFailureAfterFallback" in input
+        ? Effect.succeed(resumeFallbackSession as never)
+        : "ensureThreadFailure" in input
+          ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+          : "openFailure" in input
+            ? Effect.sync(() => {
+                if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ProviderSessionManager.ProviderSessionOpenError({
+                      instanceId: newInstanceId,
+                      providerSessionId,
+                      cause: input.openFailure,
+                    }),
                   ),
-                )
-              : input.failReadsAfterRunning === true ||
-                  input.effortProof !== undefined ||
-                  input.plannedResume !== undefined
-                ? Effect.succeed({
+                ),
+              )
+            : input.failReadsAfterRunning === true
+              ? Effect.succeed({
+                  driver: providerThread.driver,
+                  providerSession: {
+                    id: providerSessionId,
                     driver: providerThread.driver,
-                    providerSession: {
-                      id: providerSessionId,
-                      driver: providerThread.driver,
-                      providerInstanceId: newInstanceId,
-                      status: "ready",
-                      cwd: "/tmp/native-account-command",
-                      model: null,
-                      capabilities: CodexProviderCapabilitiesV2,
-                      createdAt: now,
-                      updatedAt: now,
-                      lastError: null,
-                    },
-                    ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () =>
-                      Effect.succeed({
-                        ...providerThread,
-                        nativeThreadRef: {
-                          driver: providerThread.driver,
-                          nativeId:
-                            input.plannedResume === "changed"
-                              ? "different-native-thread"
-                              : "planned-native-thread",
-                          strength: "strong" as const,
-                        },
-                      }),
-                    startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
-                      Effect.sync(() => {
-                        dispatched.push(value);
-                      }),
-                  } as never)
-                : Effect.die("A local command must not open a native session."),
+                    providerInstanceId: newInstanceId,
+                    status: "ready",
+                    cwd: "/tmp/native-account-command",
+                    model: null,
+                    capabilities: CodexProviderCapabilitiesV2,
+                    createdAt: now,
+                    updatedAt: now,
+                    lastError: null,
+                  },
+                  ensureThread: () => Effect.succeed(providerThread),
+                } as never)
+              : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
-  >((startInput) =>
-    input.effortProof !== undefined
-      ? Effect.gen(function* () {
-          yield* input.effortProof!.beforeDispatch ?? Effect.void;
-          yield* startInput.session
-            .startTurn({
-              appThread: startInput.appThread,
-              threadId,
-              runId,
-              runOrdinal: startInput.run.ordinal,
-              providerTurnOrdinal: startInput.providerTurnOrdinal,
-              attemptId,
-              rootNodeId,
-              providerThread: startInput.providerThread,
-              message: startInput.message,
-              modelSelection: startInput.modelSelection,
-              runtimePolicy: startInput.runtimePolicy,
-            })
-            .pipe(Effect.orDie);
-        })
-      : input.failReadsAfterRunning === true || input.plannedResume !== undefined
-        ? Effect.void
-        : Effect.die("A local command must not start a native turn."),
+  >(() =>
+    input.failReadsAfterRunning === true
+      ? Effect.void
+      : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -614,20 +622,12 @@ function makeLocalCommandHarness(input: {
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)({
-          allowWorkStart: () => Effect.succeed(input.plannedResume !== undefined),
-        }),
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({
           prepareProviderHandoff: () => Effect.die("history read must fail first"),
         }),
-        Layer.mock(EventSink.EventSinkV2)({
-          writeIfRunCurrent,
-          assertRuntimeStopStartAllowed: () => Effect.void,
-          assertImportedHistoryStartAllowed: () => Effect.void,
-          write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
-        }),
+        Layer.mock(EventSink.EventSinkV2)({ writeIfRunCurrent }),
         IdAllocator.layer,
-        Path.layer,
+        layerWorktreeLocation(input.worktreesDir),
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
@@ -652,44 +652,16 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            input.effortProof === undefined
-              ? Effect.fail(
-                  new ProjectionStore.ProjectionStoreReadError({
-                    threadId,
-                    cause: input.historyReadFailureAfterFallback,
-                  }),
-                )
-              : Effect.succeed([]),
-        }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
-          open,
-          get: () =>
-            Effect.succeed(
-              input.liveKeepWarmSession
-                ? Option.some(resumeFallbackSession as never)
-                : Option.none(),
+            Effect.fail(
+              new ProjectionStore.ProjectionStoreReadError({
+                threadId,
+                cause: input.historyReadFailureAfterFallback,
+              }),
             ),
         }),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({ open }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({ tryHandlePromptCommand }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
-
-        Layer.mock(ServerSettings.ServerSettingsService)({
-          getSettings: input.effortProof?.getSettings ?? Effect.succeed(DEFAULT_SERVER_SETTINGS),
-        }),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: (instanceId) =>
-            Effect.succeed({
-              instanceId,
-              driverKind: ProviderDriverKind.make("codex"),
-              snapshot: {
-                getSnapshot: Effect.succeed({
-                  instanceId,
-                  driver: ProviderDriverKind.make("codex"),
-                  models: input.effortProof?.models ?? [],
-                }),
-              },
-            } as never),
-        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
@@ -705,11 +677,8 @@ function makeLocalCommandHarness(input: {
     resolveRuntimePolicy,
     createWorktree,
     open,
-    fallbackEnsure: resumeFallbackSession.ensureThread,
     writeIfRunCurrent,
     startRootRun,
-    dispatched,
-    interruptRun,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
@@ -736,13 +705,14 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
-      const worktreePath = path.join(workspaceRoot, "worktree");
-      yield* fileSystem.makeDirectory(worktreePath);
+      const worktreePath = path.join(workspaceRoot, "project", "worktree");
+      yield* fileSystem.makeDirectory(worktreePath, { recursive: true });
       const release = yield* Deferred.make<void>();
       const openEntered = yield* Deferred.make<void>();
       const harness = makeLocalCommandHarness({
         text: "Continue",
         worktreePath,
+        worktreesDir: workspaceRoot,
         fileSystem,
         failReadsAfterRunning: true,
       });
@@ -750,12 +720,12 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         fileSystem.makeDirectory(worktreePath).pipe(Effect.as({} as never), Effect.orDie),
       );
       const open = harness.open.getMockImplementation()!;
-      harness.open.mockImplementation((input) =>
+      harness.open.mockImplementation(() =>
         Effect.gen(function* () {
           expect(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie)).toBe(true);
           yield* Deferred.succeed(openEntered, undefined);
           if (order === "startup-first") yield* Deferred.await(release);
-          return yield* open(input);
+          return yield* open();
         }),
       );
       let cleanupEntered = false;
@@ -1184,221 +1154,3 @@ for (const previousMessages of [[], ["/compact", " /COMPACT "]]) {
       }),
   );
 }
-
-effectIt.effect("planned update Work Mode reopens its captured native conversation", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "@@@@@",
-      keepWarm: true,
-      plannedResume: "same",
-    });
-    yield* harness.start;
-    expect(harness.open).toHaveBeenCalledOnce();
-    expect(harness.open).toHaveBeenCalledWith(
-      expect.objectContaining({ initialNativeThreadId: "planned-native-thread" }),
-    );
-    expect(harness.startRootRun).toHaveBeenCalledOnce();
-    expect(harness.projection().runs.at(-1)?.status).toBe("running");
-  }),
-);
-
-effectIt.effect(
-  "planned update Work Mode refuses a changed native identity before sending its prompt",
-  () =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text: "@@@@@",
-        keepWarm: true,
-        plannedResume: "changed",
-      });
-      yield* harness.start;
-      expect(harness.open).toHaveBeenCalledOnce();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-    }),
-);
-
-effectIt.effect("keep-warm does not reopen an expired provider session", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "@@@@@", keepWarm: true });
-    yield* harness.start;
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-  }),
-);
-
-effectIt.effect("keep-warm does not replace a native conversation when resume fails", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "@@@@@",
-      keepWarm: true,
-      liveKeepWarmSession: true,
-      historyReadFailureAfterFallback: new Error("must not reach fallback history"),
-    });
-    yield* harness.start;
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-  }),
-);
-effectIt.effect(
-  "fails visibly without starting a fresh native conversation after an unknown resume binding",
-  () =>
-    Effect.gen(function* () {
-      const harness = makeLocalCommandHarness({
-        text: "Continue once",
-        unknownResumeBinding: true,
-      });
-      yield* harness.start;
-      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
-      expect(harness.startRootRun).not.toHaveBeenCalled();
-      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-      const failure = harness.events.find(
-        (event) => event.type === "run.updated" && event.payload.status === "failed",
-      );
-      expect(failure).toBeDefined();
-    }),
-);
-
-const effortModels: ReadonlyArray<ServerProviderModel> = [
-  {
-    slug: "gpt-5.4",
-    name: "GPT",
-    isCustom: false,
-    capabilities: {
-      optionDescriptors: [
-        {
-          id: "reasoningEffort",
-          label: "Reasoning",
-          type: "select",
-          options: ["low", "medium", "high", "xhigh"].map((id) => ({ id, label: id })),
-          currentValue: "medium",
-        },
-      ],
-    },
-  },
-];
-
-effectIt.effect.each([
-  { model: "gpt-5.4", effort: "high", explicit: undefined, expected: "high" },
-  { model: "gpt-5.4", effort: "xhigh", explicit: "low", expected: undefined },
-  { model: "another-model", effort: "high", explicit: undefined, expected: undefined },
-  { model: "gpt-5.4", effort: "unsupported", explicit: undefined, expected: undefined },
-])("resolves dispatch-only defaults without replacing the persisted selection: %j", (row) =>
-  Effect.gen(function* () {
-    const selection: ModelSelection = {
-      instanceId: ProviderInstanceId.make("codex-personal"),
-      model: "gpt-5.4",
-      ...(row.explicit === undefined
-        ? {}
-        : { options: [{ id: "reasoningEffort", value: row.explicit }] }),
-    };
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      effortProof: {
-        selection,
-        models: effortModels,
-        getSettings: Effect.succeed({
-          ...DEFAULT_SERVER_SETTINGS,
-          defaultModelSelection: {
-            instanceId: ProviderInstanceId.make("codex-work"),
-            model: row.model,
-            options: [{ id: "reasoningEffort", value: row.effort }],
-          },
-        }),
-      },
-    });
-    yield* harness.start;
-    expect(harness.dispatched).toHaveLength(1);
-    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe(row.expected);
-    expect(harness.dispatched[0]?.modelSelection).toEqual(selection);
-    expect(harness.open.mock.calls[0]?.[0].modelSelection).toEqual(selection);
-    expect(harness.projection().runs.at(-1)?.modelSelection).toEqual(selection);
-  }),
-);
-
-effectIt.effect("rechecks the attempt after reading current settings", () =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      effortProof: {
-        models: effortModels,
-        getSettings: Effect.sync(() => {
-          harness.interruptRun();
-          return DEFAULT_SERVER_SETTINGS;
-        }),
-      },
-    });
-    yield* harness.start;
-    expect(harness.dispatched).toHaveLength(0);
-    expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");
-  }),
-);
-
-effectIt.effect("reads changed defaults after the actual handoff delivery awaits", () =>
-  Effect.gen(function* () {
-    let effort = "low";
-    const harness = makeLocalCommandHarness({
-      text: "Continue",
-      effortProof: {
-        models: effortModels,
-        duringHandoff: Effect.gen(function* () {
-          yield* Effect.yieldNow;
-          effort = "xhigh";
-        }),
-        getSettings: Effect.sync(() => ({
-          ...DEFAULT_SERVER_SETTINGS,
-          defaultModelSelection: {
-            instanceId: ProviderInstanceId.make("codex-work"),
-            model: "gpt-5.4",
-            options: [{ id: "reasoningEffort", value: effort }],
-          },
-        })),
-      },
-    });
-    yield* harness.start;
-    expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("xhigh");
-    expect(harness.dispatched[0]?.modelSelection.options).toBeUndefined();
-  }),
-);
-
-effectIt.effect(
-  "uses the project effort default before the environment default at actual delivery",
-  () =>
-    Effect.gen(function* () {
-      const instanceId = ProviderInstanceId.make("codex-personal");
-      const model = "gpt-5.4";
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        effortProof: {
-          models: effortModels,
-          getSettings: Effect.succeed({
-            ...DEFAULT_SERVER_SETTINGS,
-            providerInstances: {
-              [instanceId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
-            },
-            defaultModelSelection: {
-              instanceId,
-              model,
-              options: [{ id: "reasoningEffort", value: "low" }],
-            },
-            projectSettingsOverrides: {
-              "project-native-account-command": {
-                defaultModelSelection: {
-                  instanceId,
-                  model,
-                  options: [{ id: "reasoningEffort", value: "high" }],
-                },
-              },
-            },
-          }),
-        },
-      });
-      yield* harness.start;
-      expect(harness.dispatched[0]?.configuredReasoningEffort).toBe("high");
-      expect(harness.open.mock.calls[0]?.[0].modelSelection.options).toBeUndefined();
-      expect(harness.projection().runs.at(-1)?.modelSelection.options).toBeUndefined();
-    }),
-);

@@ -1,19 +1,18 @@
 "use client";
 
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
-import { AuthPreviewOperateScope, FILL_PREVIEW_VIEWPORT } from "@t3tools/contracts";
+import {
+  AuthPreviewOperateScope,
+  type DesktopPreviewOpenLinkEvent,
+  FILL_PREVIEW_VIEWPORT,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
-import { type ComponentProps, useEffect, useMemo, useRef, useState } from "react";
+import { type ComponentProps, useEffect, useEffectEvent, useState } from "react";
 
-import { Atom, AsyncResult } from "effect/reactivity";
-import { useAssignedCompanionSessions } from "../jones/previewCompanion/sessions";
-import { bindingsQuery, companionStateAtom } from "../jones/previewCompanion/state";
-import { mergeCompanionSessions } from "../jones/previewCompanion/inventory";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
-import { useTheme } from "~/hooks/useTheme";
 import { useActivePreviewSessions } from "~/previewStateStore";
 import { previewEnvironment } from "~/state/preview";
 import { useEnvironmentScope } from "~/state/session";
@@ -28,71 +27,27 @@ import { rendersServerTabNatively } from "./previewRuntime";
 import { previewRuntimeTabId } from "./previewRuntimeTabId";
 
 export function ElectronBrowserHost() {
-  const { resolvedTheme } = useTheme();
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
-  const assignedSessions = useAssignedCompanionSessions();
-  const companion = useAtomValue(companionStateAtom);
-  const bindingResults = useAtomValue(
-    useMemo(
-      () =>
-        Atom.make((get) => {
-          const results = new Map<string, ReturnType<typeof getBindingValue>>();
-          for (const key of Object.keys(previewByThreadKey)) {
-            const threadRef = parseScopedThreadKey(key);
-            if (threadRef)
-              results.set(
-                key,
-                getBindingValue(
-                  get(
-                    bindingsQuery({
-                      environmentId: threadRef.environmentId,
-                      input: { threadId: threadRef.threadId },
-                    }),
-                  ),
-                ),
-              );
-          }
-          return results;
-        }),
-      [previewByThreadKey],
-    ),
-  );
-  const ordinarySessions = useMemo(
-    () =>
-      Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
-        const threadRef = parseScopedThreadKey(threadKey);
-        return threadRef
-          ? Object.values(previewState.sessions)
-              .filter(
-                (snapshot) =>
-                  snapshot.runtime !== "server" ||
-                  (bindingResults.get(threadKey)?.tabs.find((tab) => tab.tabId === snapshot.tabId)
-                    ?.hostId == null &&
-                    rendersServerTabNatively(
-                      threadRef.environmentId,
-                      primaryEnvironmentId,
-                      snapshot,
-                    )),
-              )
-              .map((snapshot) => ({
-                threadRef,
-                snapshot,
-                runtimeTabId: previewRuntimeTabId(
-                  threadRef,
-                  previewState.serverEpoch,
-                  snapshot.tabId,
-                ),
-                pictureInPicture:
-                  previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
-                zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
-              }))
-          : [];
-      }),
-    [previewByThreadKey, primaryEnvironmentId, bindingResults, companion],
-  );
-
-  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions);
+  const sessions = Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
+    const threadRef = parseScopedThreadKey(threadKey);
+    return threadRef
+      ? Object.values(previewState.sessions)
+          .filter(
+            (snapshot) =>
+              snapshot.runtime !== "server" ||
+              rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot),
+          )
+          .map((snapshot) => ({
+            threadRef,
+            snapshot,
+            runtimeTabId: previewRuntimeTabId(threadRef, previewState.serverEpoch, snapshot.tabId),
+            pictureInPicture:
+              previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
+            zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
+          }))
+      : [];
+  });
 
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
@@ -125,7 +80,7 @@ export function ElectronBrowserHost() {
       observer.disconnect();
       headObserver.disconnect();
     };
-  }, [resolvedTheme]);
+  }, []);
 
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
@@ -136,59 +91,51 @@ export function ElectronBrowserHost() {
   }, []);
 
   const openPreview = useAtomCommand(previewEnvironment.open, { reportFailure: true });
-  const sessionByRuntimeTabId = useRef(new Map<string, (typeof sessions)[number]>());
-  useEffect(() => {
-    sessionByRuntimeTabId.current = new Map(
-      sessions.map((session) => [session.runtimeTabId, session]),
-    );
-  }, [sessions]);
+  const onOpenLink = useEffectEvent(({ tabId, url, background }: DesktopPreviewOpenLinkEvent) => {
+    const source = sessions.find((session) => session.runtimeTabId === tabId);
+    if (!source) return;
+    void openUrlInPreview({
+      threadRef: source.threadRef,
+      url,
+      openPreview,
+      profileId: source.snapshot.profileId,
+      background,
+    });
+  });
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
     if (!preview) return;
-    return preview.onOpenLink(({ tabId, url, background }) => {
-      const source = sessionByRuntimeTabId.current.get(tabId);
-      if (!source) return;
-      void openUrlInPreview({
-        threadRef: source.threadRef,
-        url,
-        openPreview,
-        profileId: source.snapshot.profileId,
-        background,
-      });
-    });
-  }, [openPreview]);
+    return preview.onOpenLink(onOpenLink);
+  }, []);
 
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
-      {sessions.map(
-        ({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor, companion }) => {
-          const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
-          return (
-            <AuthorizedBrowserWebview
-              key={runtimeTabId}
-              threadRef={threadRef}
-              tabId={snapshot.tabId}
-              runtimeTabId={runtimeTabId}
-              initialUrl={url}
-              {...(companion === undefined ? {} : { companion })}
-              viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
-              pictureInPicture={pictureInPicture}
-              profileId={snapshot.profileId}
-              zoomFactor={zoomFactor}
-              serverDriven={snapshot.runtime === "server"}
-              {...(snapshot.runtime === "server"
-                ? {
-                    serverRendering: {
-                      colorScheme: snapshot.colorScheme ?? "system",
-                      zoomFactor: snapshot.zoomFactor ?? 1,
-                    },
-                  }
-                : {})}
-            />
-          );
-        },
-      )}
+      {sessions.map(({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor }) => {
+        const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
+        return (
+          <AuthorizedBrowserWebview
+            key={runtimeTabId}
+            threadRef={threadRef}
+            tabId={snapshot.tabId}
+            runtimeTabId={runtimeTabId}
+            initialUrl={url}
+            viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
+            pictureInPicture={pictureInPicture}
+            profileId={snapshot.profileId}
+            zoomFactor={zoomFactor}
+            serverDriven={snapshot.runtime === "server"}
+            {...(snapshot.runtime === "server"
+              ? {
+                  serverRendering: {
+                    colorScheme: snapshot.colorScheme ?? "system",
+                    zoomFactor: snapshot.zoomFactor ?? 1,
+                  },
+                }
+              : {})}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -214,8 +161,4 @@ function useTabProfileId(profileId: string | undefined): string | undefined {
     setFallback(defaultProfileId);
   }
   return profileId ?? fallback;
-}
-
-function getBindingValue(value: Atom.Type<ReturnType<typeof bindingsQuery>>) {
-  return AsyncResult.isSuccess(value) && value.value.status === "ready" ? value.value.value : null;
 }

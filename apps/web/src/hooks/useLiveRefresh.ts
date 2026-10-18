@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useEffectEvent, useId } from "react";
 
 export const LIVE_REFRESH_MIN_INTERVAL_MS = 10_000;
 
@@ -10,12 +10,8 @@ export function shouldLiveRefresh(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number;
-  readonly minimumIntervalMs?: number;
 }): boolean {
-  return (
-    input.visible &&
-    input.now - input.lastRefreshedAt >= (input.minimumIntervalMs ?? LIVE_REFRESH_MIN_INTERVAL_MS)
-  );
+  return input.visible && input.now - input.lastRefreshedAt >= LIVE_REFRESH_MIN_INTERVAL_MS;
 }
 
 /**
@@ -26,7 +22,6 @@ export function shouldRefreshOnArrival(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number | undefined;
-  readonly minimumIntervalMs?: number;
 }): boolean {
   return (
     input.lastRefreshedAt !== undefined &&
@@ -38,7 +33,6 @@ export function shouldRefreshOnInterval(input: {
   readonly visible: boolean;
   readonly now: number;
   readonly lastRefreshedAt: number;
-  readonly minimumIntervalMs?: number;
   readonly lastInteractedAt: number;
 }): boolean {
   return (
@@ -85,30 +79,23 @@ export function useLiveRefresh(
   options: {
     readonly enabled?: boolean;
     readonly key?: string;
-    readonly minimumIntervalMs?: number;
     readonly intervalMs?: number;
   } = {},
 ): void {
-  const {
-    enabled = true,
-    key,
-    minimumIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS,
-    intervalMs = LIVE_REFRESH_INTERVAL_MS,
-  } = options;
-  // Held in a ref so a caller can pass a fresh closure every render without re-arming the
+  const { enabled = true, key, intervalMs = LIVE_REFRESH_INTERVAL_MS } = options;
+  // An effect event so a caller can pass a fresh closure every render without re-arming the
   // listeners, which would otherwise refresh on every render that changed anything at all.
-  const latest = useRef(refresh);
-  latest.current = refresh;
+  const runRefresh = useEffectEvent((viewId: string, now: number) => {
+    if (refresh === null) return;
+    lastRefreshedAtByView.set(viewId, now);
+    refresh();
+  });
   const fallbackViewId = useId();
   const viewId = key ?? fallbackViewId;
 
   useEffect(() => {
     if (!enabled) return;
-    const read = (now: number) => {
-      if (latest.current === null) return;
-      lastRefreshedAtByView.set(viewId, now);
-      latest.current();
-    };
+    const read = (now: number) => runRefresh(viewId, now);
     const visible = () => document.visibilityState === "visible";
     const onArrival = () => {
       const now = Date.now();
@@ -118,22 +105,12 @@ export function useLiveRefresh(
         lastRefreshedAtByView.set(viewId, now);
         return;
       }
-      if (shouldRefreshOnArrival({ visible: visible(), now, lastRefreshedAt, minimumIntervalMs })) {
-        read(now);
-      }
+      if (shouldRefreshOnArrival({ visible: visible(), now, lastRefreshedAt })) read(now);
     };
     const onInterval = () => {
       const now = Date.now();
       const lastRefreshedAt = lastRefreshedAtByView.get(viewId) ?? now;
-      if (
-        shouldRefreshOnInterval({
-          visible: visible(),
-          now,
-          lastRefreshedAt,
-          lastInteractedAt,
-          minimumIntervalMs,
-        })
-      ) {
+      if (shouldRefreshOnInterval({ visible: visible(), now, lastRefreshedAt, lastInteractedAt })) {
         read(now);
       }
     };
@@ -162,5 +139,5 @@ export function useLiveRefresh(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       stopWatchingInteraction();
     };
-  }, [enabled, viewId, minimumIntervalMs, intervalMs]);
+  }, [enabled, viewId, intervalMs]);
 }

@@ -1,7 +1,8 @@
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
-import { type ComponentProps, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ComponentProps, useEffect, useId, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
@@ -20,10 +21,6 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
-import {
-  downloadLocalDesktopUpdate,
-  installLocalDesktopUpdate,
-} from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -50,71 +47,6 @@ type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
 >[1];
 type SidebarUpdatePopoverHandle = ReturnType<typeof PopoverCreateHandle>;
-
-export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
-  type: "info" | "error";
-  title: string;
-  description?: string;
-} | null {
-  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") {
-    return null;
-  }
-  if (state.jones?.phase === "building") {
-    return {
-      type: "info",
-      title: "Update still being qualified",
-      description: state.jones.message ?? state.message ?? "The update is still being qualified.",
-    };
-  }
-  if (state.jones?.phase === "blocked") {
-    return {
-      type: "error",
-      title: "Update check blocked",
-      description: state.jones.message ?? state.message ?? "The update check is blocked.",
-    };
-  }
-  if (state.status === "error") {
-    return {
-      type: "error",
-      title: "Could not check for updates",
-      description: state.message ?? "Update check failed.",
-    };
-  }
-  if (state.status === "up-to-date") {
-    return { type: "info", title: "No new update available" };
-  }
-  return null;
-}
-
-export function checkForSidebarUpdate(
-  bridge: Pick<DesktopBridge, "checkForUpdate">,
-): Promise<void> {
-  return bridge
-    .checkForUpdate()
-    .then((result) => {
-      if (result.checked) {
-        const feedback = resolveSidebarUpdateCheckFeedback(result.state);
-        if (feedback) toastManager.add(stackedThreadToast(feedback));
-        return;
-      }
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not check for updates",
-          description: result.state.message ?? "Automatic updates are not available in this build.",
-        }),
-      );
-    })
-    .catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not check for updates",
-          description: error instanceof Error ? error.message : "Update check failed.",
-        }),
-      );
-    });
-}
 
 export function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
@@ -203,14 +135,13 @@ const toastUpdateError: ReportLocalUpdateError = (title, description) => {
 
 async function downloadLocalUpdate(
   bridge: DesktopBridge,
-  state: DesktopUpdateState | null,
   {
     notifyDownloaded,
     reportError = toastUpdateError,
   }: { readonly notifyDownloaded: boolean; readonly reportError?: ReportLocalUpdateError },
 ): Promise<boolean> {
   try {
-    const result = await downloadLocalDesktopUpdate(bridge, state);
+    const result = await bridge.downloadUpdate();
     if (result.completed && notifyDownloaded) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
     }
@@ -262,20 +193,28 @@ function SidebarUpdateControl() {
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
-  const [isCheckAnimationLatched, setIsCheckAnimationLatched] = useState(false);
   const [releaseNotesPopoverHandle] = useState(() => PopoverCreateHandle());
   const suppressReleaseNotesFocusOpen = useRef(false);
   const releaseNotesPopupRef = useRef<HTMLDivElement>(null);
   const releaseNotesTriggerId = useId();
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
-  useEffect(() => {
+  const updateStatus = state?.status;
+  const [isCheckAnimationLatched, setIsCheckAnimationLatched] = useState(
+    () => !prefersReducedMotion && updateStatus === "checking",
+  );
+  const [latchInputs, setLatchInputs] = useState({ prefersReducedMotion, updateStatus });
+  if (
+    latchInputs.prefersReducedMotion !== prefersReducedMotion ||
+    latchInputs.updateStatus !== updateStatus
+  ) {
+    setLatchInputs({ prefersReducedMotion, updateStatus });
     if (prefersReducedMotion) {
       setIsCheckAnimationLatched(false);
-    } else if (state?.status === "checking") {
+    } else if (updateStatus === "checking") {
       setIsCheckAnimationLatched(true);
     }
-  }, [prefersReducedMotion, state?.status]);
+  }
 
   const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
   const isDownloading = state?.status === "downloading";
@@ -329,7 +268,7 @@ function SidebarUpdateControl() {
     }
   }, [releaseNotesPopoverHandle, releaseNotesTriggerId, showReleaseNotesPopover]);
 
-  const handleAction = useCallback(async () => {
+  const handleAction = async () => {
     const bridge = window.desktopBridge;
     if (isInteractionDisabled) return;
 
@@ -342,7 +281,7 @@ function SidebarUpdateControl() {
     setIsActionPending(true);
 
     if (action === "download") {
-      void downloadLocalUpdate(bridge, state, { notifyDownloaded: true }).finally(() =>
+      void downloadLocalUpdate(bridge, { notifyDownloaded: true }).finally(() =>
         setIsActionPending(false),
       );
       return;
@@ -369,29 +308,7 @@ function SidebarUpdateControl() {
         setIsActionPending(false);
         return;
       }
-      void installLocalDesktopUpdate(bridge, state)
-        .then((result) => {
-          if (!shouldToastDesktopUpdateActionResult(result)) return;
-          const actionError = getDesktopUpdateActionError(result);
-          if (!actionError) return;
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not install update",
-              description: actionError,
-            }),
-          );
-        })
-        .catch((error) => {
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Could not install update",
-              description: error instanceof Error ? error.message : "An unexpected error occurred.",
-            }),
-          );
-        })
-        .finally(() => setIsActionPending(false));
+      void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
       return;
     }
 
@@ -399,26 +316,50 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
-  }, [action, isInteractionDisabled, prefersReducedMotion, runsEverything, state]);
+    void bridge
+      .checkForUpdate()
+      .then((result) => {
+        if (result.checked) return;
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not check for updates",
+            description:
+              result.state.message ?? "Automatic updates are not available in this build.",
+          }),
+        );
+      })
+      .catch((error) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not check for updates",
+            description: error instanceof Error ? error.message : "Update check failed.",
+          }),
+        );
+      })
+      .finally(() => setIsActionPending(false));
+  };
 
-  const runEverything = useCallback(async () => {
+  const runEverything = async () => {
     const bridge = window.desktopBridge;
     setIsConfirmingEverything(false);
     setIsActionPending(true);
-    try {
-      await everything.run({
+    const result = await settlePromise(() =>
+      everything.run({
         ...(bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
-                downloadLocalUpdate(bridge, state, { notifyDownloaded: false, reportError }),
+                downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
             }
           : {}),
         ...(bridge && action !== "none"
           ? { installLocal: (reportError) => installLocalUpdate(bridge, reportError) }
           : {}),
-      });
-    } catch (error) {
+      }),
+    );
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
       toastManager.add(
         stackedThreadToast({
           type: "error",
@@ -426,19 +367,18 @@ function SidebarUpdateControl() {
           description: error instanceof Error ? error.message : "An unexpected error occurred.",
         }),
       );
-    } finally {
-      setIsActionPending(false);
     }
-  }, [action, everything, state]);
+    setIsActionPending(false);
+  };
 
-  const handleCheckAnimationIteration = useCallback(() => {
+  const handleCheckAnimationIteration = () => {
     setIsCheckAnimationLatched(
       shouldContinueDesktopUpdateCheckAnimation({
         isChecking: state?.status === "checking",
         prefersReducedMotion,
       }),
     );
-  }, [prefersReducedMotion, state?.status]);
+  };
 
   if (!isElectron && !runsEverything && !isRunningEverything) return null;
 

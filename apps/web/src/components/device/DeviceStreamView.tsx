@@ -1,9 +1,9 @@
 import type { DevicePlatform, EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
-import { useDeviceStreamRoute } from "~/jones/device/useDeviceStreamRoute";
+import { refreshDeviceHubAccess, useDeviceHubAccess } from "~/state/device";
 import { createCanvasFrameSink } from "@t3tools/client-runtime/device/frame";
 import { resolveDeviceShape } from "@t3tools/client-runtime/device/shape-profile";
 import { deviceKeyboard, deviceModel } from "./deviceModels";
@@ -23,9 +23,39 @@ import {
   type DeviceStreamStatus,
 } from "@t3tools/client-runtime/device/stream";
 import { observeResize } from "~/lib/observeResize";
+import { useStableCallback } from "~/hooks/useStableCallback";
 
 const AX_POLL_INTERVAL_MS = 2_000;
 const CONTROLS_RAIL_WIDTH = 56;
+
+function screenAspect(platform: DevicePlatform, screen: DeviceScreenSize | null): number {
+  if (!screen) return platform === "ios" ? 9 / 19.5 : 9 / 20;
+  const landscape =
+    screen.orientation === "landscape_left" || screen.orientation === "landscape_right";
+  const w = landscape
+    ? Math.max(screen.width, screen.height)
+    : Math.min(screen.width, screen.height);
+  const h = landscape
+    ? Math.min(screen.width, screen.height)
+    : Math.max(screen.width, screen.height);
+  return w / h;
+}
+
+// serve-sim streams the raw framebuffer; rotate the display for a device
+// that reports landscape while its frames stay portrait.
+function screenRotation(platform: DevicePlatform, screen: DeviceScreenSize | null): number {
+  if (platform !== "ios" || !screen || screen.width > screen.height) return 0;
+  switch (screen.orientation) {
+    case "landscape_left":
+      return 90;
+    case "landscape_right":
+      return -90;
+    case "portrait_upside_down":
+      return 180;
+    default:
+      return 0;
+  }
+}
 
 export interface DeviceViewControls {
   readonly phone: boolean;
@@ -68,23 +98,25 @@ export function DeviceStreamView(props: {
   const [presentation, setPresentation] = useState<"phone" | "flat">("phone");
   const [keyboardAttached, setKeyboardAttached] = useState(false);
   const [phoneUnavailable, setPhoneUnavailable] = useState(false);
-  const onPhoneUnavailable = useCallback(() => setPhoneUnavailable(true), []);
+  // The stream effect and the viewports' scene setup depend on these; a new
+  // identity per render would restart the stream and rebuild the 3D scene.
+  const onPhoneUnavailable = useStableCallback(() => setPhoneUnavailable(true));
   const cancelPhoneInputRef = useRef<(() => void) | null>(null);
-  const cancelPhoneInput = useCallback(() => cancelPhoneInputRef.current?.(), []);
+  const cancelPhoneInput = useStableCallback(() => cancelPhoneInputRef.current?.());
   const resetViewRef = useRef<(() => void) | null>(null);
-  const onResetReady = useCallback((reset: (() => void) | null) => {
+  const onResetReady = useStableCallback((reset: (() => void) | null) => {
     resetViewRef.current = reset;
-  }, []);
+  });
   const frameListenerRef = useRef<(() => void) | null>(null);
-  const onFrameListener = useCallback((listener: (() => void) | null) => {
+  const onFrameListener = useStableCallback((listener: (() => void) | null) => {
     frameListenerRef.current = listener;
-  }, []);
-  const onInputCancel = useCallback((cancel: (() => void) | null) => {
+  });
+  const onInputCancel = useStableCallback((cancel: (() => void) | null) => {
     cancelPhoneInputRef.current = cancel;
-  }, []);
+  });
+  const access = useDeviceHubAccess(props.environmentId, props.hostId);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const clientRef = useRef<DeviceStreamClient | null>(null);
-  const pointerActive = useRef(false);
   const [status, setStatus] = useState<DeviceStreamStatus>("connecting");
   const [hasFrame, setHasFrame] = useState(false);
   const [detail, setDetail] = useState<string | undefined>(undefined);
@@ -93,40 +125,14 @@ export function DeviceStreamView(props: {
   const [foldAngle, setFoldAngle] = useState<number | null>(null);
   const [mjpegUrl, setMjpegUrl] = useState<string | null>(null);
   const [mjpegGeneration, setMjpegGeneration] = useState(0);
-  const attachMjpegImage = useCallback((image: HTMLImageElement | null) => {
+  // A new ref callback per render would detach and reattach the MJPEG image.
+  const attachMjpegImage = useStableCallback((image: HTMLImageElement | null) => {
     clientRef.current?.setMjpegImage(image);
-  }, []);
+  });
   const [inputState, setInputState] = useState<{ connected: boolean; detail?: string }>({
     connected: false,
   });
   const { onHandle, onScreen } = props;
-
-  const retireStream = useCallback(() => {
-    pointerActive.current = false;
-    cancelPhoneInput();
-    const previous = clientRef.current;
-    clientRef.current = null;
-    previous?.stop();
-    setStatus("connecting");
-    setInputState({ connected: false });
-    setMjpegUrl(null);
-    onHandle?.(null);
-  }, [cancelPhoneInput, onHandle]);
-  const {
-    route,
-    proxy: proxyAccess,
-    report,
-    unauthorized,
-    retryAccess,
-  } = useDeviceStreamRoute({
-    environmentId: props.environmentId,
-    hostId: props.hostId,
-    deviceId: props.deviceId,
-    platform: props.platform,
-    visible: props.visible,
-    retire: retireStream,
-  });
-  const access = route?.access ?? null;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -139,43 +145,26 @@ export function DeviceStreamView(props: {
       { platform: props.platform, deviceId: props.deviceId, access },
       createCanvasFrameSink(canvas, () => frameListenerRef.current?.()),
       {
-        onDuoControl: (next) => {
-          if (clientRef.current === client) setDuoControl(next);
-        },
-        onDuoUnavailable: () => {
-          if (clientRef.current === client) onPhoneUnavailable();
-        },
+        onDuoControl: setDuoControl,
+        onDuoUnavailable: onPhoneUnavailable,
         onStatus: (next, nextDetail) => {
-          if (clientRef.current !== client) return;
-          report(
-            access,
-            "video",
-            next === "streaming",
-            next === "error" ? (nextDetail ?? "Video failed") : nextDetail,
-          );
-          if (clientRef.current !== client) return;
           setStatus(next);
           if (next === "streaming") setHasFrame(true);
           setDetail(nextDetail);
           if (next !== "connecting") setShowRestartNotice(false);
         },
         onScreen: (next) => {
-          if (clientRef.current !== client) return;
           setScreen(next);
           onScreen?.(next);
         },
         onUnauthorized: () => {
-          if (clientRef.current === client) unauthorized(access);
+          refreshDeviceHubAccess(props.environmentId);
         },
         onMjpegFallback: (url) => {
-          if (clientRef.current !== client) return;
           setMjpegUrl(url);
           setMjpegGeneration((generation) => generation + 1);
         },
         onInputConnected: (connected, detail) => {
-          if (clientRef.current !== client) return;
-          report(access, "input", connected, detail);
-          if (clientRef.current !== client) return;
           setInputState({ connected, ...(detail ? { detail } : {}) });
           if (!connected) setShowRestartNotice(false);
           onHandle?.({
@@ -194,10 +183,9 @@ export function DeviceStreamView(props: {
     client.start();
     onHandle?.({ pressButton: client.pressButton, rotate: client.rotate, inputConnected: false });
     return () => {
-      pointerActive.current = false;
       cancelPhoneInput();
       client.stop();
-      if (clientRef.current === client) clientRef.current = null;
+      clientRef.current = null;
       onHandle?.(null);
       onScreen?.(null);
       setScreen(null);
@@ -209,24 +197,12 @@ export function DeviceStreamView(props: {
     onPhoneUnavailable,
     onScreen,
     props.deviceId,
+    props.environmentId,
     props.platform,
     props.visible,
-    report,
-    unauthorized,
   ]);
 
-  const aspect = useMemo(() => {
-    if (!screen) return props.platform === "ios" ? 9 / 19.5 : 9 / 20;
-    const landscape =
-      screen.orientation === "landscape_left" || screen.orientation === "landscape_right";
-    const w = landscape
-      ? Math.max(screen.width, screen.height)
-      : Math.min(screen.width, screen.height);
-    const h = landscape
-      ? Math.min(screen.width, screen.height)
-      : Math.max(screen.width, screen.height);
-    return w / h;
-  }, [props.platform, screen]);
+  const aspect = screenAspect(props.platform, screen);
 
   const retainingFrame =
     status === "connecting" && hasFrame && inputState.connected && screen !== null;
@@ -266,25 +242,9 @@ export function DeviceStreamView(props: {
     update();
     return observeResize(element, update);
   }, []);
-  const frame = useMemo(() => {
-    return fitDeviceFrame(aspect, host.width, host.height, controlsInset);
-  }, [aspect, controlsInset, host]);
+  const frame = fitDeviceFrame(aspect, host.width, host.height, controlsInset);
 
-  // serve-sim streams the raw framebuffer; rotate the display for a device
-  // that reports landscape while its frames stay portrait.
-  const rotation = useMemo(() => {
-    if (props.platform !== "ios" || !screen || screen.width > screen.height) return 0;
-    switch (screen.orientation) {
-      case "landscape_left":
-        return 90;
-      case "landscape_right":
-        return -90;
-      case "portrait_upside_down":
-        return 180;
-      default:
-        return 0;
-    }
-  }, [props.platform, screen]);
+  const rotation = screenRotation(props.platform, screen);
 
   const sideways = rotation === 90 || rotation === -90;
   const mediaStyle: React.CSSProperties = sideways
@@ -303,8 +263,8 @@ export function DeviceStreamView(props: {
 
   const [axElements, setAxElements] = useState<ReadonlyArray<DeviceAxElement>>([]);
   useEffect(() => {
-    if (!props.axOverlay || !proxyAccess || !props.visible) return;
-    const target = { access: proxyAccess, platform: props.platform, deviceId: props.deviceId };
+    if (!props.axOverlay || !access || !props.visible) return;
+    const target = { access, platform: props.platform, deviceId: props.deviceId };
     let controller: AbortController | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
@@ -323,8 +283,9 @@ export function DeviceStreamView(props: {
       if (timer) clearTimeout(timer);
       setAxElements([]);
     };
-  }, [proxyAccess, props.axOverlay, props.deviceId, props.platform, props.visible]);
+  }, [access, props.axOverlay, props.deviceId, props.platform, props.visible]);
 
+  const pointerActive = useRef(false);
   const normalizedPoint = (event: React.PointerEvent<HTMLElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const x = (event.clientX - rect.left) / rect.width;
@@ -344,13 +305,13 @@ export function DeviceStreamView(props: {
             : null;
 
   const keyboardSource = deviceKeyboard(props.platform, props.deviceName ?? "");
-  const resetView = useCallback(() => {
+  const resetView = () => {
     if (!isDuo) {
       const orientation = keyboardAttached ? "landscape_right" : "portrait";
       if (screen?.orientation !== orientation) clientRef.current?.setOrientation(orientation);
     }
     resetViewRef.current?.();
-  }, [isDuo, keyboardAttached, screen?.orientation]);
+  };
   const profile = resolveDeviceShape({
     platform: props.platform,
     name: props.deviceName ?? "",
@@ -364,23 +325,6 @@ export function DeviceStreamView(props: {
         props.allowPhoneView ? "bg-background" : "bg-black/90",
       )}
     >
-      {props.visible ? (
-        <div
-          className="pointer-events-none absolute right-2 top-2 z-20 max-w-[80%] rounded-md bg-background/85 px-2 py-1 text-xs text-muted-foreground"
-          role="status"
-        >
-          {route?.phase === "denied"
-            ? "Device access needs attention"
-            : route?.kind === "direct"
-              ? route.phase === "connected"
-                ? "Direct connection"
-                : "Connecting directly…"
-              : route?.phase === "connected"
-                ? "Server connection"
-                : "Connecting through server…"}
-          {route?.reason ? <span className="block">{route.reason}</span> : null}
-        </div>
-      ) : null}
       {props.renderControls ? (
         <DeviceControlsSlot
           renderControls={props.renderControls}
@@ -389,10 +333,10 @@ export function DeviceStreamView(props: {
             streaming: status === "streaming",
             phoneUnavailableReason,
             foldingControls:
-              props.platform === "android" && proxyAccess ? (
+              props.platform === "android" && access ? (
                 <DeviceAndroidFoldControls
                   key={`${props.hostId}:${props.deviceId}`}
-                  access={proxyAccess}
+                  access={access}
                   deviceId={props.deviceId}
                   visible={props.visible}
                   enabled={status === "streaming"}
@@ -587,17 +531,21 @@ export function DeviceStreamView(props: {
               name={props.deviceName ?? "Device"}
               description={props.deviceDescription ?? ""}
               stage="stream"
-              message={
-                route?.phase === "denied"
-                  ? (route.reason ?? "Device access needs attention.")
-                  : status === "error"
-                    ? (detail ?? "Stream failed.")
-                    : "Connecting video…"
-              }
-              error={status === "error" || route?.phase === "denied"}
+              message={status === "error" ? (detail ?? "Stream failed.") : "Connecting video…"}
+              error={status === "error"}
             >
-              {status === "error" || route?.phase === "denied" ? (
-                <Button size="sm" variant="outline" onClick={retryAccess}>
+              {status === "error" ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    // An expired ticket surfaces as unauthorized on restart and
+                    // refreshes access through the effect; no need to mint one here.
+                    clientRef.current?.stop();
+                    setPhoneUnavailable(false);
+                    clientRef.current?.start();
+                  }}
+                >
                   Reconnect
                 </Button>
               ) : null}

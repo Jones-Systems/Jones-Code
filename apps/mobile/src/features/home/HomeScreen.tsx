@@ -1,8 +1,3 @@
-import { useMobileWorkstreams } from "../workstreams/useWorkstreams";
-import {
-  projectMobileWorkstreamList,
-  mobileWorkstreamMoveDestination,
-} from "../workstreams/listProjection";
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { useAndroidControlSizing } from "../../components/ui/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -23,6 +18,7 @@ import { use, useCallback, useEffect, useMemo, useRef, useState, type ComponentP
 import {
   Platform,
   ScrollView,
+  useWindowDimensions,
   View,
   type ScrollViewProps,
   type GestureResponderEvent,
@@ -35,6 +31,10 @@ import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSw
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { cn } from "../../lib/cn";
+import {
+  ANDROID_READING_MAX_WIDTH,
+  deriveCenteredContentHorizontalPadding,
+} from "../../lib/layout";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
@@ -55,7 +55,6 @@ import { threadListEnvironmentsAtom } from "../../state/server";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import { useQueuedThreadKeys } from "../../state/use-thread-outbox";
 import {
-  ThreadListV2WorkstreamHeader,
   ThreadListV2PendingRow,
   ThreadListV2Row,
   ThreadListV2SettledShelfHeader,
@@ -64,6 +63,8 @@ import {
   ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
+import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-requests";
+import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
   buildThreadListV2Items,
   getThreadListV2OrderedSection,
@@ -261,7 +262,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const columnMetrics = useNativeColumnLayoutMetrics();
   const selectedThreadKey = primaryColumn?.selectedThreadKey ?? null;
   const fullSwipeWidth = primaryColumn && columnMetrics ? columnMetrics.width - 20 : undefined;
-  const workstreams = useMobileWorkstreams(props.threads);
   const queuedThreadKeys = useQueuedThreadKeys();
   const openSwipeableRef = useRef<SwipeableMethods | null>(null);
   const homeScrollGesture = useNativeGesture();
@@ -271,6 +271,17 @@ export function HomeScreen(props: HomeScreenProps) {
   const contentSideInsets = usesNativeWorkspaceColumns
     ? (columnMetrics ?? screenMetrics)?.safeArea
     : undefined;
+  // Android lists that span a wide window (foldables in portrait) keep the
+  // reading width, so rows stay clear of the edges and the camera cutout.
+  const { width: windowWidth } = useWindowDimensions();
+  const androidListGutter =
+    Platform.OS === "android"
+      ? deriveCenteredContentHorizontalPadding({
+          viewportWidth: windowWidth,
+          maxContentWidth: ANDROID_READING_MAX_WIDTH,
+          minimumPadding: 0,
+        })
+      : 0;
   const iosBottomClearance = Math.max(
     columnMetrics?.safeArea.bottom ?? insets.bottom,
     24,
@@ -321,6 +332,14 @@ export function HomeScreen(props: HomeScreenProps) {
   const handleScrollBeginDrag = useCallback(() => {
     openSwipeableRef.current?.close();
   }, []);
+  const openThreadPullRequests = useOpenThreadPullRequests();
+  const handleOpenThreadPullRequests = useCallback(
+    (thread: EnvironmentThreadShell, pr: ThreadPrPresentation) => {
+      openSwipeableRef.current?.close();
+      openThreadPullRequests(thread, pr);
+    },
+    [openThreadPullRequests],
+  );
   const onFabScroll = useFabScroll();
   const listRef = useRef<LegendListRef>(null);
   const searchMode = workspace?.state.tabs.threads.searchMode;
@@ -627,7 +646,7 @@ export function HomeScreen(props: HomeScreenProps) {
       ),
     [props.pendingTasks, props.selectedEnvironmentId, v2ScopedProjectKeys, v2SearchQuery],
   );
-  const nativeThreadListV2Items = useMemo(
+  const threadListV2Items = useMemo(
     () =>
       buildThreadListV2ListItems({
         items: threadListV2Layout.items,
@@ -661,38 +680,6 @@ export function HomeScreen(props: HomeScreenProps) {
     ],
   );
 
-  const threadListV2Items = useMemo(
-    () =>
-      projectMobileWorkstreamList(nativeThreadListV2Items, {
-        enabled: workstreams.enabled,
-        groups: workstreams.groups,
-        collapsedKeys: workstreams.collapsedKeys,
-        secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
-        confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
-        selectedThreadKey,
-        searching: props.searchQuery.trim().length > 0,
-      }),
-    [
-      nativeThreadListV2Items,
-      workstreams.enabled,
-      workstreams.groups,
-      workstreams.collapsedKeys,
-      workstreams.secondaryLabelsByKey,
-      workstreams.confirmedUnassignedKeys,
-      selectedThreadKey,
-      props.searchQuery,
-    ],
-  );
-  const moveWithinWorkstream = useCallback(
-    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
-      const target = workstreams.enabled
-        ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
-        : direction;
-      if (target !== null) handleMoveThread(thread, target);
-    },
-    [workstreams.enabled, threadListV2Items, handleMoveThread],
-  );
-
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
   useEffect(() => {
     if (swipeEnabled) activateVisibleRows(threadListV2Items);
@@ -700,15 +687,6 @@ export function HomeScreen(props: HomeScreenProps) {
 
   const renderV2Item = useCallback(
     ({ item }: { readonly item: ThreadListV2ListItem }) => {
-      if (item.type === "v2-workstream") {
-        return (
-          <ThreadListV2WorkstreamHeader
-            {...item}
-            onToggle={() => workstreams.toggleGroup(item.groupKey)}
-            onOpen={() => workstreams.openGroup(item.groupKey)}
-          />
-        );
-      }
       if (item.type === "v2-pending") {
         const pendingScopeKey = scopedProjectKey(
           item.pendingTask.environmentId,
@@ -771,8 +749,6 @@ export function HomeScreen(props: HomeScreenProps) {
           fullSwipeWidth={fullSwipeWidth}
           onNewThreadOnBranch={props.onNewThreadOnBranch}
           thread={thread}
-          onOpenWorkstreams={workstreams.openThread}
-          secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
           variant={item.item.variant}
           hasQueuedMessages={item.hasQueuedMessages}
           snoozed={item.item.snoozed}
@@ -803,6 +779,7 @@ export function HomeScreen(props: HomeScreenProps) {
           )}
           searchQuery={props.searchQuery}
           onSelectThread={props.onSelectThread}
+          onOpenThreadPullRequests={handleOpenThreadPullRequests}
           onDeleteThread={handleDeleteThread}
           onArchiveThread={props.onArchiveThread}
           onRenameThread={handleRenameThread}
@@ -826,7 +803,7 @@ export function HomeScreen(props: HomeScreenProps) {
           onPinThread={handlePinThread}
           onUnpinThread={handleUnpinThread}
           onSetThreadAutoSettle={handleSetThreadAutoSettle}
-          onMoveThread={moveWithinWorkstream}
+          onMoveThread={handleMoveThread}
           onSwipeableClose={handleSwipeableClose}
           onSwipeableWillOpen={handleSwipeableWillOpen}
           simultaneousSwipeGesture={homeScrollGesture}
@@ -836,10 +813,7 @@ export function HomeScreen(props: HomeScreenProps) {
     },
     [
       handleDeleteThread,
-      workstreams.toggleGroup,
-      workstreams.openGroup,
-      workstreams.openThread,
-      moveWithinWorkstream,
+      handleOpenThreadPullRequests,
       activeReorderEnvironmentIds,
       handleMoveThread,
       handlePinThread,
@@ -891,7 +865,6 @@ export function HomeScreen(props: HomeScreenProps) {
   // the same reason: the clock text is precomputed per item instead.
   const v2ExtraData = useMemo(
     () => ({
-      workstreamBindingRevision: workstreams.bindingRevision,
       projectByKey,
       projectTitleByProjectKey: v2ProjectTitleByProjectKey,
       listEnvironments,
@@ -902,7 +875,6 @@ export function HomeScreen(props: HomeScreenProps) {
       workingShelfEnabled,
     }),
     [
-      workstreams.bindingRevision,
       projectByKey,
       props.searchQuery,
       selectedThreadKey,
@@ -929,7 +901,6 @@ export function HomeScreen(props: HomeScreenProps) {
   if (!hasAnyThreads) {
     return (
       <View className={containerClassName}>
-        {workstreams.sheet}
         <View
           className={cn(
             "flex-1 items-center justify-center px-8",
@@ -944,7 +915,6 @@ export function HomeScreen(props: HomeScreenProps) {
           }}
         >
           <View className="w-full max-w-[430px]">
-            {workstreams.controls}
             <EmptyState
               title={emptyState.title}
               detail={emptyState.detail}
@@ -979,7 +949,6 @@ export function HomeScreen(props: HomeScreenProps) {
   const v2ListHeader = (
     <>
       {listHeader}
-      {workstreams.controls}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           environments={props.environments}
@@ -1035,7 +1004,6 @@ export function HomeScreen(props: HomeScreenProps) {
 
   return (
     <View className={containerClassName}>
-      {workstreams.sheet}
       <View
         className={
           Platform.OS === "android"
@@ -1087,8 +1055,10 @@ export function HomeScreen(props: HomeScreenProps) {
               {...scrollGateHandlers}
               scrollEventThrottle={16}
               contentContainerStyle={{
-                paddingLeft: (contentSideInsets?.left ?? 0) + (primaryColumn ? 8 : 0),
-                paddingRight: (contentSideInsets?.right ?? 0) + (primaryColumn ? 8 : 0),
+                paddingLeft:
+                  (contentSideInsets?.left ?? 0) + (primaryColumn ? 8 : 0) + androidListGutter,
+                paddingRight:
+                  (contentSideInsets?.right ?? 0) + (primaryColumn ? 8 : 0) + androidListGutter,
                 paddingBottom:
                   Platform.OS === "ios"
                     ? iosBottomClearance

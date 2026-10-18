@@ -22,16 +22,7 @@ import {
   matchesKeybindingShortcut,
   normalizeEventKey,
 } from "@t3tools/shared/keybindings";
-import {
-  lazy,
-  Suspense,
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
 import { ExpandedImageDialog } from "~/components/chat/ExpandedImageDialog";
@@ -43,7 +34,7 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
-const PdfPreview = lazy(() => import("./PdfPreview"));
+const PDF_VIEWER_FRAGMENT = "#toolbar=0&view=FitH";
 
 /**
  * The page reports the keys, and a page script can report any key it likes,
@@ -74,27 +65,25 @@ export const isPdfPreviewFile = (path: string): boolean =>
 
 /**
  * HTML runs in a sandboxed frame with an opaque origin, so a page cannot reach
- * the app's session or storage. PDFs use the app PDF viewer with retry support.
+ * the app's session or storage. The built-in PDF viewer needs an unsandboxed
+ * frame; a PDF runs no scripts.
  */
 export function BrowserDocumentFrame(props: {
   readonly src: string;
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
-  readonly onRetry?: () => void | Promise<void>;
   readonly threadRef?: ScopedThreadRef | undefined;
 }) {
   const className = "min-h-0 flex-1 border-0 bg-white";
   return props.pdf ? (
-    <Suspense
-      fallback={
-        <div role="status" className="flex min-h-0 flex-1 items-center justify-center">
-          Loading PDF…
-        </div>
-      }
-    >
-      <PdfPreview key={props.src} src={props.src} title={props.title} onRetry={props.onRetry} />
-    </Suspense>
+    // oxlint-disable-next-line react/iframe-missing-sandbox -- the built-in PDF viewer needs an unsandboxed frame.
+    <iframe
+      key={props.src}
+      src={`${props.src}${PDF_VIEWER_FRAGMENT}`}
+      title={props.title}
+      className={className}
+    />
   ) : props.htmlRender ? (
     <HtmlRenderDocument
       key={props.src}
@@ -109,7 +98,7 @@ export function BrowserDocumentFrame(props: {
       src={props.src}
       title={props.title}
       className={className}
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
     />
   );
 }
@@ -146,29 +135,27 @@ export function HtmlRenderDocument(props: {
   // binding counts whatever its `when`, and a key that any binding gives to
   // another command stays with the page. Only Cmd/Ctrl chords: a printable key
   // would type into the composer instead.
-  const { shortcuts, blocked } = useMemo(() => {
-    const mac = isMacPlatform(navigator.platform);
-    const resolve = (shortcut: KeybindingShortcut): HtmlRenderShortcut => ({
-      key: shortcut.key,
-      metaKey: shortcut.metaKey || (shortcut.modKey && mac),
-      ctrlKey: shortcut.ctrlKey || (shortcut.modKey && !mac),
-      shiftKey: shortcut.shiftKey,
-      altKey: shortcut.altKey,
-    });
-    const blocked = [...keybindings, ...(environmentKeybindings ?? [])]
-      .filter((binding) => !HTML_RENDER_SHORTCUT_COMMANDS.has(binding.command))
-      .map((binding) => resolve(binding.shortcut));
-    const shortcuts = new Map<string, HtmlRenderShortcut>();
-    for (const { command, shortcut } of keybindings) {
-      if (
-        HTML_RENDER_SHORTCUT_COMMANDS.has(command) &&
-        (shortcut.metaKey || shortcut.ctrlKey || shortcut.modKey)
-      ) {
-        shortcuts.set(shortcutConflictKey(shortcut), resolve(shortcut));
-      }
+  const mac = isMacPlatform(navigator.platform);
+  const resolve = (shortcut: KeybindingShortcut): HtmlRenderShortcut => ({
+    key: shortcut.key,
+    metaKey: shortcut.metaKey || (shortcut.modKey && mac),
+    ctrlKey: shortcut.ctrlKey || (shortcut.modKey && !mac),
+    shiftKey: shortcut.shiftKey,
+    altKey: shortcut.altKey,
+  });
+  const blocked = [...keybindings, ...(environmentKeybindings ?? [])]
+    .filter((binding) => !HTML_RENDER_SHORTCUT_COMMANDS.has(binding.command))
+    .map((binding) => resolve(binding.shortcut));
+  const shortcutsByKey = new Map<string, HtmlRenderShortcut>();
+  for (const { command, shortcut } of keybindings) {
+    if (
+      HTML_RENDER_SHORTCUT_COMMANDS.has(command) &&
+      (shortcut.metaKey || shortcut.ctrlKey || shortcut.modKey)
+    ) {
+      shortcutsByKey.set(shortcutConflictKey(shortcut), resolve(shortcut));
     }
-    return { shortcuts: [...shortcuts.values()], blocked };
-  }, [environmentKeybindings, keybindings]);
+  }
+  const shortcuts = [...shortcutsByKey.values()];
   const postShortcuts = () => {
     frameRef.current?.contentWindow?.postMessage(
       htmlRenderShortcutsMessage(shortcuts, blocked),
