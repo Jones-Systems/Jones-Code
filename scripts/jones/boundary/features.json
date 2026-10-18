@@ -274,6 +274,11 @@
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     },
     {
+      "id": "mcp-pin-placement",
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
+      "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
+    },
+    {
       "id": "work-queue-metadata",
       "tests": [
         "apps/server/src/voiceReview/bridge.test.ts",
@@ -800,6 +805,22 @@
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
       ],
       "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
+    },
+    {
+      "id": "pr-read-efficiency",
+      "tests": [
+        "packages/contracts/src/pullRequestRateLimit.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts",
+        "packages/client-runtime/src/state/pullRequests.test.ts",
+        "apps/web/src/hooks/useLiveRefresh.test.ts",
+        "apps/web/src/state/query.test.ts",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
+        "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
+        "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
+      ],
+      "scope": "Typed PR read pauses terminate alternate routing; bounded qualified-head REST discovery preserves shared cooldown; PR focus reuse and held-data pause presentation. Shared contract/service/router/hook edits are small extensions of existing mechanisms; integration tests retain existing private harnesses."
     }
   ]
 }

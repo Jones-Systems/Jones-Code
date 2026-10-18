@@ -27,6 +27,7 @@ import { decodeJsonResult } from "@t3tools/shared/schemaJson";
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import * as GitHubRest from "./GitHubRest.ts";
+import { listQualifiedHeadPullRequests } from "../jones/qualifiedHeadDiscovery.ts";
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as GitHubChangeRequestTemplate from "./gitHubChangeRequestTemplate.ts";
 import * as GitHubGraphQlClient from "./gitHubGraphQlClient.ts";
@@ -400,7 +401,6 @@ const BACKGROUND_HEAD_LOOKUP_BATCH_WINDOW = "500 millis";
  */
 const BACKGROUND_HEAD_LOOKUPS_PER_DOCUMENT = 25;
 const HEAD_LOOKUP_MAX_RESPONSE_BYTES = 16_000_000;
-const OWNER_HEAD_SCAN_LIMIT = 100;
 
 function trimmed(value: string): string | null {
   const text = value.trim();
@@ -561,6 +561,27 @@ export const make = Effect.gen(function* () {
     const locator = yield* resolveRepository(input);
     const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 100);
     const ownerMatch = /^([^:/\s]+):(.+)$/u.exec(input.headSelector.trim());
+    if (
+      /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}:[^\s:]+$/u.test(input.headSelector.trim())
+    ) {
+      return yield* listQualifiedHeadPullRequests({
+        locator,
+        headSelector: input.headSelector.trim(),
+        state: input.state,
+        limit,
+      }).pipe(
+        Effect.provideService(GitHubRest.GitHubRest, api),
+        Effect.mapError((error) => {
+          if (error._tag === "QualifiedHeadDecodeError") {
+            return failure("GitHub returned an invalid change request list.", error);
+          }
+          if (error._tag === "QualifiedHeadPageLimitError") {
+            return failure("Qualified pull request discovery exceeded ten REST pages.", error);
+          }
+          return fromGitHubApiError(error);
+        }),
+      );
+    }
     const headRefName = ownerMatch?.[2] ?? input.headSelector.trim();
     const result = yield* graphqlRead(
       {
@@ -578,7 +599,7 @@ export const make = Effect.gen(function* () {
           name: locator.name,
           head: headRefName,
           states: GRAPHQL_STATES[input.state],
-          first: ownerMatch ? OWNER_HEAD_SCAN_LIMIT : limit,
+          first: ownerMatch ? 100 : limit,
         },
         input.allowReserve ? interactiveHeadResolver : backgroundHeadResolver,
       ),
