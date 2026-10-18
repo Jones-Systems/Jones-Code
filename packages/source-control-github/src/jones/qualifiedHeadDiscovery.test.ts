@@ -165,8 +165,9 @@ describe("qualified head REST discovery", () => {
     });
   });
 
-  for (const state of ["open", "all"] as const) {
-    it.effect(`preserves ${state} selection and the requested result limit`, () => {
+  it.effect.each(["open", "all"] as const)(
+    "preserves %s selection and the requested result limit",
+    (state) => {
       const { effect, calls } = run(
         state,
         [[{ ...row(3), state: "open" }, { ...row(2), state: "open" }, row(1, true)]],
@@ -183,9 +184,9 @@ describe("qualified head REST discovery", () => {
           state,
         );
       });
-    });
-  }
-  for (const error of [
+    },
+  );
+  it.effect.each([
     new GitHubRequestPolicy.GitHubApiAuthenticationError({
       host: input.locator.host,
       operation: "listPullRequestsByHead",
@@ -195,30 +196,28 @@ describe("qualified head REST discovery", () => {
       host: input.locator.host,
       retryAt: 123,
     }),
-  ]) {
-    it.effect(`keeps ${error._tag} terminal under ambient interactive context`, () => {
-      let calls = 0;
-      return Effect.gen(function* () {
-        const result = yield* Effect.result(
-          listQualifiedHeadPullRequests(input).pipe(
-            Effect.provideService(
-              GitHubRest.GitHubRest,
-              GitHubRest.GitHubRest.of({
-                credential: () => Effect.succeed(credential),
-                rest: (request) => {
-                  calls++;
-                  assert.strictEqual(request.allowReserve, false);
-                  return Effect.fail(error);
-                },
-              }),
-            ),
-            Effect.provideService(SourceControlRateLimit.Interactive, true),
+  ])("keeps $_tag terminal under ambient interactive context", (error) => {
+    let calls = 0;
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(
+        listQualifiedHeadPullRequests(input).pipe(
+          Effect.provideService(
+            GitHubRest.GitHubRest,
+            GitHubRest.GitHubRest.of({
+              credential: () => Effect.succeed(credential),
+              rest: (request) => {
+                calls++;
+                assert.strictEqual(request.allowReserve, false);
+                return Effect.fail(error);
+              },
+            }),
           ),
-        );
-        assert(Result.isFailure(result));
-        assert.strictEqual(result.failure, error);
-        assert.strictEqual(calls, 1);
-      });
+          Effect.provideService(SourceControlRateLimit.Interactive, true),
+        ),
+      );
+      assert(Result.isFailure(result));
+      assert.strictEqual(result.failure, error);
+      assert.strictEqual(calls, 1);
     });
-  }
+  });
 });

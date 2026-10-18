@@ -995,118 +995,114 @@ it.effect.each(
   ),
 );
 
-for (const tag of [WS_METHODS.pullRequestsSummary, WS_METHODS.pullRequestsDetail]) {
-  for (const scenario of [
-    "local source pause",
-    "alternate pause",
-    "final source pause",
-    "origin identity pause",
-    "alternate identity pause",
-    "transport fallback",
-    "legacy error fallback",
-  ] as const) {
-    it.effect(`${tag} respects ${scenario} without extra reads`, () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const calls: string[] = [];
-          const pause = new PullRequestOperationError({
-            operation: "detail",
-            detail: "Provider reads are paused",
-            reason: "rate-limited",
-            retryAt: 123456,
-          });
-          const transport = new EnvironmentRpcUnavailableError({
-            environmentId: EnvironmentId.make("test-environment"),
-            message: "Connection unavailable",
-          });
-          const legacy = new PullRequestOperationError({
-            operation: "detail",
-            detail: "rate limit reached",
-          });
-          const fallback =
-            scenario === "transport fallback" || scenario === "legacy error fallback";
-          const clientFor = (alternate: boolean) => {
-            const name = alternate ? "alternate" : "origin";
-            return {
-              [alternate ? WS_METHODS.pullRequestsRoutingIdentity : WS_METHODS.pullRequestsRouting]:
-                () =>
-                  Effect.gen(function* () {
-                    calls.push(`${name}:identity`);
-                    if (scenario === `${name} identity pause`) return yield* pause;
-                    return {
-                      host: "github.com",
-                      provider: "github",
-                      viewer: "synthetic-viewer",
-                      accountId: "123",
-                    };
-                  }),
-              [tag]: (input: { allowStale?: boolean }) =>
-                Effect.gen(function* () {
-                  calls.push(`${name}:${input.allowStale === false ? "strict" : "ordinary"}`);
-                  if (fallback) {
-                    if (alternate) return null;
-                    return yield* scenario === "transport fallback" ? transport : legacy;
-                  }
-                  if (scenario === "final source pause" && alternate) return yield* transport;
-                  return yield* pause;
-                }),
-            } as unknown as WsRpcProtocolClient;
-          };
-          const { environmentRegistry, supervisor } = yield* makeTestRuntime(
-            clientFor(false),
-            clientFor(true),
-            scenario === "local source pause" || fallback,
-          );
-          const result = yield* createPullRequestRouter()(tag, {
-            projectId: ProjectId.make("project-1"),
-            repository: "acme/web",
-            number: 7,
-          }).pipe(
-            Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
-            Effect.provideService(GitHubRoutingPermissions, trustedRouting),
-            Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
-            Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-            Effect.result,
-          );
-          const expected =
-            scenario === "local source pause"
-              ? ["origin:strict"]
-              : scenario === "origin identity pause"
-                ? ["origin:identity"]
-                : scenario === "alternate identity pause"
-                  ? ["origin:identity", "alternate:identity"]
-                  : scenario === "final source pause"
-                    ? ["origin:identity", "alternate:identity", "alternate:strict", "origin:strict"]
-                    : fallback
-                      ? [
-                          "origin:strict",
-                          "origin:identity",
-                          "alternate:identity",
-                          "alternate:strict",
-                        ]
-                      : ["origin:identity", "alternate:identity", "alternate:strict"];
-          expect(calls).toEqual(expected);
-          if (fallback) {
-            expect(Result.isSuccess(result)).toBe(true);
-            if (Result.isSuccess(result)) expect(result.success).toBeNull();
-          } else {
-            expect(Result.isFailure(result)).toBe(true);
-            if (Result.isFailure(result)) {
-              const error = result.failure;
-              const isOperationError = Schema.is(PullRequestOperationError);
-              expect(isOperationError(error)).toBe(true);
-              if (isOperationError(error)) {
-                expect(error.reason).toBe(pause.reason);
-                expect(error.retryAt).toBe(pause.retryAt);
-                expect(error.detail).toBe(pause.detail);
+it.effect.each(
+  [WS_METHODS.pullRequestsSummary, WS_METHODS.pullRequestsDetail].flatMap((tag) =>
+    (
+      [
+        "local source pause",
+        "alternate pause",
+        "final source pause",
+        "origin identity pause",
+        "alternate identity pause",
+        "transport fallback",
+        "legacy error fallback",
+      ] as const
+    ).map((scenario) => ({ tag, scenario })),
+  ),
+)("$tag respects $scenario without extra reads", ({ tag, scenario }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const pause = new PullRequestOperationError({
+        operation: "detail",
+        detail: "Provider reads are paused",
+        reason: "rate-limited",
+        retryAt: 123456,
+      });
+      const transport = new EnvironmentRpcUnavailableError({
+        environmentId: EnvironmentId.make("test-environment"),
+        message: "Connection unavailable",
+      });
+      const legacy = new PullRequestOperationError({
+        operation: "detail",
+        detail: "rate limit reached",
+      });
+      const fallback = scenario === "transport fallback" || scenario === "legacy error fallback";
+      const clientFor = (alternate: boolean) => {
+        const name = alternate ? "alternate" : "origin";
+        return {
+          [alternate ? WS_METHODS.pullRequestsRoutingIdentity : WS_METHODS.pullRequestsRouting]:
+            () =>
+              Effect.gen(function* () {
+                calls.push(`${name}:identity`);
+                if (scenario === `${name} identity pause`) return yield* pause;
+                return {
+                  host: "github.com",
+                  provider: "github",
+                  viewer: "synthetic-viewer",
+                  accountId: "123",
+                };
+              }),
+          [tag]: (input: { allowStale?: boolean }) =>
+            Effect.gen(function* () {
+              calls.push(`${name}:${input.allowStale === false ? "strict" : "ordinary"}`);
+              if (fallback) {
+                if (alternate) return null;
+                return yield* scenario === "transport fallback" ? transport : legacy;
               }
-            }
+              if (scenario === "final source pause" && alternate) return yield* transport;
+              return yield* pause;
+            }),
+        } as unknown as WsRpcProtocolClient;
+      };
+      const { environmentRegistry, supervisor } = yield* makeTestRuntime(
+        clientFor(false),
+        clientFor(true),
+        scenario === "local source pause" || fallback,
+      );
+      const result = yield* createPullRequestRouter()(tag, {
+        projectId: ProjectId.make("project-1"),
+        repository: "acme/web",
+        number: 7,
+      }).pipe(
+        Effect.provideService(EnvironmentRegistry.EnvironmentRegistry, environmentRegistry),
+        Effect.provideService(GitHubRoutingPermissions, trustedRouting),
+        Effect.provideService(RpcPermissionGuard, { authorize: () => Effect.void }),
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.result,
+      );
+      const expected =
+        scenario === "local source pause"
+          ? ["origin:strict"]
+          : scenario === "origin identity pause"
+            ? ["origin:identity"]
+            : scenario === "alternate identity pause"
+              ? ["origin:identity", "alternate:identity"]
+              : scenario === "final source pause"
+                ? ["origin:identity", "alternate:identity", "alternate:strict", "origin:strict"]
+                : fallback
+                  ? ["origin:strict", "origin:identity", "alternate:identity", "alternate:strict"]
+                  : ["origin:identity", "alternate:identity", "alternate:strict"];
+      expect(calls).toEqual(expected);
+      if (fallback) {
+        expect(Result.isSuccess(result)).toBe(true);
+        if (Result.isSuccess(result)) expect(result.success).toBeNull();
+      } else {
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          const error = result.failure;
+          const isOperationError = Schema.is(PullRequestOperationError);
+          expect(isOperationError(error)).toBe(true);
+          if (isOperationError(error)) {
+            expect(error.reason).toBe(pause.reason);
+            expect(error.retryAt).toBe(pause.retryAt);
+            expect(error.detail).toBe(pause.detail);
           }
-        }),
-      ),
-    );
-  }
-}
+        }
+      }
+    }),
+  ),
+);
 
 it.live("keeps source workspace metadata when an alternate answers a detail read", () =>
   Effect.scoped(

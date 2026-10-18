@@ -1347,10 +1347,13 @@
         "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
         "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
         "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
-        "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
+        "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts",
+        "packages/source-control-github/src/server/GitHubRest.test.ts",
+        "packages/source-control-github/src/server/GitHubQuota.test.ts",
+        "packages/source-control-core/src/server/SourceControlRateLimit.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/pullRequestRateLimit.test.ts apps/server/src/pullRequest/PullRequestService.test.ts apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts packages/client-runtime/src/state/pullRequests.test.ts apps/web/src/hooks/useLiveRefresh.test.ts apps/web/src/state/query.test.ts apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts --maxWorkers=1",
+        "vp test run packages/contracts/src/pullRequestRateLimit.test.ts apps/server/src/pullRequest/PullRequestService.test.ts apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts packages/client-runtime/src/state/pullRequests.test.ts apps/web/src/hooks/useLiveRefresh.test.ts apps/web/src/state/query.test.ts apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts packages/source-control-github/src/server/GitHubRest.test.ts packages/source-control-github/src/server/GitHubQuota.test.ts packages/source-control-core/src/server/SourceControlRateLimit.test.ts --maxWorkers=1",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

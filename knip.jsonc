@@ -114,6 +114,8 @@
         "src/jones/updates/fixtures/environment-updates-entry.tsx",
         // The standalone client-notice HTML fixture loads this module through a script tag.
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
+        // The PR read fixture HTML loads this synthetic verification entry.
+        "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
