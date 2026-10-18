@@ -18,7 +18,10 @@ import {
   type JonesDesktopDownloadSelection,
   type JonesDesktopDownloadResult,
 } from "../jones/updates/JonesDesktopUpdates.ts";
-import { prepareJonesNativeInstall } from "../jones/updates/jonesNativePreparation.ts";
+import {
+  jonesNativeBootstrapCredential,
+  prepareJonesNativeInstall,
+} from "../jones/updates/jonesNativePreparation.ts";
 import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
@@ -449,10 +452,12 @@ export const make = Effect.gen(function* () {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
         const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
         if (Option.isNone(backend)) throw new Error("Native backend preparation is unavailable.");
-        const token = backend.value.bootstrap.desktopBootstrapToken;
+        const token = await Effect.runPromiseWith(context)(
+          jonesNativeBootstrapCredential(backend.value.bootstrap),
+        );
         if (typeof token !== "string")
           throw new Error("Native backend preparation is unavailable.");
-        await prepareJonesNativeInstall({
+        return prepareJonesNativeInstall({
           listener: backend.value.httpBaseUrl.toString(),
           bootstrapToken: token,
           stagedHandle: handle,
