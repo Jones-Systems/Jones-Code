@@ -355,11 +355,15 @@ describe("terminatePosixOwnedProcessTree", () => {
         (path) => Effect.sync(() => NodeFS.rmSync(path, { recursive: true, force: true })),
       );
       let detachedChildPid: number | undefined;
+      let firstLease = true;
       const controller: AcpSessionRuntime.AcpLinuxCgroupController = {
-        create: () =>
-          makeFixtureLease(scratch, () =>
-            detachedChildPid === undefined ? [] : [detachedChildPid],
-          ),
+        create: () => {
+          const ownsChild = firstLease;
+          firstLease = false;
+          return makeFixtureLease(scratch, () =>
+            ownsChild && detachedChildPid !== undefined ? [detachedChildPid] : [],
+          );
+        },
       };
       const lease = controller.create()!;
       // The host/test process and unrelated sentinel are never fixture members.
@@ -431,6 +435,8 @@ describe("terminatePosixOwnedProcessTree", () => {
         const replacement = controller.create();
         expect(replacement?.path).not.toBe(lease.path);
         if (replacement !== undefined) {
+          expect(replacement.contains(detachedChildPid)).toBe(false);
+          expect(replacement.populated()).toBe(false);
           NodeFS.mkdirSync(NodePath.join(replacement.path, "nested"));
           yield* AcpSessionRuntime.terminateLinuxCgroupLease(replacement);
           expect(NodeFS.existsSync(replacement.path)).toBe(false);
