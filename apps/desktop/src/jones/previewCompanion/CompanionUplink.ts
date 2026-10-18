@@ -27,6 +27,7 @@ import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as CompanionConfig from "./CompanionConfig.ts";
 import { createCompanionUplink, type CompanionSocket } from "./UplinkController.ts";
 import * as Channels from "./channels.ts";
+import { watchCompanionRenderer } from "./RendererReadiness.ts";
 import { onCompanionPopupNotice } from "./CompanionPopup.ts";
 import { MAX_MESSAGE_BYTES } from "@t3tools/shared/jones/previewCompanionFraming";
 
@@ -181,27 +182,10 @@ const make = Effect.gen(function* () {
     unwatchRenderer?.();
     unwatchRenderer = undefined;
     if (ready && renderer) {
-      const stop = () => {
-        unwatchRenderer?.();
+      unwatchRenderer = watchCompanionRenderer(renderer, () => {
         unwatchRenderer = undefined;
         controller.setReady(false);
-      };
-      const navigate = (
-        _event: Electron.Event,
-        _url: string,
-        _inPlace: boolean,
-        mainFrame: boolean,
-      ) => {
-        if (mainFrame) stop();
-      };
-      renderer.once("destroyed", stop);
-      renderer.once("render-process-gone", stop);
-      renderer.on("did-start-navigation", navigate);
-      unwatchRenderer = () => {
-        renderer.removeListener("destroyed", stop);
-        renderer.removeListener("render-process-gone", stop);
-        renderer.removeListener("did-start-navigation", navigate);
-      };
+      });
     }
     controller.setReady(ready);
   };
