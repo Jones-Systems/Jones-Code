@@ -3,6 +3,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import { makeNativeExecutionMethods } from "./NativeCreationExecutionSqlite.ts";
 import { NativeCreationRepositoryError } from "./NativeCreationRepository.ts";
 import { NativeCreationExecutionReferenceV2 } from "./NativeCreationExecutionTypes.ts";
@@ -539,4 +540,88 @@ it.effect("cancellation after native invocation retains a hold before releasing 
       [],
     );
   }).pipe(Effect.provide(realRepository)),
+);
+
+it.effect(
+  "native completion needs a strict envelope and the exact confirmed worker, lease and attempt",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.accept();
+      yield* f.enqueue;
+      yield* f.seedRuntime;
+      yield* f.issue;
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const succeed = (workerId = "sql-worker") =>
+        outbox.succeed({ effectId: f.reference.effectId, workerId });
+      const status = Effect.map(
+        f.sql<{
+          readonly status: string;
+        }>`SELECT status FROM orchestration_v2_effect_outbox WHERE effect_id=${f.reference.effectId}`,
+        (rows) => rows[0]?.status,
+      );
+      const row = (yield* f.sql<{
+        readonly payload_json: string;
+      }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${f.reference.effectId}`)[0]!;
+      // Changes one fact for the check and always puts it back.
+      const withRow = <A, E>(
+        change: Effect.Effect<unknown, SqlError>,
+        restore: Effect.Effect<unknown, SqlError>,
+        check: Effect.Effect<A, E>,
+      ) =>
+        Effect.acquireUseRelease(
+          Effect.orDie(change),
+          () => check,
+          () => Effect.orDie(restore),
+        );
+
+      // Started but unconfirmed.
+      assert.isFalse(yield* succeed());
+      yield* f.repository.confirmExecution!(f.confirmation);
+
+      assert.isFalse(yield* succeed("other-worker"));
+      assert.isFalse(
+        yield* withRow(
+          f.sql`UPDATE orchestration_v2_effect_outbox SET attempt_count=2 WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET attempt_count=1 WHERE effect_id=${f.reference.effectId}`,
+          succeed(),
+        ),
+      );
+      assert.isFalse(
+        yield* withRow(
+          f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at='2098-01-01T00:00:00.000Z' WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${deadline} WHERE effect_id=${f.reference.effectId}`,
+          succeed(),
+        ),
+      );
+      assert.isFalse(
+        yield* withRow(
+          TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe("2099-06-01T00:00:00Z"))),
+          TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(now))),
+          succeed(),
+        ),
+      );
+
+      // A matching proof never admits an envelope the strict decoder rejects.
+      const payload = JSON.parse(row.payload_json) as Record<string, unknown>;
+      const reference = payload.nativeCreationExecutionReference as Record<string, unknown>;
+      for (const malformed of [
+        { ...payload, nativeCreationExecutionReference: { ...reference, stage: "unknown" } },
+        { ...payload, nativeCreationExecutionReference: null },
+        { ...payload, extra: true },
+        { nativeCreationExecutionReference: reference },
+      ]) {
+        const failed = yield* withRow(
+          f.sql`UPDATE orchestration_v2_effect_outbox SET payload_json=${JSON.stringify(malformed)} WHERE effect_id=${f.reference.effectId}`,
+          f.sql`UPDATE orchestration_v2_effect_outbox SET payload_json=${row.payload_json} WHERE effect_id=${f.reference.effectId}`,
+          succeed().pipe(Effect.result),
+        );
+        assert.strictEqual(failed._tag, "Failure", JSON.stringify(malformed));
+        assert.strictEqual(yield* status, "running");
+      }
+
+      assert.isTrue(yield* succeed());
+      assert.strictEqual(yield* status, "succeeded");
+      assert.isFalse(yield* succeed());
+    }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(realRepository)))),
 );

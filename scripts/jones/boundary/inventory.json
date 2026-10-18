@@ -9,6 +9,9 @@
   "paths": {
     "apps/server/src/jones/runtime/RuntimeOperationPermit.ts": "jones-owned",
     "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts": "jones-owned",
+    "packages/shared/src/nodeSqliteClient.ts": "accepted-shared",
+    "packages/shared/src/nodeSqliteClient.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/sqlite-checkpoint-lifecycle.json": "jones-owned",
     "apps/web/src/state/device.ts": "accepted-shared",
     "apps/server/src/cli/auth.ts": "accepted-shared",
     "apps/server/src/auth/PairingGrantStore.ts": "accepted-shared",
