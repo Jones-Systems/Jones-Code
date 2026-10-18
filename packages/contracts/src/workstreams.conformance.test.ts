@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous conformance fixture hashing preserves canonical wire bytes.
 import * as NodeCrypto from "node:crypto";
 
 import conformanceRaw from "./workstreams-fixtures/conformance.json.fixture?raw";

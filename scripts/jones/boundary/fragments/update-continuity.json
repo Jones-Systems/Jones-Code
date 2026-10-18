@@ -1,0 +1,79 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "update-continuity",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/updates/continuationPrompt.ts",
+    "apps/server/src/jones/updates/continuationPrompt.test.ts",
+    "apps/server/src/jones/updates/serverCapability.ts",
+    "apps/server/src/jones/updates/serverCapability.test.ts",
+    "apps/server/src/jones/updates/launcherOperation.ts",
+    "apps/server/src/jones/updates/launcherOperation.test.ts",
+    "apps/server/src/jones/updates/operationHandoff.test.ts",
+    "apps/server/src/jones/updates/desktopInstall.test.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuity.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts",
+    "apps/server/src/jones/updates/PlannedUpdateContinuity.test.ts",
+    "apps/server/src/jones/updates/plannedContinuityPolicy.ts",
+    "apps/server/src/jones/updates/plannedContinuityPolicy.test.ts",
+    "apps/server/src/jones/updates/plannedContinuityStartup.ts",
+    "apps/server/src/jones/cloud/shutdownBudget.ts",
+    "apps/server/src/jones/cloud/shutdownBudget.test.ts",
+    "apps/server/src/jones/updates/stageRevocation.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/launcherOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/updates/continuationPrompt.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/updates/launcherOperation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuity.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/plannedContinuityStartup.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/bootService.ts",
+      "to": "apps/server/src/jones/cloud/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/updates/stageRevocation.ts"
+    }
+  ]
+}

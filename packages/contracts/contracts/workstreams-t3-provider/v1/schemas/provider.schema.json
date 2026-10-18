@@ -70,7 +70,9 @@
         "account_provenance": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["kind"],
+          "required": [
+            "kind"
+          ],
           "properties": {
             "kind": {
               "const": "not_account_scoped"
@@ -82,7 +84,11 @@
     "Build": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "sha", "tree"],
+      "required": [
+        "repository",
+        "sha",
+        "tree"
+      ],
       "properties": {
         "repository": {
           "const": "Jones-Systems/Jones-Code"
@@ -119,7 +125,11 @@
     "Rejected": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocol", "state", "reason"],
+      "required": [
+        "protocol",
+        "state",
+        "reason"
+      ],
       "properties": {
         "protocol": {
           "$ref": "#/$defs/Protocol"
@@ -177,7 +187,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protocol", "state", "context"],
+          "required": [
+            "protocol",
+            "state",
+            "context"
+          ],
           "properties": {
             "protocol": {
               "$ref": "#/$defs/Protocol"
@@ -193,7 +207,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protocol", "state", "reason"],
+          "required": [
+            "protocol",
+            "state",
+            "reason"
+          ],
           "properties": {
             "protocol": {
               "$ref": "#/$defs/Protocol"
@@ -202,7 +220,11 @@
               "const": "unavailable"
             },
             "reason": {
-              "enum": ["provider_unconfigured", "authority_unavailable", "build_unavailable"]
+              "enum": [
+                "provider_unconfigured",
+                "authority_unavailable",
+                "build_unavailable"
+              ]
             }
           }
         },
@@ -276,7 +298,14 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protocol", "state", "request", "attestation", "attested_at", "expires_at"],
+          "required": [
+            "protocol",
+            "state",
+            "request",
+            "attestation",
+            "attested_at",
+            "expires_at"
+          ],
           "properties": {
             "protocol": {
               "$ref": "#/$defs/Protocol"
@@ -301,7 +330,11 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protocol", "state", "reason"],
+          "required": [
+            "protocol",
+            "state",
+            "reason"
+          ],
           "properties": {
             "protocol": {
               "$ref": "#/$defs/Protocol"
@@ -310,7 +343,11 @@
               "const": "unknown"
             },
             "reason": {
-              "enum": ["authority_changed", "authority_unavailable", "observation_unavailable"]
+              "enum": [
+                "authority_changed",
+                "authority_unavailable",
+                "observation_unavailable"
+              ]
             }
           }
         },
@@ -345,7 +382,10 @@
           "$ref": "#/$defs/Id"
         },
         "native_action": {
-          "enum": ["settle", "unsettle"]
+          "enum": [
+            "settle",
+            "unsettle"
+          ]
         },
         "request_sha256": {
           "$ref": "#/$defs/Sha256"
@@ -384,7 +424,10 @@
           "$ref": "#/$defs/Id"
         },
         "native_action": {
-          "enum": ["settle", "unsettle"]
+          "enum": [
+            "settle",
+            "unsettle"
+          ]
         },
         "request_sha256": {
           "$ref": "#/$defs/Sha256"
@@ -433,7 +476,10 @@
           "$ref": "#/$defs/Id"
         },
         "native_action": {
-          "enum": ["settle", "unsettle"]
+          "enum": [
+            "settle",
+            "unsettle"
+          ]
         },
         "request_sha256": {
           "$ref": "#/$defs/Sha256"
@@ -449,7 +495,10 @@
     "CommittedResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["native_outcome", "native_evidence"],
+      "required": [
+        "native_outcome",
+        "native_evidence"
+      ],
       "properties": {
         "native_outcome": {
           "const": "committed"
@@ -462,10 +511,17 @@
     "NoncommittedResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["native_outcome", "native_evidence"],
+      "required": [
+        "native_outcome",
+        "native_evidence"
+      ],
       "properties": {
         "native_outcome": {
-          "enum": ["denied", "unsupported", "failed"]
+          "enum": [
+            "denied",
+            "unsupported",
+            "failed"
+          ]
         },
         "native_evidence": {
           "$ref": "#/$defs/ResultEvidence"
@@ -575,7 +631,10 @@
           "$ref": "#/$defs/Version"
         },
         "type": {
-          "enum": ["thread.settled", "thread.unsettled"]
+          "enum": [
+            "thread.settled",
+            "thread.unsettled"
+          ]
         },
         "occurredAt": {
           "$ref": "#/$defs/Timestamp"
@@ -658,7 +717,12 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["protocol", "request", "state", "reason"],
+          "required": [
+            "protocol",
+            "request",
+            "state",
+            "reason"
+          ],
           "properties": {
             "protocol": {
               "$ref": "#/$defs/Protocol"
@@ -695,7 +759,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "request"],
+          "required": [
+            "operation",
+            "request"
+          ],
           "properties": {
             "operation": {
               "const": "context"
@@ -708,7 +775,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "request"],
+          "required": [
+            "operation",
+            "request"
+          ],
           "properties": {
             "operation": {
               "const": "attestations"
@@ -721,7 +791,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "request"],
+          "required": [
+            "operation",
+            "request"
+          ],
           "properties": {
             "operation": {
               "const": "settlements"
@@ -734,7 +807,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "request"],
+          "required": [
+            "operation",
+            "request"
+          ],
           "properties": {
             "operation": {
               "const": "settlements/lookup"
@@ -751,7 +827,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "response"],
+          "required": [
+            "operation",
+            "response"
+          ],
           "properties": {
             "operation": {
               "const": "context"
@@ -764,7 +843,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "response"],
+          "required": [
+            "operation",
+            "response"
+          ],
           "properties": {
             "operation": {
               "const": "attestations"
@@ -777,7 +859,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "response"],
+          "required": [
+            "operation",
+            "response"
+          ],
           "properties": {
             "operation": {
               "const": "settlements"
@@ -790,7 +875,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["operation", "response"],
+          "required": [
+            "operation",
+            "response"
+          ],
           "properties": {
             "operation": {
               "const": "settlements/lookup"

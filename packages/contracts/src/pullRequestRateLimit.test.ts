@@ -9,7 +9,11 @@ const legacy = { _tag: "PullRequestOperationError", operation: "detail", detail:
 
 describe("pull request pause metadata", () => {
   it("round-trips legacy and typed pause payloads", () => {
-    for (const payload of [legacy, { ...legacy, reason: "rate-limited", retryAt: 123_000 }]) {
+    for (const payload of [
+      legacy,
+      { ...legacy, reason: "not-found" },
+      { ...legacy, reason: "rate-limited", retryAt: 123_000 },
+    ]) {
       expect(encode(decode(payload))).toEqual(payload);
     }
   });

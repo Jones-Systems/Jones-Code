@@ -1,21 +1,31 @@
-import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type {
-  MobileThreadOrderSnapshot,
-  MobileThreadOrderSource,
-} from "../../lib/threadOrderScope";
-import type { WorkstreamDtoPage } from "@t3tools/client-runtime/state/workstreams";
-import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/state/environmentHttpAuth";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+  NativeWorkstreamThreadAssurance,
+  WorkstreamDtoPage,
+} from "@t3tools/client-runtime/state/workstreams";
+import type { EnvironmentHttpAuthHeaders } from "@t3tools/client-runtime/authorization";
+import type {
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamAppearance,
+  WorkstreamAppearanceWrite,
+} from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
-import type { WorkstreamClient } from "./gateway";
+import type { WorkstreamClient, WorkstreamUrls, WorkstreamUrlSelector } from "./gateway";
 import type { MobileWorkstreamGroup, MobileWorkstreamSnapshot } from "./projection";
 
 export interface MobileWorkstreams {
-  readonly orderSnapshot: MobileThreadOrderSnapshot;
-  readonly orderSource: MobileThreadOrderSource;
-  readonly removePrimary: (thread: EnvironmentThreadShell) => Promise<void>;
+  readonly saveAppearance: (
+    snapshot: MobileWorkstreamSnapshot,
+    input: WorkstreamAppearanceWrite,
+  ) => Promise<WorkstreamAppearance>;
   readonly groups: readonly MobileWorkstreamGroup[];
   readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
+  readonly assuranceByKey: ReadonlyMap<string, NativeWorkstreamThreadAssurance>;
+  /** Only these rows may be labeled Unassigned; other ungrouped rows are unknown. */
+  readonly confirmedUnassignedKeys: ReadonlySet<string>;
+  readonly conflictingThreadKeys: ReadonlySet<string>;
+  /** Some shown Workstreams are a last good load that could not be refreshed. */
+  readonly stale: boolean;
   readonly snapshots: readonly MobileWorkstreamSnapshot[];
   readonly enabled: boolean;
   readonly toggleEnabled: () => void;
@@ -35,12 +45,12 @@ export interface MobileWorkstreams {
   ) => Promise<WorkstreamReceipt>;
   readonly read: <A, E>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: WorkstreamUrlSelector,
     run: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
   ) => Promise<A>;
   readonly pages: <Item>(
     snapshot: MobileWorkstreamSnapshot,
-    path: string,
+    url: (urls: WorkstreamUrls, cursor?: string) => string,
     run: (
       client: WorkstreamClient,
       headers: EnvironmentHttpAuthHeaders,

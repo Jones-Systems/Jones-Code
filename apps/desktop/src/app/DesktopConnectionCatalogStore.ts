@@ -15,7 +15,7 @@ import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64 from "effect/encoding/Base64";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -157,6 +157,13 @@ export class DesktopConnectionCatalogStore extends Context.Service<
       | DesktopConnectionCatalogStoreMigrationError
       | DesktopConnectionCatalogStoreProtectionError
     >;
+    readonly snapshot: Effect.Effect<
+      Option.Option<string>,
+      | DesktopConnectionCatalogStoreReadError
+      | DesktopConnectionCatalogStoreDocumentDecodeError
+      | DesktopConnectionCatalogStoreDecodeError
+      | DesktopConnectionCatalogStoreProtectionError
+    >;
     readonly set: (
       catalog: string,
     ) => Effect.Effect<
@@ -171,7 +178,7 @@ function decodeSecretBytes(
   catalogPath: string,
   encoded: string,
 ): Effect.Effect<Uint8Array, DesktopConnectionCatalogStoreDecodeError> {
-  return Effect.fromResult(Encoding.decodeBase64(encoded)).pipe(
+  return Effect.fromResult(Base64.decode(encoded)).pipe(
     Effect.mapError(
       (cause) =>
         new DesktopConnectionCatalogStoreDecodeError({
@@ -376,7 +383,7 @@ const migrateSavedEnvironmentRecords = Effect.fn(
   };
 });
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -399,7 +406,7 @@ export const make = Effect.gen(function* () {
   const writeCatalog = Effect.fn("desktop.connectionCatalogStore.writeCatalog")(function* (
     catalog: string,
   ) {
-    const encryptedCatalog = Encoding.encodeBase64(
+    const encryptedCatalog = Base64.encode(
       yield* safeStorage.encryptString(catalog).pipe(
         Effect.mapError(
           (cause) =>
@@ -411,7 +418,7 @@ export const make = Effect.gen(function* () {
         ),
       ),
     );
-    const suffix = (yield* crypto.randomUUIDv4.pipe(
+    const suffix = (yield* crypto.randomUUIDv4().pipe(
       Effect.mapError(
         (cause) =>
           new DesktopConnectionCatalogStoreWriteError({
@@ -471,30 +478,37 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
-  return DesktopConnectionCatalogStore.of({
-    get: Effect.gen(function* () {
-      const document = yield* readDocument(fileSystem, catalogPath);
-      if (Option.isNone(document)) {
-        return yield* migrateLegacyCatalog;
-      }
-      if (!(yield* encryptionAvailable)) {
-        return Option.none<string>();
-      }
-      const decrypted = yield* decodeSecretBytes(catalogPath, document.value.encryptedCatalog).pipe(
-        Effect.flatMap((encryptedCatalog) =>
-          safeStorage.decryptString(encryptedCatalog).pipe(
-            Effect.mapError(
-              (cause) =>
-                new DesktopConnectionCatalogStoreProtectionError({
-                  operation: "decrypt-catalog",
-                  catalogPath,
-                  cause,
-                }),
-            ),
-          ),
+  const decryptDocument = (document: EncryptedConnectionCatalogDocument) =>
+    Effect.gen(function* () {
+      if (!(yield* encryptionAvailable)) return Option.none<string>();
+      const encrypted = yield* decodeSecretBytes(catalogPath, document.encryptedCatalog);
+      const decrypted = yield* safeStorage.decryptString(encrypted).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DesktopConnectionCatalogStoreProtectionError({
+              operation: "decrypt-catalog",
+              catalogPath,
+              cause,
+            }),
         ),
       );
       return Option.some(decrypted);
+    });
+  const snapshot = readDocument(fileSystem, catalogPath).pipe(
+    Effect.flatMap((document) =>
+      Option.isNone(document)
+        ? Effect.succeed(Option.none<string>())
+        : decryptDocument(document.value),
+    ),
+    Effect.withSpan("desktop.connectionCatalogStore.snapshot"),
+  );
+
+  return DesktopConnectionCatalogStore.of({
+    snapshot,
+    get: Effect.gen(function* () {
+      const document = yield* readDocument(fileSystem, catalogPath);
+      if (Option.isNone(document)) return yield* migrateLegacyCatalog;
+      return yield* decryptDocument(document.value);
     }).pipe(Effect.withSpan("desktop.connectionCatalogStore.get")),
     set: Effect.fn("desktop.connectionCatalogStore.set")(function* (catalog) {
       if (!(yield* encryptionAvailable)) {

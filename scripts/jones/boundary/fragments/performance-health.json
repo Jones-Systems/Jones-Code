@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "performance-health",
+  "jonesOwnedPaths": [
+    "apps/server/scripts/jones/sqliteHealth.support.ts",
+    "apps/server/scripts/jones/sqliteHealth.test.ts",
+    "apps/server/scripts/jones/sqliteHealth.ts",
+    "apps/server/scripts/jones/sqliteHealth.worker.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

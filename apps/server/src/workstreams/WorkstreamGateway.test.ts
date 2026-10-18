@@ -1,11 +1,8 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 
 import { expect, it } from "@effect/vitest";
-import {
-  WORKSTREAM_COUNTS_MANIFEST_SHA256,
-  WorkstreamDetail,
-  WorkstreamReferenceDetail,
-} from "@t3tools/contracts";
+import { WorkstreamDetail, WorkstreamReferenceDetail } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -18,6 +15,7 @@ import {
   make,
 } from "./WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
+import { makeControlPlaneWorkstreamTransport } from "./ControlPlaneWorkstreamTransport.ts";
 
 const binding = {
   registryId: "fixture-registry",
@@ -100,6 +98,32 @@ it.effect("bounds metadata reads and falls back only to its metadata cache", () 
   }),
 );
 
+it.effect("reports disabled activation as not configured rather than offline", () =>
+  Effect.gen(function* () {
+    const disabled = makeControlPlaneWorkstreamTransport({ state: "disabled" });
+    const gateway = yield* make(disabled.transport, { binding: disabled.binding });
+    expect((yield* gateway.readMetadata().pipe(Effect.flip)).reason).toBe("not-configured");
+    expect((yield* gateway.readSession().pipe(Effect.flip)).reason).toBe("not-configured");
+
+    const fixture = makeSyntheticWorkstreamTransport();
+    const unreachable = yield* make(
+      {
+        ...fixture,
+        getCapabilities: () =>
+          Effect.fail(
+            new WorkstreamTransportError({
+              operation: "capabilities",
+              effect: "no-effect",
+              detail: "http_error",
+            }),
+          ),
+      },
+      { binding },
+    );
+    expect((yield* unreachable.readMetadata().pipe(Effect.flip)).reason).toBe("offline");
+  }),
+);
+
 it.effect("rejects a receipt attributed to another principal", () =>
   Effect.gen(function* () {
     const fixture = makeSyntheticWorkstreamTransport();
@@ -168,6 +192,15 @@ it.effect("binds the accepted contract and exact idempotency bytes", () =>
     const submissions: Array<Parameters<WorkstreamTransport["submitCommand"]>[0]> = [];
     const transport: WorkstreamTransport = {
       ...fixture,
+      // Pin the advertised revision so the replay below exercises the gateway's own receipt
+      // cache under one unchanged binding; the synthetic registry advances on every commit.
+      getCapabilities: (input) =>
+        fixture.getCapabilities(input).pipe(
+          Effect.map((value) => ({
+            ...value,
+            context: { ...value.context, registry_version: 11 },
+          })),
+        ),
       submitCommand: (input) => {
         submissions.push(input);
         return fixture.submitCommand(input);
@@ -284,10 +317,11 @@ it.effect("keeps coordination disposition and native T3 settlement as distinct r
         other_disposition: null,
       },
     });
+    // The committed disposition advanced the synthetic registry version.
     const settlement = yield* gateway.submit({
       command_id: "command-settlement-0001",
       expected_server_generation: 7,
-      expected_registry_version: 11,
+      expected_registry_version: 12,
       action: {
         operation: "request_native_t3_settlement",
         native_reference_id: "reference-t3-1",
@@ -318,7 +352,8 @@ it.effect("reconciles pending and unresolved commands only through the exact GET
     const fixture = makeSyntheticWorkstreamTransport();
     const command = updateCommand({ command_id: "command-pending-0001" });
     const body = "fixture-request-body";
-    const terminal = yield* fixture.submitCommand({
+    // A separate instance supplies the terminal receipt, so the gateway's registry stays at 11.
+    const terminal = yield* makeSyntheticWorkstreamTransport().submitCommand({
       body,
       command,
       idempotencyKey: command.command_id,
@@ -369,50 +404,5 @@ it.effect("reconciles pending and unresolved commands only through the exact GET
     expect((yield* gateway.pollCommand(command.command_id)).state).toBe("committed");
     expect(submissions).toBe(1);
     expect(polls).toBe(2);
-  }),
-);
-
-it.effect("negotiates owner-scoped registry counts without pages and rejects identity drift", () =>
-  Effect.gen(function* () {
-    const fixture = makeSyntheticWorkstreamTransport();
-    const old = yield* fixture.getCapabilities({
-      contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
-      contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-    });
-    let principal = binding.principalId as string;
-    const transport: WorkstreamTransport = {
-      ...fixture,
-      listWorkstreams: () => Effect.die("counts must not load pages"),
-      getCountsCapabilities: () =>
-        Effect.succeed({
-          ...old,
-          manifest_sha256: WORKSTREAM_COUNTS_MANIFEST_SHA256,
-          registry_counts: {
-            version: 1,
-            path: "/workstreams/v1/counts",
-            active_definition: "latest_owner_lifecycle_declaration_active",
-          },
-        }),
-      getRegistryCounts: () =>
-        Effect.succeed({
-          context: old.context,
-          principal_id: principal,
-          observed_at: "2026-10-02T00:00:00Z",
-          authority_effect: "none",
-          total: 6,
-          active: 4,
-          unknown_lifecycle: 1,
-        }),
-    };
-    const gateway = yield* make(transport, { binding });
-    expect((yield* gateway.readRegistryCounts()).active).toBe(4);
-    principal = "other-principal";
-    expect(yield* gateway.readRegistryCounts().pipe(Effect.flip)).toMatchObject({
-      reason: "stale",
-    });
-    const legacy = yield* make(fixture, { binding });
-    expect(yield* legacy.readRegistryCounts().pipe(Effect.flip)).toMatchObject({
-      reason: "contract-mismatch",
-    });
   }),
 );

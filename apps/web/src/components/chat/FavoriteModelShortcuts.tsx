@@ -1,1 +1,1 @@
-export { ProviderInstanceShortcuts as FavoriteModelShortcuts } from "./ProviderInstanceShortcuts";
+export { ProviderInstanceShortcuts as FavoriteModelShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";

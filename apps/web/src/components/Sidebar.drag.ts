@@ -19,8 +19,6 @@ const isShelfHeader = (item: SidebarListItem | undefined) =>
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
-/** Keep the lifted card below the supplied label boundary, including empty shelves.
- * The container rect follows scrolling; the offset is measured once at pickup. */
 export function restrictBelowSidebarLabel(
   { transform, containerNodeRect, draggingNodeRect }: Parameters<Modifier>[0],
   offset: number,
@@ -30,8 +28,6 @@ export function restrictBelowSidebarLabel(
   return transform.y < minimumY ? { ...transform, y: minimumY } : transform;
 }
 
-/** Reject the nearest unsupported target without selecting another section.
- * Recreate this detector when drop eligibility changes. */
 export function createSidebarCollisionDetection(
   isValidTarget: (id: string) => boolean,
   options: {
@@ -43,43 +39,32 @@ export function createSidebarCollisionDetection(
   const sections = new Map<string, SidebarSection | null>();
   let previousPointerY = options.activationY;
   let boundarySection: "pinned" | "active" | undefined;
-  const activeFirst =
-    options.items?.[0]?.kind === "marker" && options.items[0].marker === "active-placeholder";
   return (args) => {
     let collisions = closestCenter(args);
     const pointer = args.pointerCoordinates;
     const items = options.items;
     const source = items?.find((item) => item.kind === "thread" && item.key === args.active.id);
     const boundary = args.droppableContainers
-      .find(
-        (container) =>
-          container.id === sidebarMarkerId(activeFirst ? "pinned-header" : "pinned-divider"),
-      )
+      .find((container) => container.id === sidebarMarkerId("pinned-divider"))
       ?.node.current?.querySelector(".sidebar-drag-boundary-label")
       ?.getBoundingClientRect();
     if (items && boundary && source?.kind === "thread" && pointer) {
       boundarySection ??= source.section === "pinned" ? "pinned" : "active";
-      // Use the visible boundary row, including its sortable translation.
+      // Use the visible divider row, including its sortable translation.
       // Only pointer movement can change sections: opening the destination
       // moves this row, but must not toggle a stationary gesture back.
       const previousY = previousPointerY ?? pointer.y;
       previousPointerY = pointer.y;
       if (pointer.x >= boundary.left && pointer.x <= boundary.right) {
-        if (pointer.y < previousY && pointer.y <= boundary.bottom)
-          boundarySection = activeFirst ? "active" : "pinned";
-        else if (pointer.y > previousY && pointer.y >= boundary.top)
-          boundarySection = activeFirst ? "pinned" : "active";
+        if (pointer.y < previousY && pointer.y <= boundary.bottom) boundarySection = "pinned";
+        else if (pointer.y > previousY && pointer.y >= boundary.top) boundarySection = "active";
         const nextHeader = (["working-header", "snoozed-header", "settled-header"] as const)
           .map((marker) =>
             args.droppableContainers.find((container) => container.id === sidebarMarkerId(marker)),
           )
           .find((container) => container !== undefined);
         const activeBottom = nextHeader?.node.current?.getBoundingClientRect().top;
-        if (
-          activeFirst
-            ? activeBottom != null && pointer.y < activeBottom
-            : boundarySection === "pinned" || (activeBottom != null && pointer.y < activeBottom)
-        ) {
+        if (boundarySection === "pinned" || (activeBottom != null && pointer.y < activeBottom)) {
           const target = collisions.find((collision) => {
             const id = String(collision.id);
             if (!sections.has(id)) {
@@ -106,12 +91,10 @@ export function createSidebarCollisionDetection(
   };
 }
 
-/** Preview the committed section layout without moving or mounting DOM nodes.
- * A zero scaleY marks rows/markers to hide while retaining their measured nodes. */
 export function createSidebarSortingStrategy(input: {
   items: readonly SidebarListItem[];
+  enabled?: boolean;
   settledOrder: readonly string[];
-  /** Time-ordered inbox (Working beta): where the lifted row would land. */
   activeOrder?: readonly string[];
   settledExpanded: boolean;
   settledVisibleCount?: number;
@@ -119,10 +102,9 @@ export function createSidebarSortingStrategy(input: {
   snoozedThreadCount?: number;
   cardHeight?: number;
   slimHeight?: number;
-  /** Space each pinned boundary opens for its label while dragging. The
-   * markers stay zero height at rest, so nothing is reserved until pickup. */
   boundaryLabelHeight?: number;
 }): SortingStrategy {
+  if (input.enabled === false) return () => stationary;
   const { items } = input;
   const indices = new Map(items.map((item, index) => [sidebarListItemId(item), index]));
   let previous: Pick<Layout, "rects" | "activeIndex" | "overIndex"> | undefined;
@@ -157,7 +139,6 @@ export function createSidebarSortingStrategy(input: {
       else slimHeight ??= rects[index]?.height;
       if (item.key !== active.key) groups[item.section].push(item);
     }
-    // Cards are 4.875rem + 0.25rem padding; slim rows/placeholders are h-9.
     const scale =
       slimHeight !== undefined ? slimHeight / 36 : (headerScale ?? (cardHeight ?? 82) / 82);
     cardHeight ??= 82 * scale;
@@ -193,17 +174,10 @@ export function createSidebarSortingStrategy(input: {
       if (groups[name].length > 0) projected.push(...groups[name]);
       else marker(`${name}-placeholder`);
     };
-    if (items[0]?.kind === "marker" && items[0].marker === "active-placeholder") {
-      section("active");
-      marker("pinned-header");
-      projected.push(...groups.pinned);
-      marker("pinned-divider");
-    } else {
-      marker("pinned-header");
-      projected.push(...groups.pinned);
-      marker("pinned-divider");
-      section("active");
-    }
+    marker("pinned-header");
+    projected.push(...groups.pinned);
+    marker("pinned-divider");
+    section("active");
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
       marker("working-header");
       projected.push(...groups.working);
@@ -240,8 +214,6 @@ export function createSidebarSortingStrategy(input: {
     const shelfRect = rects[firstShelf];
     const beforeShelf = rects[firstShelf - 1];
     const lastRect = rects.at(-1);
-    // Consume the shelf's auto margin as drag labels and resized rows need
-    // room, keeping the combined shelves at their measured bottom.
     let shelfSpace =
       shelfRect && beforeShelf && lastRect && shelfRect.top > beforeShelf.bottom + 1
         ? Math.max(

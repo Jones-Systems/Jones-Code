@@ -1,0 +1,416 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import { Command } from "effect/cli";
+
+import * as HostService from "./HostService.ts";
+import { jonesCommand } from "./cli.ts";
+import type * as SystemAdoption from "./systemAdoption.ts";
+
+const baseDir = "/task-owned/jones-host";
+const decodeUnknownJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const plan: HostService.HostPlan = {
+  baseDir,
+  config: { schema: 1, port: 4321, tailscaleServePort: 8443 },
+  effects: ["Write Jones config.", "Reconcile jones-code.service."],
+  nextStep: `t3 pair --base-dir '${baseDir}' --tailscale --tailscale-serve-port 8443`,
+};
+
+const planSha256 = "f".repeat(64);
+// Only the fields the command prints; the domain owns the full plan.
+const systemPlan = {
+  planSha256,
+  plan: {
+    effects: ["Stop the unit through the root worker."],
+    ownedDropin: { path: "/task-owned/unit.d/owned.conf", text: "[Service]\n" },
+    launcher: { version: "new" },
+    active: { version: "old" },
+  },
+  bootstrap: { worker: "installed", policy: "installed" },
+  manifest: {
+    files: [
+      {
+        path: "/task-owned/policy",
+        mode: "0644",
+        sha256: "e".repeat(64),
+        source: "rendered",
+        text: "policy\n",
+      },
+    ],
+    enable: [],
+  },
+} as unknown as SystemAdoption.SystemAdoptionPlanResult;
+
+function testService() {
+  const calls: Array<{ readonly method: string; readonly input: unknown }> = [];
+  const printed: string[] = [];
+  const record = <A>(method: string, input: unknown, result: A) =>
+    Effect.sync(() => {
+      calls.push({ method, input });
+      return result;
+    });
+  const service = HostService.HostService.of({
+    planAdoption: (input) =>
+      record("plan-adoption", input, {
+        baseDir,
+        environmentId: "fixture",
+        activeVersion: "old",
+        launcherVersion: "new",
+        servicePath: "/task-owned/unit",
+        serviceContents: "fixture",
+        effects: ["Keep active version."],
+        commands: [],
+      }),
+    adopt: (input) =>
+      record("adopt", input, {
+        state: input.dryRun ? ("dry-run" as const) : ("adopted" as const),
+        plan: {
+          baseDir,
+          environmentId: "fixture",
+          activeVersion: "old",
+          launcherVersion: "new",
+          servicePath: "/task-owned/unit",
+          serviceContents: "fixture",
+          effects: [],
+          commands: [],
+        },
+      }),
+    planSystemAdoption: (input) => record("plan-system-adoption", input, systemPlan),
+    adoptSystem: (input) =>
+      record("adopt-system", input, {
+        state: "adopted" as const,
+        plan: systemPlan.plan,
+        planSha256,
+        launcherProcessId: 20,
+        childProcessId: 21,
+      }),
+    plan: (input) => record("plan", input, plan),
+    setup: (input) =>
+      Effect.gen(function* () {
+        expect(printed[0]).toContain("Jones host effect plan:");
+        return yield* record("setup", input, {
+          state: input.dryRun ? ("dry-run" as const) : ("installed" as const),
+          plan,
+          warnings: [],
+        });
+      }),
+    stageRuntime: (input) =>
+      record("stage-runtime", input, {
+        versionDir: "/task-owned/runtime/1.0.0",
+        entryPath: "/task-owned/runtime/1.0.0/t3",
+        sentinelPath: "/task-owned/runtime/1.0.0/.install-complete",
+      }),
+    routeRemove: (input) =>
+      record("route-remove", input, {
+        state: input.dryRun ? ("dry-run" as const) : ("removed" as const),
+        mapping: { _tag: "absent" as const },
+      }),
+    status: (input) =>
+      record("status", input, {
+        baseDir,
+        provenance: "missing" as const,
+        config: "missing" as const,
+        service: "unknown" as const,
+        serviceProblems: [],
+        runtime: "missing" as const,
+        serve: "not-configured" as const,
+        serveEndpoint: { environmentMatch: "unknown" as const, scope: "host-side-only" as const },
+        foreignUpstreamUnit: { present: false, managed: false as const },
+      }),
+  });
+  return {
+    calls,
+    printed,
+    run: (args: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        const console = yield* Console.Console;
+        return yield* Command.runWith(jonesCommand, { version: "1.0.0" })(args).pipe(
+          Effect.provideService(HostService.HostService, service),
+          Effect.provideService(Console.Console, {
+            ...console,
+            log: (...args: ReadonlyArray<unknown>) => {
+              printed.push(args.map(String).join(" "));
+            },
+          }),
+          Effect.provide(NodeServices.layer),
+        );
+      }),
+  };
+}
+
+it.effect("setup prints the effect plan before dispatch and exposes bounded flags", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "setup",
+      "--base-dir",
+      baseDir,
+      "--port",
+      "4321",
+      "--tailscale-serve-port",
+      "8443",
+      "--allow-linger-enable",
+      "--dry-run",
+      "--artifact-dir",
+      "/approved/artifact",
+      "--expect-source-commit",
+      "a".repeat(40),
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan", "setup"]);
+    expect(t.calls[1]?.input).toEqual({
+      baseDir,
+      port: 4321,
+      tailscaleServePort: 8443,
+      allowLingerEnable: true,
+      dryRun: true,
+      artifactDir: "/approved/artifact",
+      expectSourceCommit: "a".repeat(40),
+    });
+    expect(t.printed.at(-1)).toContain("Next: t3 pair");
+    expect(t.printed.at(-1)).toContain("dry-run");
+  }),
+);
+
+it.effect.each([
+  "setup",
+  "adopt",
+  "adopt-system",
+  "status",
+  "stage-runtime",
+  "route-remove",
+] as const)("%s requires explicit --base-dir before dispatch", (command) =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run(["host", command]).pipe(Effect.flip);
+    expect(t.calls).toEqual([]);
+  }),
+);
+
+it.effect("stage-runtime calls the local verified runtime service", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "stage-runtime",
+      "--base-dir",
+      baseDir,
+      "--artifact-dir",
+      "/approved/artifact",
+      "--expect-source-commit",
+      "a".repeat(40),
+    ]);
+    expect(t.calls).toEqual([
+      {
+        method: "stage-runtime",
+        input: { baseDir, artifactDir: "/approved/artifact", expectSourceCommit: "a".repeat(40) },
+      },
+    ]);
+  }),
+);
+
+it.effect("status --json returns the domain's observed status", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run(["host", "status", "--base-dir", baseDir, "--json"]);
+    expect(t.calls.map((call) => call.method)).toEqual(["status"]);
+    const observed = yield* decodeUnknownJson(t.printed.at(-1)!);
+    expect(observed).toMatchObject({
+      provenance: "missing",
+      service: "unknown",
+      foreignUpstreamUnit: { managed: false },
+    });
+  }),
+);
+
+it.effect("route-remove forwards dry-run without exposing a route override", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run(["host", "route-remove", "--base-dir", baseDir, "--dry-run"]);
+    expect(t.calls).toEqual([{ method: "route-remove", input: { baseDir, dryRun: true } }]);
+    expect(t.printed.at(-1)).toContain("dry-run");
+  }),
+);
+
+it.effect("there is no Jones host pair command", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run(["host", "pair", "--base-dir", baseDir]).pipe(Effect.flip);
+    expect(t.calls).toEqual([]);
+  }),
+);
+
+it.effect("adopt exposes separate active and launcher provenance with explicit supersession", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "adopt",
+      "--base-dir",
+      baseDir,
+      "--active-artifact-dir",
+      "/approved/active",
+      "--active-source-commit",
+      "a".repeat(40),
+      "--launcher-artifact-dir",
+      "/approved/launcher",
+      "--launcher-source-commit",
+      "b".repeat(40),
+      "--supersede-execstart",
+      "--dry-run",
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-adoption", "adopt"]);
+    expect(t.calls[1]?.input).toMatchObject({
+      dryRun: true,
+      supersedeExecstart: true,
+      activeArtifactDir: "/approved/active",
+      launcherArtifactDir: "/approved/launcher",
+    });
+  }),
+);
+
+const systemFlags = [
+  "host",
+  "adopt-system",
+  "--base-dir",
+  baseDir,
+  "--system-unit",
+  "host-tooling-t3.service",
+  "--port",
+  "3773",
+  "--retained-executable",
+  "/task-owned/retained/t3",
+  "--active-artifact-dir",
+  "/approved/active",
+  "--active-source-commit",
+  "a".repeat(40),
+  "--launcher-artifact-dir",
+  "/approved/launcher",
+  "--launcher-source-commit",
+  "b".repeat(40),
+  "--accept-unattested-child-capability",
+];
+
+it.effect("adopt-system dry-run prints the plan digest and root manifest without applying", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([...systemFlags, "--dry-run"]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption"]);
+    expect(t.calls[0]?.input).toEqual({
+      baseDir,
+      systemUnit: "host-tooling-t3.service",
+      port: 3773,
+      retainedExecutable: "/task-owned/retained/t3",
+      activeArtifactDir: "/approved/active",
+      activeSourceCommit: "a".repeat(40),
+      launcherArtifactDir: "/approved/launcher",
+      launcherSourceCommit: "b".repeat(40),
+      acceptUnattestedChildCapability: true,
+    });
+    expect(t.printed.join("\n")).toContain(`plan SHA-256: ${planSha256}`);
+    expect(t.printed.join("\n")).toContain("worker installed, policy installed");
+    expect(t.printed.join("\n")).toContain("adoption installs none");
+  }),
+);
+
+it.effect.each([{ extra: [] as string[] }, { extra: ["--approved-plan-sha256", "0".repeat(64)] }])(
+  "adopt-system applies nothing without the reviewed plan digest %#",
+  ({ extra }) =>
+    Effect.gen(function* () {
+      const t = testService();
+      yield* t.run([...systemFlags, ...extra]).pipe(Effect.flip);
+      expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption"]);
+    }),
+);
+
+it.effect("adopt-system applies only the plan whose digest was reviewed", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([...systemFlags, "--approved-plan-sha256", planSha256]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-system-adoption", "adopt-system"]);
+    expect(t.calls[1]?.input).toMatchObject({ approvedPlanSha256: planSha256, port: 3773 });
+    expect(t.printed.at(-1)).toContain("child Install unattested");
+  }),
+);
+
+it.effect(
+  "adopt decodes the explicit bootstrap bindings and repeated metadata-only preservation flags",
+  () =>
+    Effect.gen(function* () {
+      const t = testService();
+      yield* t.run([
+        "host",
+        "adopt",
+        "--base-dir",
+        baseDir,
+        "--active-artifact-dir",
+        "/approved/active",
+        "--active-source-commit",
+        "a".repeat(40),
+        "--launcher-artifact-dir",
+        "/approved/launcher",
+        "--launcher-source-commit",
+        "b".repeat(40),
+        "--legacy-direct-serve",
+        "--service-unit",
+        "t3code.service",
+        "--service-unit-sha256",
+        "c".repeat(64),
+        "--task-operation-id",
+        "bound-task",
+        "--task-handoff-sha256",
+        "d".repeat(64),
+        "--task-dropin",
+        `50-transition.conf=${"e".repeat(64)}`,
+        "--preserve-dropin",
+        "20-private.conf",
+        "--preserve-dropin",
+        "40-private.conf",
+        "--accept-unattested-child-capability",
+        "--dry-run",
+      ]);
+      expect(t.calls[1]?.input).toMatchObject({
+        legacyDirectServe: true,
+        serviceUnit: "t3code.service",
+        taskOperationId: "bound-task",
+        preserveDropin: ["20-private.conf", "40-private.conf"],
+        acceptUnattestedChildCapability: true,
+      });
+    }),
+);
+
+it.effect("adopt forwards explicit legacy Mac identity bindings", () =>
+  Effect.gen(function* () {
+    const t = testService();
+    yield* t.run([
+      "host",
+      "adopt",
+      "--base-dir",
+      baseDir,
+      "--active-artifact-dir",
+      "/approved/active",
+      "--active-source-commit",
+      "a".repeat(40),
+      "--launcher-artifact-dir",
+      "/approved/launcher",
+      "--launcher-source-commit",
+      "b".repeat(40),
+      "--launchd-label",
+      "com.t3tools.t3code.service",
+      "--service-unit-sha256",
+      "c".repeat(64),
+      "--retained-executable",
+      "/approved/home/dated-install/t3",
+      "--dry-run",
+    ]);
+    expect(t.calls.map((call) => call.method)).toEqual(["plan-adoption", "adopt"]);
+    expect(t.calls[1]?.input).toMatchObject({
+      launchdLabel: "com.t3tools.t3code.service",
+      serviceUnitSha256: "c".repeat(64),
+      retainedExecutable: "/approved/home/dated-install/t3",
+      dryRun: true,
+    });
+  }),
+);

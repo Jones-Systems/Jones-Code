@@ -14,16 +14,52 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
-  it("omits saved accounting on older servers and preserves explicit support", () => {
-    expect(decodeDescriptor(descriptor).capabilities.savedTokenAccounting).toBeUndefined();
-    expect(
-      decodeDescriptor({
-        ...descriptor,
-        capabilities: { ...descriptor.capabilities, savedTokenAccounting: true },
-      }).capabilities.savedTokenAccounting,
-    ).toBe(true);
+  it("accepts older descriptors without claiming a Jones source", () => {
+    expect(decodeDescriptor(descriptor).jonesSource).toBeUndefined();
+    const jonesSource = {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    };
+    expect(decodeDescriptor({ ...descriptor, jonesSource }).jonesSource).toEqual(jonesSource);
+    expect(() =>
+      decodeDescriptor({ ...descriptor, jonesSource: { ...jonesSource, sha: "unknown" } }),
+    ).toThrow();
   });
 
+  it("keeps settled cleanup optional alongside current worktree capabilities", () => {
+    expect(decodeDescriptor(descriptor).capabilities.settledWorktreeCleanup).toBeUndefined();
+    const capabilities = {
+      settledWorktreeCleanup: true,
+      storageCleanupRun: true,
+      projectWorktreeCleanup: true,
+      worktreesDirectory: true,
+      threadAutoSettlementScope: true,
+    };
+    expect(decodeDescriptor({ ...descriptor, capabilities }).capabilities).toMatchObject(
+      capabilities,
+    );
+  });
+
+  it("decodes old, recognized and future manual installation descriptors", () => {
+    expect(decodeDescriptor(descriptor).capabilities.serverInstallation).toBeUndefined();
+    for (const installation of [{ kind: "npx" }, { kind: "npm-global", prefix: "/opt/node" }]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, serverInstallation: installation },
+        }).capabilities.serverInstallation,
+      ).toEqual(installation);
+    }
+    for (const installation of [{ kind: "future-manager" }, { kind: "npm-global" }]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, serverInstallation: installation },
+        }).capabilities.serverInstallation,
+      ).toBeUndefined();
+    }
+  });
   it("requires an advertised required-worktree bootstrap capability", () => {
     expect(decodeDescriptor(descriptor).capabilities.requiredWorktreeBootstrap).toBeUndefined();
     expect(
@@ -70,5 +106,21 @@ describe("ExecutionEnvironmentDescriptor", () => {
         },
       }).capabilities.fileAttachments,
     ).toEqual({ maxUploadBytes: 50 * 1024 * 1024 });
+  });
+
+  it("treats missing server-resolved command context as unsupported", () => {
+    expect(decodeDescriptor(descriptor).capabilities.serverResolvedCommandContext).toBeUndefined();
+  });
+
+  it("preserves advertised server-resolved command context", () => {
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          serverResolvedCommandContext: true,
+        },
+      }).capabilities.serverResolvedCommandContext,
+    ).toBe(true);
   });
 });

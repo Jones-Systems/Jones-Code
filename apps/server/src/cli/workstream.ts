@@ -1,14 +1,14 @@
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import { Command, GlobalFlag } from "effect/unstable/cli";
+import { Command, GlobalFlag } from "effect/cli";
 
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   initializeNativeStoreAuthorityForBaseDir,
   NativeStoreAuthorityPersistenceError,
 } from "../environment/nativeStoreAuthorityPersistence.ts";
+import { workstreamProviderCommand } from "../jones/workstreams/enrollment/cli.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
-import { workstreamProviderCommand } from "./workstreamProvider.ts";
 
 const authorityEnrollCommand = Command.make("enroll", projectLocationFlags).pipe(
   Command.withDescription(

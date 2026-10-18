@@ -12,6 +12,9 @@ export const thread = {
   projectId: "repo-one",
   pinnedAt: null,
   settledOverride: null,
+  runtime: null,
+  hasPendingApprovals: false,
+  hasPendingUserInput: false,
 };
 const metadata = (id: string, sortOrder: number) => ({
   workstreamId: id,

@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "orchestration-tests",
+  "jonesOwnedPaths": ["apps/server/src/jones/orchestration/"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

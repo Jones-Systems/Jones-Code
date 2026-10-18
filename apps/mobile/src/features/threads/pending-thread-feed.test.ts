@@ -41,7 +41,7 @@ describe("pending timeline messages", () => {
   it("keeps pending messages after newer agent activity in queue order", () => {
     const activity = {
       type: "thinking",
-      turnId: null,
+      runId: null,
       id: "thinking",
       createdAt: "2026-09-06T11:00:00.000Z",
     } as const;
@@ -59,7 +59,37 @@ describe("pending timeline messages", () => {
     const optimistic = appendPendingThreadMessages([], [], [queued])[0]!;
     const delivered = { ...optimistic, pendingMessage: undefined };
     expect(appendPendingThreadMessages([delivered], [delivered], [queued])).toEqual([delivered]);
-    // Folded messages still count as delivered even when absent from the presented rows.
     expect(appendPendingThreadMessages([], [delivered], [queued])).toEqual([]);
   });
+});
+
+it("hides pending plain sentinel messages while retaining near misses and context", () => {
+  const sentinel = { ...pending("warm"), text: "@@@@@" };
+  expect(appendPendingThreadMessages([], [], [sentinel])).toEqual([]);
+  for (const text of ["@@@@", "@@@@@ extra", " @@@@@", "@@@@@\n"]) {
+    expect(appendPendingThreadMessages([], [], [{ ...sentinel, text }])).toHaveLength(1);
+  }
+  expect(
+    appendPendingThreadMessages(
+      [],
+      [],
+      [
+        {
+          ...sentinel,
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                kind: "mention",
+                contextId: ComposerContextId.make("file"),
+                label: "file",
+                path: "file",
+              },
+            ],
+          },
+        },
+      ],
+    ),
+  ).toHaveLength(1);
 });

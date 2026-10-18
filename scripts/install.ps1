@@ -1,7 +1,7 @@
 # Installs the T3 Code CLI from a GitHub Release archive on Windows. Needs
 # only PowerShell 5.1+; no Node, npm, or compiler.
 #
-#   powershell -File scripts/install.ps1  # from a verified Jones-Code checkout
+#   irm https://t3.codes/install.ps1 | iex
 #
 # Environment:
 #   T3CODE_CHANNEL           release train to follow: stable, nightly, or preview
@@ -16,7 +16,7 @@
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$repo = "Jones-Systems/Jones-Code"
+$repo = "pingdotgg/t3code"
 $baseUrl = if ($env:T3CODE_RELEASE_BASE_URL) { $env:T3CODE_RELEASE_BASE_URL.TrimEnd("/") } else { "https://github.com/$repo/releases/download" }
 $t3Home = if ($env:T3CODE_HOME) { $env:T3CODE_HOME } else { Join-Path $HOME ".t3" }
 $binDir = if ($env:T3CODE_INSTALL_BIN_DIR) { $env:T3CODE_INSTALL_BIN_DIR } else { Join-Path $HOME ".local\bin" }
@@ -141,7 +141,7 @@ if (-not $version) {
   }
   $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100" -Headers @{ "User-Agent" = "t3-install" }
   $tag = ($releases | Where-Object { -not $_.draft -and $_.tag_name -match $tagPattern } | Select-Object -First 1).tag_name
-  if (-not $tag) { Fail "no published $channel release in $repo; Actions trial artifacts are not a release channel" }
+  if (-not $tag) { Fail "could not find a $channel release; set T3CODE_VERSION" }
   $version = $tag.Substring(1)
 }
 if ($version -match '-preview\.') {
@@ -156,11 +156,6 @@ $archive = "$stem.zip"
 $versionsDir = Join-Path $t3Home "runtime\versions"
 $targetDir = Join-Path $versionsDir $version
 $marker = Join-Path $targetDir ".install-complete"
-$sourceMarker = Join-Path $targetDir ".install-source"
-$sourceUrl = "$baseUrl/v$version"
-if ((Test-Path $targetDir) -and ((-not (Test-Path $sourceMarker)) -or ((Get-Content $sourceMarker -Raw).Trim() -ne $sourceUrl))) {
-  Fail "cached $version has unknown or different source provenance; preserve it and use a distinct Jones version or isolated T3CODE_HOME"
-}
 
 if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
   Step "Version $version is already downloaded."
@@ -177,7 +172,7 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     } catch {
       $status = $_.Exception.Response.StatusCode.value__
       if ($status -eq 404) {
-        Fail "$repo has no release archive $version for win32-$arch; no upstream replacement is attempted"
+        Fail "t3 $version has no release archive for win32-$arch; releases before the self-contained CLI can only be installed with 'npm install -g t3@$version'"
       }
       throw
     }
@@ -202,13 +197,9 @@ if ((Test-Path $marker) -and ((Get-Content $marker -Raw).Trim() -eq $version)) {
     Get-ChildItem (Join-Path $staging $stem) | Move-Item -Destination $staging
     Remove-Item (Join-Path $staging $stem), (Join-Path $staging $archive), (Join-Path $staging "SHA256SUMS") -Recurse -Force
 
-    $reportedVersion = & (Join-Path $staging "t3.exe") --version
+    & (Join-Path $staging "t3.exe") --version | Out-Null
     if ($LASTEXITCODE -ne 0) { Fail "the downloaded executable does not run" }
-    if (($reportedVersion | Select-Object -Last 1).Trim().Split(" ")[-1].TrimStart("v") -ne $version) {
-      Fail "the downloaded executable version does not match $version"
-    }
     Set-Content -Path (Join-Path $staging ".install-complete") -Value $version -NoNewline
-    Set-Content -Path (Join-Path $staging ".install-source") -Value $sourceUrl -NoNewline
 
     if (Test-Path $targetDir) { Remove-Item $targetDir -Recurse -Force }
     Move-Item $staging $targetDir

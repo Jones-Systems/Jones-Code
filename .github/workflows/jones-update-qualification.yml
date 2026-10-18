@@ -1,0 +1,297 @@
+name: Jones update qualification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/jones-update-qualification.yml
+      - .github/workflows/artifact-desktop-mac.yml
+      - .github/workflows/artifact-cli-linux.yml
+      - apps/desktop/src/jones/updates/**
+      - apps/desktop/src/boot.ts
+      - apps/desktop/vite.config.ts
+      - apps/desktop/scripts/main-process-bundle.test.mjs
+      - packages/shared/src/jones/nativeWriterFence*
+      - apps/web/src/jones/updates/**
+      - apps/web/src/jones/fleetUpdates/**
+      - apps/web/src/state/desktopUpdate.ts
+      - apps/web/src/components/desktopUpdate.logic.ts
+      - apps/web/src/components/desktopUpdate.toast.tsx
+      - apps/web/src/components/sidebar/SidebarUpdatePill.tsx
+      - apps/server/src/jones/updates/**
+      - apps/server/src/jones/cloud/qualified*.ts
+      - apps/server/src/jones/cloud/stoppedServerOwnership*
+      - apps/server/src/jones/cloud/capturedProcess*
+      - apps/server/src/serviceLauncher*
+      - apps/server/src/cloud/serviceLauncher*
+      - apps/server/src/cloud/serviceProtocol*
+      - apps/server/src/cloud/selfUpdate*
+      - apps/server/src/cloud/pinnedRuntime*
+      - apps/server/src/cloud/bootService*
+      - apps/server/src/jones/hostService/**
+      - apps/server/vite.config.ts
+      - apps/server/src/cli/servicePreflight.ts
+      - apps/server/src/cloud/servicePreflight*
+      - apps/server/src/orchestration-v2/RestartContinuation*
+      - apps/server/src/orchestration-v2/ServerUpdateContinuation*
+      - packages/client-runtime/src/jones/updates/**
+      - packages/client-runtime/src/jones/fleetUpdates/**
+      - packages/contracts/src/jones/jonesUpdates.ts
+      - packages/contracts/src/jones/fleetUpdates/**
+      - packages/shared/src/jones/jonesActions*
+      - scripts/stamp-jones-build*
+      - scripts/build-desktop-artifact*
+      - scripts/jones/updates/**
+      - scripts/jones/boundary/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-update-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Jones update regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Qualify affected update and recovery behavior
+        run: >-
+          vp test run
+          apps/web/src/versionSkew.test.ts
+          apps/web/src/jones/updates/versionSkew.test.ts
+          apps/web/src/jones/updates/localDesktopUpdate.test.ts
+          apps/desktop/src/jones/updates/preloadInstall.test.ts
+          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
+          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts
+          apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts
+          packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts
+          packages/contracts/src/jones/fleetUpdates/source.test.ts
+          packages/client-runtime/src/platform/storageDocument.test.ts
+          packages/client-runtime/src/connection/registry.test.ts
+          apps/web/src/connection/storage.test.ts
+          apps/mobile/src/connection/storage.test.ts
+          apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts
+          apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts
+          apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx
+          packages/contracts/src/ipc.test.ts
+          apps/desktop/src/jones/updates/jonesMacStaging.test.ts
+          apps/server/src/jones/updates/trialGate.test.ts
+          apps/server/src/orchestration-v2/RestartContinuation.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts
+          apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts
+          apps/server/src/ServerSettingsPersistence.test.ts
+          apps/server/src/serverSettings.test.ts
+          apps/server/src/jones/updates/trialStartup.test.ts
+          apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
+          apps/server/src/jones/cloud/qualifiedBackup.test.ts
+          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
+          apps/server/src/jones/cloud/capturedProcess.test.ts
+          apps/server/src/jones/hostService/systemAdoption.test.ts
+          apps/server/src/jones/hostService/systemServiceControl.test.ts
+          apps/server/src/jones/hostService/cli.test.ts
+          apps/server/src/serviceLauncher.test.ts
+          apps/server/src/jones/updates/migrationPlan.test.ts
+          scripts/stamp-jones-build.test.ts
+          scripts/jones/updates/build-provenance.test.ts
+          scripts/build-desktop-artifact.test.ts
+
+      - name: Install virtual display for Chromium startup qualification
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Check startup qualification fixtures
+        run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/native-fixture-support.node-test.mjs
+
+      - name: Qualify Chromium-mode native startup refusal
+        run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
+
+      - name: Verify Jones boundary accounting
+        run: node scripts/jones/check-boundary.ts --strict --json
+
+  qualify-mac:
+    name: Jones install lifecycle on macOS
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Qualify migration, launcher recovery and desktop snapshot cleanup
+        run: >-
+          vp test run
+          apps/server/src/jones/updates/migrationPlan.test.ts
+          apps/server/src/jones/cloud/qualifiedLauncher.test.ts
+          apps/server/src/jones/cloud/qualifiedBackup.test.ts
+          apps/server/src/jones/cloud/qualifiedStartup.test.ts
+          apps/server/src/jones/cloud/stoppedServerOwnership.test.ts
+          apps/server/src/serviceLauncher.test.ts
+          apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts
+          apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts
+          apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts
+          --maxWorkers=1
+
+  preview-changes:
+    name: Detect renderer update changes
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Select renderer update paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- apps/web/src/jones/updates/)
+            if [ -n "$changed_paths" ]; then
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'changed=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  preview:
+    needs: preview-changes
+    if: needs.preview-changes.outputs.changed == 'true'
+    name: Jones native Preview evidence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact public candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Verify isolated Preview provider and evidence controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs
+
+      - name: Build matching server and web source
+        env:
+          JONES_EXPECTED_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+          vp run --filter t3 build
+
+      - name: Build explicit desktop renderer fixture
+        working-directory: apps/web
+        env:
+          JONES_INSTALL_RENDERER_FIXTURE: "1"
+          JONES_INSTALL_FIXTURE_OUT: ${{ runner.temp }}/install-preview-renderer
+          JONES_INSTALL_FIXTURE_SOURCE_SHA: ${{ env.JONES_SOURCE_SHA }}
+          JONES_INSTALL_FIXTURE_SOURCE_TREE: ${{ env.JONES_SOURCE_TREE }}
+        run: pnpm exec vp build --config vite.install-preview.config.ts --mode jones-install-fixture
+
+      - name: Install Chromium host libraries
+        run: node apps/server/node_modules/playwright-core/cli.js install-deps chromium
+
+      - name: Prepare native Preview sandbox on the ephemeral runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup_root=$(mktemp -d "$RUNNER_TEMP/jones-preview-browser-setup.XXXXXX")
+          trap 'rmdir -- "$setup_root"' EXIT
+          sudo -n "$(command -v node)" "$GITHUB_WORKSPACE/apps/server/dist/bin.mjs" browser setup --base-dir "$setup_root"
+
+      - name: Bind source and served build receipt
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs record-build
+          --source "$GITHUB_WORKSPACE"
+          --out "$RUNNER_TEMP/install-preview-build.json"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Exercise renderer through real injected T3 Preview tools
+        run: >-
+          node scripts/jones/updates/install-preview-qualification.mjs run
+          --source "$GITHUB_WORKSPACE"
+          --receipt "$RUNNER_TEMP/install-preview-build.json"
+          --out "$RUNNER_TEMP/install-preview-evidence"
+          --scratch-parent "$RUNNER_TEMP"
+          --fixture-build "$RUNNER_TEMP/install-preview-renderer"
+
+      - name: Preserve source-bound Preview reports and native screenshots
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: install-preview-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/install-preview-build.json
+            ${{ runner.temp }}/install-preview-build.patch
+            ${{ runner.temp }}/install-preview-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's renderer build scratch
+        if: always()
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import shutil
+          parent = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve(strict=True)
+          target = parent / "install-preview-renderer"
+          if target.is_symlink():
+              raise RuntimeError("Renderer build scratch was replaced by a symlink")
+          if target.exists():
+              shutil.rmtree(target)

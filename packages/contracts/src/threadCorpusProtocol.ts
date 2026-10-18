@@ -21,7 +21,9 @@ export const ThreadCorpusCapability = Schema.flip(
 export type ThreadCorpusCapability = typeof ThreadCorpusCapability.Type;
 
 /**
- * Read semantics of the existing orchestration shell and thread detail endpoints.
+ * Required legacy read semantics for compatible shell and thread detail endpoints.
+ * Advertise only after the receiving server proves these behaviors; the DTO
+ * schemas alone do not establish runtime compatibility.
  * The shell carries global snapshotSequence and updatedAt; projects carry id,
  * workspaceRoot and optional nullable repositoryIdentity. Threads join by projectId
  * and carry nullable worktreePath/branch, archivedAt/settledAt, latestUserMessageAt,

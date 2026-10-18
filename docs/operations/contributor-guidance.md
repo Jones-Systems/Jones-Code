@@ -10,6 +10,164 @@ Understand the constraint before preserving existing complexity or adding new
 machinery. Keep scope aligned with the owner's task. If a task conflicts with
 applicable guidance, identify the conflict and obtain the owner's direction.
 
+## Keep Jones changes separate from upstream
+
+Jones Code regularly imports changes from T3 Code. Adding Jones logic directly
+to upstream files makes those imports repeatedly conflict and obscures which
+side owns the behavior. Use the extracted structure by default for new features
+and repairs: keep Jones implementations and their tests together in Jones-owned
+modules, and keep upstream integration points small. This reduces edit overlap;
+upstream API changes can still require adapter and compatibility repairs.
+
+| Jones-owned code                                            | Default location                     |
+| ----------------------------------------------------------- | ------------------------------------ |
+| Wire schemas and small derived contract helpers             | `packages/contracts/src/jones/`      |
+| Shared client state, commands and capability handling       | `packages/client-runtime/src/jones/` |
+| Server services, upstream adapters and registration bundles | `apps/server/src/jones/`             |
+| Jones persistence and migration loader                      | `apps/server/src/jones/persistence/` |
+| Web components, views and controllers                       | `apps/web/src/jones/`                |
+| Mobile features                                             | `apps/mobile/src/jones/`             |
+| Desktop shell and IPC features                              | `apps/desktop/src/jones/`            |
+| Boundary checks and Jones development tools                 | `scripts/jones/`                     |
+
+Use the existing feature owner within these locations before creating another
+module. Keep coherent existing Jones-owned feature directories where they are
+when a move would add churn without an integration benefit. Shared utilities
+and additional packages follow the same ownership principle; do not duplicate
+code merely to fit this table.
+
+- **Hooks and adapters.** Upstream-owned files should register or call a narrow,
+  typed Jones interface. Put Jones business logic, retries and lifecycle work
+  behind that interface, rather than growing the hook. Jones modules may use
+  specific upstream APIs through adapters. Keep contract modules independent
+  of runtime services and avoid barrel cycles.
+- **Tests.** Put Jones behavior tests beside their Jones implementation and use
+  the existing runner's discovery or a small explicit registration. Preserve
+  upstream tests and assertions. Keep a Jones case in an upstream test only
+  when the integration harness requires it, and record that exception. Keep
+  meaningful application integration coverage for both sides.
+- **Boundary accounting.** Update the affected feature fragment under
+  `scripts/jones/boundary/fragments/`, and the applicable
+  [inventory](../../scripts/jones/boundary/inventory.json),
+  [feature coverage](../../scripts/jones/boundary/features.json) and
+  [check mapping](../../scripts/jones/boundary/checks.json).
+  Record hooks, accepted shared edits, imports from upstream into Jones,
+  test exceptions and removed paths. Run the following from the repository root
+  on a supported Node version:
+
+  ```sh
+  node scripts/jones/check-boundary.ts --strict
+  ```
+
+  Do not weaken
+  its path, ancestry, hash or resolution checks to hide new divergence.
+
+- **Stored state.** Preserve wire names, persisted fields, event decoding,
+  migration identities and guards. Keep Jones migrations on their independent
+  loader and tracking ledger; source extraction must not rewrite stored history.
+  Database changes follow the [Jones database boundary](#jones-database-boundary).
+- **Practical exceptions.** A small direct shared-file edit is acceptable when
+  isolating it would require disproportionate complexity or duplicated upstream
+  machinery. State the reason and classify the edit. Do not build a generic
+  plugin framework or perform unrelated moves to eliminate every conflict.
+
+An upstream import and Jones restoration are separate concerns. Follow
+[the upstream sync procedure](./upstream-sync.md#upstream-sync-procedure):
+import upstream in the bottom PR, restore Jones behavior in stacked follow-ons,
+and qualify the complete stack before merging any layer. A similar upstream
+feature is not an accepted replacement without behavior evidence and M Jones's
+explicit decision.
+
+### Jones database boundary
+
+T3 Code can open a database that Jones Code has used, and upstream migrations
+and maintenance assume only upstream schema. Upstream owns every table, column,
+index, trigger and view created by `apps/server/src/persistence/Migrations`,
+and its `effect_sql_migrations` ledger. It may prune, delete, drop or rebuild
+those objects without knowing about Jones.
+
+- **No upstream schema changes.** Jones migrations must not alter, drop or
+  rebuild upstream tables, or add columns, indexes, triggers or views to them.
+  They must not write the upstream ledger or upstream rows.
+- **Jones-owned tables.** Store Jones state only in tables created through the
+  Jones loader and recorded in `jones_sql_migrations`. Name new tables, indexes
+  and triggers with a `jones_` prefix. Released unprefixed names such as
+  `native_creation_*` and `workstreams_native_*` keep their names.
+- **Sparse extension rows.** To attach Jones metadata to an upstream record,
+  key a Jones table by that record's stable ID, such as a thread, command,
+  effect or session ID. Write a row only when Jones has something to record,
+  in the transaction of the Jones operation that produces it. Do not mirror
+  upstream rows eagerly, copy upstream payloads, or keep rows in step with
+  upstream writes through triggers.
+- **No references to upstream tables.** Do not declare foreign keys from Jones
+  tables to upstream tables. With foreign keys enabled, such a key makes
+  upstream deletes, pruning and table rebuilds fail. Verify the upstream row in
+  the transaction that writes the Jones row, and treat a missing upstream row
+  as absent when reading. References between Jones tables are allowed.
+- **Upstream payloads and hot paths.** Do not add Jones fields to upstream JSON
+  payloads or columns. Read upstream rows from Jones-owned queries through
+  existing upstream keys and indexes. Do not add joins, scans or schema checks
+  to upstream per-event or per-command paths; a necessary hook does a
+  primary-key lookup and is recorded as a hook.
+- **Environment identity.** Jones rows are meaningful only beside the upstream
+  rows of the same database. Do not copy or restore Jones tables separately
+  from the upstream data they describe.
+- **Released history.** Never renumber, rename or delete a released Jones
+  migration. When one breaks these rules, keep its identity, change its effect
+  only if no stored data depends on it, and repair existing databases with a
+  new data-preserving Jones migration. Removing upstream residue that released
+  migrations left behind, such as `runtime_identity_json` on the V1 thread
+  session projection, needs a separately authorized operation.
+- **Update checks.** Trust upstream migrations through the normal T3 startup
+  and recovery process. Before stopping the active server, the staged candidate
+  reads the migration ledgers without writing them and reports pending IDs;
+  a candidate older than the database is blocked. Add targeted checks inside
+  Jones migrations for their declared effects and interactions, such as row
+  counts around a Jones table rebuild and removal of upstream references.
+  A failed check aborts the migration transaction. Routine updates do not need
+  full database scans, content hashing or a separate migration rehearsal.
+
+[`UpstreamIsolation.test.ts`](../../apps/server/src/jones/persistence/UpstreamIsolation.test.ts)
+checks the schema rules against the complete Jones manifest. Some earlier
+integrations predate these rules, for example the native-creation reference in
+effect outbox payloads and Jones table checks in the event sink. They are not
+precedent for new work.
+
+### Install path changes
+
+Jones Code is a personal development tool. Keep installation close to the
+upstream flow: verify the selected artifact, preflight the candidate, stop the
+owned backend, snapshot the database, and trial-start before committing.
+
+- Verify downloaded artifacts by their published digest. Do not pin emitted
+  bundle bytes, source hashes, lockfiles, or generated-code offsets in install
+  admission or artifact production. Ordinary application changes must not
+  require renewing an installation allowlist.
+- Keep updates within the launcher's owned child and state directory. Do not
+  introduce privileged observers or whole-host process scans as prerequisites
+  for installing an otherwise valid build.
+- Use one recovery snapshot of the database, WAL/SHM, and required settings.
+  Release the task's snapshot after commit or durably recorded rollback;
+  do not copy browser caches or retain a second failed database indefinitely.
+  Existing historical backups are outside routine update cleanup.
+- Make a refusal actionable: identify what failed and how to recover. Optional
+  fleet bookkeeping must not prevent a local app update.
+- Preserve launcher and startup-gate protocols when possible. A necessary
+  incompatible change must describe the one-time host refresh in the PR.
+
+Use small synthetic fixtures instead of installing across the fleet. Migration
+or startup-wiring changes run
+[`migrationPlan.test.ts`](../../apps/server/src/jones/updates/migrationPlan.test.ts)
+with the real migrations, a few retained rows, and a deliberately failing
+transaction. Launcher and recovery changes run
+[`serviceLauncher.test.ts`](../../apps/server/src/serviceLauncher.test.ts) and
+the affected backup tests. Desktop handoff or recovery changes run the affected
+[`native helper tests`](../../apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts)
+and updater tests. Keep fixtures isolated, clean them on success and failure,
+and retain the original failure result. Unrelated UI changes do not need an
+installation rehearsal. The normal read-only candidate preflight remains the
+per-install migration check.
+
 ## Coverage before completion
 
 The common failure is a change that works on the path tested but is missing
@@ -104,24 +262,23 @@ receipts have a separate role in idempotent dispatch.
 
 ### UI evidence
 
-For user-visible changes, follow
-[capture-ui-evidence](../../.agents/skills/capture-ui-evidence/SKILL.md) to select
-the client and retain evidence. The primary agent exercises the affected flow
+For user-visible changes, select the affected client and retain evidence.
+The primary agent exercises the affected flow
 once after integration, checks observable results, and retains captures.
 A screenshot alone does not prove the interaction worked. Subagents do not
 launch their own development servers.
 
-Reuse existing browser or computer-use authorization within the task's scope.
-Obtain authorization when the task has not authorized that verification.
+M Jones's [standing local app testing permission](#local-app-testing-permission)
+covers browser and native app verification with isolated synthetic test state.
+Do not request per-task reconfirmation for covered testing.
 
 Use [test-t3-app](../../.agents/skills/test-t3-app/SKILL.md) and T3's Browser panel
 for seeing, clicking, typing, and inspecting the shared web/desktop renderer.
 Unavailable Preview tools do not authorize switching to a standalone browser.
 
-Use the qualified Linux Electron runner for desktop-shell behavior and
-repeatable native screenshots or scenarios. Qualification must pass for the
-exact harness revision. That runner does not cover macOS, packaged builds,
-signing, native dialogs, provider/network flows, or message content.
+Renderer checks do not establish desktop-shell or packaged-build behavior.
+When those are affected, record the native platform and packaging coverage
+required by the task; unavailable harnesses remain a verification gap.
 
 Use [test-t3-mobile](../../.agents/skills/test-t3-mobile/SKILL.md) for mobile.
 For authorized mobile verification, a missing or outdated native client is a
@@ -133,6 +290,28 @@ node scripts/mobile-native-client.ts ensure <ios|android> <device-id>
 
 It checks the local Expo fingerprint and builds or installs when needed.
 Follow the mobile skill for the complete workflow and host scope.
+
+### Local app testing permission
+
+M Jones authorizes browser and computer use across tasks to test behavior in
+owner-built local applications, including Jones Code and T3 Code. Opening the
+app, navigating, clicking, typing synthetic inputs, inspecting results, and
+retaining test captures need no per-task reconfirmation. Reuse this standing
+owner authorization when a testing workflow asks for browser permission.
+
+Bind verification to the task's exact source/build and use isolated, task-owned
+synthetic state with a defined lifetime and cleanup owner. Reuse separately
+authorized sanitized fixtures only within their approved scope. Use T3's Browser
+panel for the shared renderer and the applicable qualified desktop or device
+harness for native behavior; preserve the routes and evidence requirements above.
+
+This permission does not authorize external-site or ChatGPT automation,
+credential access, private or live application state, production changes,
+deployment, shared route changes, sudo, or interaction with unrelated apps.
+Those effects retain their existing exact authorization gates. In particular,
+use only the task's isolated development pairing token, never the user's token
+or a live application credential. Continue covered verification and surface the
+exact uncovered effect if the flow requires one.
 
 ## Pull requests
 
@@ -164,6 +343,40 @@ When asked to watch a PR, inspect current-head checks and new comments, validate
 reported problems against the source, and follow the task's authority for
 disposition and fixes. Stay quiet when nothing changes. Report current-head
 results and unresolved findings; absence of a bot review is not a failure.
+
+### Atomic stack qualification
+
+Ordinary PR merges require passing applicable checks on the exact current head.
+The standing policy for a complete atomic stack qualifies the composed
+result rather than every intermediate layer. It applies only when all of the
+following hold:
+
+- The selected group is contiguous and complete: the import or foundational
+  change and every repair it needs are included, with the receiving base and
+  constituent PR heads recorded. The current top contains all those changes.
+- That exact top is qualified for the complete group's upstream behavior and
+  Jones parity, with passing applicable checks and full applicable coverage.
+  Skipped, unavailable or unrelated checks do not prove coverage. Refresh
+  qualification if the top, a constituent head or the receiving base changes.
+- The failure-to-repair ledger maps each lower failure to its repair higher in
+  the selected group and the passing check on the composed top that proves
+  restoration. No unexplained or unrepaired lower failure remains.
+- Integration lands the complete qualified group atomically. A broken import
+  or intermediate prefix cannot merge independently. A non-atomic queue or
+  sequence must qualify every group it actually lands before landing it.
+
+For an eligible group, keep lower CI failures visible as resolved-by-higher
+entries in the ledger. Do not add work merely to make already-repaired lower
+layers green, and do not request a separate CI exception for each occurrence
+of this accepted pattern. If a failure lacks a qualified repair or the group
+cannot land atomically, this policy does not cover it.
+
+Normal merge authorization, required reviews, resolved review threads and
+receiving-ref/tree readback remain required for the selected group. This
+qualification policy grants no merge authority and never permits bypassing
+required checks or changing repository rulesets. If repository enforcement
+prevents the intended atomic integration, hold that operation and report the
+specific constraint.
 
 ## Documentation
 

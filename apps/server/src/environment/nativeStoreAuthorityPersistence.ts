@@ -238,6 +238,8 @@ export const decodeNativeStoreAuthorityState = (value: unknown): NativeStoreAuth
   };
 };
 
+const MAX_EXISTING_STATE_BYTES = 8192;
+
 const readStateUnlocked = (
   authorityStateDir: string,
   createIfMissing = true,
@@ -248,27 +250,26 @@ const readStateUnlocked = (
   let fd: number | undefined;
   try {
     fd = NodeFS.openSync(statePath, NodeFS.constants.O_RDONLY | NOFOLLOW);
-    if (!createIfMissing) {
+    let raw: string;
+    if (createIfMissing) {
+      raw = NodeFS.readFileSync(fd, "utf8");
+    } else {
       const stat = NodeFS.fstatSync(fd);
       verifyOwner(stat, statePath);
-      if (!stat.isFile() || mode(stat) !== 0o600 || stat.size > 8192) {
+      if (!stat.isFile() || mode(stat) !== 0o600 || stat.size > MAX_EXISTING_STATE_BYTES) {
         throw persistenceError(
           "corrupt",
           "Existing native authority state is not a bounded private file.",
         );
       }
-    }
-    let raw: string;
-    if (createIfMissing) {
-      raw = NodeFS.readFileSync(fd, "utf8");
-    } else {
-      const bytes = Buffer.alloc(8193);
+      const bytes = Buffer.alloc(MAX_EXISTING_STATE_BYTES + 1);
       const count = NodeFS.readSync(fd, bytes, 0, bytes.length, 0);
-      if (count > 8192)
+      if (count > MAX_EXISTING_STATE_BYTES) {
         throw persistenceError(
           "corrupt",
           "Existing native authority state exceeds its byte bound.",
         );
+      }
       raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count));
     }
     return decodeNativeStoreAuthorityState(JSON.parse(raw) as unknown);
@@ -279,11 +280,6 @@ const readStateUnlocked = (
     if (fd !== undefined) NodeFS.closeSync(fd);
   }
 };
-
-// Standalone enrollment preflight must not create the authority directory or its writer lock.
-export const readExistingNativeStoreAuthorityState = (
-  authorityStateDir: string,
-): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir, false);
 
 const hasNativeStoreAuthorityState = (authorityStateDir: string): boolean => {
   try {
@@ -535,6 +531,11 @@ export const readNativeStoreAuthorityState = (
   authorityStateDir: string,
 ): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir);
 
+// Standalone enrollment preflight must not create the authority directory or its writer lock.
+export const readExistingNativeStoreAuthorityState = (
+  authorityStateDir: string,
+): NativeStoreAuthorityState => readStateUnlocked(authorityStateDir, false);
+
 /**
  * Explicit enrollment for a new native store. Normal startup never calls this:
  * losing this record requires owner-controlled re-enrollment, not a reset.
@@ -587,6 +588,60 @@ export const fenceNativeStoreAuthority = (
     return fenced;
   });
 
+const verifyRestoredNativeDatabase = (databasePath: string): void => {
+  let dbStat: NodeFS.Stats;
+  try {
+    dbStat = NodeFS.lstatSync(databasePath);
+  } catch (cause) {
+    throw persistenceError("source_unavailable", "Restored native database is unavailable.", cause);
+  }
+  if (dbStat.isSymbolicLink() || !dbStat.isFile()) {
+    throw persistenceError("source_unavailable", "Restored native database is not a regular file.");
+  }
+  verifyOwner(dbStat, databasePath);
+  let dbFd: number | undefined;
+  try {
+    dbFd = NodeFS.openSync(databasePath, NodeFS.constants.O_RDONLY | NOFOLLOW);
+    const header = Buffer.allocUnsafe(16);
+    const bytesRead = NodeFS.readSync(dbFd, header, 0, header.byteLength, 0);
+    if (bytesRead !== header.byteLength || header.toString("utf8") !== "SQLite format 3\0") {
+      throw persistenceError(
+        "source_unavailable",
+        "Restored native database is not a SQLite database.",
+      );
+    }
+  } catch (cause) {
+    if (cause instanceof NativeStoreAuthorityPersistenceError) throw cause;
+    throw persistenceError(
+      "source_unavailable",
+      "Restored native database could not be verified.",
+      cause,
+    );
+  } finally {
+    if (dbFd !== undefined) NodeFS.closeSync(dbFd);
+  }
+};
+
+const advanceStateUnlocked = (
+  authorityStateDir: string,
+  current: NativeStoreAuthorityState,
+  databasePath: string,
+): NativeStoreAuthorityState => {
+  verifyRestoredNativeDatabase(databasePath);
+  const nextGeneration = current.store_generation + 1;
+  if (!Number.isSafeInteger(nextGeneration) || nextGeneration > MAX_SAFE_GENERATION) {
+    throw persistenceError("generation_regression", "Native authority generation cannot advance.");
+  }
+  const active: NativeStoreAuthorityState = {
+    ...current,
+    store_generation: nextGeneration,
+    state: "active",
+    transition_id: null,
+  };
+  writeStateUnlocked(authorityStateDir, active);
+  return active;
+};
+
 export const advanceNativeStoreAuthority = (
   authorityStateDir: string,
   environmentId: string,
@@ -604,57 +659,99 @@ export const advanceNativeStoreAuthority = (
         "Native authority was not fenced before advancing.",
       );
     }
-    let dbStat: NodeFS.Stats;
-    try {
-      dbStat = NodeFS.lstatSync(databasePath);
-    } catch (cause) {
-      throw persistenceError(
-        "source_unavailable",
-        "Restored native database is unavailable.",
-        cause,
-      );
-    }
-    if (dbStat.isSymbolicLink() || !dbStat.isFile()) {
-      throw persistenceError(
-        "source_unavailable",
-        "Restored native database is not a regular file.",
-      );
-    }
-    verifyOwner(dbStat, databasePath);
-    let dbFd: number | undefined;
-    try {
-      dbFd = NodeFS.openSync(databasePath, NodeFS.constants.O_RDONLY | NOFOLLOW);
-      const header = Buffer.allocUnsafe(16);
-      const bytesRead = NodeFS.readSync(dbFd, header, 0, header.byteLength, 0);
-      if (bytesRead !== header.byteLength || header.toString("utf8") !== "SQLite format 3\0") {
-        throw persistenceError(
-          "source_unavailable",
-          "Restored native database is not a SQLite database.",
-        );
-      }
-    } catch (cause) {
-      if (cause instanceof NativeStoreAuthorityPersistenceError) throw cause;
-      throw persistenceError(
-        "source_unavailable",
-        "Restored native database could not be verified.",
-        cause,
-      );
-    } finally {
-      if (dbFd !== undefined) NodeFS.closeSync(dbFd);
-    }
-    const nextGeneration = current.store_generation + 1;
-    if (!Number.isSafeInteger(nextGeneration) || nextGeneration > MAX_SAFE_GENERATION) {
-      throw persistenceError(
-        "generation_regression",
-        "Native authority generation cannot advance.",
-      );
-    }
-    const active: NativeStoreAuthorityState = {
-      ...current,
-      store_generation: nextGeneration,
-      state: "active",
-      transition_id: null,
+    return advanceStateUnlocked(authorityStateDir, current, databasePath);
+  });
+
+/** A restore guard binds one durably fenced record, never just a generation number. */
+export type NativeAuthorityRestoreGuard =
+  | { readonly kind: "absent" }
+  | {
+      readonly kind: "fenced";
+      readonly environmentId: string;
+      readonly authorityNamespace: string;
+      readonly storeGeneration: number;
+      readonly transitionId: string;
+      readonly recordSha256: string;
     };
-    writeStateUnlocked(authorityStateDir, active);
-    return active;
+
+const restoreGuard = (state: NativeStoreAuthorityState): NativeAuthorityRestoreGuard => {
+  if (state.state !== "fenced" || state.transition_id === null)
+    throw persistenceError("generation_regression", "Native authority is not fenced.");
+  return {
+    kind: "fenced",
+    environmentId: state.environment_id,
+    authorityNamespace: state.authority_namespace,
+    storeGeneration: state.store_generation,
+    transitionId: state.transition_id,
+    recordSha256: NodeCrypto.createHash("sha256")
+      .update(`${JSON.stringify(state)}\n`)
+      .digest("hex"),
+  };
+};
+
+const existingRestoreState = (directory: string): NativeStoreAuthorityState | null => {
+  try {
+    return readStateUnlocked(directory, false);
+  } catch (cause) {
+    if (cause instanceof NativeStoreAuthorityPersistenceError && cause.code === "missing")
+      return null;
+    throw cause;
+  }
+};
+
+/** The caller retains native writer exclusion across both calls and the paired restore. */
+export const fenceNativeAuthorityRestore = (
+  directory: string,
+  environmentId: string,
+): NativeAuthorityRestoreGuard =>
+  withWriterLock(directory, () => {
+    validateEnvironmentId(environmentId);
+    const current = existingRestoreState(directory);
+    if (current === null) return { kind: "absent" };
+    if (current.environment_id !== environmentId)
+      throw persistenceError("environment_mismatch", "Native authority environment changed.");
+    if (current.state !== "active")
+      throw persistenceError(
+        "fenced",
+        "Native authority is already fenced; reconciliation required.",
+      );
+    const fenced: NativeStoreAuthorityState = {
+      ...current,
+      state: "fenced",
+      transition_id: NodeCrypto.randomUUID(),
+    };
+    writeStateUnlocked(directory, fenced);
+    return restoreGuard(fenced);
+  });
+
+export const advanceNativeAuthorityRestore = (
+  directory: string,
+  environmentId: string,
+  databasePath: string,
+  guard: NativeAuthorityRestoreGuard,
+): NativeStoreAuthorityState | null =>
+  withWriterLock(directory, () => {
+    validateEnvironmentId(environmentId);
+    const current = existingRestoreState(directory);
+    if (guard.kind === "absent") {
+      if (current !== null)
+        throw persistenceError(
+          "generation_regression",
+          "Native authority appeared during restore.",
+        );
+      return null;
+    }
+    if (current === null || current.state !== "fenced" || current.environment_id !== environmentId)
+      throw persistenceError("generation_regression", "Native authority restore guard changed.");
+    const actual = restoreGuard(current);
+    if (
+      actual.kind !== "fenced" ||
+      guard.environmentId !== actual.environmentId ||
+      guard.authorityNamespace !== actual.authorityNamespace ||
+      guard.storeGeneration !== actual.storeGeneration ||
+      guard.transitionId !== actual.transitionId ||
+      guard.recordSha256 !== actual.recordSha256
+    )
+      throw persistenceError("generation_regression", "Native authority restore guard changed.");
+    return advanceStateUnlocked(directory, current, databasePath);
   });

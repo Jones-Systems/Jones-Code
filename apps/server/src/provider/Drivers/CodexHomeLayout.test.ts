@@ -116,6 +116,38 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
     );
 
     it.effect.skipIf(!symlinksSupported)(
+      "does not introduce a shared SQLite maintenance lock into an account home",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowHome = yield* makeTempDir("t3code-codex-shadow-");
+          const lockName = ".sqlite-maintenance.lock";
+          yield* writeTextFile(path.join(sharedHome, lockName), "shared-lock");
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+          expect(yield* fileSystem.exists(path.join(shadowHome, lockName))).toBe(false);
+
+          yield* writeTextFile(path.join(shadowHome, lockName), "new-account-lock");
+          yield* materializeCodexShadowHome(layout);
+
+          expect(yield* fileSystem.readFileString(path.join(shadowHome, lockName))).toBe(
+            "new-account-lock",
+          );
+          expect(yield* fileSystem.readFileString(path.join(sharedHome, lockName))).toBe(
+            "shared-lock",
+          );
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "sessions"))).toBe(
+            path.join(sharedHome, "sessions"),
+          );
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
       "materializes a shadow home with shared state links and private auth",
       () =>
         Effect.gen(function* () {
@@ -167,6 +199,41 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           expect(modelsCacheExists).toBe(false);
           expect(authLinkResult._tag).toBe("Failure");
           expect(authContents).toContain("shadow");
+        }),
+    );
+
+    it.effect.skipIf(!symlinksSupported)(
+      "keeps a Codex-created SQLite lock local while sharing MCP OAuth locks",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+          const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+          const shadowHome = path.join(shadowRoot, "shadow");
+          const sharedLock = path.join(sharedHome, ".sqlite-maintenance.lock");
+          const shadowLock = path.join(shadowHome, ".sqlite-maintenance.lock");
+
+          yield* writeTextFile(sharedLock, "shared-lock");
+          yield* writeTextFile(shadowLock, "account-lock");
+          yield* writeTextFile(path.join(shadowHome, "mcp-oauth-locks", "local.lock"), "");
+
+          const layout = yield* resolveCodexHomeLayout(
+            decodeCodexSettings({
+              homePath: sharedHome,
+              shadowHomePath: shadowHome,
+            }),
+          );
+
+          yield* materializeCodexShadowHome(layout);
+
+          // SQLite maintenance stays account-local; MCP OAuth locks coordinate shared state.
+          expect((yield* fileSystem.readLink(shadowLock).pipe(Effect.result))._tag).toBe("Failure");
+          expect(yield* fileSystem.readFileString(shadowLock)).toBe("account-lock");
+          expect(yield* fileSystem.readFileString(sharedLock)).toBe("shared-lock");
+          expect(yield* fileSystem.readLink(path.join(shadowHome, "mcp-oauth-locks"))).toBe(
+            path.join(sharedHome, "mcp-oauth-locks"),
+          );
         }),
     );
 

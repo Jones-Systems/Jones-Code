@@ -20,10 +20,11 @@ export default async function sidebarRename(ctx) {
       projectId,
       title: "UI evidence synthetic project",
       workspaceRoot: ctx.workspace,
-      createdAt: new Date().toISOString(),
     });
     await ctx.dispatch({
       type: "thread.create",
+      createdBy: "user",
+      creationSource: "web",
       commandId: NodeCrypto.randomUUID(),
       projectId,
       threadId,
@@ -33,7 +34,6 @@ export default async function sidebarRename(ctx) {
       interactionMode: "default",
       branch: null,
       worktreePath: null,
-      createdAt: new Date().toISOString(),
     });
     await ctx.page.getByRole("button", { name: initialTitle }).first().waitFor();
   });

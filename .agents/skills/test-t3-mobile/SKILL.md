@@ -63,6 +63,11 @@ through AgentDevice. For a backend on the device host, use
 on Android. For a remote backend, use its reachable origin.
 
 Confirm the intended projects appear, exercise the affected flow, and capture
-evidence. Retain the app and environment while iterating. At teardown, remove
+evidence using the common format in
+[capture-ui-evidence](../capture-ui-evidence/SKILL.md). Record the candidate
+revision, native-client and served-backend build correspondence, device and
+platform, actual viewport/scale/theme, fixture, action/readback, and coverage
+limits. Distinguish interaction states in one build from two source builds.
+Retain the app and environment while iterating. At teardown, remove
 the disposable connection, close the AgentDevice session, call `device_close`,
 and stop only your backend and Metro processes.

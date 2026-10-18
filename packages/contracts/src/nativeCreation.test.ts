@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import {
   ExecutionEnvironmentCapabilities,
@@ -12,9 +13,12 @@ import {
   NativeCreationEffect,
   NativeCreationGuard,
   NativeCreationObservation,
-  OrchestrationCommandObservation,
-  OrchestrationDispatchCommandError,
-} from "./orchestration.ts";
+} from "./nativeCreation.ts";
+import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
+import {
+  OrchestrationV2ThreadLaunchResult,
+  OrchestrationV2DispatchCommandError,
+} from "./orchestrationV2.ts";
 
 const guard = {
   schema: "t3.native-creation-guard/v1",
@@ -32,17 +36,7 @@ const capability = {
   observationSchema: "t3.native-creation-observation/v1",
   guardRequired: true,
 };
-const commandObservation = {
-  threadId: "thread-1",
-  commandId: "command-1",
-  messageId: "message-1",
-  snapshotSequence: 1,
-  commandStatus: "accepted",
-  acceptedSequence: 1,
-  correlation: "exact",
-  turn: null,
-  target: null,
-};
+
 const digest = "a".repeat(64);
 const creation = {
   schema: "t3.native-creation-observation/v1",
@@ -148,12 +142,11 @@ it("keeps legacy capabilities and observations decodable while requiring exact c
   for (const field of ["submissionSchema", "preparationSchema", "observationSchema"]) {
     assert.isFalse(acceptsCapability({ ...capability, [field]: "unsupported/v2" }));
   }
-  const decodeObservation = Schema.decodeUnknownSync(OrchestrationCommandObservation);
-  assert.deepEqual<unknown>(decodeObservation(commandObservation), commandObservation);
-  assert.deepEqual<unknown>(
-    decodeObservation({ ...commandObservation, creation }).creation,
-    creation,
+  const decodeCreationField = Schema.decodeUnknownSync(
+    Schema.Struct({ creation: OrchestrationV2ThreadLaunchResult.fields.creation }),
   );
+  assert.deepEqual<unknown>(decodeCreationField({}), {});
+  assert.deepEqual<unknown>(decodeCreationField({ creation }).creation, creation);
 });
 
 it("records historical unknown effects without prompt bytes or legacy provider normalization", () => {
@@ -321,4 +314,95 @@ it("keeps dispatch rejection codes optional and closed", () => {
     "stale_grant",
   );
   assert.throws(() => decode({ ...error, creationRejectionCode: "invented" }));
+});
+
+it("keeps V2 dispatch rejection codes optional without altering current error fields", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationV2DispatchCommandError);
+  const error = {
+    _tag: "OrchestrationV2DispatchCommandError",
+    commandId: "command-1",
+    commandType: "message.dispatch",
+    message: "Rejected",
+  };
+  assert.equal(decode(error).creationRejectionCode, undefined);
+  assert.equal(
+    decode({ ...error, creationRejectionCode: "stale_grant" }).creationRejectionCode,
+    "stale_grant",
+  );
+  assert.throws(() => decode({ ...error, creationRejectionCode: "invented" }));
+});
+
+it("does not reinterpret V2 execution commands as historical native command facts", () => {
+  const accepts = acceptsWire(NativeCreationEffect);
+  assert.isFalse(
+    accepts({
+      ...effect,
+      kind: "native_command",
+      phase: "started",
+      commandId: "command-1",
+      threadId: "thread-1",
+      commandType: "message.dispatch",
+      commandDigest: digest,
+    }),
+  );
+});
+
+it("round-trips current launch results in both upgrade directions without changing historical bytes", () => {
+  const now = DateTime.makeUnsafe("2026-10-02T12:00:00Z");
+  const projection = {
+    thread: {
+      createdBy: "user",
+      creationSource: "server",
+      id: "thread-1",
+      projectId: "project-1",
+      title: "Synthetic thread",
+      providerInstanceId: "codex",
+      modelSelection: { instanceId: "codex", model: "fixture-model" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      activeProviderThreadId: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      deletedAt: null,
+    },
+    runs: [],
+    attempts: [],
+    nodes: [],
+    subagents: [],
+    providerSessions: [],
+    providerThreads: [],
+    providerTurns: [],
+    runtimeRequests: [],
+    messages: [],
+    plans: [],
+    turnItems: [],
+    checkpointScopes: [],
+    checkpoints: [],
+    contextHandoffs: [],
+    contextTransfers: [],
+    visibleTurnItems: [],
+    updatedAt: now,
+  };
+  const beforeCreation = Schema.Struct({
+    threadId: OrchestrationV2ThreadLaunchResult.fields.threadId,
+    projection: OrchestrationV2ThreadLaunchResult.fields.projection,
+    resumed: OrchestrationV2ThreadLaunchResult.fields.resumed,
+  });
+  const decode = Schema.decodeUnknownSync(OrchestrationV2ThreadLaunchResult);
+  const legacy = { threadId: "thread-1", projection, resumed: false };
+  const acceptedLegacy = decode(legacy);
+  assert.equal(acceptedLegacy.creation, undefined);
+  assert.deepEqual<unknown>(acceptedLegacy, Schema.decodeUnknownSync(beforeCreation)(legacy));
+  const accepted = decode({ ...legacy, creation });
+  assert.deepEqual<unknown>(encodeCreation(accepted.creation!), creation);
+  assert.deepEqual<unknown>(
+    Schema.decodeUnknownSync(beforeCreation)({ ...legacy, creation }),
+    acceptedLegacy,
+  );
+  assert.throws(() => decode({ ...legacy, creation: { ...creation, extra: true } }));
 });

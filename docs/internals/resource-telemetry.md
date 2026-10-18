@@ -8,9 +8,11 @@ protocol. A missing or failed collector leaves the server running.
 
 ## Collection cost
 
-The native child owns sampling and bounded in-memory history. The server requests
-continuous snapshots only while diagnostics has live subscribers and fetches
-history on demand. Consuming host power for background scheduling must not retain
+The native child owns sampling and bounded in-memory history. It samples on a timer
+only while diagnostics has live subscribers. With none, the server sends a sample
+interval of 0 and the child samples only on request, so an idle server never walks
+the process table. History therefore covers only time with a live subscriber, plus
+on-demand samples. Consuming host power for background scheduling must not retain
 live diagnostics. There is no telemetry database or recurring shell-probe fallback.
 
 History has independent bounds for age, snapshot count, process rows, and retained
@@ -44,9 +46,15 @@ unconstrained states. Headless servers leave unavailable power data unknown.
 - Historical replay uses native samples without current Electron CPU or memory
   metrics. Merging the latest Electron values would overwrite the past.
 
+A WSL backend needs a Linux monitor even though Electron runs on Windows. Windows
+desktop packages currently supply only the Windows executable, so native process
+telemetry for the WSL backend is unavailable. The inherited Electron power feed
+still works.
+
 ## Provider process attribution
 
-Each live Codex session registers its app-server root PID for the session scope.
+Codex root ownership belongs to each provider-session scope and is registered by
+the [V2 app-server factory](../../apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts).
 Live snapshots classify a matching process as `provider-root` and attach its opaque
 T3 thread ID and provider kind. Descendants remain identifiable through the process
 tree; ownership is not copied onto each child or into historical summaries.
@@ -56,8 +64,3 @@ time newer than registration cannot inherit the owner, limiting PID reuse. Nativ
 start times may have second-level precision, so reuse within one time bucket cannot
 be distinguished before the finalizer runs. Missing ownership does not imply that
 the process is stale or safe to stop.
-
-A WSL backend needs a Linux monitor even though Electron runs on Windows. Windows
-desktop packages currently supply only the Windows executable, so native process
-telemetry for the WSL backend is unavailable. The inherited Electron power feed
-still works.

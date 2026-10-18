@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { buildThreadActionMenuItems, type ThreadActionMenuState } from "./threadActionMenu.logic";
+import {
+  buildDraftActionMenuItems,
+  buildThreadActionMenuItems,
+  type ThreadActionMenuState,
+} from "./threadActionMenu.logic";
 
 const baseState: ThreadActionMenuState = {
+  canOperate: true,
   branch: null,
   projectFilter: null,
   isPinned: false,
@@ -12,7 +17,6 @@ const baseState: ThreadActionMenuState = {
   canSnoozeNow: true,
   isRegeneratingTitle: false,
   isRunning: false,
-  canStopSession: true,
   supports: {
     settlement: true,
     autoSettleOptOut: true,
@@ -36,7 +40,107 @@ function allIds(state: ThreadActionMenuState): string[] {
 }
 
 describe("buildThreadActionMenuItems", () => {
-  it("hides lifecycle items when the environment lacks the capabilities", () => {
+  it.each([false, true])(
+    "puts assignment directly below Snooze/Wake with read-only gating (snoozed: %s)",
+    (isSnoozed) => {
+      const assignmentItems = [
+        { id: "assign-workstream:group:alpha" as const, label: "alpha" },
+        { id: "assign-workstream:remove" as const, label: "Unassigned (remove primary)" },
+      ];
+      for (const canOperate of [true, false]) {
+        const items = buildThreadActionMenuItems({
+          ...baseState,
+          isSnoozed,
+          canOperate,
+          assignmentItems,
+        });
+        const snooze = items.findIndex((item) => item.id === (isSnoozed ? "unsnooze" : "snooze"));
+        expect(items[snooze + 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
+        expect(items[snooze + 1]?.children).toEqual(
+          canOperate
+            ? assignmentItems
+            : assignmentItems.map((item) => ({ ...item, disabled: true })),
+        );
+      }
+    },
+  );
+
+  it("places Stop after settlement and keeps it reachable without session details", () => {
+    const items = buildThreadActionMenuItems(baseState);
+    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      disabled: false,
+    });
+    expect(
+      buildThreadActionMenuItems(baseState).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
+    expect(
+      buildThreadActionMenuItems({
+        ...baseState,
+        isPinned: true,
+        isSettled: true,
+      }).find((item) => item.id === "stop-thread"),
+    ).toMatchObject({ disabled: false });
+  });
+  it.each([false, true])(
+    "disables both lifecycle directions without permission (reversed: %s)",
+    (reversed) => {
+      const items = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        isPinned: reversed,
+        isSettled: reversed,
+        isSnoozed: reversed,
+      });
+      const expected = reversed
+        ? [
+            "unpin",
+            "unsettle",
+            "stop-thread",
+            "unsnooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ]
+        : [
+            "pin",
+            "settle",
+            "stop-thread",
+            "snooze",
+            "rename",
+            "regenerate-title",
+            "auto-settle",
+            "archive",
+            "delete",
+          ];
+      expect(items.filter((item) => item.disabled).map((item) => item.id)).toEqual(expected);
+      expect(
+        items.find((item) => item.id === "snooze")?.children?.every((child) => child.disabled) ??
+          true,
+      ).toBe(true);
+    },
+  );
+
+  it("preserves local actions and restores mutations after a grant", () => {
+    const denied = buildThreadActionMenuItems({ ...baseState, canOperate: false, branch: "main" });
+    expect(denied.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
+      "new-thread-on-branch",
+      "mark-unread",
+      "copy",
+      "project-settings",
+    ]);
+    const allowed = buildThreadActionMenuItems({
+      ...baseState,
+      canOperate: true,
+    });
+    expect(allowed.every((item) => !item.disabled)).toBe(true);
+  });
+
+  it("hides capability-gated items while keeping Stop available", () => {
     expect(
       ids({
         ...baseState,
@@ -49,7 +153,7 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toEqual([
-      "kill-thread",
+      "stop-thread",
       "rename",
       "mark-unread",
       "copy",
@@ -106,21 +210,6 @@ describe("buildThreadActionMenuItems", () => {
     expect(ids(baseState)).toEqual(expect.arrayContaining(["pin", "settle", "snooze"]));
   });
 
-  it("places Kill Thread below Settle and disables it after the session stops", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const settleIndex = items.findIndex((item) => item.id === "settle");
-    expect(items[settleIndex + 1]).toMatchObject({
-      id: "kill-thread",
-      label: "Kill Thread",
-      disabled: false,
-    });
-    expect(
-      buildThreadActionMenuItems({ ...baseState, canStopSession: false }).find(
-        (item) => item.id === "kill-thread",
-      ),
-    ).toMatchObject({ disabled: true });
-  });
-
   it("offers auto-settle as a submenu with the current option checked", () => {
     const find = (state: ThreadActionMenuState) =>
       buildThreadActionMenuItems(state).find((item) => item.id === "auto-settle");
@@ -132,7 +221,6 @@ describe("buildThreadActionMenuItems", () => {
     ]);
     const off = find({ ...baseState, autoSettleEnabled: false });
     expect(off?.children?.map((child) => child.checked)).toEqual([false, true]);
-    // Sits with the per-thread settings after Mark unread, not the lifecycle verbs.
     const items = buildThreadActionMenuItems(baseState);
     expect(items[items.findIndex((item) => item.id === "mark-unread") + 1]?.id).toBe("auto-settle");
     expect(
@@ -189,5 +277,26 @@ describe("buildThreadActionMenuItems", () => {
       (item) => item.id === "archive",
     );
     expect(archiveItem?.disabled).toBe(true);
+  });
+});
+
+describe("buildDraftActionMenuItems", () => {
+  it("offers only the copy values the draft has", () => {
+    const items = buildDraftActionMenuItems({ hasPath: false, hasBranch: true, hasProject: true });
+    expect(items[0]).toMatchObject({ id: "copy", disabled: false });
+    expect(items[0]?.children?.map((item) => item.id)).toEqual(["copy-branch"]);
+
+    const noCopy = buildDraftActionMenuItems({
+      hasPath: false,
+      hasBranch: false,
+      hasProject: true,
+    });
+    expect(noCopy[0]).toMatchObject({ id: "copy", disabled: true, children: [] });
+  });
+
+  it("drops project settings without a project and keeps discard last", () => {
+    const items = buildDraftActionMenuItems({ hasPath: true, hasBranch: false, hasProject: false });
+    expect(items.map((item) => item.id)).toEqual(["copy", "discard"]);
+    expect(items.at(-1)).toMatchObject({ label: "Discard draft", destructive: true });
   });
 });

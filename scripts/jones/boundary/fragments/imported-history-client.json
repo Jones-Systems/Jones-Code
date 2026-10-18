@@ -1,0 +1,38 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "imported-history-client",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/importedHistory/",
+    "packages/client-runtime/src/jones/importedHistory/",
+    "packages/shared/src/jones/importedHistoryCanonical.ts",
+    "packages/shared/src/jones/importedHistoryCanonical.test.ts"
+  ],
+  "hookPaths": ["apps/web/src/components/chat/QueuedRunsControl.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.tsx"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "packages/shared/src/jones/importedHistoryCanonical.ts"
+    },
+    {
+      "from": "apps/web/src/composerDraftStore.ts",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    }
+  ]
+}

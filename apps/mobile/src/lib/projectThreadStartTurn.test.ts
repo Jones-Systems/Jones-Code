@@ -11,12 +11,120 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   buildProjectThreadStartTurnInput,
   deriveThreadTitleFromPrompt,
+  type ProjectThreadStartTurnSpec,
 } from "./projectThreadStartTurn";
+
+describe("project thread worktree bootstrap", () => {
+  const spec = {
+    projectId: ProjectId.make("project"),
+    projectCwd: "/workspace",
+    threadId: "new-thread",
+    commandId: "command",
+    messageId: "message",
+    createdAt: "2026-09-01T00:00:00Z",
+    text: "Start the task",
+    uploadedAttachments: [],
+    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    workspaceMode: "worktree",
+    branch: null,
+    worktreePath: null,
+    startFromOrigin: false,
+    worktreeBranchName: "t3-task",
+  } satisfies ProjectThreadStartTurnSpec;
+
+  it.each([true, false, undefined])(
+    "omits the automatic base and keeps the capability hint outside bootstrap (%s)",
+    (serverResolvesWorktreeBase) => {
+      const input = buildProjectThreadStartTurnInput({ ...spec, serverResolvesWorktreeBase });
+
+      expect(input.bootstrap.prepareWorktree).toEqual({
+        projectCwd: spec.projectCwd,
+        branch: spec.worktreeBranchName,
+      });
+      expect(input.bootstrap.createThread.branch).toBeNull();
+      expect(input.bootstrap.runSetupScript).toBe(true);
+      expect(input.serverResolvesWorktreeBase).toBe(serverResolvesWorktreeBase);
+      expect(input.bootstrap).not.toHaveProperty("serverResolvesWorktreeBase");
+      expect(input.commandId).toBe(spec.commandId);
+      expect(input.threadId).toBe(spec.threadId);
+      expect(input.message.messageId).toBe(spec.messageId);
+      expect(input.createdAt).toBe(spec.createdAt);
+    },
+  );
+
+  it("preserves the chosen base and independent origin flag", () => {
+    const input = buildProjectThreadStartTurnInput({
+      ...spec,
+      branch: "upstream/release",
+      startFromOrigin: true,
+    });
+
+    expect(input.bootstrap.prepareWorktree).toEqual({
+      projectCwd: spec.projectCwd,
+      baseBranch: "upstream/release",
+      branch: spec.worktreeBranchName,
+      startFromOrigin: true,
+    });
+    expect(input.bootstrap.createThread.branch).toBe("upstream/release");
+  });
+
+  it("preserves the live local checkout without requesting worktree preparation", () => {
+    const input = buildProjectThreadStartTurnInput({
+      ...spec,
+      workspaceMode: "local",
+      branch: "feature/current",
+      worktreePath: "/workspace/checkout",
+    });
+
+    expect(input.bootstrap.createThread).toMatchObject({
+      branch: "feature/current",
+      worktreePath: "/workspace/checkout",
+    });
+    expect(input.bootstrap).not.toHaveProperty("prepareWorktree");
+    expect(input.bootstrap).not.toHaveProperty("runSetupScript");
+  });
+});
 
 describe("project thread title", () => {
   it("keeps ordinary titles and the empty-prompt fallback", () => {
     expect(deriveThreadTitleFromPrompt("  Fix\n the parser  ")).toBe("Fix the parser");
     expect(deriveThreadTitleFromPrompt(" \n ")).toBe("New thread");
+  });
+
+  it("derives attachment-only titles from prepared image metadata", () => {
+    const uploadedAttachments = [
+      {
+        type: "image" as const,
+        id: "prepared-photo",
+        name: "photo.png",
+        mimeType: "image/png",
+        sizeBytes: 3,
+      },
+    ];
+    const input = buildProjectThreadStartTurnInput({
+      projectId: ProjectId.make("project"),
+      projectCwd: "/workspace",
+      threadId: "image-thread",
+      commandId: "image-command",
+      messageId: "image-message",
+      createdAt: "2026-09-04T00:00:00Z",
+      text: "",
+      uploadedAttachments,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceMode: "local",
+      branch: null,
+      worktreePath: null,
+      startFromOrigin: false,
+      worktreeBranchName: "unused",
+    });
+
+    expect(input.titleSeed).toBe("Image: photo.png");
+    expect(input.bootstrap.createThread.title).toBe(input.titleSeed);
+    expect(input.message.attachments).toEqual(uploadedAttachments);
   });
 
   it.each([
@@ -26,7 +134,7 @@ describe("project thread title", () => {
     },
     {
       comment: 'Why "shared"?',
-      title: 'Keep `cache[key]` & <parser> shared. Retry! Comment: Why "shared"?',
+      title: "Keep `cache[key]` & <parser> shared. Retry! Commen...",
     },
   ])("uses readable titles and intact links with comment $comment", ({ comment, title }) => {
     const quoteText = "Keep `cache[key]` & <parser> shared.\n  Retry!";

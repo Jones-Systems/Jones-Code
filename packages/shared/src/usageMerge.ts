@@ -1,11 +1,3 @@
-/**
- * Merges per-environment usage summaries into the single view the page renders.
- *
- * Pure, so the de-duplication and derivation rules can be tested without a
- * connected environment.
- *
- * @module usageMerge
- */
 import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
@@ -42,16 +34,15 @@ export interface ModelTotals {
   readonly provider: UsageProviderKind;
   readonly costUsd: number;
   readonly totalTokens: number;
+  readonly tokens: UsageTokenTotals;
   readonly records: number;
   readonly totals: UsageTokenTotals;
   readonly providerReportedRecords: number;
   readonly modelPricedRecords: number;
-  /**
-   * Records whose tokens are counted here but which contributed nothing to
-   * `costUsd`. When it equals `records` the cost is unknown, not zero.
-   */
   readonly unpricedRecords: number;
+  readonly unpricedTokens: number;
   readonly costShare: number;
+  readonly tokenShare: number;
 }
 
 /**
@@ -84,6 +75,21 @@ export interface CostQuality {
   readonly cacheSavingsUsd: number;
 }
 
+export interface CategoryCost {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+  readonly output: number;
+  readonly unsplit: number;
+}
+
+export interface SpeedCost {
+  readonly standard: number;
+  readonly fast: number;
+  readonly ultrafast: number;
+  readonly premium: number;
+}
+
 export interface UsageContractMismatch {
   readonly environmentId: EnvironmentId;
   readonly direction: "serverBehind" | "clientBehind";
@@ -105,19 +111,16 @@ export interface MergedUsage {
   readonly daily: readonly DailyTotals[];
   readonly hourly: readonly HourlyTotals[];
   readonly costQuality: CostQuality;
-  /** Environments whose data was dropped as a duplicate of another's. */
+  readonly categoryCost: CategoryCost;
+  readonly speedCost: SpeedCost;
   readonly duplicateSources: readonly string[];
   readonly contributingEnvironments: readonly EnvironmentId[];
   readonly contractMismatches: readonly UsageContractMismatch[];
 }
 
 /**
- * Two sources are the same physical transcript directory only when host,
- * provider, path and filesystem identity all agree.
- *
- * `volumeId` is what stops two machines that happen to share a hostname and a
- * home path, which is every Mac in a fleet, from collapsing into one source and
- * having one of them silently dropped.
+ * `volumeId` is what stops two machines that happen to share a hostname and a home path, which is
+ * every Mac in a fleet, from collapsing into one source and having one of them silently dropped.
  */
 function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
   return [
@@ -144,16 +147,6 @@ function bucketKey(bucket: UsageBucket): string {
   return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
 }
 
-/**
- * Decides which environment owns each physical transcript directory.
- *
- * Several environments on one machine (worktree servers, for instance) resolve
- * the same provider home and would otherwise double count every token. The
- * Complete scans claim a fingerprint ahead of partial scans, then the most
- * recently read scan wins within each status. A newer partial scan can still
- * contribute cells absent from an older complete scan. Environment ids break
- * ties so the result is stable when summaries have the same read time.
- */
 function claimSources(environments: readonly EnvironmentUsage[]): {
   readonly ownerByFingerprint: ReadonlyMap<string, EnvironmentId>;
   readonly supplementalBucketsByEnvironment: ReadonlyMap<EnvironmentId, ReadonlySet<UsageBucket>>;
@@ -176,8 +169,6 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
       a.environmentId.localeCompare(b.environmentId),
   );
 
-  // A complete scan takes precedence over a newer partial scan of the same
-  // directory. Partial history still contributes when no complete copy exists.
   for (const status of ["ok", "partial", "failed"] as const) {
     for (const environment of ordered) {
       for (const source of environment.summary.sources) {
@@ -240,7 +231,6 @@ function claimSources(environments: readonly EnvironmentUsage[]): {
   };
 }
 
-/** Sources this environment owns after fingerprint claims, plus their buckets. */
 function ownedContribution(
   environment: EnvironmentUsage,
   ownerByFingerprint: ReadonlyMap<string, EnvironmentId>,
@@ -344,20 +334,13 @@ const EMPTY_MERGED: MergedUsage = {
     unpricedShare: 0,
     cacheSavingsUsd: 0,
   },
+  categoryCost: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, unsplit: 0 },
+  speedCost: { standard: 0, fast: 0, ultrafast: 0, premium: 0 },
   duplicateSources: [],
   contributingEnvironments: [],
   contractMismatches: [],
 };
 
-/**
- * Merges every connected environment's summary.
- *
- * `expectedContractVersion` guards against incompatible server code: rather
- * than blocking the page, its data is excluded and the mismatch direction is
- * reported so the UI can identify which side needs updating. Versions in
- * [{@link USAGE_MERGE_COMPATIBLE_SINCE}, expected] still merge, so an additive
- * provider expansion does not drop Claude/Codex totals from older servers.
- */
 export function mergeUsage(
   environments: readonly EnvironmentUsage[],
   expectedContractVersion: number,
@@ -401,6 +384,8 @@ export function mergeUsage(
   let cacheSavingsUsd = 0;
   let providerReportedRecords = 0;
   let unpricedRecords = 0;
+  const categoryCost = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
+  const speedCost = { fast: 0, ultrafast: 0, premium: 0 };
 
   const providerAccumulator = new Map<
     UsageProviderKind,
@@ -417,7 +402,9 @@ export function mergeUsage(
       provider: UsageProviderKind;
       costUsd: number;
       totalTokens: number;
+      tokens: UsageTokenTotals;
       records: number;
+      unpricedTokens: number;
     }
   >();
   const dailyAccumulator = new Map<
@@ -476,6 +463,15 @@ export function mergeUsage(
       records += bucket.records;
       unpricedRecords += bucket.unpricedRecords;
       if (bucket.costSource === "providerReported") providerReportedRecords += bucket.records;
+      if (bucket.categoryCostUsd !== undefined) {
+        categoryCost.input += bucket.categoryCostUsd.input;
+        categoryCost.cacheRead += bucket.categoryCostUsd.cacheRead;
+        categoryCost.cacheWrite += bucket.categoryCostUsd.cacheWrite;
+        categoryCost.output += bucket.categoryCostUsd.output;
+      }
+      speedCost.fast += bucket.fastCostUsd ?? 0;
+      speedCost.ultrafast += bucket.ultrafastCostUsd ?? 0;
+      speedCost.premium += bucket.speedPremiumUsd ?? 0;
 
       const provider = providerAccumulator.get(bucket.provider) ?? {
         ...emptyDetailTotals(),
@@ -496,12 +492,30 @@ export function mergeUsage(
         provider: bucket.provider,
         costUsd: 0,
         totalTokens: 0,
+        tokens: {
+          uncachedInputTokens: 0,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+        },
         records: 0,
+        unpricedTokens: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
+      model.tokens = {
+        uncachedInputTokens: model.tokens.uncachedInputTokens + bucket.totals.uncachedInputTokens,
+        cachedInputTokens: model.tokens.cachedInputTokens + bucket.totals.cachedInputTokens,
+        cacheCreationTokens: model.tokens.cacheCreationTokens + bucket.totals.cacheCreationTokens,
+        outputTokens: model.tokens.outputTokens + bucket.totals.outputTokens,
+        reasoningTokens: model.tokens.reasoningTokens + bucket.totals.reasoningTokens,
+      };
       model.records += bucket.records;
       addDetailTotals(model, bucket);
+      if (bucket.records > 0) {
+        model.unpricedTokens += (tokens * bucket.unpricedRecords) / bucket.records;
+      }
       modelAccumulator.set(modelKey, model);
 
       const day = dailyAccumulator.get(bucket.day) ?? {
@@ -563,12 +577,15 @@ export function mergeUsage(
       provider: totals.provider,
       costUsd: totals.costUsd,
       totalTokens: totals.totalTokens,
+      tokens: totals.tokens,
       records: totals.records,
       totals: totals.totals,
       providerReportedRecords: totals.providerReportedRecords,
       modelPricedRecords: totals.modelPricedRecords,
       unpricedRecords: totals.unpricedRecords,
+      unpricedTokens: totals.unpricedTokens,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
+      tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);
 
@@ -605,6 +622,21 @@ export function mergeUsage(
       modelPricedShare:
         records === 0 ? 0 : (records - providerReportedRecords - unpricedRecords) / records,
       cacheSavingsUsd,
+    },
+    categoryCost: {
+      ...categoryCost,
+      unsplit: Math.max(
+        0,
+        costUsd -
+          categoryCost.input -
+          categoryCost.cacheRead -
+          categoryCost.cacheWrite -
+          categoryCost.output,
+      ),
+    },
+    speedCost: {
+      ...speedCost,
+      standard: Math.max(0, costUsd - speedCost.fast - speedCost.ultrafast),
     },
     duplicateSources: duplicates,
     contributingEnvironments,

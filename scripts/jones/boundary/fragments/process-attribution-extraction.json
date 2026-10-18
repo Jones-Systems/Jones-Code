@@ -1,0 +1,94 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "process-attribution-extraction",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
+    "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
+    "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+    "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
+    "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+    "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
+    "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+    "apps/server/src/provider/ProviderRegistry.test.ts",
+    "apps/server/src/resourceTelemetry/Model.test.ts",
+    "apps/server/src/resourceTelemetry/Model.ts",
+    "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
+    "apps/server/src/resourceTelemetry/ResourceTelemetry.ts"
+  ],
+  "tombstones": [
+    "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts",
+    "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/Drivers/CodexDriver.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderRegistry.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/Model.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/Model.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/ResourceTelemetry.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
+    }
+  ]
+}

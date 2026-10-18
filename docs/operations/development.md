@@ -18,9 +18,22 @@ including access to potentially sensitive configuration. An assignment to edit
 source does not itself authorize running setup or accessing those files.
 Confirm the applicable scope before invoking it; do not print their contents.
 
-Give the printed pairing URL to the authorized tester. The bare origin does not
-authenticate a new browser. Agents must have browser authorization before
-opening a browser and must not consume the user's pairing token.
+Startup logs record issuance without printing pairing credentials or QR codes,
+including when stdout is a terminal or redirected. For manual access, explicitly
+request a link in a separate terminal using the base directory printed by the
+runner:
+
+```sh
+node apps/server/src/bin.ts pair --base-dir <printed-base-directory>
+```
+
+Keep this command's credential-bearing output private; do not redirect it into
+service logs. Give its pairing URL to the authorized tester. The bare origin
+does not authenticate a new browser. `vp run dev --browser` instead opens the
+startup pairing URL automatically without printing it.
+[Standing local app testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers isolated synthetic verification; agents must not consume the user's
+pairing token.
 
 Prefer a container? See [Dev container](../internals/devcontainer.md) for VS Code and Codespaces setup.
 
@@ -33,7 +46,8 @@ See the [mobile README](../../apps/mobile/README.md) for native builds and Metro
 Flags go directly after the task name, for example
 `vp run dev --home-dir /absolute/task-owned/t3-home`.
 Use an isolated, task-owned directory with a defined lifetime and cleanup owner.
-Add `--browser` only when opening a browser is authorized.
+The [standing testing permission](./contributor-guidance.md#local-app-testing-permission)
+covers `--browser` for isolated synthetic verification.
 
 ### State and ports
 
@@ -74,16 +88,17 @@ credentials, secrets, settings, or unrelated files.
 For an authorized SQLite snapshot:
 
 1. Choose a fresh destination under the task-owned T3 home, normally
-   `<worktree>/.t3/userdata/state.sqlite`. Verify that the destination and its
+   `<worktree>/.t3/userdata/statev2.sqlite`. Verify that the destination and its
    parents are isolated from live state and that no server is using them.
    If the destination already exists, stop and reconcile ownership; do not
-   remove `state.sqlite*` or other state unconditionally.
+   remove `statev2.sqlite*` or other state unconditionally.
 2. Open the approved source read-only and use SQLite's online backup API or
    `VACUUM INTO` to create a consistent snapshot at the fresh destination.
    `VACUUM INTO` requires a destination file that does not already exist.
    Do not copy a live SQLite file with `cp`, including its WAL or SHM siblings
    as a substitute for a consistent snapshot.
-3. Close the source connection and validate the copied database locally.
+3. Close the source connection and validate the copied V2 database locally.
+   The server uses `statev2.sqlite`; a V1 `state.sqlite` copy is not a substitute.
    Run the test server only against the isolated copy.
 4. Copy additional files only when the flow requires them and their access
    and copying are separately authorized. In particular, do not bring
@@ -105,12 +120,14 @@ creating its own, and the mapping can outlive the process. Obtain authorization
 covering the exact shared route and its cleanup before running it. Do not
 manually change Tailscale routes as a workaround.
 
-Wait for the runner's actual share result and `pairingUrl:` output. Sharing can
-fail while the server continues locally; a running process does not prove
-tailnet access. Give the authorized tester the complete pairing URL through
-the approved private channel. Do not open or consume the user's pairing token,
-or put it in commits, PRs, or public output. A browser already holding the
-reusable dev cookie can use the bare origin.
+Wait for the runner's actual share result. Sharing can fail while the server
+continues locally; a running process does not prove tailnet access. After the
+server is ready, use the explicit `pair --base-dir <printed-base-directory>`
+command above to print a pairing URL for the recorded web origin. Give the
+authorized tester that URL through the approved private channel. Do not open
+or consume the user's pairing token, or put it in commits, PRs, service logs,
+or public output. A browser already holding the reusable dev cookie can use
+the bare origin.
 
 The runner attempts to remove its mapping on exit, but cleanup can fail and
 overlapping runs can affect the same mapping. Verify cleanup through the
@@ -118,10 +135,13 @@ authorized route and report any remaining or unknown effect. Do not claim
 removal from process exit alone or perform an unapproved manual cleanup.
 
 If an authorized tester consumed a normal one-time token and needs another,
-the development server's `node apps/server/src/bin.ts pair` command can mint
-one. Run it only against the exact authorized isolated environment. It grants
-standard scopes; the startup pairing URL carries administrative scopes needed
-for Connections settings.
+repeat the explicit pairing command for the same authorized isolated base
+directory. It grants standard client scopes. Startup browser auto-open carries
+administrative scopes needed for Connections settings; manual `pair` accepts
+repeated `--scope` flags when additional scopes are intended. Explicit scopes
+replace the default set, so include every required scope. See
+[environment authentication](../internals/environment-auth.md) for the scope
+model.
 
 Leave `VITE_HTTP_URL` and `VITE_WS_URL` unset for browser development.
 Vite proxies `/api`, `/ws`, `/oauth`, and `/.well-known` through the browser's
@@ -146,8 +166,10 @@ The workarounds live in the [web entry](../../apps/web/src/bootstrap.ts) and
 
 Configure or reuse this credential only when the task authorizes the exact
 configuration access and change. This procedure does not grant permission to
-read existing `.env` values, copy credentials, start a shared server, or open a
-browser. Reuse an existing authorization within its scope.
+read existing `.env` values, copy credentials, or start a shared server.
+Browser verification is covered separately by [standing local app testing
+permission](./contributor-guidance.md#local-app-testing-permission); credential
+configuration still needs exact authorization.
 
 Use this only on a hostname where you trust every service. Browsers send cookies to all ports
 on that hostname. Any service you visit there can receive the reusable admin credential,
@@ -177,11 +199,14 @@ export T3CODE_DEV_AUTH_TOKEN="<the value generated above>"
 ```
 
 Do not generate a new value at startup. For an authorized shared run, start or
-restart `vp run dev --share` after configuration and have the authorized tester
-open its printed startup pairing URL once per browser profile on that hostname.
-Later web dev servers on the same hostname accept the shared cookie across
-ports. The cookie expires after 30 days. Reload an old tab if its URL now serves
-a replacement environment.
+restart `vp run dev --share --browser` after configuration. Browser auto-open
+passes the reusable startup credential directly to the browser on the server
+host; startup logs never print it. After pairing, later web dev servers on the
+same hostname accept that browser profile's shared cookie across ports. The
+cookie expires after 30 days. Reload an old tab if its URL now serves a
+replacement environment. For a remote browser or unavailable auto-open, the
+explicit pairing command above creates an ordinary one-time link; it does not
+print the reusable dev credential or establish cross-environment cookie reuse.
 
 The token and startup pairing URLs are reusable administrative secrets. Never put them in a
 commit, pull request, or public output. Every server still seeds its own auth database record at
@@ -198,6 +223,13 @@ vp test run <files>
 vp lint <files>
 vp run --filter <package> typecheck
 ```
+
+TypeScript workspaces typecheck with tsc-rs, which has Effect diagnostics built in.
+Keep `typescript`, `@effect/tsgo`, and the `effect-tsgo patch` prepare step: editors
+still use them for Effect quick fixes and refactors. Keep `@effect/tsgo` on the
+effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagree
+on rule names.
+Marketing keeps `astro check` for Astro files.
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.

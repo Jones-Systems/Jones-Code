@@ -4,7 +4,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { expect, it } from "@effect/vitest";
-import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { ServiceLauncherHostProcess } from "../cloud/serviceLauncherClient.ts";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -23,6 +23,7 @@ import {
   initializeNativeStoreAuthority,
 } from "./nativeStoreAuthorityPersistence.ts";
 import * as NativeStoreAuthority from "./NativeStoreAuthority.ts";
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 
 const authorityLayer = (
   baseDir: string,
@@ -36,7 +37,7 @@ const authorityLayer = (
 ) =>
   Layer.mergeAll(
     Layer.succeed(
-      HostProcessEnvironment,
+      HostProcess.Environment,
       context === null ? {} : { [SERVICE_LAUNCHER_CONTEXT_ENV]: context },
     ),
     Layer.succeed(ServiceLauncherHostProcess, {
@@ -68,7 +69,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
       NodeFS.mkdirSync(NodePath.join(root, "runtime"), { recursive: true });
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
@@ -95,7 +95,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
 
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: LEGACY_SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
@@ -105,7 +104,6 @@ it.effect("publishes only the current T3-owned tuple and fails closed when fence
       });
       NodeFS.writeFileSync(
         NodePath.join(root, "runtime", "service-state.json"),
-        // @effect-diagnostics-next-line preferSchemaOverJson:off - launcher-owned test fixture.
         JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: "1.0.0" }),
         { mode: 0o600 },
       );
@@ -171,6 +169,62 @@ it.effect("keeps live placement fail-closed when the native authority is missing
         trustedEnvironments: [],
         readiness: "trust-provider-required",
       });
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
+    }
+  }),
+);
+
+it.effect("keeps desktop enrollment explicit and preserves the tuple across owner restart", () =>
+  Effect.gen(function* () {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "desktop-authority-test-"));
+    try {
+      const authorityStateDir = NodePath.join(root, "native-store-authority");
+      const dbPath = NodePath.join(root, "userdata", "statev2.sqlite");
+      const environmentId = "desktop-environment";
+      let live = true;
+      const assertCurrent = () => {
+        if (!live) throw new Error("owner disconnected");
+      };
+      const layer = Layer.mergeAll(
+        authorityLayer(root, authorityStateDir, environmentId, null, false),
+        Layer.succeed(ServerConfig.ServerConfig, {
+          mode: "desktop",
+          baseDir: root,
+          authorityStateDir,
+          dbPath,
+        } as ServerConfig.ServerConfig["Service"]),
+        Layer.succeed(DesktopNativeOwner.DesktopNativeOwner, {
+          available: true,
+          binding: {
+            home: root,
+            databasePath: dbPath,
+            profile: NodePath.join(root, "profile"),
+            environmentId,
+            version: "fixture",
+            sourceSha: "a".repeat(40),
+            sourceTree: "b".repeat(40),
+            manifestSha256: "c".repeat(64),
+          },
+          assertCurrent,
+          refresh: Effect.sync(assertCurrent),
+        }),
+      );
+      const authority = yield* NativeStoreAuthority.make().pipe(Effect.provide(layer));
+      expect(authority.trustProvider.readTrustSnapshot().readiness).toBe("trust-provider-required");
+      expect(
+        NodeFS.existsSync(NodePath.join(authorityStateDir, "native-store-authority-v1.json")),
+      ).toBe(false);
+      const enrolled = initializeNativeStoreAuthority(authorityStateDir, environmentId);
+      const first = yield* authority.readCurrent;
+      const restarted = yield* NativeStoreAuthority.make().pipe(Effect.provide(layer));
+      expect(yield* restarted.readCurrent).toEqual(first);
+      expect(first.authorityNamespace).toBe(enrolled.authority_namespace);
+      expect(first.storeGeneration).toBe(1);
+      expect(NodeFS.existsSync(NodePath.join(root, "runtime", "service-state.json"))).toBe(false);
+      live = false;
+      expect(authority.trustProvider.readTrustSnapshot().readiness).toBe("trust-provider-required");
+      expect(restarted.trustProvider.readTrustSnapshot().readiness).toBe("trust-provider-required");
     } finally {
       NodeFS.rmSync(root, { recursive: true, force: true });
     }

@@ -1,18 +1,28 @@
 import {
   ConnectionCatalogDocument,
   type ConnectionCatalogDocument as ConnectionCatalogDocumentType,
-  ConnectionPersistenceError,
-  ConnectionRegistrationStore,
-  ConnectionTargetStore,
   EMPTY_CONNECTION_CATALOG_DOCUMENT,
-  EnvironmentCacheStore,
-  encodeShellSnapshotForCache,
+  ORCHESTRATION_CACHE_SCHEMA_VERSION,
+  ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
+  StoredOrchestrationShellSnapshot,
+  StoredOrchestrationThreadSnapshot,
+  decodeOrDiscardOrchestrationCache,
   putRemoteDpopTokenInCatalog,
+  listConnectionCompatibilityHints,
+  catalogCompatibilityRouteBinding,
+  decodeConnectionCompatibilityHints,
+  MAX_CONNECTION_COMPATIBILITY_HINTS,
+  StoredConnectionCompatibilityHint,
+  putConnectionProfileInCatalog,
+  removeConnectionProfileFromCatalog,
   registerConnectionInCatalog,
   removeCatalogValue,
   removeConnectionFromCatalog,
   setConnectionEnabledInCatalog,
+  setRoutesInCatalog,
   replaceCatalogValue,
+  Persistence,
+  makeStoredShellSnapshotEncoder,
 } from "@t3tools/client-runtime/platform";
 import { TokenStore } from "@t3tools/client-runtime/authorization";
 import {
@@ -25,14 +35,7 @@ import {
   gitHubRoutingConnectionKey,
   gitHubRoutingPermissionFor,
 } from "@t3tools/client-runtime/connection";
-import {
-  EnvironmentId,
-  OrchestrationShellSnapshot,
-  OrchestrationThreadDetailSnapshot,
-  ServerConfig,
-  ThreadId,
-  VcsListRefsResult,
-} from "@t3tools/contracts";
+import { EnvironmentId, ServerConfig, ThreadId, VcsListRefsResult } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -46,34 +49,17 @@ import { projectFaviconCache } from "../assets/projectFaviconCache";
 
 const DATABASE_NAME = "t3code:connection-runtime";
 const DATABASE_VERSION = 4;
+const COMPATIBILITY_HINT_DATABASE_NAME = "t3code:connection-compatibility-hints";
+const COMPATIBILITY_HINT_STORE_NAME = "compatibility-hints";
 const CATALOG_STORE_NAME = "catalog";
 const SHELL_STORE_NAME = "shell";
 const THREAD_STORE_NAME = "thread";
 const SERVER_CONFIG_STORE_NAME = "server-config";
 const VCS_REFS_STORE_NAME = "vcs-refs";
 const CATALOG_KEY = "document";
-const SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
-
-const StoredShellSnapshot = Schema.Struct({
-  schemaVersion: Schema.Literal(SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION),
-  environmentId: EnvironmentId,
-  snapshot: OrchestrationShellSnapshot,
-});
+const StoredShellSnapshot = StoredOrchestrationShellSnapshot;
 const StoredShellSnapshotJson = Schema.fromJsonString(StoredShellSnapshot);
-// v2 stores the snapshot sequence alongside the thread so a warm cache can
-// resume via `afterSequence` instead of re-downloading the full thread body.
-// v3 adds windowed (paginated) snapshots carrying `page` metadata. The bump
-// exists for rollback safety: a pre-pagination client would decode a windowed
-// v2 record, silently drop the unknown `page` field, and treat the partial
-// thread as complete forever. Older entries fail to decode → cold cache.
-// v4 reloads pre-thinking caches: their fallback system roles cannot recover
-// settled reasoning messages by resuming afterSequence.
-const StoredThreadSnapshot = Schema.Struct({
-  schemaVersion: Schema.Literal(4),
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  snapshot: OrchestrationThreadDetailSnapshot,
-});
+const StoredThreadSnapshot = StoredOrchestrationThreadSnapshot;
 const StoredThreadSnapshotJson = Schema.fromJsonString(StoredThreadSnapshot);
 const StoredServerConfig = Schema.Struct({
   schemaVersion: Schema.Literal(1),
@@ -110,7 +96,10 @@ function persistenceError(
   operation:
     | "list-targets"
     | "list-disabled-targets"
+    | "list-compatibility-hints"
+    | "set-compatibility-hint"
     | "register-connection"
+    | "set-connection-routes"
     | "remove-connection"
     | "set-connection-enabled"
     | "load-shell"
@@ -127,7 +116,7 @@ function persistenceError(
     | "clear-environment",
   cause: unknown,
 ) {
-  return new ConnectionPersistenceError({
+  return new Persistence.ConnectionPersistenceError({
     operation,
     message: `Could not ${operation.replaceAll("-", " ")}: ${String(cause)}`,
   });
@@ -141,108 +130,299 @@ const openDatabase = Effect.fn("web.connectionStorage.openDatabase")(function* (
       );
       return;
     }
-    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
-    request.addEventListener("upgradeneeded", () => {
-      if (!request.result.objectStoreNames.contains(CATALOG_STORE_NAME)) {
-        request.result.createObjectStore(CATALOG_STORE_NAME);
+    try {
+      const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+      request.addEventListener("upgradeneeded", () => {
+        if (!request.result.objectStoreNames.contains(CATALOG_STORE_NAME)) {
+          request.result.createObjectStore(CATALOG_STORE_NAME);
+        }
+        if (!request.result.objectStoreNames.contains(SHELL_STORE_NAME)) {
+          request.result.createObjectStore(SHELL_STORE_NAME);
+        }
+        if (!request.result.objectStoreNames.contains(THREAD_STORE_NAME)) {
+          request.result.createObjectStore(THREAD_STORE_NAME);
+        }
+        if (!request.result.objectStoreNames.contains(SERVER_CONFIG_STORE_NAME)) {
+          request.result.createObjectStore(SERVER_CONFIG_STORE_NAME);
+        }
+        if (!request.result.objectStoreNames.contains(VCS_REFS_STORE_NAME)) {
+          request.result.createObjectStore(VCS_REFS_STORE_NAME);
+        }
+      });
+      request.addEventListener("error", () => {
+        resume(Effect.fail(catalogError("open", request.error ?? "Unknown IndexedDB error")));
+      });
+      request.addEventListener("success", () => {
+        resume(Effect.succeed(request.result));
+      });
+    } catch (cause) {
+      resume(Effect.fail(catalogError("open", cause)));
+    }
+  });
+});
+
+// An older renderer can keep its version-4 runtime connection while hints open independently.
+const openCompatibilityHintDatabase = Effect.fn(
+  "web.connectionStorage.openCompatibilityHintDatabase",
+)(function* () {
+  return yield* Effect.callback<IDBDatabase, ConnectionTransientError>((resume) => {
+    let settled = false;
+    let request: IDBOpenDBRequest | undefined;
+    try {
+      request = indexedDB.open(COMPATIBILITY_HINT_DATABASE_NAME, 1);
+      const owned = request;
+      owned.addEventListener("upgradeneeded", () => {
+        if (settled) {
+          owned.transaction?.abort();
+          return;
+        }
+        owned.result.createObjectStore(COMPATIBILITY_HINT_STORE_NAME);
+      });
+      owned.addEventListener("error", () => {
+        if (settled) return;
+        settled = true;
+        resume(Effect.fail(catalogError("open compatibility hints", owned.error)));
+      });
+      owned.addEventListener("blocked", () => {
+        if (settled) return;
+        settled = true;
+        resume(
+          Effect.fail(catalogError("open compatibility hints", "Hint database upgrade blocked.")),
+        );
+      });
+      owned.addEventListener("success", () => {
+        if (settled) {
+          owned.result.close();
+          return;
+        }
+        settled = true;
+        resume(Effect.succeed(owned.result));
+      });
+    } catch (cause) {
+      settled = true;
+      resume(Effect.fail(catalogError("open compatibility hints", cause)));
+    }
+    return Effect.sync(() => {
+      if (!settled) {
+        settled = true;
+        request?.transaction?.abort();
       }
-      if (!request.result.objectStoreNames.contains(SHELL_STORE_NAME)) {
-        request.result.createObjectStore(SHELL_STORE_NAME);
-      }
-      if (!request.result.objectStoreNames.contains(THREAD_STORE_NAME)) {
-        request.result.createObjectStore(THREAD_STORE_NAME);
-      }
-      if (!request.result.objectStoreNames.contains(SERVER_CONFIG_STORE_NAME)) {
-        request.result.createObjectStore(SERVER_CONFIG_STORE_NAME);
-      }
-      if (!request.result.objectStoreNames.contains(VCS_REFS_STORE_NAME)) {
-        request.result.createObjectStore(VCS_REFS_STORE_NAME);
-      }
-    });
-    request.addEventListener("error", () => {
-      resume(Effect.fail(catalogError("open", request.error ?? "Unknown IndexedDB error")));
-    });
-    request.addEventListener("success", () => {
-      resume(Effect.succeed(request.result));
     });
   });
 });
 
-function readDatabaseValue(database: IDBDatabase, storeName: string, key: IDBValidKey) {
+interface DatabaseHandle {
+  readonly get: Effect.Effect<IDBDatabase, ConnectionTransientError>;
+  readonly invalidate: (database: IDBDatabase) => Effect.Effect<void>;
+}
+
+const makeDatabaseHandle = Effect.fn("web.connectionStorage.makeDatabaseHandle")(function* (
+  open: () => Effect.Effect<IDBDatabase, ConnectionTransientError> = openDatabase,
+) {
+  const lock = yield* Semaphore.make(1);
+  let current: IDBDatabase | null = null;
+  const forget = (database: IDBDatabase) => {
+    if (current === database) current = null;
+  };
+  const get = Effect.suspend(() =>
+    current !== null
+      ? Effect.succeed(current)
+      : lock.withPermits(1)(
+          Effect.gen(function* () {
+            if (current !== null) return current;
+            const opened = yield* open();
+            current = opened;
+            opened.addEventListener("close", () => forget(opened));
+            // Another tab upgrading the schema waits on this connection.
+            opened.addEventListener("versionchange", () => {
+              forget(opened);
+              opened.close();
+            });
+            return opened;
+          }),
+        ),
+  );
+  const close = lock.withPermits(1)(
+    Effect.sync(() => {
+      current?.close();
+      current = null;
+    }),
+  );
+  const handle: DatabaseHandle = {
+    get,
+    invalidate: (database) => Effect.sync(() => forget(database)),
+  };
+  return { handle, close };
+});
+
+/**
+ * A connection the browser already closed throws InvalidStateError even when no
+ * close event reached this tab, so drop it and retry once on a fresh one
+ * instead of failing every later operation.
+ */
+function withDatabase<A>(
+  database: DatabaseHandle,
+  use: (opened: IDBDatabase) => Effect.Effect<A, ConnectionTransientError>,
+) {
+  const closedConnection = Symbol("closedConnection");
+  const attempt = Effect.flatMap(database.get, (opened) =>
+    use(opened).pipe(
+      Effect.catchIf(
+        (error) => error.detail.includes("InvalidStateError"),
+        (error) =>
+          database
+            .invalidate(opened)
+            .pipe(Effect.andThen(Effect.fail({ [closedConnection]: error } as const))),
+      ),
+    ),
+  );
+  return attempt.pipe(
+    Effect.catchIf(
+      (error): error is { readonly [closedConnection]: ConnectionTransientError } =>
+        closedConnection in error,
+      () => Effect.flatMap(database.get, use),
+    ),
+  );
+}
+
+function readDatabaseValueOnConnection(database: IDBDatabase, storeName: string, key: IDBValidKey) {
   return Effect.callback<unknown, ConnectionTransientError>((resume) => {
-    const request = database.transaction(storeName, "readonly").objectStore(storeName).get(key);
-    request.addEventListener("error", () => {
-      resume(Effect.fail(catalogError("read", request.error ?? "Unknown IndexedDB read error")));
-    });
-    request.addEventListener("success", () => {
-      resume(Effect.succeed(request.result));
-    });
+    try {
+      const request = database.transaction(storeName, "readonly").objectStore(storeName).get(key);
+      request.addEventListener("error", () => {
+        resume(Effect.fail(catalogError("read", request.error ?? "Unknown IndexedDB read error")));
+      });
+      request.addEventListener("success", () => {
+        resume(Effect.succeed(request.result));
+      });
+    } catch (cause) {
+      resume(Effect.fail(catalogError("read", cause)));
+    }
   }).pipe(Effect.withSpan("web.connectionStorage.readDatabaseValue"));
 }
 
-function writeDatabaseValue(
+function writeDatabaseValueOnConnection(
   database: IDBDatabase,
   storeName: string,
   key: IDBValidKey,
   value: unknown,
 ) {
   return Effect.callback<void, ConnectionTransientError>((resume) => {
-    const transaction = database.transaction(storeName, "readwrite");
-    // Every failed write fires "abort". A failed commit, such as
-    // QuotaExceededError, fires only "abort" and no "error".
-    transaction.addEventListener("abort", () => {
-      resume(
-        Effect.fail(catalogError("write", transaction.error ?? "Unknown IndexedDB write error")),
-      );
-    });
-    transaction.addEventListener("complete", () => {
-      resume(Effect.void);
-    });
-    transaction.objectStore(storeName).put(value, key);
+    try {
+      const transaction = database.transaction(storeName, "readwrite");
+      // Every failed write fires "abort". A failed commit, such as
+      // QuotaExceededError, fires only "abort" and no "error".
+      transaction.addEventListener("abort", () => {
+        resume(
+          Effect.fail(catalogError("write", transaction.error ?? "Unknown IndexedDB write error")),
+        );
+      });
+      transaction.addEventListener("complete", () => {
+        resume(Effect.void);
+      });
+      transaction.objectStore(storeName).put(value, key);
+    } catch (cause) {
+      resume(Effect.fail(catalogError("write", cause)));
+    }
   }).pipe(Effect.withSpan("web.connectionStorage.writeDatabaseValue"));
 }
 
-function removeDatabaseValue(database: IDBDatabase, storeName: string, key: IDBValidKey) {
+function removeDatabaseValueOnConnection(
+  database: IDBDatabase,
+  storeName: string,
+  key: IDBValidKey,
+) {
   return Effect.callback<void, ConnectionTransientError>((resume) => {
-    const transaction = database.transaction(storeName, "readwrite");
-    transaction.addEventListener("error", () => {
-      resume(
-        Effect.fail(catalogError("remove", transaction.error ?? "Unknown IndexedDB remove error")),
-      );
-    });
-    transaction.addEventListener("complete", () => {
-      resume(Effect.void);
-    });
-    transaction.objectStore(storeName).delete(key);
+    try {
+      const transaction = database.transaction(storeName, "readwrite");
+      transaction.addEventListener("abort", () => {
+        resume(
+          Effect.fail(
+            catalogError("remove", transaction.error ?? "Unknown IndexedDB remove error"),
+          ),
+        );
+      });
+      transaction.addEventListener("complete", () => {
+        resume(Effect.void);
+      });
+      transaction.objectStore(storeName).delete(key);
+    } catch (cause) {
+      resume(Effect.fail(catalogError("remove", cause)));
+    }
   }).pipe(Effect.withSpan("web.connectionStorage.removeDatabaseValue"));
 }
 
-function removeDatabaseValuesInRange(database: IDBDatabase, storeName: string, range: IDBKeyRange) {
+function removeDatabaseValuesInRangeOnConnection(
+  database: IDBDatabase,
+  storeName: string,
+  range: IDBKeyRange,
+) {
   return Effect.callback<void, ConnectionTransientError>((resume) => {
-    const transaction = database.transaction(storeName, "readwrite");
-    transaction.addEventListener("error", () => {
-      resume(
-        Effect.fail(catalogError("remove", transaction.error ?? "Unknown IndexedDB cursor error")),
-      );
-    });
-    transaction.addEventListener("complete", () => {
-      resume(Effect.void);
-    });
-    const request = transaction.objectStore(storeName).openCursor(range);
-    request.addEventListener("error", () => {
-      resume(
-        Effect.fail(catalogError("remove", request.error ?? "Unknown IndexedDB cursor error")),
-      );
-    });
-    request.addEventListener("success", () => {
-      const cursor = request.result;
-      if (cursor === null) {
-        return;
-      }
-      cursor.delete();
-      cursor.continue();
-    });
+    try {
+      const transaction = database.transaction(storeName, "readwrite");
+      transaction.addEventListener("abort", () => {
+        resume(
+          Effect.fail(
+            catalogError("remove", transaction.error ?? "Unknown IndexedDB cursor error"),
+          ),
+        );
+      });
+      transaction.addEventListener("complete", () => {
+        resume(Effect.void);
+      });
+      const request = transaction.objectStore(storeName).openCursor(range);
+      request.addEventListener("error", () => {
+        resume(
+          Effect.fail(catalogError("remove", request.error ?? "Unknown IndexedDB cursor error")),
+        );
+      });
+      request.addEventListener("success", () => {
+        const cursor = request.result;
+        if (cursor === null) {
+          return;
+        }
+        try {
+          cursor.delete();
+          cursor.continue();
+        } catch (cause) {
+          resume(Effect.fail(catalogError("remove", cause)));
+        }
+      });
+    } catch (cause) {
+      resume(Effect.fail(catalogError("remove", cause)));
+    }
   }).pipe(Effect.withSpan("web.connectionStorage.removeDatabaseValuesInRange"));
+}
+
+function readDatabaseValue(database: DatabaseHandle, storeName: string, key: IDBValidKey) {
+  return withDatabase(database, (opened) => readDatabaseValueOnConnection(opened, storeName, key));
+}
+
+function writeDatabaseValue(
+  database: DatabaseHandle,
+  storeName: string,
+  key: IDBValidKey,
+  value: unknown,
+) {
+  return withDatabase(database, (opened) =>
+    writeDatabaseValueOnConnection(opened, storeName, key, value),
+  );
+}
+
+function removeDatabaseValue(database: DatabaseHandle, storeName: string, key: IDBValidKey) {
+  return withDatabase(database, (opened) =>
+    removeDatabaseValueOnConnection(opened, storeName, key),
+  );
+}
+
+function removeDatabaseValuesInRange(
+  database: DatabaseHandle,
+  storeName: string,
+  range: IDBKeyRange,
+) {
+  return withDatabase(database, (opened) =>
+    removeDatabaseValuesInRangeOnConnection(opened, storeName, range),
+  );
 }
 
 function threadCacheKey(environmentId: EnvironmentId, threadId: ThreadId) {
@@ -270,13 +450,21 @@ const encodeCatalog = Effect.fn("web.connectionStorage.encodeCatalog")(function*
 export interface CatalogBackend {
   readonly read: Effect.Effect<string | null, ConnectionTransientError>;
   readonly write: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
+  readonly snapshot?: Effect.Effect<string | null, ConnectionTransientError>;
   readonly quarantine?: (raw: string) => Effect.Effect<void, ConnectionTransientError>;
 }
 
-export function makeCatalogBackend(database: IDBDatabase): CatalogBackend {
+export function makeCatalogBackend(database: DatabaseHandle): CatalogBackend {
   const bridge = window.desktopBridge;
   if (bridge?.getConnectionCatalog !== undefined && bridge.setConnectionCatalog !== undefined) {
     return {
+      snapshot:
+        bridge.getConnectionCatalogSnapshot === undefined
+          ? Effect.succeed(null)
+          : Effect.tryPromise({
+              try: () => bridge.getConnectionCatalogSnapshot!(),
+              catch: (cause) => catalogError("read snapshot from", cause),
+            }),
       read: Effect.tryPromise({
         try: () => bridge.getConnectionCatalog!(),
         catch: (cause) => catalogError("load", cause),
@@ -310,6 +498,219 @@ export function makeCatalogBackend(database: IDBDatabase): CatalogBackend {
   };
 }
 
+export interface CompatibilityHintBackend {
+  readonly supported: boolean;
+  readonly read: Effect.Effect<unknown, ConnectionTransientError>;
+  readonly set: (
+    environmentId: EnvironmentId,
+    routeBinding: string,
+    kind: "outdated-update" | null,
+  ) => Effect.Effect<void, ConnectionTransientError>;
+}
+
+/** No bridge fallback may write a catalog, including on an older desktop build. */
+export function makeCompatibilityHintBackend(database: DatabaseHandle): CompatibilityHintBackend {
+  const bridge = window.desktopBridge;
+  if (bridge !== undefined) {
+    const supported =
+      bridge.getConnectionCatalogSnapshot !== undefined &&
+      bridge.listConnectionCompatibilityHints !== undefined &&
+      bridge.setConnectionCompatibilityHint !== undefined;
+    return {
+      supported,
+      read: !supported
+        ? Effect.succeed([])
+        : Effect.tryPromise({
+            try: () => bridge.listConnectionCompatibilityHints!(),
+            catch: (cause) => catalogError("read compatibility hints from", cause),
+          }),
+      set: (environmentId, routeBinding, kind) =>
+        !supported
+          ? Effect.fail(
+              catalogError(
+                "save compatibility hints in",
+                "This desktop build has no isolated hint store.",
+              ),
+            )
+          : Effect.tryPromise({
+              try: () =>
+                bridge.setConnectionCompatibilityHint!({ environmentId, routeBinding, kind }),
+              catch: (cause) => catalogError("save compatibility hints in", cause),
+            }).pipe(
+              Effect.flatMap((stored) =>
+                stored
+                  ? Effect.void
+                  : Effect.fail(
+                      catalogError(
+                        "save compatibility hints in",
+                        "Hint storage declined the write.",
+                      ),
+                    ),
+              ),
+            ),
+    };
+  }
+  return {
+    supported: true,
+    read: withDatabase(database, (opened) =>
+      Effect.callback<unknown, ConnectionTransientError>((resume) => {
+        let transaction: IDBTransaction | undefined;
+        let settled = false;
+        try {
+          transaction = opened.transaction(COMPATIBILITY_HINT_STORE_NAME, "readonly");
+          const request = transaction
+            .objectStore(COMPATIBILITY_HINT_STORE_NAME)
+            .getAll(undefined, MAX_CONNECTION_COMPATIBILITY_HINTS + 1);
+          transaction.addEventListener("complete", () => {
+            settled = true;
+            resume(Effect.succeed(request.result));
+          });
+          transaction.addEventListener("abort", () => {
+            settled = true;
+            resume(Effect.fail(catalogError("read compatibility hints", transaction?.error)));
+          });
+        } catch (cause) {
+          settled = true;
+          resume(Effect.fail(catalogError("read compatibility hints", cause)));
+        }
+        return Effect.sync(() => {
+          if (!settled) transaction?.abort();
+        });
+      }),
+    ),
+    set: (environmentId, routeBinding, kind) =>
+      withDatabase(database, (opened) =>
+        Effect.callback<void, ConnectionTransientError>((resume) => {
+          let transaction: IDBTransaction | undefined;
+          let settled = false;
+          let failure: unknown;
+          try {
+            transaction = opened.transaction(COMPATIBILITY_HINT_STORE_NAME, "readwrite");
+            const owned = transaction;
+            owned.addEventListener("complete", () => {
+              settled = true;
+              resume(Effect.void);
+            });
+            owned.addEventListener("abort", () => {
+              settled = true;
+              resume(
+                Effect.fail(catalogError("write compatibility hints", failure ?? owned.error)),
+              );
+            });
+            const store = owned.objectStore(COMPATIBILITY_HINT_STORE_NAME);
+            const key: IDBValidKey = [environmentId, routeBinding];
+            if (kind === null) store.delete(key);
+            else {
+              const count = store.count();
+              count.addEventListener("success", () => {
+                try {
+                  // These callbacks keep the native readwrite transaction active through its put.
+                  const existing = store.get(key);
+                  existing.addEventListener("success", () => {
+                    try {
+                      if (
+                        existing.result === undefined &&
+                        count.result >= MAX_CONNECTION_COMPATIBILITY_HINTS
+                      ) {
+                        failure = "Compatibility hint capacity exceeded.";
+                        owned.abort();
+                        return;
+                      }
+                      store.put({ environmentId, routeBinding, kind }, key);
+                    } catch (cause) {
+                      failure = cause;
+                      owned.abort();
+                    }
+                  });
+                } catch (cause) {
+                  failure = cause;
+                  owned.abort();
+                }
+              });
+            }
+          } catch (cause) {
+            failure = cause;
+            try {
+              transaction?.abort();
+            } catch {
+              /* An already finished transaction has no pending write. */
+            }
+            settled = true;
+            resume(Effect.fail(catalogError("write compatibility hints", cause)));
+          }
+          return Effect.sync(() => {
+            if (!settled) transaction?.abort();
+          });
+        }),
+      ),
+  };
+}
+
+/** Fresh diagnostic reads never invoke catalog recovery or migration. */
+export function makeCompatibilityHintStore(
+  backend: CompatibilityHintBackend,
+  snapshot: Effect.Effect<string | null, ConnectionTransientError>,
+) {
+  const fresh = snapshot.pipe(
+    Effect.flatMap((raw) =>
+      raw === null || raw.trim() === ""
+        ? Effect.succeed(EMPTY_CONNECTION_CATALOG_DOCUMENT)
+        : decodeCatalog(raw),
+    ),
+  );
+  const read = Effect.gen(function* () {
+    const records = yield* backend.read;
+    return listConnectionCompatibilityHints(yield* fresh, records);
+  }).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("Could not load historical connection compatibility hints.").pipe(
+        Effect.as([]),
+      ),
+    ),
+  );
+  const set = Effect.fn("web.connectionStorage.setCompatibilityHint")(function* (
+    environmentId: EnvironmentId,
+    routeBinding: string,
+    kind: "outdated-update" | null,
+  ) {
+    yield* Schema.decodeUnknownEffect(StoredConnectionCompatibilityHint)({
+      environmentId,
+      routeBinding,
+      kind: kind ?? "outdated-update",
+    }).pipe(Effect.mapError((cause) => catalogError("validate compatibility hint", cause)));
+    if (!backend.supported) return yield* backend.set(environmentId, routeBinding, kind);
+    if (
+      kind !== null &&
+      catalogCompatibilityRouteBinding(yield* fresh, environmentId) !== routeBinding
+    )
+      return;
+    yield* backend.set(environmentId, routeBinding, kind);
+  });
+  const invalidate = (
+    previous: ConnectionCatalogDocumentType,
+    next: ConnectionCatalogDocumentType,
+  ) =>
+    !backend.supported
+      ? Effect.void
+      : Effect.gen(function* () {
+          if (previous.targets === next.targets && previous.profiles === next.profiles) return;
+          const records = decodeConnectionCompatibilityHints(yield* backend.read);
+          for (const record of records) {
+            if (
+              catalogCompatibilityRouteBinding(previous, record.environmentId) ===
+                record.routeBinding &&
+              catalogCompatibilityRouteBinding(next, record.environmentId) !== record.routeBinding
+            )
+              yield* backend.set(record.environmentId, record.routeBinding, null);
+          }
+        }).pipe(
+          Effect.catch(() =>
+            Effect.logWarning("Could not clear historical connection compatibility hints."),
+          ),
+        );
+  return { read, set, invalidate };
+}
+
 interface CatalogStore {
   readonly read: Effect.Effect<ConnectionCatalogDocumentType, ConnectionTransientError>;
   readonly update: (
@@ -319,6 +720,10 @@ interface CatalogStore {
 
 export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStore")(function* (
   backend: CatalogBackend,
+  beforeWrite?: (
+    previous: ConnectionCatalogDocumentType,
+    next: ConnectionCatalogDocumentType,
+  ) => Effect.Effect<void, ConnectionTransientError>,
 ) {
   const state = yield* Ref.make<Option.Option<ConnectionCatalogDocumentType>>(Option.none());
   const lock = yield* Semaphore.make(1);
@@ -368,7 +773,9 @@ export const makeCatalogStore = Effect.fn("web.connectionStorage.makeCatalogStor
     function* (transform) {
       yield* lock.withPermits(1)(
         Effect.gen(function* () {
-          const next = transform(yield* loadUnlocked());
+          const previous = yield* loadUnlocked();
+          const next = transform(previous);
+          if (beforeWrite !== undefined) yield* beforeWrite(previous, next);
           yield* backend.write(yield* encodeCatalog(next));
           yield* Ref.set(state, Option.some(next));
         }),
@@ -480,15 +887,48 @@ export function makeBrowserGitHubRoutingPermissions(
   });
 }
 
-export const connectionStorageLayer = Layer.effectContext(
-  Effect.gen(function* () {
-    const database = yield* Effect.acquireRelease(openDatabase(), (database) =>
-      Effect.sync(() => database.close()),
-    );
-    const catalog = yield* makeCatalogStore(makeCatalogBackend(database));
-    const githubRoutingPermissions = makeBrowserGitHubRoutingPermissions();
+// A posted message resumes in a fresh task, so input and rendering get a turn between
+// encoding chunks. A zero-delay timer would not do: browsers clamp nested timers to
+// 4 ms and throttle them to once a second or less in a background tab.
+const yieldToBrowserTask = Effect.callback<void>((resume) => {
+  const { port1, port2 } = new MessageChannel();
+  port1.addEventListener(
+    "message",
+    () => {
+      port1.close();
+      resume(Effect.void);
+    },
+    { once: true },
+  );
+  port1.start();
+  port2.postMessage(null);
+  // A closed port delivers nothing, so interruption needs no listener bookkeeping.
+  return Effect.sync(() => port1.close());
+});
 
-    const targetStore = ConnectionTargetStore.of({
+export const layer = Layer.effectContext(
+  Effect.gen(function* () {
+    const { handle: database } = yield* Effect.acquireRelease(
+      makeDatabaseHandle(),
+      (owned) => owned.close,
+    );
+    const { handle: hintDatabase } = yield* Effect.acquireRelease(
+      makeDatabaseHandle(openCompatibilityHintDatabase),
+      (owned) => owned.close,
+    );
+    const backend = makeCatalogBackend(database);
+    const hints = makeCompatibilityHintStore(
+      makeCompatibilityHintBackend(hintDatabase),
+      backend.snapshot ?? backend.read,
+    );
+    const catalog = yield* makeCatalogStore(backend, hints.invalidate);
+    const githubRoutingPermissions = makeBrowserGitHubRoutingPermissions();
+    // Remembers each thread row's encoding, so a save only encodes rows that changed.
+    const encodeStoredShellSnapshot = makeStoredShellSnapshotEncoder({
+      yieldToHost: yieldToBrowserTask,
+    });
+
+    const targetStore = Persistence.ConnectionTargetStore.of({
       list: catalog.read.pipe(
         Effect.map((document) => document.targets),
         Effect.mapError((cause) => persistenceError("list-targets", cause)),
@@ -497,15 +937,30 @@ export const connectionStorageLayer = Layer.effectContext(
         Effect.map((document) => document.disabledEnvironmentIds),
         Effect.mapError((cause) => persistenceError("list-disabled-targets", cause)),
       ),
+      listCompatibilityHints: hints.read,
     });
-    const registrationStore = ConnectionRegistrationStore.of({
-      register: (registration) =>
+    const registrationStore = Persistence.ConnectionRegistrationStore.of({
+      setCompatibilityHint: (environmentId, routeBinding, kind) =>
+        hints.set(environmentId, routeBinding, kind).pipe(
+          Effect.mapError(
+            () =>
+              new Persistence.ConnectionPersistenceError({
+                operation: "set-compatibility-hint",
+                message: "Could not save historical connection compatibility hints.",
+              }),
+          ),
+        ),
+      register: (registration, routes) =>
         catalog
-          .update((document) => registerConnectionInCatalog(document, registration))
+          .update((document) => registerConnectionInCatalog(document, registration, routes))
           .pipe(Effect.mapError((cause) => persistenceError("register-connection", cause))),
-      remove: (target) =>
+      setRoutes: (environmentId, routes) =>
         catalog
-          .update((document) => removeConnectionFromCatalog(document, target))
+          .update((document) => setRoutesInCatalog(document, environmentId, routes))
+          .pipe(Effect.mapError((cause) => persistenceError("set-connection-routes", cause))),
+      remove: (environmentId) =>
+        catalog
+          .update((document) => removeConnectionFromCatalog(document, environmentId))
           .pipe(Effect.mapError((cause) => persistenceError("remove-connection", cause))),
       setEnabled: (environmentId, enabled) =>
         catalog
@@ -522,19 +977,9 @@ export const connectionStorageLayer = Layer.effectContext(
           ),
         ),
       put: (profile) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: replaceCatalogValue(document.profiles, (value) => value.connectionId, profile),
-        })),
+        catalog.update((document) => putConnectionProfileInCatalog(document, profile)),
       remove: (connectionId) =>
-        catalog.update((document) => ({
-          ...document,
-          profiles: removeCatalogValue(
-            document.profiles,
-            (value) => value.connectionId,
-            connectionId,
-          ),
-        })),
+        catalog.update((document) => removeConnectionProfileFromCatalog(document, connectionId)),
     });
     const credentialStore = CredentialStore.make({
       get: (connectionId) =>
@@ -583,7 +1028,7 @@ export const connectionStorageLayer = Layer.effectContext(
           ),
         })),
     });
-    const cacheStore = EnvironmentCacheStore.of({
+    const cacheStore = Persistence.EnvironmentCacheStore.of({
       loadShell: (environmentId) =>
         readDatabaseValue(database, SHELL_STORE_NAME, environmentId).pipe(
           Effect.tap(() => Effect.promise(() => projectFaviconCache.hydrate())),
@@ -591,34 +1036,27 @@ export const connectionStorageLayer = Layer.effectContext(
             if (typeof raw !== "string") {
               return Effect.succeedNone;
             }
-            return decodeStoredShellSnapshot(raw).pipe(
-              Effect.mapError((cause) => persistenceError("load-shell", cause)),
-              Effect.map((stored) =>
-                stored.environmentId === environmentId
-                  ? Option.some(stored.snapshot)
-                  : Option.none(),
+            return decodeOrDiscardOrchestrationCache(
+              decodeStoredShellSnapshot(raw).pipe(
+                Effect.mapError((cause) => persistenceError("load-shell", cause)),
+                Effect.map((stored) =>
+                  stored.environmentId === environmentId
+                    ? Option.some(stored.snapshot)
+                    : Option.none(),
+                ),
               ),
+              removeDatabaseValue(database, SHELL_STORE_NAME, environmentId),
             );
           }),
-          Effect.mapError((cause) =>
-            cause._tag === "ConnectionPersistenceError"
-              ? cause
-              : persistenceError("load-shell", cause),
-          ),
+          Effect.mapError((cause) => persistenceError("load-shell", cause)),
         ),
       saveShell: (environmentId, snapshot) =>
         Effect.gen(function* () {
-          const encodedSnapshot = yield* encodeShellSnapshotForCache(snapshot);
-          const encoded = yield* Effect.try({
-            try: () =>
-              // @effect-diagnostics-next-line preferSchemaOverJson:off - the snapshot is already encoded.
-              JSON.stringify({
-                schemaVersion: SHELL_SNAPSHOT_CACHE_SCHEMA_VERSION,
-                environmentId,
-                snapshot: encodedSnapshot,
-              } satisfies typeof StoredShellSnapshot.Encoded),
-            catch: (cause) => persistenceError("save-shell", cause),
-          });
+          const encoded = yield* encodeStoredShellSnapshot({
+            schemaVersion: ORCHESTRATION_CACHE_SCHEMA_VERSION,
+            environmentId,
+            snapshot,
+          }).pipe(Effect.mapError((cause) => persistenceError("save-shell", cause)));
           yield* writeDatabaseValue(database, SHELL_STORE_NAME, environmentId, encoded);
         }).pipe(
           Effect.mapError((cause) =>
@@ -671,33 +1109,36 @@ export const connectionStorageLayer = Layer.effectContext(
             if (typeof raw !== "string") {
               return Effect.succeedNone;
             }
-            return decodeStoredThreadSnapshot(raw).pipe(
-              Effect.mapError((cause) => persistenceError("load-thread", cause)),
-              Effect.map((stored) =>
-                stored.environmentId === environmentId && stored.threadId === threadId
-                  ? Option.some(stored.snapshot)
-                  : Option.none(),
+            return decodeOrDiscardOrchestrationCache(
+              decodeStoredThreadSnapshot(raw).pipe(
+                Effect.mapError((cause) => persistenceError("load-thread", cause)),
+                Effect.map((stored) =>
+                  stored.environmentId === environmentId && stored.threadId === threadId
+                    ? Option.some(stored.snapshot)
+                    : Option.none(),
+                ),
+              ),
+              removeDatabaseValue(
+                database,
+                THREAD_STORE_NAME,
+                threadCacheKey(environmentId, threadId),
               ),
             );
           }),
-          Effect.mapError((cause) =>
-            cause._tag === "ConnectionPersistenceError"
-              ? cause
-              : persistenceError("load-thread", cause),
-          ),
+          Effect.mapError((cause) => persistenceError("load-thread", cause)),
         ),
       saveThread: (environmentId, snapshot) =>
         Effect.gen(function* () {
           const encoded = yield* encodeStoredThreadSnapshot({
-            schemaVersion: 4,
+            schemaVersion: ORCHESTRATION_THREAD_CACHE_SCHEMA_VERSION,
             environmentId,
-            threadId: snapshot.thread.id,
+            threadId: snapshot.projection.thread.id,
             snapshot,
           }).pipe(Effect.mapError((cause) => persistenceError("save-thread", cause)));
           yield* writeDatabaseValue(
             database,
             THREAD_STORE_NAME,
-            threadCacheKey(environmentId, snapshot.thread.id),
+            threadCacheKey(environmentId, snapshot.projection.thread.id),
             encoded,
           );
         }).pipe(
@@ -788,13 +1229,13 @@ export const connectionStorageLayer = Layer.effectContext(
         ).pipe(Effect.mapError((cause) => persistenceError("clear-environment", cause))),
     });
 
-    return Context.make(ConnectionTargetStore, targetStore).pipe(
+    return Context.make(Persistence.ConnectionTargetStore, targetStore).pipe(
       Context.add(GitHubRoutingPermissions, githubRoutingPermissions),
-      Context.add(ConnectionRegistrationStore, registrationStore),
+      Context.add(Persistence.ConnectionRegistrationStore, registrationStore),
       Context.add(ProfileStore.ConnectionProfileStore, profileStore),
       Context.add(CredentialStore.ConnectionCredentialStore, credentialStore),
       Context.add(TokenStore.RemoteDpopAccessTokenStore, remoteTokenStore),
-      Context.add(EnvironmentCacheStore, cacheStore),
+      Context.add(Persistence.EnvironmentCacheStore, cacheStore),
     );
   }),
 );

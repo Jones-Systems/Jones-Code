@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { expect, it, vi } from "@effect/vitest";
 
 import { makeProcessReader, type ProcessReaderRuntime } from "./ProcessReader.ts";
@@ -48,7 +48,7 @@ function runtime(): ProcessReaderRuntime {
   };
 }
 
-it.layer(Layer.succeed(HostProcessPlatform, "linux"))("saved accounting startup reader", (it) => {
+it.layer(Layer.succeed(HostProcess.Platform, "linux"))("saved accounting startup reader", (it) => {
   it.effect("returns the existing unconfigured port when all three keys are absent", () =>
     Effect.gen(function* () {
       const factory = vi.fn(() => unconfiguredReader);

@@ -7,6 +7,7 @@ import type {
 import {
   currentT3Placement,
   type LiveT3Placements,
+  type WorkstreamAssignmentIndex,
 } from "@t3tools/client-runtime/state/workstreams";
 import {
   attestedNativeThreadKey,
@@ -20,6 +21,29 @@ export const canEditWorkstreams = (data: T3WorkstreamListResult | null): boolean
   !data.stale &&
   data.nextCursor === null &&
   data.binding.permissions.includes("workstreams:write");
+
+/**
+ * Why membership changes are unavailable for one thread, or null when they may proceed.
+ * Stale loads are read-only, and conflicting stored assignments block changes until the
+ * thread is re-verified.
+ */
+export function mobileMembershipBlock(input: {
+  readonly snapshot: {
+    readonly data: T3WorkstreamListResult;
+    readonly placements: LiveT3Placements | null;
+    readonly stale: boolean;
+  };
+  readonly threadKey: string;
+  readonly conflictingThreadKeys: ReadonlySet<string>;
+}): string | null {
+  if (input.snapshot.stale || !canEditWorkstreams(input.snapshot.data))
+    return "Workstreams are read-only.";
+  if (input.conflictingThreadKeys.has(input.threadKey))
+    return "This thread has conflicting Workstream assignments. Changes are blocked until it is re-verified.";
+  if (input.snapshot.placements?.readiness !== "ready")
+    return "Thread assignment requires current verified enrollment.";
+  return null;
+}
 
 export {
   WORKSTREAM_TINT_PALETTE,
@@ -35,6 +59,8 @@ export function planNativeMembership(input: {
   readonly thread: WorkstreamThreadLike;
   readonly destination: string | null;
   readonly now: number;
+  /** Stored assignments read with `data`; a proof that disagrees with them blocks changes. */
+  readonly index?: WorkstreamAssignmentIndex | null;
 }): WorkstreamCommand["action"] | null {
   if (!canEditWorkstreams(input.data))
     throw new Error("Refresh Workstreams with write access before changing membership.");
@@ -74,6 +100,15 @@ export function planNativeMembership(input: {
       "Thread placement is stale or conflicting. Refresh before changing membership.",
     );
   const current = placements[0];
+  const stored = input.index?.entries.get(key);
+  if (
+    stored !== undefined &&
+    (stored.state === "conflict" ||
+      (stored.primary?.membershipId ?? null) !== (current?.membership_id ?? null))
+  )
+    throw new Error(
+      "Stored Workstream assignment and current proof disagree. Refresh before changing membership.",
+    );
   if (
     current &&
     (current.native_reference_id !== reference.native_reference_id ||
@@ -134,12 +169,4 @@ export function moveNativeThreadOrder(
   const next = order.filter((key) => key !== movedId);
   next.splice(next.indexOf(neighborId) + (after ? 1 : 0), 0, movedId);
   return next;
-}
-
-export async function executeMobileShelfMove<A>(input: {
-  readonly removePrimary: () => Promise<void>;
-  readonly moveNative: () => Promise<A>;
-}): Promise<A> {
-  await input.removePrimary();
-  return input.moveNative();
 }

@@ -1,147 +1,133 @@
-import { assert, it } from "@effect/vitest";
-import * as Effect from "effect/Effect";
-import * as Migrator from "effect/unstable/sql/Migrator";
-import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { afterEach, vi } from "vite-plus/test";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
 
-vi.mock("effect/unstable/sql/Migrator", async (importOriginal) => ({
-  ...(await importOriginal<typeof Migrator>()),
-}));
+const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
+const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
 
-const fromRecord = Migrator.fromRecord;
-const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-
-const forkProbe = Effect.gen(function* () {
+const history = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`SELECT auto_settle_disabled_at FROM projection_threads`;
-  yield* sql`CREATE TABLE fork_probe (upstream_max INTEGER NOT NULL)`;
-  yield* sql`INSERT INTO fork_probe SELECT MAX(migration_id) FROM effect_sql_migrations`;
+  const rows = yield* sql<{ readonly migration_id: number; readonly name: string }>`
+    SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id
+  `;
+  return rows.map((row) => [row.migration_id, row.name] as const);
 });
 
-const futureUpstreamProbe = Effect.gen(function* () {
+const v2TableCount = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`CREATE TABLE upstream_55_probe (id INTEGER PRIMARY KEY)`;
+  const rows = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'orchestration_v2_%'
+  `;
+  return rows.length;
 });
 
-const injectMigrations = (includeFutureUpstream = false) =>
-  vi
-    .spyOn(Migrator, "fromRecord")
-    .mockImplementation((entries) =>
-      fromRecord(
-        Object.hasOwn(entries, "1_WorktreeOwnershipLeases")
-          ? { "1_ForkProbe": forkProbe }
-          : includeFutureUpstream
-            ? { ...entries, "55_FutureUpstreamProbe": futureUpstreamProbe }
-            : entries,
-      ),
-    );
+describe("runMigrations", () => {
+  it.effect("migrates a fresh database through the whole manifest", () =>
+    Effect.gen(function* () {
+      yield* runMigrations();
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.isAbove(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 
-afterEach(() => vi.restoreAllMocks());
+  it.effect("refuses to start when another migration took a V2 id", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name) VALUES (55, 'FutureMainMigration')
+      `;
+      const before = yield* history;
 
-it.effect("runs upstream before fork migration 1 on a fresh database", () =>
-  Effect.gen(function* () {
-    injectMigrations();
-    const sql = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 54 }), []);
+      const exit = yield* Effect.exit(runMigrations());
 
-    assert.deepEqual(yield* runMigrations(), migrationManifest);
-    assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 54 }]);
-    assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
-      { migration_id: 1, name: "ForkProbe" },
-    ]);
-    assert.deepEqual(
-      yield* sql`SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id`,
-      migrationManifest.map(([migration_id, name]) => ({ migration_id, name })),
-    );
-  }).pipe(Effect.provide(memory)),
-);
+      assert.isTrue(Exit.isFailure(exit));
+      assert.include(String(exit), "55_OrchestrationV2 (recorded: FutureMainMigration)");
+      assert.deepStrictEqual(yield* history, before);
+      assert.strictEqual(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 
-it.effect("applies fork migration 1 to an existing upstream-54 database exactly once", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations();
-    yield* sql`DROP TABLE IF EXISTS jones_sql_migrations`;
-    injectMigrations();
+  it.effect("refuses to start when a later id would skip V2 migrations", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (${newerMigrationId}, 'FutureMainMigration')
+      `;
+      const before = yield* history;
 
-    assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 54 }]);
-    assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
-      { migration_id: 1, name: "ForkProbe" },
-    ]);
-    assert.deepEqual(yield* sql`SELECT MAX(migration_id) AS id FROM effect_sql_migrations`, [
-      { id: 54 },
-    ]);
-  }).pipe(Effect.provide(memory)),
-);
+      const exit = yield* Effect.exit(runMigrations());
 
-it.effect("applies future upstream migration 55 after fork migration 1", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const injected = injectMigrations();
-    yield* runMigrations();
-    injected.mockRestore();
-    injectMigrations(true);
+      assert.isTrue(Exit.isFailure(exit));
+      for (const [id, name] of v2Migrations) {
+        assert.include(String(exit), `${id}_${name} (recorded: nothing)`);
+      }
+      assert.deepStrictEqual(yield* history, before);
+      assert.strictEqual(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 
-    assert.deepEqual(yield* runMigrations(), [[55, "FutureUpstreamProbe"]]);
-    assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* sql`SELECT * FROM upstream_55_probe`, []);
-    assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 54 }]);
-    assert.deepEqual(yield* sql`SELECT MAX(migration_id) AS id FROM effect_sql_migrations`, [
-      { id: 55 },
-    ]);
-    assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
-      { migration_id: 1, name: "ForkProbe" },
-    ]);
-  }).pipe(Effect.provide(memory)),
-);
+  it.effect("upgrades a database at exactly 54", () =>
+    Effect.gen(function* () {
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.deepStrictEqual(yield* history, migrationManifest);
+      assert.isAbove(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 
-it.effect("runs fork migration 1 after completing historical upstream replay", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+  it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        UPDATE effect_sql_migrations SET name = 'SiteLocalMigration' WHERE migration_id = ${id}
+      `;
 
-    assert.deepEqual(
-      yield* runMigrations({ toMigrationInclusive: 53 }),
-      migrationManifest.filter(([id]) => id <= 53),
-    );
-    assert.deepEqual(yield* runMigrations(), [[54, "ProjectionThreadsAutoSettleDisabledAt"]]);
-    assert.deepEqual(yield* runMigrations(), []);
-    assert.deepEqual(yield* sql`SELECT migration_id, name FROM jones_sql_migrations`, [
-      { migration_id: 1, name: "WorktreeOwnershipLeases" },
-      { migration_id: 2, name: "ProjectionThreadRuntimeIdentity" },
-      { migration_id: 3, name: "NativeCreationIntents" },
-      { migration_id: 4, name: "NativeCreationCommandIdentities" },
-      { migration_id: 5, name: "WorkstreamsNativeAttempts" },
-      { migration_id: 6, name: "WorkstreamsProviderEnrollments" },
-    ]);
-    assert.deepEqual(
-      yield* sql`SELECT name FROM sqlite_master WHERE name = 'worktree_ownership_leases'`,
-      [{ name: "worktree_ownership_leases" }],
-    );
-    assert.deepEqual(
-      yield* sql`SELECT name FROM sqlite_master
-        WHERE name IN ('workstreams_native_attempts', 'workstreams_native_enrollments') ORDER BY name`,
-      [{ name: "workstreams_native_attempts" }, { name: "workstreams_native_enrollments" }],
-    );
-  }).pipe(Effect.provide(memory)),
-);
+      assert.deepStrictEqual(yield* runMigrations(), v2Migrations);
+      assert.isAbove(yield* v2TableCount, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
 
-it.effect("keeps historical upstream replay independent of pending fork migrations", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    injectMigrations();
+  it.effect("only checks V2 migrations within the requested limit", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 55 });
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (56, 'SiteLocalMigration'), (${newerMigrationId}, 'NewerV2Migration')
+      `;
+      const before = yield* history;
 
-    assert.deepEqual(
-      yield* runMigrations({ toMigrationInclusive: 53 }),
-      migrationManifest.filter(([id]) => id <= 53),
-    );
-    assert.deepEqual(
-      yield* sql`SELECT name FROM sqlite_master WHERE name IN ('jones_sql_migrations', 'fork_probe')`,
-      [],
-    );
-    assert.deepEqual(yield* runMigrations(), [[54, "ProjectionThreadsAutoSettleDisabledAt"]]);
-    assert.deepEqual(yield* sql`SELECT upstream_max FROM fork_probe`, [{ upstream_max: 54 }]);
-  }).pipe(Effect.provide(memory)),
-);
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 55 }), []);
+      const exit = yield* Effect.exit(runMigrations({ toMigrationInclusive: 56 }));
+      assert.isTrue(Exit.isFailure(exit));
+      assert.include(
+        String(exit),
+        "56_RemoveRedundantProjectionIndexes (recorded: SiteLocalMigration)",
+      );
+      assert.notInclude(String(exit), "57_ScheduledTaskWebhooks");
+      assert.deepStrictEqual(yield* history, before);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("still starts after a newer build recorded a later V2 migration", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`
+        INSERT INTO effect_sql_migrations (migration_id, name)
+        VALUES (${newerMigrationId}, 'NewerV2Migration')
+      `;
+
+      assert.deepStrictEqual(yield* runMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+});

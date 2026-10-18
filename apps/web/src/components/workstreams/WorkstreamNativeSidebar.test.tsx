@@ -4,16 +4,49 @@ import { act, useState, useCallback, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import type { WorkstreamCommand, WorkstreamReceipt } from "@t3tools/contracts";
+import {
+  buildWorkstreamAssignmentIndex,
+  type WorkstreamAssignmentIndex,
+} from "@t3tools/client-runtime/state/workstreams";
+import type {
+  MembershipEpisode,
+  WorkstreamCommand,
+  WorkstreamReceipt,
+  WorkstreamsRegistrationContextAcceptedResponse,
+} from "@t3tools/contracts";
 import type { WorkstreamDetailView, WorkstreamListView } from "../../state/workstreams";
-import { WorkstreamCreateForm, WorkstreamSidebarSection } from "./WorkstreamSidebarSection";
+import { WorkstreamCreateForm } from "./WorkstreamSidebarSection";
 import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
 import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
 import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
+import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFallback";
+import { buildThreadActionMenuItems } from "../threadActionMenu.logic";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
+
+import { assignNativeThread } from "../../jones/workstreams/nativeThreadAssignment";
+
+const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
+  protocol: "workstreams-registration-context/2.0.0",
+  state: "ready",
+  ...placements.context,
+  grant_id: "grant",
+  sources: [
+    {
+      provider: "t3",
+      source_instance_id: thread.environmentId,
+      authority_namespace: "authority",
+      store_generation: 1,
+      resource_kind: "thread",
+      id_kind: "internal",
+      account_provenance: { kind: "not_account_scoped" },
+      native_protocol: "workstreams-t3-provider/1.0.0",
+      build: { repository: "Jones-Systems/Jones-Code", sha: "a".repeat(40), tree: "b".repeat(40) },
+    },
+  ],
+};
 
 let root: Root;
 let container: HTMLDivElement;
@@ -49,20 +82,42 @@ beforeEach(() => {
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
-  const submit = vi.fn(async (_command: WorkstreamCommand) => committed);
+  const submit = vi.fn(async (command: WorkstreamCommand) => ({
+    ...committed,
+    command_id: command.command_id,
+    owner_id: "owner",
+    server_generation: 7,
+    operation: command.action.operation,
+  }));
   controller = {
     data,
+    registrationContext,
+    assignNativeThread: (selected, destination, options) =>
+      assignNativeThread({
+        ...options,
+        data: controller.data!,
+        thread: selected,
+        destination,
+        runBindingOperation: controller.runBindingOperation,
+        loadSnapshot: async () => {
+          const loaded = await controller.loadDetail(destination ?? "alpha", options);
+          return {
+            data: controller.data!,
+            registrationContext: controller.registrationContext!,
+            placements: controller.placements!,
+            reference: { context: loaded.detail.context, reference, latest_observation: null },
+            destinationMemberships:
+              destination === null
+                ? null
+                : {
+                    context: loaded.detail.context,
+                    items: loaded.memberships.items,
+                    next_cursor: null,
+                  },
+          };
+        },
+      }),
     placements,
-    references: { context: detail.detail.context, items: [reference], next_cursor: null },
-    registrationContext: null,
-    loadActionSnapshot: vi.fn(async () => ({
-      data: controller.data!,
-      references: controller.references!,
-      placements: controller.placements,
-      registrationContext: controller.registrationContext,
-    })),
-    observeCommand: vi.fn(),
-    retry: vi.fn(async () => {}),
     placementInventory: {
       coverage: "complete",
       identities: threads.map((item) => ({
@@ -87,6 +142,7 @@ afterEach(async () => {
   await act(async () => root.unmount());
   container.remove();
   localStorage.clear();
+  dismissContextMenu();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -94,15 +150,14 @@ afterEach(async () => {
 async function render(
   visibleThreads: readonly EnvironmentThreadShell[] = threads,
   summaryThreads: readonly EnvironmentThreadShell[] = visibleThreads,
-  movement: Partial<
-    Pick<
-      Parameters<typeof WorkstreamNativeSidebar>[0],
-      "captureDrag" | "reorderSelection" | "onVisibleGroupsChange" | "onMovementError"
-    >
-  > = {},
+  assignment: {
+    readonly assignmentIndex?: WorkstreamAssignmentIndex;
+    readonly verificationNow?: string;
+  } = {},
 ) {
   const group = (members: readonly EnvironmentThreadShell[]) =>
     groupNativeThreadsByWorkstream({
+      ...assignment,
       workstreams: controller.data?.items ?? [],
       placements: controller.placements?.items ?? [],
       threads: members,
@@ -117,13 +172,46 @@ async function render(
   await act(async () =>
     root.render(
       <WorkstreamNativeSidebar
-        {...movement}
         controller={controller}
         grouping={group(visibleThreads)}
         summaryGrouping={group(summaryThreads)}
-        renderThread={(item) => (
+        renderThread={(item, assignment) => (
           <li>
-            <button type="button">{item.title}</button>
+            <div
+              role="button"
+              tabIndex={0}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                void showContextMenuFallback(
+                  buildThreadActionMenuItems({
+                    canOperate: true,
+                    branch: null,
+                    projectFilter: null,
+                    isPinned: false,
+                    isSettled: false,
+                    autoSettleEnabled: true,
+                    isSnoozed: false,
+                    canSnoozeNow: true,
+                    isRegeneratingTitle: false,
+                    isRunning: false,
+                    snoozePresets: [],
+                    supports: {
+                      settlement: true,
+                      autoSettleOptOut: true,
+                      snooze: true,
+                      pinning: true,
+                      titleRegeneration: true,
+                    },
+                    assignmentItems: assignment.items,
+                  }),
+                  { x: event.clientX, y: event.clientY },
+                ).then((action) => {
+                  if (action) assignment.onAction(action);
+                });
+              }}
+            >
+              {item.title}
+            </div>
           </li>
         )}
         canReorder={() => true}
@@ -139,12 +227,49 @@ async function clickLabel(label: string) {
   await act(async () => button!.click());
 }
 
+async function openAssignment(index = 0) {
+  await act(async () => {
+    const row = nativeRow(index);
+    row.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 2 }));
+    row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+  });
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  await clickMenu("Assign thread");
+}
+
 async function clickMenu(text: string) {
-  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-    (entry) => entry.textContent?.trim() === text,
+  const item = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (entry) => !container.contains(entry) && entry.textContent?.trim() === text,
   );
   expect(item, text).not.toBeUndefined();
   await act(async () => item!.click());
+}
+
+async function pointerEvent(element: EventTarget, type: string, clientY = 0, buttons = 1) {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    clientX: 10,
+    clientY,
+    buttons,
+    button: 0,
+  });
+  Object.defineProperties(event, { pointerId: { value: 1 }, isPrimary: { value: true } });
+  await act(async () => {
+    element.dispatchEvent(event);
+  });
+  return event;
+}
+
+async function pointAt(target: Element, clientY = 10) {
+  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
+  await pointerEvent(document, "pointermove", clientY);
+}
+
+async function release(clientY = 10) {
+  await pointerEvent(document, "pointerup", clientY, 0);
 }
 
 async function dragEvent(element: Element, type: string, clientY = 0) {
@@ -160,148 +285,21 @@ async function dragEvent(element: Element, type: string, clientY = 0) {
 }
 
 function nativeRow(index: number) {
-  return [...container.querySelectorAll("button")].find(
+  return [...container.querySelectorAll<HTMLElement>('[role="button"]')].find(
     (button) => button.textContent === threads[index]!.title,
   )!;
 }
 
 describe("native Workstream sidebar interactions", () => {
-  it("captures the selected group at HTML drag start and submits memberships in that stable order", async () => {
-    const second = threads[1]!;
-    controller = {
-      ...controller,
-      placements: {
-        ...placements,
-        items: [
-          ...placements.items,
-          {
-            ...placements.items[0]!,
-            native_thread_id: second.id,
-            membership_id: "second-member",
-            native_reference_id: "second-reference",
-          },
-        ],
-      },
-    };
-    const secondReference = {
-      ...reference,
-      native_reference_id: "second-reference",
-      identity: { ...reference.identity, native_id: second.id },
-      registration: {
-        ...reference.registration,
-        evidence: { ...reference.registration.evidence!, native_id: second.id },
-      },
-    };
-    let batchCompletion: Promise<unknown> | null = null;
-    controller = {
-      ...controller,
-      references: {
-        context: detail.detail.context,
-        items: [reference, secondReference],
-        next_cursor: null,
-      },
-      loadActionSnapshot: vi.fn(async () => {
-        const progressed = vi.mocked(controller.submit).mock.calls.length > 0;
-        return {
-          data: progressed
-            ? {
-                ...data,
-                binding: { ...data.binding, registryVersion: 12 },
-                items: data.items.map((item) => ({ ...item, version: 4 })),
-              }
-            : data,
-          references: {
-            context: { ...detail.detail.context, registry_version: progressed ? 12 : 11 },
-            items: [reference, secondReference],
-            next_cursor: null,
-          },
-          placements: {
-            ...controller.placements!,
-            context: { ...placements.context, registry_version: progressed ? 12 : 11 },
-          },
-          registrationContext: null,
-        };
-      }),
-      loadDetail: vi.fn(async () => ({
-        ...detail,
-        detail: {
-          ...detail.detail,
-          context: {
-            ...detail.detail.context,
-            registry_version: vi.mocked(controller.submit).mock.calls.length ? 12 : 11,
-          },
-        },
-        references: { ...detail.references, items: [reference, secondReference] },
-      })),
-      runBindingOperation: (operation) => {
-        const pending = operation(controller.submit);
-        batchCompletion = pending;
-        return pending;
-      },
-    };
-    const captureDrag = vi.fn(() => [second, threads[0]!]);
-    const submit = vi.mocked(controller.submit);
-    submit.mockResolvedValueOnce({
-      ...committed,
-      state: "committed",
-      registry_version: 12,
-      effects: {
-        workstream_versions: [
-          { workstream_id: "alpha", version: 4 },
-          { workstream_id: "beta", version: 4 },
-        ],
-      },
-    } as unknown as WorkstreamReceipt);
-    await render(threads, threads, { captureDrag });
-    await dragEvent(nativeRow(0), "dragstart");
-    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "drop");
-    expect(batchCompletion).not.toBeNull();
-    await act(async () => {
-      await batchCompletion;
-    });
-    expect(captureDrag).toHaveBeenCalledWith(threads[0]);
-    expect(submit).toHaveBeenCalledTimes(2);
-    expect(submit.mock.calls.map(([command]) => command.action)).toEqual([
-      expect.objectContaining({
-        operation: "move_primary",
-        source_membership_id: "second-member",
-        expected_source_version: 3,
-      }),
-      expect.objectContaining({
-        operation: "move_primary",
-        source_membership_id: "membership",
-        expected_source_version: 4,
-        expected_destination_version: 4,
-      }),
-    ]);
-    expect(reorder).not.toHaveBeenCalled();
-  });
-
-  it("reports the expanded group order and excludes collapsed member ranges", async () => {
-    const visible = vi.fn();
-    await render(threads, threads, { onVisibleGroupsChange: visible });
-    expect(visible).toHaveBeenLastCalledWith(["alpha", "beta", null]);
-    await clickLabel("Collapse alpha");
-    expect(visible).toHaveBeenLastCalledWith(["beta", null]);
-    expect(nativeRow(0)).toBeUndefined();
-    await clickLabel("Collapse Unassigned");
-    expect(visible).toHaveBeenLastCalledWith(["beta"]);
-    await clickLabel("Expand alpha");
-    expect(visible).toHaveBeenLastCalledWith(["alpha", "beta"]);
-    expect(nativeRow(0)).toBeDefined();
-  });
-
   it("drags the native row into another Workstream with compatible target feedback", async () => {
     await render();
     expect(container.querySelector('[aria-label="New Workstream name"]')).toBeNull();
     const row = nativeRow(0);
-    expect(row.closest('[draggable="true"]')?.textContent).not.toContain("alpha");
-    await dragEvent(row, "dragstart");
+    await pointerEvent(row, "pointerdown");
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(true);
+    await pointAt(target);
     expect(target.getAttribute("data-drop-target")).toBe("thread");
-    await dragEvent(target, "drop");
+    await release();
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -317,13 +315,11 @@ describe("native Workstream sidebar interactions", () => {
 
   it("drops a native row on Unassigned to remove its primary membership", async () => {
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
-    const target = container
-      .querySelector('[aria-label="Collapse Unassigned"]')!
-      .closest('[data-thread-drop-header="__unassigned__"]')!.parentElement!;
-    await dragEvent(target, "dragover");
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse Unassigned"]')!.parentElement!;
+    await pointAt(target);
     expect(target.getAttribute("data-drop-target")).toBe("thread");
-    await dragEvent(target, "drop");
+    await release();
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -338,21 +334,38 @@ describe("native Workstream sidebar interactions", () => {
   it("shows the insertion edge and reorders native rows without changing membership", async () => {
     controller = {
       ...controller,
-      references: {
-        context: detail.detail.context,
-        next_cursor: null,
+      placements: {
+        ...placements,
         items: [
-          reference,
+          ...placements.items,
           {
-            ...reference,
+            ...placements.items[0]!,
             native_reference_id: "reference-two",
-            identity: { ...reference.identity, native_id: "unassigned" },
-            registration: {
-              ...reference.registration,
-              evidence: { ...reference.registration.evidence!, native_id: "unassigned" },
-            },
+            native_thread_id: "unassigned",
+            membership_id: "member-two",
           },
         ],
+      },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = nativeRow(1).closest("[data-native-workstream-thread]")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-position")).toBe("after");
+    await release();
+    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("refuses to reorder against a neighbor whose displayed membership has not been checked", async () => {
+    controller = {
+      ...controller,
+      placementInventory: {
+        ...controller.placementInventory,
+        coverage: "partial",
+        identities: controller.placementInventory.identities.filter(
+          (identity) => identity.native_thread_id === threads[0]!.id,
+        ),
       },
       placements: {
         ...placements,
@@ -368,12 +381,12 @@ describe("native Workstream sidebar interactions", () => {
       },
     };
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
-    const target = nativeRow(1).closest('[draggable="true"]')!;
-    await dragEvent(target, "dragover", 10);
-    expect(target.getAttribute("data-drop-position")).toBe("after");
-    await dragEvent(target, "drop", 10);
-    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = nativeRow(1).closest("[data-native-workstream-thread]")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-position")).toBeNull();
+    await release();
+    expect(reorder).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -396,14 +409,17 @@ describe("native Workstream sidebar interactions", () => {
     expect(reorder).not.toHaveBeenCalled();
   });
 
-  it("clears drop feedback on cancellation and rejects a drop after write access changes", async () => {
+  it("clears pointer feedback on Escape and rejects a drop after write access changes", async () => {
     await render();
-    await dragEvent(nativeRow(0), "dragstart");
+    await pointerEvent(nativeRow(0), "pointerdown");
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "dragover");
-    await dragEvent(nativeRow(0), "dragend");
+    await pointAt(target);
+    await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })));
     expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
-    await dragEvent(nativeRow(0), "dragstart");
+    await release();
+    expect(controller.submit).not.toHaveBeenCalled();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
     controller = {
       ...controller,
       data: {
@@ -412,50 +428,168 @@ describe("native Workstream sidebar interactions", () => {
       },
     };
     await render();
-    await dragEvent(target, "drop");
+    await release();
     expect(controller.submit).not.toHaveBeenCalled();
+    expect(reorder).not.toHaveBeenCalled();
   });
 
-  it("does not treat selected native text as a thread drag", async () => {
+  it("leaves clicks below the ordinary sidebar threshold idle and cancels on pointercancel", async () => {
     await render();
-    const row = nativeRow(0);
-    const selection = window.getSelection()!;
-    const range = document.createRange();
-    range.selectNodeContents(row);
-    selection.addRange(range);
-    expect((await dragEvent(row, "dragstart")).defaultPrevented).toBe(true);
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
-    await dragEvent(target, "drop");
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target, 6);
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    await release(6);
     expect(controller.submit).not.toHaveBeenCalled();
-    selection.removeAllRanges();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
+    await pointerEvent(document, "pointercancel");
+    await release();
+    expect(controller.submit).not.toHaveBeenCalled();
   });
 
-  it("ignores external drags and refuses row drags without verified placements", async () => {
-    controller = { ...controller, placements: null };
+  it("ignores external drags and refuses row drags without an activated source", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
     expect((await dragEvent(target, "dragover")).defaultPrevented).toBe(false);
-    expect((await dragEvent(nativeRow(0), "dragstart")).defaultPrevented).toBe(true);
-    await dragEvent(target, "drop");
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(target);
+    await release();
     expect(controller.submit).not.toHaveBeenCalled();
     expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("allows choosing an assignment outside the initial placement inventory", async () => {
+    controller = {
+      ...controller,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    expect(container.querySelector('[aria-label="Other threads"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment not checked");
+    await clickMenu("beta");
+    await vi.waitFor(() =>
+      expect(controller.loadDetail).toHaveBeenCalledWith(
+        "beta",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it("checks an unchecked row before a same-group drop instead of reordering it", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse alpha"]')!.closest("li")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await release();
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "alpha",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("checks an unchecked row dropped on Other threads before removing primary membership", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
+      placements: null,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse Other threads"]')!.parentElement!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await release();
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("keeps unchecked primary and removal choices enabled without asserting stale memberships", async () => {
+    const assignment = vi.fn(async () => undefined);
+    controller = {
+      ...controller,
+      assignNativeThread: assignment,
+      placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
+    };
+    await render();
+    await openAssignment();
+    expect(document.body.textContent).toContain("Assignment not checked");
+    expect(document.body.textContent).not.toContain("alpha (primary)");
+    expect(document.body.textContent).not.toContain("beta (secondary)");
+    await clickMenu("alpha");
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "alpha",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    await openAssignment(1);
+    await clickMenu("Unassigned (remove primary)");
+    expect(assignment).toHaveBeenLastCalledWith(
+      threads[1],
+      null,
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("admits only one assignment while the chosen action is pending", async () => {
+    let complete!: () => void;
+    const assignment = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    controller = { ...controller, assignNativeThread: assignment };
+    await render();
+    await openAssignment();
+    const item = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent === "beta (secondary)",
+    )!;
+    await act(async () => {
+      item.click();
+      item.click();
+    });
+    expect(assignment).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Saving Workstream change");
+    await act(async () => complete());
+    expect(container.textContent).not.toContain("Saving Workstream change");
   });
 
   it("preserves all native conversations under partial or untrusted placement coverage", async () => {
     controller = {
       ...controller,
       placements: null,
+      registrationContext: null,
       placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
     };
     await render();
-    const unassigned = container.querySelector('[aria-label="Unassigned threads"]');
+    const unassigned = container.querySelector('[aria-label="Other threads"]');
     for (const item of threads) expect(unassigned?.textContent).toContain(item.title);
     expect(container.textContent).toContain("Thread assignments are unavailable");
-    await clickLabel("Workstream actions for First native conversation");
-    const assignment = [...document.querySelectorAll('[role="menuitem"]')].find(
-      (entry) => entry.textContent === "Re-verify reference and assign to beta",
+    await openAssignment();
+    const assignment = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent === "beta",
     );
-    expect(assignment?.getAttribute("aria-disabled")).toBe("true");
+    expect(assignment?.disabled).toBe(true);
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -474,8 +608,8 @@ describe("native Workstream sidebar interactions", () => {
 
   it("moves primary membership through the real menu without a native reorder or secondary change", async () => {
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move to beta");
+    await openAssignment();
+    await clickMenu("beta (secondary)");
     await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
     expect(controller.submit).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -494,26 +628,40 @@ describe("native Workstream sidebar interactions", () => {
     expect(placements.items[1]?.kind).toBe("secondary");
   });
 
-  it("reorders actual native members through the menu while leaving registry membership alone", async () => {
-    controller = {
-      ...controller,
-      placements: {
-        ...placements,
-        items: [
-          ...placements.items,
-          {
-            ...placements.items[0]!,
-            native_reference_id: "reference-two",
-            native_thread_id: "unassigned",
-            membership_id: "member-two",
-          },
-        ],
-      },
-    };
+  it("removes only primary membership through Unassigned and retains secondary context without a bottom strip", async () => {
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move thread down");
-    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(
+      container.querySelector(
+        '[aria-label="Drag First native conversation to a Workstream or reorder"]',
+      ),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Workstream actions for First native conversation"]'),
+    ).toBeNull();
+    await openAssignment();
+    await clickMenu("Unassigned (remove primary)");
+    await vi.waitFor(() => expect(controller.submit).toHaveBeenCalledOnce());
+    expect(controller.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: {
+          operation: "remove_membership",
+          workstream_id: "alpha",
+          expected_version: 3,
+          membership_id: "membership",
+        },
+      }),
+    );
+    expect(placements.items[1]?.kind).toBe("secondary");
+    expect(reorder).not.toHaveBeenCalled();
+  });
+
+  it("refuses a native or fallback menu selection after the Workstream controls unmount", async () => {
+    await render();
+    await openAssignment();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await clickMenu("beta (secondary)");
+    expect(controller.loadDetail).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -527,8 +675,8 @@ describe("native Workstream sidebar interactions", () => {
     );
     controller = { ...controller, loadDetail };
     await render();
-    await clickLabel("Workstream actions for First native conversation");
-    await clickMenu("Move to beta");
+    await openAssignment();
+    await clickMenu("beta (secondary)");
     expect(loadDetail).toHaveBeenCalledOnce();
     controller = {
       ...controller,
@@ -683,14 +831,9 @@ describe("Workstream toolbar creation", () => {
         .click(),
     );
     await vi.waitFor(() =>
-      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-        "The effect is unknown",
-      ),
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Connection failed"),
     );
     expect(nameInput()?.value).toBe("Release prep");
-    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain(
-      "Connection failed",
-    );
   });
 
   it("blocks duplicate pending creates even after dismissal and respects loading and authority", async () => {
@@ -744,7 +887,7 @@ describe("Workstream toolbar creation", () => {
 
 function statusThread(
   id: string,
-  status: NonNullable<EnvironmentThreadShell["session"]>["status"] | null,
+  status: NonNullable<EnvironmentThreadShell["runtime"]>["status"] | null,
   changes: Partial<EnvironmentThreadShell> = {},
 ): EnvironmentThreadShell {
   return {
@@ -753,8 +896,18 @@ function statusThread(
     title: id,
     hasPendingApprovals: false,
     hasPendingUserInput: false,
-    backgroundLiveness: null,
-    session: status === null ? null : { status },
+    runtime:
+      status === null
+        ? null
+        : {
+            status,
+            activeRunId: null,
+            providerInstanceId: "synthetic-provider",
+            providerName: "Synthetic",
+            lastError: null,
+            lastErrorClass: null,
+            updatedAt: new Date(now).toISOString(),
+          },
     ...changes,
   } as EnvironmentThreadShell;
 }
@@ -776,25 +929,25 @@ describe("Workstream live thread summaries", () => {
       statusThread("starting", "starting"),
       statusThread("input", "running", { hasPendingUserInput: true }),
       statusThread("approval", "running", { hasPendingApprovals: true }),
-      statusThread("failed", "error", { backgroundLiveness: "working" }),
-      statusThread("background", "idle", { backgroundLiveness: "working" }),
-      statusThread("monitoring", "idle", { backgroundLiveness: "monitoring" }),
+      statusThread("failed", "failed"),
+      statusThread("background", "idle"),
+      statusThread("monitoring", "completed"),
       statusThread("unknown", null),
-      statusThread("ready", "ready"),
+      statusThread("ready", "completed"),
     ];
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [{ workstream: data.items[0]!, threads: members }],
       }).get("alpha"),
-    ).toEqual({ total: 9, running: 3, waiting: 2, failed: 1 });
+    ).toEqual({ total: 9, running: 2, waiting: 2, failed: 1 });
     expect(
       summarizeWorkstreamThreadStatuses({
         groups: [
           {
             workstream: data.items[0]!,
             threads: [
-              statusThread("approval-error", "error", { hasPendingApprovals: true }),
-              statusThread("input-error", "error", { hasPendingUserInput: true }),
+              statusThread("approval-error", "failed", { hasPendingApprovals: true }),
+              statusThread("input-error", "failed", { hasPendingUserInput: true }),
             ],
           },
         ],
@@ -871,13 +1024,13 @@ describe("Workstream live thread summaries", () => {
     ).toBe(false);
     const mixedFailure = [
       ...members.slice(0, 2),
-      statusThread("pinned", "error"),
+      statusThread("pinned", "failed"),
       ...members.slice(3),
     ];
     await render(mixedFailure.slice(0, 2), mixedFailure);
     expect(count()?.parentElement?.textContent).toBe("Failed1/6");
     expect(count()?.parentElement?.querySelector("svg")).toBeNull();
-    const failedMembers = [statusThread("running", "error"), ...members.slice(1)];
+    const failedMembers = [statusThread("running", "failed"), ...members.slice(1)];
     await render(failedMembers.slice(0, 2), failedMembers);
     const failedCount = container.querySelector(
       '[aria-label="alpha: 0 of 6 known threads running"]',
@@ -891,7 +1044,7 @@ describe("Workstream live thread summaries", () => {
     expect(
       failedIndicators.querySelector('[aria-label="1 thread waiting for input or approval"]'),
     ).toBeNull();
-    const recoveredMembers = [statusThread("running", "ready"), ...members.slice(1)];
+    const recoveredMembers = [statusThread("running", "completed"), ...members.slice(1)];
     await render(recoveredMembers.slice(0, 2), recoveredMembers);
     expect(container.querySelector('[aria-label="1 failed thread"]')).toBeNull();
     expect(
@@ -902,34 +1055,192 @@ describe("Workstream live thread summaries", () => {
     ).toBe("0/6");
   });
 
-  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unassigned", async () => {
-    controller = { ...controller, placements: null };
+  it("uses zero counts when primary placement trust is unavailable, keeping visible threads unchecked", async () => {
+    controller = { ...controller, placements: null, registrationContext: null };
     await render([statusThread("thread", "running")]);
     expect(
       container.querySelector('[aria-label="alpha: 0 of 0 known threads running"]')?.textContent,
     ).toBe("0/0");
-    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+    expect(container.querySelector('[aria-label="Other threads"]')?.textContent).toContain(
       "thread",
     );
     expect(container.querySelector('[aria-label="1 running thread"]')).toBeNull();
   });
 });
 
-it("keeps parent visibility updates stable when collapsed state is unchanged", async () => {
-  let renders = 0;
-  function VisibilityHost() {
-    const [ids, setIds] = useState<readonly (string | null)[]>([]);
-    renders += 1;
-    if (renders > 5) throw new Error("Unchanged visibility recursively rendered its parent.");
-    return (
-      <>
-        <WorkstreamSidebarSection controller={controller} onVisibleGroupsChange={setIds} />
-        <output data-testid="visible-group-count">{ids.length}</output>
-      </>
+describe("durable Workstream assignment display", () => {
+  const episode = (id: string, workstreamId: string): MembershipEpisode => ({
+    membership_id: id,
+    workstream_id: workstreamId,
+    native_reference_id: reference.native_reference_id,
+    kind: "primary",
+    opened: {
+      at: "2026-09-30T11:00:00Z",
+      actor: { principal_id: "owner" },
+      command_id: "command-open-0001",
+      registry_version: 1,
+    },
+    closed: null,
+  });
+  const index = (memberships: readonly MembershipEpisode[], complete = true) =>
+    buildWorkstreamAssignmentIndex({
+      ownerId: "owner",
+      registryVersion: 11,
+      references: [reference],
+      memberships,
+      complete,
+    });
+  const menuButton = (text: string) =>
+    [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (entry) => !container.contains(entry) && entry.textContent?.trim() === text,
     );
-  }
-  await act(async () => root.render(<VisibilityHost />));
-  expect(container.querySelector('[data-testid="visible-group-count"]')?.textContent).toBe(
-    String(data.items.length + 1),
-  );
+  const useIndex = (
+    assignmentIndex: WorkstreamAssignmentIndex,
+    changes: Partial<WorkstreamListView> = {},
+  ) => {
+    controller = {
+      ...controller,
+      placements: null,
+      placementInventory: { coverage: "complete", identities: [], json: "[]", totalIdentities: 0 },
+      assignmentIndex,
+      stale: false,
+      ...changes,
+    };
+    return { assignmentIndex, verificationNow: new Date(now).toISOString() };
+  };
+
+  it("groups and counts a recorded member without current proof and confirms Unassigned", async () => {
+    const options = useIndex(index([episode("membership", "alpha")]));
+    const running = statusThread("thread", "running");
+    await render([running, threads[1]!], [running, threads[1]!], options);
+    expect(
+      container.querySelector('[aria-label="alpha: 1 of 1 known threads running"]')?.textContent,
+    ).toBe("1/1");
+    expect(container.querySelector('[aria-label="Unassigned threads"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.textContent).not.toContain("Thread assignments are unavailable");
+    expect(container.textContent).not.toContain("Showing the last loaded Workstreams");
+  });
+
+  it("offers recorded membership choices without claiming the row is unchecked", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+    });
+    await render(threads, threads, options);
+    await openAssignment();
+    expect(document.body.textContent).not.toContain("Assignment unknown");
+    expect(document.body.textContent).not.toContain("Assignment not checked");
+    expect(menuButton("alpha (primary)")?.disabled).toBe(true);
+    await clickMenu("beta");
+    expect(assignment).toHaveBeenCalledWith(
+      threads[0],
+      "beta",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  // Keeps the second row's title so the shared row helpers find it.
+  const remoteThread = {
+    ...threads[1]!,
+    environmentId: "env:b",
+    id: "remote",
+  } as unknown as EnvironmentThreadShell;
+
+  it("offers another environment's thread when its own server handles the assignment", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+      assignsThroughOwnEnvironment: (environmentId) => environmentId !== thread.environmentId,
+    });
+    const visible = [threads[0]!, remoteThread];
+    await render(visible, visible, options);
+    await openAssignment(1);
+    expect(document.body.textContent).not.toContain("Assignment unavailable for this environment");
+    await clickMenu("beta");
+    expect(assignment).toHaveBeenCalledWith(
+      remoteThread,
+      "beta",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("keeps another environment's thread unavailable without its own assignment route", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+    });
+    const visible = [threads[0]!, remoteThread];
+    await render(visible, visible, options);
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment unavailable for this environment");
+    expect(menuButton("beta")?.disabled).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+  });
+
+  it("never confirms Unassigned from an incomplete index", async () => {
+    const options = useIndex(index([episode("membership", "alpha")], false));
+    await render(threads, threads, options);
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.querySelector('[aria-label="Unassigned threads"]')).toBeNull();
+    expect(container.textContent).toContain("Some thread assignments could not be loaded");
+    expect(container.querySelector('[aria-label="Collapse alpha"]')).not.toBeNull();
+    await openAssignment(1);
+    expect(document.body.textContent).toContain("Assignment unknown");
+  });
+
+  it("shows stale Workstreams read-only without confirming Unassigned", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), {
+      assignNativeThread: assignment,
+      stale: true,
+    });
+    await render(threads, threads, options);
+    expect(container.textContent).toContain(
+      "Showing the last loaded Workstreams. Refresh to update.",
+    );
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[1]!.title,
+    );
+    expect(container.querySelector('[aria-label="Workstream threads"]')?.textContent).toContain(
+      threads[0]!.title,
+    );
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!);
+    await release();
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+    await openAssignment();
+    expect(menuButton("beta")?.disabled).toBe(true);
+    expect(menuButton("Unassigned (remove primary)")?.disabled).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+  });
+
+  it("warns about conflicting primaries and blocks every membership change", async () => {
+    const assignment = vi.fn(async () => undefined);
+    const options = useIndex(
+      index([episode("membership", "alpha"), episode("membership-beta", "beta")]),
+      { assignNativeThread: assignment },
+    );
+    await render(threads, threads, options);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "conflicting Workstream assignments",
+    );
+    expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
+      threads[0]!.title,
+    );
+    await pointerEvent(nativeRow(0), "pointerdown");
+    const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
+    await pointAt(target);
+    expect(target.getAttribute("data-drop-target")).not.toBe("thread");
+    await release();
+    await openAssignment();
+    expect(document.body.textContent).toContain("Conflicting assignments; changes blocked");
+    for (const label of ["alpha", "beta", "Unassigned (remove primary)"])
+      expect(menuButton(label)?.disabled, label).toBe(true);
+    expect(assignment).not.toHaveBeenCalled();
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
 });

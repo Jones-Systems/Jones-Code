@@ -219,6 +219,23 @@ afterEach(() => {
 });
 
 describe("showContextMenuFallback", () => {
+  it("selects an enabled Stop and rejects a disabled Stop", async () => {
+    const selection = showContextMenuFallback([
+      { id: "stop-thread", label: "Stop thread", icon: "square" },
+    ]);
+    const button = findButton("Stop thread");
+    expect(button).toBeTruthy();
+    button?.dispatchEvent(new FakeDomEvent("click"));
+    await expect(selection).resolves.toBe("stop-thread");
+
+    const disabled = showContextMenuFallback([
+      { id: "stop-thread", label: "Stop thread", icon: "square", disabled: true },
+    ]);
+    expect(findButton("Stop thread")?.disabled).toBe(true);
+    findButton("Stop thread")?.dispatchEvent(new FakeDomEvent("click"));
+    dismissContextMenu();
+    await expect(disabled).resolves.toBeNull();
+  });
   it("renders one separator between menu sections", async () => {
     const selectionPromise = showContextMenuFallback([
       { id: "rename", label: "Rename" },

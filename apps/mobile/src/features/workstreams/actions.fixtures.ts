@@ -1,9 +1,14 @@
 import type {
+  MembershipEpisode,
   NativeReference,
   T3ThreadPlacement,
   T3WorkstreamListResult,
 } from "@t3tools/contracts";
-import type { LiveT3Placements } from "@t3tools/client-runtime/state/workstreams";
+import {
+  buildWorkstreamAssignmentIndex,
+  type LiveT3Placements,
+  type WorkstreamAssignmentIndex,
+} from "@t3tools/client-runtime/state/workstreams";
 
 export const now = Date.parse("2026-09-30T12:00:00Z");
 export const thread = {
@@ -110,4 +115,72 @@ export const input = {
   thread,
   destination: "beta",
   now,
+};
+
+const opened = {
+  at: "2026-09-30T11:00:00Z",
+  actor: { principal_id: "owner" },
+  command_id: "fixture-command",
+  registry_version: 1,
+};
+/** A stored reference for any environment and thread, attested once and then expired. */
+export const referenceFor = (environmentId: string, threadId: string): NativeReference => ({
+  ...reference,
+  native_reference_id: `reference:${environmentId}:${threadId}`,
+  identity: { ...reference.identity, source_instance_id: environmentId, native_id: threadId },
+  registration: {
+    ...reference.registration,
+    evidence: {
+      ...reference.registration.evidence!,
+      source_instance_id: environmentId,
+      native_id: threadId,
+    },
+  },
+});
+export const membershipFor = (
+  membershipId: string,
+  workstreamId: string,
+  referenceId: string,
+  kind: "primary" | "secondary" = "primary",
+): MembershipEpisode => ({
+  membership_id: membershipId,
+  workstream_id: workstreamId,
+  native_reference_id: referenceId,
+  kind,
+  opened,
+  closed: null,
+});
+/** The fixture thread's stored primary in alpha, matching the `primary` placement. */
+export const assignmentIndexFor = (
+  assignments: readonly {
+    readonly environmentId: string;
+    readonly threadId: string;
+    readonly workstreamId: string;
+    readonly kind?: "primary" | "secondary";
+    readonly membershipId?: string;
+  }[] = [{ environmentId: "env:a", threadId: "thread", workstreamId: "alpha" }],
+  complete = true,
+): WorkstreamAssignmentIndex => {
+  const references = new Map<string, NativeReference>();
+  const memberships = assignments.map((entry, position) => {
+    const stored =
+      entry.environmentId === "env:a" && entry.threadId === "thread"
+        ? reference
+        : referenceFor(entry.environmentId, entry.threadId);
+    references.set(stored.native_reference_id, stored);
+    return membershipFor(
+      entry.membershipId ??
+        (stored === reference && position === 0 ? "membership" : `membership:${position}`),
+      entry.workstreamId,
+      stored.native_reference_id,
+      entry.kind,
+    );
+  });
+  return buildWorkstreamAssignmentIndex({
+    ownerId: data.binding.ownerId,
+    registryVersion: data.binding.registryVersion,
+    references: [...references.values()],
+    memberships,
+    complete,
+  });
 };

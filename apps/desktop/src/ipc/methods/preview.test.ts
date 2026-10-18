@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as PreviewManager from "../../preview/Manager.ts";
 import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
+import { unwrapPreviewAutomationResult } from "../../preview/AutomationResult.ts";
 import * as PreviewIpc from "./preview.ts";
 
 const { fromPartition } = vi.hoisted(() => ({
@@ -36,6 +37,37 @@ vi.mock("electron", () => ({
 describe("preview IPC methods", () => {
   beforeEach(() => {
     fromPartition.mockClear();
+  });
+
+  it("preserves authoritative not-started evidence through encoded IPC", () => {
+    const envelope = {
+      type: "previewAutomationResult",
+      ok: false,
+      error: { _tag: "PreviewAutomationNotStartedError", outcome: "not_started" },
+    };
+    expect(() => unwrapPreviewAutomationResult(structuredClone(envelope), 100)).toThrow();
+    try {
+      unwrapPreviewAutomationResult(structuredClone(envelope), 100);
+    } catch (error) {
+      expect(error).toEqual(envelope.error);
+    }
+    expect(unwrapPreviewAutomationResult(envelope)).toBe(envelope);
+  });
+
+  it("does not interpret an arbitrary evaluate result as executor evidence", () => {
+    const pageResult = {
+      type: "previewAutomationResult",
+      ok: false,
+      error: { _tag: "PreviewAutomationNotStartedError", outcome: "not_started" },
+    };
+    const envelope = { type: "previewAutomationResult", ok: true, result: pageResult };
+    expect(unwrapPreviewAutomationResult(envelope, 100)).toBe(pageResult);
+    expect(
+      unwrapPreviewAutomationResult(
+        { type: "previewAutomationResult", ok: true, result: undefined },
+        100,
+      ),
+    ).toBeUndefined();
   });
 
   it("does not access the Electron session while the module loads", async () => {
@@ -126,32 +158,6 @@ describe("preview IPC methods", () => {
         expect(fromPartition).not.toHaveBeenCalled();
       },
     ),
-  );
-
-  effectIt.effect("returns automation status for long runtime tab ids", () =>
-    Effect.gen(function* () {
-      const tabId =
-        `["environment-1","thread:delegated-task:${"a".repeat(120)}",` +
-        `"server-epoch-1","preview-1"]`;
-      const status = {
-        available: false,
-        visible: true,
-        tabId,
-        url: null,
-        title: null,
-        loading: false,
-      };
-      const manager = PreviewManager.PreviewManager.of({
-        automationStatus: () => Effect.succeed(status),
-      } as unknown as PreviewManager.PreviewManager["Service"]);
-
-      expect(tabId.length).toBeGreaterThan(128);
-      expect(
-        yield* PreviewIpc.automationStatus
-          .handler({ tabId })
-          .pipe(Effect.provideService(PreviewManager.PreviewManager, manager)),
-      ).toEqual(status);
-    }),
   );
 
   it("keeps the public automation status tab id limit", () => {

@@ -1,6 +1,6 @@
 import { PullRequestOperationError } from "@t3tools/contracts";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const { useAtomValue, refresh } = vi.hoisted(() => ({
@@ -24,14 +24,13 @@ describe("environment query error metadata", () => {
       reason: "rate-limited",
       retryAt: 60_000,
     });
-    useAtomValue.mockReturnValue(
-      AsyncResult.fail(error, { previousSuccess: Option.some(AsyncResult.success("held")) }),
-    );
+    const held = AsyncResult.success("held");
+    useAtomValue.mockReturnValue(AsyncResult.fail(error, { previousSuccess: Option.some(held) }));
     const query = useEnvironmentQuery(atom);
     expect(query.data).toBe("held");
     expect(query.error).toBe(error.message);
-    expect(query.errorCause).toBe(error);
-    expect(query.dataUpdatedAt).toBeNull();
+    expect(query.failure).toBe(error);
+    expect(query.dataUpdatedAt).toBe(held.timestamp);
   });
 
   it("clears the failure metadata after recovery", () => {
@@ -39,6 +38,6 @@ describe("environment query error metadata", () => {
     const query = useEnvironmentQuery(atom);
     expect(query.data).toBe("fresh");
     expect(query.error).toBeNull();
-    expect(query.errorCause).toBeNull();
+    expect(query.failure).toBeNull();
   });
 });

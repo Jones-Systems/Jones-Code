@@ -4,6 +4,7 @@ import {
   USAGE_CONTRACT_VERSION,
   type UsageBucket,
   type UsageSummary,
+  type UsageSummaryInput,
 } from "@t3tools/contracts";
 import { mergeUsage } from "@t3tools/shared/usageMerge";
 import { act } from "react";
@@ -12,6 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { saveUsagePagePreferences } from "./usagePagePreferences";
+import type { UsageView } from "../../state/usage";
 
 const testState = vi.hoisted(() => ({
   useUsage: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("../WorkspaceBreadcrumb", () => ({
   WorkspaceBreadcrumb: "div",
   WorkspaceBreadcrumbItem: "div",
   WorkspaceBreadcrumbSeparator: "span",
+  WorkspaceBreadcrumbText: "span",
 }));
 vi.mock("../WorkspacePageContainer", () => ({ WorkspacePageContainer: "main" }));
 vi.mock("../WorkspacePageHeader", () => ({ WorkspacePageHeader: "header" }));
@@ -83,13 +86,15 @@ vi.mock("./UsageProviderChart", async () => {
   };
 });
 vi.mock("./UsagePriceOverrides", () => ({ UsagePriceOverrides: () => null }));
+vi.mock("../../jones/usage/SavedTokenAccounting", () => ({ SavedTokenAccounting: () => null }));
 vi.mock("./usageProviders", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./usageProviders")>();
   return {
     ...actual,
+    PROVIDER_ORDER: ["codex", "claude"],
     PROVIDER_PRESENTATION: {
-      codex: { color: "white", label: "Codex", mark: "span" },
-      claude: { color: "orange", label: "Claude Code", mark: "span" },
+      codex: { ...actual.PROVIDER_PRESENTATION.codex, color: "white" },
+      claude: { ...actual.PROVIDER_PRESENTATION.claude, color: "orange" },
     },
   };
 });
@@ -100,6 +105,9 @@ const environments = [
     environmentId: EnvironmentId.make("test-environment"),
     label: "Test environment",
     isPending: false,
+    canReadDiagnostics: true,
+    isConnected: true,
+    needsCursorKeychainAccess: false,
     error: null,
     summary: {
       contractVersion: USAGE_CONTRACT_VERSION,
@@ -115,8 +123,15 @@ const environments = [
   },
 ];
 
+function mockAnsweredUsage(view: Omit<UsageView, "shown">) {
+  testState.useUsage.mockImplementation((window: UsageSummaryInput) => ({
+    ...view,
+    shown: { window, merged: view.merged },
+  }));
+}
+
 beforeEach(() => {
-  testState.useUsage.mockReturnValue({
+  mockAnsweredUsage({
     merged: mergeUsage([], USAGE_CONTRACT_VERSION),
     environments,
     selectedEnvironments: environments,
@@ -426,7 +441,7 @@ describe("UsagePage provider and model details", () => {
 
   beforeEach(async () => {
     saveUsagePagePreferences({ metric: "tokens", windowDays: 30 });
-    testState.useUsage.mockReturnValue(usageFixture());
+    mockAnsweredUsage(usageFixture());
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     container = document.createElement("div");
     document.body.append(container);
@@ -446,12 +461,19 @@ describe("UsagePage provider and model details", () => {
     await act(() => button!.click());
   }
 
-  async function clickText(text: string) {
-    const button = [...container.querySelectorAll("button")].find(
+  async function clickText(text: string, within: ParentNode = container) {
+    const button = [...within.querySelectorAll("button")].find(
       (item) => item.textContent?.trim() === text,
     );
     expect(button).toBeDefined();
     await act(() => button!.click());
+  }
+
+  function breakdownSection() {
+    const section = container.querySelector('[aria-label="Usage breakdown"]')?.closest("section");
+    expect(section).toBeDefined();
+    expect(section).not.toBeNull();
+    return section!;
   }
 
   function details() {
@@ -467,7 +489,7 @@ describe("UsagePage provider and model details", () => {
 
   function modelNames() {
     return [...container.querySelectorAll('tbody button[aria-label$="token details"]')].map(
-      (button) => button.textContent?.trim(),
+      (button) => button.previousElementSibling?.textContent?.trim(),
     );
   }
 
@@ -489,7 +511,10 @@ describe("UsagePage provider and model details", () => {
     expect(metric(details(), "Recorded responses")).toBe("3");
     expect(metric(details(), "Model priced")).toBe("2");
     expect(metric(details(), "Unpriced")).toBe("1");
+    expect(container.querySelector("tbody tr")?.textContent).toContain("92.5%");
+    await clickText("Cost");
     expect(container.querySelector("tbody tr")?.textContent).toContain("100.0%");
+    await clickText("Tokens");
     expect(container.textContent).toContain("Shares are within Codex's API estimate");
     expect(container.querySelector(".text-4xl")?.textContent).toBe(summary);
     expect(container.querySelector('[data-testid="usage-chart"]')!.outerHTML).toBe(chart);
@@ -503,7 +528,7 @@ describe("UsagePage provider and model details", () => {
     expect(modelNames()).toEqual(["claude-known"]);
     expect(container.querySelectorAll("#usage-provider-details")).toHaveLength(1);
 
-    await clickText("All providers");
+    await clickText("All providers", breakdownSection());
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toHaveLength(3);
   });
@@ -532,7 +557,7 @@ describe("UsagePage provider and model details", () => {
       "Total",
       "Tokens",
     ]);
-    await clickText("All providers");
+    await clickText("All providers", breakdownSection());
     expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
 
     const range = container.querySelector<HTMLButtonElement>(
@@ -570,7 +595,7 @@ describe("UsagePage provider and model details", () => {
     ).toBeNull();
 
     const fixture = usageFixture();
-    testState.useUsage.mockReturnValue({
+    mockAnsweredUsage({
       ...fixture,
       merged: {
         ...fixture.merged,
@@ -589,7 +614,7 @@ describe("UsagePage provider and model details", () => {
   it("recomputes from new environment data and clears a provider that disappears", async () => {
     await clickLabel("Codex usage details");
     const next = usageFixture(true, "other-environment");
-    testState.useUsage.mockReturnValue({
+    mockAnsweredUsage({
       ...next,
       merged: {
         ...next.merged,
@@ -601,11 +626,11 @@ describe("UsagePage provider and model details", () => {
     await act(() => renderer.render(<UsagePage />));
     expect(metric(details(), "Recorded responses")).toBe("7");
 
-    testState.useUsage.mockReturnValue(usageFixture(false, "claude-environment"));
+    mockAnsweredUsage(usageFixture(false, "claude-environment"));
     await act(() => renderer.render(<UsagePage />));
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toEqual(["claude-known"]);
-    testState.useUsage.mockReturnValue(usageFixture());
+    mockAnsweredUsage(usageFixture());
     await act(() => renderer.render(<UsagePage />));
     expect(container.querySelector("#usage-provider-details")).toBeNull();
     expect(modelNames()).toHaveLength(3);

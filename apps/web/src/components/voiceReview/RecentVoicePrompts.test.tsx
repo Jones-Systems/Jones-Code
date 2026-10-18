@@ -7,6 +7,7 @@ import {
   threadRegistrySnapshotFixture,
   threadRegistryWorkstreamsFixture,
 } from "@t3tools/client-runtime/voice-review/fixtures";
+import type { VoiceReviewRecentEntry } from "@t3tools/contracts";
 import { RecentVoicePrompts, recentThread } from "./RecentVoicePrompts";
 
 describe("recent voice prompt interactions", () => {
@@ -23,7 +24,10 @@ describe("recent voice prompt interactions", () => {
     container.remove();
     vi.unstubAllGlobals();
   });
-  async function render(entries = voiceReviewRecentFixture.entries, correctAssociation = vi.fn()) {
+  async function render(
+    entries: readonly VoiceReviewRecentEntry[] = voiceReviewRecentFixture.entries,
+    correctAssociation = vi.fn(),
+  ) {
     await act(() =>
       root.render(
         <RecentVoicePrompts
@@ -43,6 +47,35 @@ describe("recent voice prompt interactions", () => {
     if (!found) throw new Error(`Missing button: ${text}`);
     return found;
   }
+  it("shows opaque remaining delivery identities without claiming native handoff", async () => {
+    await render([
+      {
+        ...voiceReviewRecentFixture.entries[0]!,
+        queue_delivery_links: {
+          status: "ready",
+          reason: null,
+          deliveries: [
+            {
+              delivery_id: "unconfirmed-sibling",
+              queue_request_id: "queue-request",
+              payload_sha256: "b".repeat(64),
+              destination: {
+                backend: "t3",
+                instance: "opaque-instance",
+                thread_id: "thread",
+                project_id: null,
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    const details = container.querySelector("article details")!;
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.textContent).toContain("unconfirmed-sibling");
+    expect(details.textContent).toContain("Instance: opaque-instance");
+    expect(details.textContent).toContain("do not prove native handoff");
+  });
   it("joins only the verified composite key and never a bare routing target", () => {
     const entry = voiceReviewRecentFixture.entries[0]!;
     const thread = threadRegistrySnapshotFixture.threads[0]!;
@@ -59,7 +92,28 @@ describe("recent voice prompt interactions", () => {
     expect(recentThread({ ...entry, thread_key: thread.thread_key }, [thread])).toBe(thread);
     expect(recentThread({ ...entry, thread_key: "unmapped" }, [thread])).toBeNull();
   });
-  it("expands retained literal text and shows deletion and expiry without fabricating text", async () => {
+  it("explains retained unlinked siblings even after all explicit links were matched", async () => {
+    await render([
+      {
+        ...voiceReviewRecentFixture.entries[0]!,
+        queue_delivery_links: {
+          status: "ready",
+          reason: null,
+          deliveries: [],
+          unlinked_delivery_count: 2,
+        },
+      },
+    ]);
+    const details = container.querySelector<HTMLDetailsElement>("article details")!;
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.textContent).toContain("Deliveries without queue links: 2.");
+    expect(details.textContent).toContain(
+      "Native handoff remains unconfirmed for these deliveries.",
+    );
+    expect(details.textContent).not.toContain("Queue request:");
+  });
+  it("shows literal prompt text immediately and discloses provenance without fabricating missing text", async () => {
     const retained = voiceReviewRecentFixture.entries[0]!;
     const deleted = voiceReviewRecentFixture.entries[2]!;
     await render([
@@ -71,15 +125,21 @@ describe("recent voice prompt interactions", () => {
         text_state: "expired",
       },
     ]);
-    expect(container.textContent).not.toContain("literal retained text");
     const articles = container.querySelectorAll("article");
-    for (const article of articles) await act(() => button("Show full text", article).click());
     expect(articles[0]!.textContent).toContain("<script>literal retained text</script>");
     expect(container.querySelector("script")).toBeNull();
     expect(articles[1]!.textContent).toContain("Prompt text was deleted.");
     expect(articles[2]!.textContent).toContain("Prompt text has expired.");
-    await act(() => button("Hide full text", articles[0]!).click());
-    expect(articles[0]!.textContent).not.toContain("literal retained text");
+    const details = articles[0]!.querySelector("details")!;
+    expect(details.open).toBe(false);
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.textContent).toContain("Retained command text");
+    expect(details.textContent).toContain("command-1");
+    expect(details.textContent).toContain("Original transcript");
+    await act(() => details.querySelector("summary")!.click());
+    expect(details.open).toBe(false);
+    expect(articles[0]!.textContent).toContain("literal retained text");
   });
   it("removes only acknowledged metadata and re-adds the same workstream at the suppression revision", async () => {
     const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
@@ -175,5 +235,90 @@ describe("recent voice prompt interactions", () => {
     await act(() => remove.click());
     expect(correctAssociation).not.toHaveBeenCalled();
     expect(container.textContent).toContain("association revisions are observed");
+  });
+  it("shows an empty observation without offering metadata corrections", async () => {
+    await render([]);
+    expect(container.textContent).toContain("No recent prompts observed.");
+    expect(container.querySelector("article, select")).toBeNull();
+  });
+  it("keeps stale prompt text readable but disables corrections when context is unavailable", async () => {
+    const correctAssociation = vi.fn();
+    await act(() =>
+      root.render(
+        <RecentVoicePrompts
+          entries={[voiceReviewRecentFixture.entries[0]!]}
+          registry={{
+            ...threadRegistrySnapshotFixture,
+            threads: threadRegistrySnapshotFixture.threads.map((thread) => ({
+              ...thread,
+              freshness: { ...thread.freshness, stale: true },
+            })),
+          }}
+          workstreams={threadRegistryWorkstreamsFixture}
+          transport={{ correctAssociation }}
+          onRefresh={async () => undefined}
+          unavailable
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("Keep the recent prompts readable.");
+    expect(container.textContent).toContain("Thread context is stale.");
+    const remove = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Remove Voice review workstream"]',
+    )!;
+    expect(remove.disabled).toBe(true);
+    expect(container.querySelector("select")!.disabled).toBe(true);
+    await act(() => remove.click());
+    expect(correctAssociation).not.toHaveBeenCalled();
+  });
+  it("requires successful metadata refresh after an uncertain correction without retrying it", async () => {
+    let rejectCorrection!: (error: Error) => void;
+    const correction = new Promise<never>((_, reject) => {
+      rejectCorrection = reject;
+    });
+    const correctAssociation = vi.fn(() => correction);
+    const onRefresh = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Offline"))
+      .mockResolvedValueOnce(undefined);
+    await act(() =>
+      root.render(
+        <RecentVoicePrompts
+          entries={[voiceReviewRecentFixture.entries[0]!]}
+          registry={threadRegistrySnapshotFixture}
+          workstreams={threadRegistryWorkstreamsFixture}
+          transport={{ correctAssociation }}
+          onRefresh={onRefresh}
+          unavailable={false}
+        />,
+      ),
+    );
+    const remove = () => {
+      const current = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Remove Voice review workstream"]',
+      )!;
+      expect(current.isConnected).toBe(true);
+      return current;
+    };
+    await act(() => remove().click());
+    expect(remove().disabled).toBe(true);
+    expect(container.querySelector("select")!.disabled).toBe(true);
+    await act(() => remove().click());
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    await act(() => rejectCorrection(new Error("Lost receipt")));
+    expect(remove().disabled).toBe(true);
+    expect(container.textContent).toContain("Correction is unconfirmed");
+    await act(() => remove().click());
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    await act(() => button("Check current workstreams").click());
+    expect(container.textContent).toContain("Correction remains unconfirmed");
+    expect(remove().disabled).toBe(true);
+    await act(() => remove().click());
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    await act(() => button("Check current workstreams").click());
+    expect(remove().disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(correctAssociation).toHaveBeenCalledTimes(1);
+    expect(onRefresh).toHaveBeenCalledTimes(2);
   });
 });

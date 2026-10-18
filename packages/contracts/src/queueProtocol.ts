@@ -1,8 +1,10 @@
 import * as Schema from "effect/Schema";
 
+export const LEGACY_ORCHESTRATION_PROTOCOL_VERSION = 1;
+
 const queueDispatchCapabilityFields = {
   schemaVersion: Schema.Literal("t3.queue-dispatch-capability/v1"),
-  orchestrationProtocolVersion: Schema.Literal(1),
+  orchestrationProtocolVersion: Schema.Literal(LEGACY_ORCHESTRATION_PROTOCOL_VERSION),
   dispatchGuard: Schema.Literal("t3.thread-turn-dispatch-guard/v1"),
   commandObservation: Schema.Literal("t3.command-observation/v1"),
   persistedRejection: Schema.Literal("t3.command-rejection/v1"),
@@ -21,11 +23,12 @@ export const QueueDispatchCapability = Schema.flip(
 );
 export type QueueDispatchCapability = typeof QueueDispatchCapability.Type;
 
-// These literals describe existing dispatch, observation, inventory and CLI semantics.
+// These literals bind the legacy dispatch, observation, inventory and CLI semantics.
+// Advertise only after the receiving server proves that complete compatibility facade.
 // They do not qualify a particular provider account or authorize thread creation.
 export const QUEUE_DISPATCH_CAPABILITY = {
   schemaVersion: "t3.queue-dispatch-capability/v1",
-  orchestrationProtocolVersion: 1,
+  orchestrationProtocolVersion: LEGACY_ORCHESTRATION_PROTOCOL_VERSION,
   dispatchGuard: "t3.thread-turn-dispatch-guard/v1",
   commandObservation: "t3.command-observation/v1",
   persistedRejection: "t3.command-rejection/v1",

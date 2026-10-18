@@ -5,9 +5,6 @@ export const WORKSTREAM_CONTRACT_VERSION = "1.0.0" as const;
 export const WORKSTREAM_CONTRACT_HEADER_VERSION = "workstreams/1.0.0" as const;
 export const WORKSTREAM_CONTRACT_MANIFEST_SHA256 =
   "6d8da23d51c1bba024dddc4b8d4dd9a594d2f474affd73e4cc7de508b797f557" as const;
-export const WORKSTREAM_COUNTS_MANIFEST_SHA256 =
-  "02d17ec73ecd375f2d52b0879fc77913561d28c71760355db5d9004c365ff925" as const;
-export const WORKSTREAM_COUNTS_ROUTE = "/workstreams/v1/counts" as const;
 export const WORKSTREAM_MAX_PAGE_ITEMS = 100;
 export const WORKSTREAM_MAX_RESPONSE_BYTES = 1_048_576;
 
@@ -684,26 +681,8 @@ export const WorkstreamCapabilities = Schema.Struct({
   max_pr_response_bytes: Schema.Literal(262_144),
   max_pr_request_seconds: Schema.Literal(15),
   cursor_ttl_seconds: Schema.Literal(900),
-  registry_counts: Schema.optional(
-    Schema.Struct({
-      version: Schema.Literal(1),
-      path: Schema.Literal(WORKSTREAM_COUNTS_ROUTE),
-      active_definition: Schema.Literal("latest_owner_lifecycle_declaration_active"),
-    }),
-  ),
 });
 export type WorkstreamCapabilities = typeof WorkstreamCapabilities.Type;
-
-export const WorkstreamRegistryCounts = Schema.Struct({
-  context: WorkstreamReadContext,
-  principal_id: Id,
-  observed_at: Timestamp,
-  authority_effect: Schema.Literal("none"),
-  total: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  active: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  unknown_lifecycle: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-});
-export type WorkstreamRegistryCounts = typeof WorkstreamRegistryCounts.Type;
 
 const page = <Item extends Schema.Top>(item: Item) =>
   Schema.Struct({

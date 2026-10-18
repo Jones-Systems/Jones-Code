@@ -1,50 +1,48 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
-import { GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
 import {
-  workstreamFailureMessage,
-  type WorkstreamActionSnapshot,
-  type WorkstreamListView,
-} from "../../state/workstreams";
-import { Button } from "../ui/button";
-import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
+import type { WorkstreamListView } from "../../state/workstreams";
+import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ThreadActionMenuId } from "../threadActionMenu.logic";
+import { SIDEBAR_DRAG_DISTANCE, SidebarPointerSensor } from "../Sidebar.pointer";
+
 import { WorkstreamSidebarSection, workstreamCommandId } from "./WorkstreamSidebarSection";
-import {
-  canEditWorkstreams,
-  moveNativeMembershipThreads,
-  ThreadMovementError,
-  type NativeMembershipIntent,
-} from "./nativeWorkstreamActions";
-import { qualifiedRegistrationSource, threadReferenceState } from "./workstreamReferenceActions";
+import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import {
   nativeWorkstreamThreadKey,
-  secondaryNativeWorkstreamLabels,
   type NativeWorkstreamThreadGrouping,
 } from "./nativeThreadGrouping";
 
+import { nativeThreadSourceAvailable } from "../../jones/workstreams/nativeThreadAssignment";
+import { workstreamFailureMessage } from "../../jones/workstreams/workstreamActionSnapshot";
+
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
+
+export interface NativeThreadAssignmentMenu {
+  readonly items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>;
+  readonly onAction: (action: ThreadActionMenuId) => void;
+}
 
 export function WorkstreamNativeSidebar(props: {
   readonly controller: WorkstreamListView;
   readonly grouping: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
   readonly summaryGrouping?: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
-  readonly renderThread: (thread: EnvironmentThreadShell) => ReactNode;
+  readonly renderThread: (
+    thread: EnvironmentThreadShell,
+    assignment: NativeThreadAssignmentMenu,
+  ) => ReactNode;
+  readonly assignmentMenuRef?: RefObject<
+    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
+  >;
   readonly canReorder: (thread: EnvironmentThreadShell) => boolean;
-  readonly onMovementError?: (cause: unknown) => void;
-  readonly onThreadDragEnd?: () => void;
-  readonly captureDrag?: (thread: EnvironmentThreadShell) => readonly EnvironmentThreadShell[];
-  readonly moveThreads?: (
-    threads: readonly EnvironmentThreadShell[],
-    destination: string | null,
-    intent?: NativeMembershipIntent,
-  ) => Promise<void>;
-  readonly reorderSelection?: (
-    threads: readonly EnvironmentThreadShell[],
-    neighbor: EnvironmentThreadShell,
-    after: boolean,
-  ) => Promise<void>;
-  readonly onVisibleGroupsChange?: (ids: readonly (string | null)[]) => void;
   readonly reorder: (
     thread: EnvironmentThreadShell,
     neighbor: EnvironmentThreadShell,
@@ -57,81 +55,94 @@ export function WorkstreamNativeSidebar(props: {
     () => summarizeWorkstreamThreadStatuses(statusGrouping),
     [statusGrouping],
   );
-  const [dragged, setDragged] = useState<readonly EnvironmentThreadShell[] | null>(null);
+  const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
     threadKey?: string;
     after?: boolean;
   } | null>(null);
-  const [menuThread, setMenuThread] = useState<string | null>(null);
+  const sensorRef = useRef<SidebarPointerSensor | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [offsetY, setOffsetY] = useState(0);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
-  const binding = controller.data
-    ? workstreamBindingKey({ ...controller.data.binding, registryVersion: 0 })
-    : null;
+  const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
   const bindingRef = useRef(binding);
   useLayoutEffect(() => {
     bindingRef.current = binding;
+    sensorRef.current?.cancel();
     request.current?.abort();
     setDragged(null);
     setDropTarget(null);
     setError(null);
     setBusy(false);
     busyRef.current = false;
-    props.onThreadDragEnd?.();
-    return () => request.current?.abort();
-  }, [binding, props.onThreadDragEnd]);
+    return () => {
+      bindingRef.current = null;
+      sensorRef.current?.cancel();
+      request.current?.abort();
+    };
+  }, [binding]);
   const canWrite = canEditWorkstreams(controller.data) && !controller.loading && !busy;
   const inventory = new Set(
     controller.placementInventory.identities.map((item) =>
       nativeWorkstreamThreadKey(item.source_instance_id, item.native_thread_id),
     ),
   );
-  const snapshot: WorkstreamActionSnapshot | null =
-    controller.data && controller.references
-      ? {
-          data: controller.data,
-          references: controller.references,
-          placements: controller.placements,
-          registrationContext: controller.registrationContext,
-        }
-      : null;
-  const referenceState = (thread: EnvironmentThreadShell) =>
-    snapshot ? threadReferenceState(snapshot, thread, Date.now()) : null;
-  const canPrepare = (thread: EnvironmentThreadShell) => {
-    if (
-      !canWrite ||
-      !snapshot ||
-      !inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
-    )
-      return false;
-    try {
-      qualifiedRegistrationSource(snapshot, "t3", thread);
-      return true;
-    } catch {
-      return false;
-    }
+  const assuranceOf = (thread: EnvironmentThreadShell) => {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    return statusGrouping.assuranceByKey?.get(key) ?? grouping.assuranceByKey?.get(key);
   };
+  const conflicted = (thread: EnvironmentThreadShell) => {
+    const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
+    return statusGrouping.conflictingKeys.has(key) || grouping.conflictingKeys.has(key);
+  };
+  // With stored assignments, a recorded member is known; Unassigned needs a complete live index.
+  const assignmentChecked = (thread: EnvironmentThreadShell) => {
+    const assurance = assuranceOf(thread);
+    if (assurance !== undefined)
+      return (
+        assurance === "verified" ||
+        assurance === "recorded" ||
+        (assurance === "unassigned" && controller.stale !== true)
+      );
+    return (
+      controller.placements?.readiness === "ready" &&
+      controller.placements.trustedEnvironments.some(
+        (entry) => entry.environmentId === thread.environmentId,
+      ) &&
+      inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
+    );
+  };
+  // Another environment's thread is registered through its own server, which checks its source.
+  const sourceAvailable = (thread: EnvironmentThreadShell) =>
+    nativeThreadSourceAvailable(controller.registrationContext, thread) ||
+    controller.assignsThroughOwnEnvironment?.(thread.environmentId) === true;
+  // Stale snapshots are read-only; conflicting primaries or a known identity mismatch block
+  // changes until re-verification.
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
-    controller.placements !== null &&
-    referenceState(thread) === "verified" &&
-    inventory.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id));
+    controller.stale !== true &&
+    controller.assignNativeThread !== undefined &&
+    sourceAvailable(thread) &&
+    !conflicted(thread);
+  const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
+  const hasConflict = grouping.conflictingKeys.size > 0;
+  // Unassigned is a claim only a complete, live index can make for every listed row.
+  const otherThreadsLabel =
+    grouping.assuranceByKey !== undefined ? "Assignment unknown" : "Other threads";
+  const assignmentIndex = controller.assignmentIndex ?? null;
   const run = (operation: () => Promise<void>) => {
-    if (busyRef.current) return;
+    if (busyRef.current || bindingRef.current !== binding) return;
     busyRef.current = true;
     setBusy(true);
     setError(null);
     const startedBinding = binding;
     void operation()
       .catch((cause: unknown) => {
-        props.onMovementError?.(cause);
-        if (bindingRef.current === startedBinding)
-          setError(
-            cause instanceof ThreadMovementError ? cause.message : workstreamFailureMessage(cause),
-          );
+        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
       })
       .finally(() => {
         if (bindingRef.current === startedBinding) {
@@ -140,94 +151,220 @@ export function WorkstreamNativeSidebar(props: {
         }
       });
   };
-  const moveThreads = async (
-    threads: readonly EnvironmentThreadShell[],
-    destination: string | null,
-    intent?: NativeMembershipIntent,
-  ) => {
-    if (props.moveThreads) return props.moveThreads(threads, destination, intent);
+  const move = async (thread: EnvironmentThreadShell, destination: string | null) => {
+    if (!canMove(thread) || !controller.assignNativeThread)
+      throw new Error("This environment is unavailable for Workstream assignment.");
     request.current?.abort();
     const abort = new AbortController();
     request.current = abort;
-    await moveNativeMembershipThreads({
-      controller,
-      threads,
-      destination,
-      commandId: workstreamCommandId,
-      now: Date.now(),
+    await controller.assignNativeThread(thread, destination, {
       signal: abort.signal,
-      ...(intent ? { intent } : {}),
+      commandId: workstreamCommandId,
     });
   };
-  const move = (
-    thread: EnvironmentThreadShell,
-    destination: string | null,
-    intent?: NativeMembershipIntent,
-  ) => moveThreads([thread], destination, intent);
   const currentWorkstream = (thread: EnvironmentThreadShell) =>
-    grouping.groups.find((group) => group.threads.includes(thread))?.workstream.workstreamId ??
-    null;
-  const acceptsDrop = (destination: string | null, neighbor?: EnvironmentThreadShell) =>
-    dragged !== null &&
-    canWrite &&
-    (dragged.some((thread) => currentWorkstream(thread) !== destination) ||
-      (!!neighbor &&
-        !dragged.includes(neighbor) &&
-        dragged.every(props.canReorder) &&
-        props.canReorder(neighbor)));
-  const dragOver = (
-    event: DragEvent,
-    destination: string | null,
-    neighbor?: EnvironmentThreadShell,
-  ) => {
-    if (!dragged) return false;
-    event.stopPropagation();
-    if (!acceptsDrop(destination, neighbor)) {
-      event.dataTransfer.dropEffect = "none";
+    statusGrouping.groups.find((group) =>
+      group.threads.some(
+        (item) => item.environmentId === thread.environmentId && item.id === thread.id,
+      ),
+    )?.workstream.workstreamId ?? null;
+  const threadsByKey = useMemo(
+    () =>
+      new Map(
+        grouping.ordered.map((thread) => [
+          nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+          thread,
+        ]),
+      ),
+    [grouping],
+  );
+  const pointerActions = useRef({
+    threadsByKey,
+    canMove,
+    currentWorkstream,
+    assignmentChecked,
+    run,
+    move,
+    reorder: props.reorder,
+    canReorder: props.canReorder,
+  });
+  useLayoutEffect(() => {
+    pointerActions.current = {
+      threadsByKey,
+      canMove,
+      currentWorkstream,
+      assignmentChecked,
+      run,
+      move,
+      reorder: props.reorder,
+      canReorder: props.canReorder,
+    };
+  });
+  const pointerDown = (event: ReactPointerEvent, thread: EnvironmentThreadShell) => {
+    if (
+      !event.isPrimary ||
+      event.button !== 0 ||
+      !canMove(thread) ||
+      (event.target as HTMLElement).closest(
+        "button, a, input, textarea, select, [contenteditable=true]",
+      )
+    )
+      return;
+    sensorRef.current?.cancel();
+    const originY = event.clientY;
+    let target: {
+      destination: string | null;
+      neighbor: EnvironmentThreadShell | undefined;
+      after: boolean;
+    } | null = null;
+    const locate = (point: { x: number; y: number }) => {
+      const element = document.elementFromPoint(point.x, point.y);
+      const group = element?.closest<HTMLElement>("[data-native-workstream]");
+      target = null;
       setDropTarget(null);
-      return true;
-    }
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const bounds = event.currentTarget.getBoundingClientRect();
-    setDropTarget({
-      workstreamId: destination,
-      ...(neighbor && dragged.every((thread) => currentWorkstream(thread) === destination)
-        ? {
-            threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id),
-            after: event.clientY > bounds.top + bounds.height / 2,
-          }
-        : {}),
+      if (!group || !rootRef.current?.contains(group)) return;
+      const actions = pointerActions.current;
+      if (
+        !actions.canMove(thread) ||
+        !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
+      )
+        return;
+      const destination = JSON.parse(group.dataset.nativeWorkstream!) as string | null;
+      const row = element?.closest<HTMLElement>("[data-native-workstream-thread]");
+      const neighbor = row?.dataset.nativeWorkstreamThread
+        ? actions.threadsByKey.get(row.dataset.nativeWorkstreamThread)
+        : undefined;
+      const sameGroup =
+        actions.assignmentChecked(thread) && actions.currentWorkstream(thread) === destination;
+      if (
+        sameGroup &&
+        (!neighbor ||
+          !actions.assignmentChecked(neighbor) ||
+          (neighbor.environmentId === thread.environmentId && neighbor.id === thread.id) ||
+          !actions.canReorder(thread) ||
+          !actions.canReorder(neighbor))
+      )
+        return;
+      const bounds = row?.getBoundingClientRect();
+      const after = bounds !== undefined && point.y > bounds.top + bounds.height / 2;
+      target = { destination, neighbor, after };
+      setDropTarget({
+        workstreamId: destination,
+        ...(sameGroup && neighbor
+          ? { threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id), after }
+          : {}),
+      });
+    };
+    sensorRef.current = new SidebarPointerSensor({
+      active: nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+      event: event.nativeEvent,
+      options: {
+        distance: SIDEBAR_DRAG_DISTANCE,
+        onAttach: () => {},
+        onFinish: () => {
+          sensorRef.current = null;
+          setDragged(null);
+          setOffsetY(0);
+          setDropTarget(null);
+        },
+        onDrop: (point) => {
+          locate(point);
+          return false;
+        },
+      },
+      onPending: () => {},
+      onAbort: () => {},
+      onStart: () => setDragged(thread),
+      onMove: (point) => {
+        setOffsetY(point.y - originY);
+        locate(point);
+      },
+      onCancel: () => {
+        target = null;
+      },
+      onEnd: () => {
+        if (!target) return;
+        const { destination, neighbor, after } = target;
+        const actions = pointerActions.current;
+        if (
+          !actions.canMove(thread) ||
+          !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
+        )
+          return;
+        actions.run(async () => {
+          if (
+            !actions.assignmentChecked(thread) ||
+            actions.currentWorkstream(thread) !== destination
+          )
+            await actions.move(thread, destination);
+          else if (
+            neighbor &&
+            actions.assignmentChecked(neighbor) &&
+            actions.canReorder(thread) &&
+            actions.canReorder(neighbor)
+          )
+            await actions.reorder(thread, neighbor, after);
+        });
+      },
     });
-    return true;
   };
-  const drop = (
-    event: DragEvent,
-    destination: string | null,
-    neighbor?: EnvironmentThreadShell,
-  ) => {
-    if (!dragged) return false;
-    event.preventDefault();
-    event.stopPropagation();
-    const threads = dragged;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const after = event.clientY > bounds.top + bounds.height / 2;
-    const accepted = acceptsDrop(destination, neighbor);
-    setDragged(null);
-    setDropTarget(null);
-    props.onThreadDragEnd?.();
-    if (!accepted) return true;
-    run(async () => {
-      if (threads.some((thread) => currentWorkstream(thread) !== destination))
-        await moveThreads(threads, destination);
-      else if (neighbor && !threads.includes(neighbor)) {
-        if (props.reorderSelection) await props.reorderSelection(threads, neighbor, after);
-        else if (threads.length === 1) await props.reorder(threads[0]!, neighbor, after);
-        else throw new Error("Selected thread ordering is unavailable.");
-      }
-    });
-    return true;
+  const assignmentMenu = (thread: EnvironmentThreadShell): NativeThreadAssignmentMenu => {
+    const checked = assignmentChecked(thread);
+    const workstreamId = checked ? currentWorkstream(thread) : null;
+    const secondary =
+      (checked
+        ? statusGrouping.secondaryWorkstreamIdsByKey.get(
+            nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+          )
+        : undefined) ?? [];
+    return {
+      items: [
+        ...(!sourceAvailable(thread) || conflicted(thread) || !checked
+          ? [
+              {
+                id: "assign-workstream:status" as const,
+                label: !sourceAvailable(thread)
+                  ? "Assignment unavailable for this environment"
+                  : conflicted(thread)
+                    ? "Conflicting assignments; changes blocked"
+                    : assuranceOf(thread) === undefined
+                      ? "Assignment not checked"
+                      : "Assignment unknown",
+                disabled: true,
+              },
+            ]
+          : []),
+        ...(controller.data?.items ?? []).map((item) => ({
+          id: `assign-workstream:group:${item.workstreamId}` as const,
+          label: `${item.name}${item.workstreamId === workstreamId ? " (primary)" : secondary.includes(item.workstreamId) ? " (secondary)" : ""}`,
+          disabled: !canMove(thread) || item.workstreamId === workstreamId,
+        })),
+        {
+          id: "assign-workstream:remove",
+          label: "Unassigned (remove primary)",
+          separatorBefore: true,
+          disabled: !canMove(thread) || (checked && workstreamId === null),
+        },
+      ],
+      onAction: (action) => {
+        if (action === "assign-workstream:remove") run(() => move(thread, null));
+        else {
+          const destination = controller.data?.items.find(
+            (item) => `assign-workstream:group:${item.workstreamId}` === action,
+          );
+          if (destination) run(() => move(thread, destination.workstreamId));
+        }
+      },
+    };
   };
+  const assignmentMenuRef = props.assignmentMenuRef;
+  useLayoutEffect(() => {
+    if (!assignmentMenuRef) return;
+    assignmentMenuRef.current = assignmentMenu;
+    return () => {
+      assignmentMenuRef.current = null;
+    };
+  }, [assignmentMenuRef, assignmentMenu]);
   const renderMembers = (workstreamId: string | null) => {
     const threads =
       workstreamId === null
@@ -236,52 +373,30 @@ export function WorkstreamNativeSidebar(props: {
             ?.threads ?? []);
     return (
       <ul
-        aria-label={workstreamId === null ? "Unassigned threads" : "Workstream threads"}
+        aria-label={
+          workstreamId === null
+            ? hasUnchecked
+              ? otherThreadsLabel
+              : "Unassigned threads"
+            : "Workstream threads"
+        }
         className="space-y-px px-1 pb-1"
       >
-        {threads.map((thread, index) => {
+        {threads.map((thread) => {
           const key = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
-          const secondary = secondaryNativeWorkstreamLabels(grouping, thread);
+          const isDragging =
+            dragged !== null &&
+            nativeWorkstreamThreadKey(dragged.environmentId, dragged.id) === key;
           return (
             <li
               key={key}
-              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${dragged?.includes(thread) ? "opacity-50" : ""}`}
-              draggable={canMove(thread)}
+              data-native-workstream-thread={key}
+              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${isDragging ? "pointer-events-none z-30 bg-sidebar shadow-lg" : ""}`}
+              style={isDragging ? { transform: `translateY(${offsetY}px)` } : undefined}
+              onPointerDown={(event) => pointerDown(event, thread)}
               data-drop-position={
                 dropTarget?.threadKey === key ? (dropTarget.after ? "after" : "before") : undefined
               }
-              onDragStartCapture={(event) => {
-                event.stopPropagation();
-                const selection = window.getSelection();
-                if (
-                  !canMove(thread) ||
-                  (event.target as HTMLElement).closest(
-                    "input, textarea, select, [contenteditable=true]",
-                  ) ||
-                  (selection &&
-                    !selection.isCollapsed &&
-                    event.currentTarget.contains(selection.anchorNode))
-                ) {
-                  event.preventDefault();
-                  return;
-                }
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("application/x-t3-workstream-thread", key);
-                setDragged(props.captureDrag?.(thread) ?? [thread]);
-                setDropTarget(null);
-              }}
-              onDragEndCapture={(event) => {
-                event.stopPropagation();
-                setDragged(null);
-                setDropTarget(null);
-                props.onThreadDragEnd?.();
-              }}
-              onDragOverCapture={(event) => dragOver(event, workstreamId, thread)}
-              onDropCapture={(event) => drop(event, workstreamId, thread)}
-              onDragLeave={(event) => {
-                if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-                  setDropTarget(null);
-              }}
             >
               {dropTarget?.threadKey === key ? (
                 <div
@@ -289,99 +404,7 @@ export function WorkstreamNativeSidebar(props: {
                   className={`pointer-events-none absolute inset-x-1 z-20 h-0.5 bg-primary ${dropTarget.after ? "bottom-0" : "top-0"}`}
                 />
               ) : null}
-              <ul>{props.renderThread(thread)}</ul>
-              <div className="flex items-center gap-1 px-2 pb-1 text-xs text-muted-foreground">
-                <button
-                  type="button"
-                  draggable={canMove(thread)}
-                  disabled={!canMove(thread)}
-                  aria-label={`Drag ${thread.title} to a Workstream or reorder`}
-                  className="cursor-grab rounded p-1 focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
-                >
-                  <GripVerticalIcon aria-hidden className="size-3" />
-                </button>
-                <span className="min-w-0 flex-1 truncate">
-                  {secondary.length ? `Also in ${secondary.join(", ")}` : ""}
-                </span>
-                <Menu onOpenChange={(open) => setMenuThread(open ? key : null)}>
-                  <MenuTrigger
-                    aria-label={`Workstream actions for ${thread.title}`}
-                    render={<Button size="icon-micro" variant="ghost-muted" />}
-                  >
-                    <MoreHorizontalIcon />
-                  </MenuTrigger>
-                  <MenuPopup align="end">
-                    {(menuThread === key ? (controller.data?.items ?? []) : []).map((item) => (
-                      <MenuItem
-                        key={item.workstreamId}
-                        disabled={
-                          !(referenceState(thread) === "verified"
-                            ? canMove(thread)
-                            : referenceState(thread) !== "ambiguous" &&
-                              referenceState(thread) !== null &&
-                              canPrepare(thread)) || item.workstreamId === workstreamId
-                        }
-                        onClick={() =>
-                          run(() =>
-                            move(
-                              thread,
-                              item.workstreamId,
-                              referenceState(thread) === "verified"
-                                ? undefined
-                                : { prepareReferences: true },
-                            ),
-                          )
-                        }
-                      >
-                        {referenceState(thread) === "missing"
-                          ? "Register and assign to"
-                          : referenceState(thread) === "verify"
-                            ? "Verify reference and assign to"
-                            : referenceState(thread) === "reverify"
-                              ? "Re-verify reference and assign to"
-                              : workstreamId === null
-                                ? "Assign to"
-                                : "Move to"}{" "}
-                        {item.name}
-                      </MenuItem>
-                    ))}
-                    {referenceState(thread) === "ambiguous" ? (
-                      <MenuItem disabled>Conflicting references require resolution</MenuItem>
-                    ) : null}
-                    {referenceState(thread) !== "verified" && !canPrepare(thread) ? (
-                      <MenuItem disabled>Reference preparation unavailable</MenuItem>
-                    ) : null}
-                    <MenuItem
-                      disabled={!canMove(thread) || workstreamId === null}
-                      onClick={() => run(() => move(thread, null))}
-                    >
-                      Remove from Workstream
-                    </MenuItem>
-                    <MenuItem
-                      disabled={
-                        !canWrite ||
-                        index === 0 ||
-                        !props.canReorder(thread) ||
-                        !props.canReorder(threads[index - 1] ?? thread)
-                      }
-                      onClick={() => run(() => props.reorder(thread, threads[index - 1]!, false))}
-                    >
-                      Move thread up
-                    </MenuItem>
-                    <MenuItem
-                      disabled={
-                        !canWrite ||
-                        index === threads.length - 1 ||
-                        !props.canReorder(thread) ||
-                        !props.canReorder(threads[index + 1] ?? thread)
-                      }
-                      onClick={() => run(() => props.reorder(thread, threads[index + 1]!, true))}
-                    >
-                      Move thread down
-                    </MenuItem>
-                  </MenuPopup>
-                </Menu>
-              </div>
+              <ul>{props.renderThread(thread, assignmentMenu(thread))}</ul>
             </li>
           );
         })}
@@ -392,12 +415,20 @@ export function WorkstreamNativeSidebar(props: {
     );
   };
   return (
-    <>
+    <div ref={rootRef}>
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
-          <button type="button" disabled={busy} onClick={() => run(() => controller.retry())}>
-            Retry
+          <button
+            type="button"
+            onClick={() =>
+              run(async () => {
+                if (controller.retry) await controller.retry();
+                else controller.refresh();
+              })
+            }
+          >
+            Refresh
           </button>
         </p>
       ) : null}
@@ -406,22 +437,34 @@ export function WorkstreamNativeSidebar(props: {
           Saving Workstream change…
         </p>
       ) : null}
-      {controller.placements === null ? (
+      {controller.stale ? (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          Showing the last loaded Workstreams. Refresh to update.
+        </p>
+      ) : assignmentIndex !== null && !assignmentIndex.complete ? (
+        <p role="status" className="px-2 text-xs text-muted-foreground">
+          Some thread assignments could not be loaded, so threads outside a group may still belong
+          to one.
+        </p>
+      ) : assignmentIndex === null && controller.placements === null ? (
         <p className="px-2 text-xs text-muted-foreground">
           Thread assignments are unavailable until current placements can be verified.
         </p>
       ) : null}
+      {hasConflict ? (
+        <p role="alert" className="px-2 text-xs text-destructive">
+          Some threads have conflicting Workstream assignments. Changes to them are blocked until
+          they are verified again.
+        </p>
+      ) : null}
       <WorkstreamSidebarSection
         controller={controller}
-        onVisibleGroupsChange={props.onVisibleGroupsChange}
         renderMembers={renderMembers}
+        unassignedLabel={hasUnchecked ? otherThreadsLabel : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}
-        onThreadDrop={drop}
-        onThreadDragOver={dragOver}
         threadDropTarget={dropTarget && !dropTarget.threadKey ? dropTarget.workstreamId : undefined}
-        onThreadDragLeave={() => setDropTarget(null)}
         threadActionBusy={busy}
       />
-    </>
+    </div>
   );
 }

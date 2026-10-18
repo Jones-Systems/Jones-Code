@@ -11,13 +11,14 @@ import { validateNativeStoreAuthorityPath } from "./nativeStoreAuthorityPath.ts"
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import {
   advanceNativeStoreAuthority,
+  advanceNativeAuthorityRestore,
+  fenceNativeAuthorityRestore,
   decodeNativeStoreAuthorityState,
   fenceNativeStoreAuthority,
   initializeNativeStoreAuthority,
   initializeNativeStoreAuthorityForBaseDir,
   nativeStoreAuthorityPaths,
   readNativeStoreAuthorityState,
-  readExistingNativeStoreAuthorityState,
 } from "./nativeStoreAuthorityPersistence.ts";
 
 const withDirectory = (run: (directory: string) => void): void => {
@@ -30,32 +31,6 @@ const withDirectory = (run: (directory: string) => void): void => {
 };
 
 describe("native store authority persistence", () => {
-  it("existing-state reader never creates missing directories, state or writer locks", () => {
-    withDirectory((authorityStateDir) => {
-      const root = NodePath.dirname(authorityStateDir);
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(root)).toEqual([]);
-      NodeFS.mkdirSync(authorityStateDir, { mode: 0o700 });
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("missing");
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([]);
-      const state = {
-        record_version: "t3-native-store-authority/1.0.0",
-        environment_id: "synthetic-environment",
-        authority_namespace: "t3-native:12345678-1234-4234-8234-123456789abc",
-        store_generation: 7,
-        state: "active",
-        transition_id: null,
-      };
-      const statePath = nativeStoreAuthorityPaths(authorityStateDir).statePath;
-      NodeFS.writeFileSync(statePath, JSON.stringify(state), { mode: 0o600 });
-      const before = NodeFS.statSync(statePath);
-      expect(readExistingNativeStoreAuthorityState(authorityStateDir)).toEqual(state);
-      expect(NodeFS.readdirSync(authorityStateDir)).toEqual([NodePath.basename(statePath)]);
-      expect(NodeFS.statSync(statePath).mtimeMs).toBe(before.mtimeMs);
-      NodeFS.writeFileSync(statePath, "x".repeat(8193));
-      expect(() => readExistingNativeStoreAuthorityState(authorityStateDir)).toThrow("bounded");
-    });
-  });
   it("enrolls only from the persisted T3 environment identity", () => {
     const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-native-enroll-test-"));
     try {
@@ -237,6 +212,122 @@ describe("native store authority persistence", () => {
       expect(() =>
         advanceNativeStoreAuthority(authorityStateDir, "env-a", invalidDatabasePath),
       ).toThrow("not a SQLite database");
+    });
+  });
+});
+
+describe("guarded native paired restore", () => {
+  it("fences persisted state and advances exactly once with the complete guard", () => {
+    withDirectory((directory) => {
+      const initial = initializeNativeStoreAuthority(directory, "native-restore");
+      const guard = fenceNativeAuthorityRestore(directory, "native-restore");
+      const fenced = readNativeStoreAuthorityState(directory);
+      expect(guard).toMatchObject({
+        kind: "fenced",
+        environmentId: "native-restore",
+        authorityNamespace: initial.authority_namespace,
+        storeGeneration: 1,
+        transitionId: fenced.transition_id,
+      });
+      expect(fenced.state).toBe("fenced");
+      expect(() => fenceNativeAuthorityRestore(directory, "native-restore")).toThrow(
+        "already fenced",
+      );
+      const database = NodePath.join(NodePath.dirname(directory), "state.sqlite");
+      const db = new NodeSqlite.DatabaseSync(database);
+      try {
+        db.exec("CREATE TABLE retained (value TEXT)");
+      } finally {
+        db.close();
+      }
+      const advanced = advanceNativeAuthorityRestore(directory, "native-restore", database, guard);
+      expect(advanced).toMatchObject({
+        state: "active",
+        transition_id: null,
+        store_generation: 2,
+        authority_namespace: initial.authority_namespace,
+      });
+      expect(readNativeStoreAuthorityState(directory)).toEqual(advanced);
+      expect(() =>
+        advanceNativeAuthorityRestore(directory, "native-restore", database, guard),
+      ).toThrow("guard changed");
+      expect(readNativeStoreAuthorityState(directory)).toEqual(advanced);
+    });
+  });
+
+  it.each([
+    "environmentId",
+    "authorityNamespace",
+    "storeGeneration",
+    "transitionId",
+    "recordSha256",
+  ] as const)("rejects a changed %s without un-fencing", (field) => {
+    withDirectory((directory) => {
+      initializeNativeStoreAuthority(directory, "native-restore");
+      const guard = fenceNativeAuthorityRestore(directory, "native-restore");
+      if (guard.kind !== "fenced") throw new Error("expected fenced guard");
+      const before = NodeFS.readFileSync(nativeStoreAuthorityPaths(directory).statePath);
+      const changed = {
+        ...guard,
+        [field]: field === "storeGeneration" ? guard.storeGeneration + 1 : "changed",
+      };
+      expect(() =>
+        advanceNativeAuthorityRestore(directory, "native-restore", "/missing", changed),
+      ).toThrow("guard changed");
+      expect(NodeFS.readFileSync(nativeStoreAuthorityPaths(directory).statePath)).toEqual(before);
+    });
+  });
+
+  it("serializes absence under the same lock without enrollment and refuses an appearing record", () => {
+    withDirectory((directory) => {
+      expect(fenceNativeAuthorityRestore(directory, "native-restore")).toEqual({ kind: "absent" });
+      const paths = nativeStoreAuthorityPaths(directory);
+      expect(NodeFS.existsSync(paths.statePath)).toBe(false);
+      expect(NodeFS.statSync(directory).mode & 0o777).toBe(0o700);
+      const lock = new NodeSqlite.DatabaseSync(paths.lockDatabasePath);
+      try {
+        lock.exec("PRAGMA journal_mode=DELETE; BEGIN EXCLUSIVE");
+        expect(() => fenceNativeAuthorityRestore(directory, "native-restore")).toThrow(
+          "lock is unavailable",
+        );
+        expect(() =>
+          advanceNativeAuthorityRestore(directory, "native-restore", "/missing", {
+            kind: "absent",
+          }),
+        ).toThrow("lock is unavailable");
+      } finally {
+        lock.close();
+      }
+      expect(
+        advanceNativeAuthorityRestore(directory, "native-restore", "/missing", { kind: "absent" }),
+      ).toBeNull();
+      expect(NodeFS.existsSync(paths.statePath)).toBe(false);
+      const enrolled = initializeNativeStoreAuthority(directory, "native-restore");
+      expect(() =>
+        advanceNativeAuthorityRestore(directory, "native-restore", "/missing", { kind: "absent" }),
+      ).toThrow("appeared");
+      expect(readNativeStoreAuthorityState(directory)).toEqual(enrolled);
+    });
+  });
+
+  it("keeps the fence for an unsafe restored database or wrong environment", () => {
+    withDirectory((directory) => {
+      initializeNativeStoreAuthority(directory, "native-restore");
+      expect(() => fenceNativeAuthorityRestore(directory, "another")).toThrow(
+        "environment changed",
+      );
+      const guard = fenceNativeAuthorityRestore(directory, "native-restore");
+      const database = NodePath.join(NodePath.dirname(directory), "state.sqlite");
+      NodeFS.writeFileSync(database, "invalid database");
+      expect(() =>
+        advanceNativeAuthorityRestore(directory, "native-restore", database, guard),
+      ).toThrow("SQLite");
+      NodeFS.unlinkSync(database);
+      NodeFS.symlinkSync(nativeStoreAuthorityPaths(directory).statePath, database);
+      expect(() =>
+        advanceNativeAuthorityRestore(directory, "native-restore", database, guard),
+      ).toThrow("regular file");
+      expect(readNativeStoreAuthorityState(directory).state).toBe("fenced");
     });
   });
 });

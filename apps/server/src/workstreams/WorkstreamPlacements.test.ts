@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous contract hashing and opaque request identities retain their existing wire encoding.
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -405,5 +406,101 @@ it.effect("fails closed before aggregate output exceeds one MiB", () =>
       "Failure",
     );
     expect(calls).toBeLessThanOrEqual(4);
+  }),
+);
+
+const expiredInventory = [1, 2, 3].map((index) => ({
+  source_instance_id: "environment:1",
+  native_thread_id: `thread:${index}`,
+}));
+const expired = (index: number): T3ThreadPlacement => ({
+  ...placement(index),
+  expires_at: "2026-09-12T11:30:00Z",
+});
+const loadPages = (pages: readonly T3PlacementPage[]) =>
+  Effect.gen(function* () {
+    let calls = 0;
+    const gateway = yield* make(
+      {
+        ...makeSyntheticWorkstreamTransport(),
+        listThreadPlacements: () =>
+          Effect.succeed({ ...pages[calls++]!, inventory_sha256: digest(expiredInventory) }),
+      },
+      { binding, now: () => now },
+    );
+    return yield* Effect.result(gateway.readThreadPlacements({ identities: expiredInventory }));
+  });
+
+it.effect("drops individually expired placements instead of failing the whole read", () =>
+  Effect.gen(function* () {
+    const result = yield* loadPages([{ ...page, items: [placement(1), expired(2), placement(3)] }]);
+    expect(result._tag).toBe("Success");
+    if (result._tag === "Success") {
+      expect(result.success.page.items).toEqual([placement(1), placement(3)]);
+      expect(result.success.page.context).toEqual(page.context);
+      expect(result.success.page.next_cursor).toBeNull();
+    }
+  }),
+);
+
+it.effect("returns an empty successful load when every placement has expired", () =>
+  Effect.gen(function* () {
+    const result = yield* loadPages([{ ...page, items: [expired(1), expired(2), expired(3)] }]);
+    expect(result._tag).toBe("Success");
+    if (result._tag === "Success") expect(result.success.page.items).toEqual([]);
+  }),
+);
+
+it.effect("drops placements that expire on the gateway clock while later pages load", () =>
+  Effect.gen(function* () {
+    let served = 0;
+    const early = { ...placement(1), expires_at: "2026-09-12T12:00:01Z" };
+    const pages = [
+      { ...page, items: [early], next_cursor: "next" },
+      { ...page, items: [placement(2)] },
+    ];
+    const gateway = yield* make(
+      {
+        ...makeSyntheticWorkstreamTransport(),
+        listThreadPlacements: () =>
+          Effect.succeed({ ...pages[served++]!, inventory_sha256: digest(expiredInventory) }),
+      },
+      { binding, now: () => now + (served > 1 ? 5_000 : 0) },
+    );
+    const result = yield* Effect.result(
+      gateway.readThreadPlacements({ identities: expiredInventory }),
+    );
+    expect(result._tag).toBe("Success");
+    if (result._tag === "Success") expect(result.success.page.items).toEqual([placement(2)]);
+  }),
+);
+
+it.effect("keeps malformed lifetimes and expired-item contract violations fail-closed", () =>
+  Effect.gen(function* () {
+    const stale =
+      "Thread placements do not match the current principal, grant, or attestation lifetime.";
+    const unordered = "Repeated, unordered, or unrelated placement.";
+    for (const [items, detail] of [
+      [
+        [placement(1), { ...placement(2), expires_at: "not-a-timestamp" }],
+        "Invalid thread placement page.",
+      ],
+      [[placement(1), { ...placement(2), expires_at: "2026-09-12T10:00:00Z" }], stale],
+      [[placement(1), { ...placement(2), attested_at: "2026-09-12T12:30:00Z" }], stale],
+      [[expired(2), placement(1)], unordered],
+      [[placement(1), expired(1)], unordered],
+      [[placement(1), { ...expired(2), native_thread_id: "thread:unrelated" }], unordered],
+      [
+        [
+          { ...expired(1), authority_namespace: "different" },
+          { ...placement(1), membership_id: "membership:00002" },
+        ],
+        "Placement reference changed.",
+      ],
+    ] as const) {
+      const result = yield* loadPages([{ ...page, items }]);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") expect(result.failure.detail).toBe(detail);
+    }
   }),
 );

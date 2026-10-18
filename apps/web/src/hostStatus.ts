@@ -1,29 +1,25 @@
 import type { HostStatus, HostStatusSnapshot } from "@t3tools/contracts";
-import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
+export { fetchHostStatus } from "./jones/hostStatus/state";
 
-import { PrimaryEnvironmentHttpClient, layer } from "./environments/primary/httpClient";
-import { primaryEnvironmentHttpLayer } from "./environments/primary/httpLayer";
-
-export const HOST_STATUS_NAMES = { vps: "VPS", test: "Test", mini: "Mini", home: "Home" } as const;
+export const HOST_STATUS_NAMES = {
+  vps: "VPS",
+  test: "Test",
+  mini: "Mini",
+  home: "Laptop",
+} as const;
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
 
-const hostStatusRequest = PrimaryEnvironmentHttpClient.pipe(
-  Effect.flatMap((client) => client.hostStatus.snapshot({ headers: {} })),
-  Effect.timeout("8 seconds"),
-);
-
-export function fetchHostStatus(signal: AbortSignal): Promise<HostStatusSnapshot> {
-  // Retain RequestInit alongside the client so browser cookie credentials reach the request.
-  return Effect.runPromise(
-    hostStatusRequest.pipe(
-      Effect.provide(layer.pipe(Layer.provideMerge(primaryEnvironmentHttpLayer))),
-    ),
-    { signal },
-  );
-}
-
 const HOST_STATUS_MAX_AGE_MS = 30_000;
+
+function utilizationHealth(percent: number) {
+  return percent > 90
+    ? "critical"
+    : percent > 75
+      ? "elevated"
+      : percent >= 50
+        ? "warning"
+        : "healthy";
+}
 
 function freshHostStatus(host: HostStatus, now: number): HostStatus {
   if (host.status === "unavailable") return host;
@@ -44,25 +40,63 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
-    return { cpu: "—", ram: "—", health: "unavailable", detail: reason } as const;
+    return {
+      cpu: "—",
+      ram: "—",
+      cpuHealth: "unavailable",
+      ramHealth: "unavailable",
+      health: "unavailable",
+      detail: reason,
+    } as const;
   }
+  const cpuHealth = utilizationHealth(host.cpuUsagePercent);
+  const cpu = `${Math.round(host.cpuUsagePercent)}%`;
+  const availableMemoryBytes = host.availableMemoryBytes;
+  if (host.id === "mini" || host.id === "home") {
+    const swap = host.swapIoBytesPerSecond;
+    const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
+    const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
+    const ram = swapMiB === undefined ? "— mb/s" : `${swapMiB.toFixed(1)} mb/s`;
+    const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
+    const availableRam =
+      availableMemoryBytes === undefined
+        ? "unavailable"
+        : `${(availableMemoryBytes / 1024 ** 3).toFixed(1)} GiB (collector estimate, including reclaimable memory)`;
+    return {
+      health,
+      cpuHealth,
+      ramHealth,
+      cpu,
+      ram,
+      detail: `CPU ${cpu} of total cores. Swap I/O ${swapMiB === undefined ? "unavailable" : `${swapMiB.toFixed(1)} MiB/s (combined reads and writes, 10-second average)`}. Available RAM ${availableRam}. Swap activity above 10 MiB/s is amber; this is not native macOS memory pressure or an agent-admission decision.`,
+    } as const;
+  }
+  const ramHealth =
+    availableMemoryBytes === undefined
+      ? "unavailable"
+      : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
+  const ram =
+    availableMemoryBytes === undefined ? "—" : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
-    host.cpuUsagePercent >= 95 ? "critical" : host.cpuUsagePercent >= 80 ? "warning" : "healthy";
-  const format = (value: number) => value.toFixed(1).replace(/\.0$/, "");
-  const cpu = `${format(host.cpuUsagePercent)}%`;
-  const ram = `${format(host.occupiedMemoryBytes / 1024 ** 3)}/${format(host.totalMemoryBytes / 1024 ** 3)} GiB`;
+    availableMemoryBytes === undefined
+      ? cpuHealth
+      : utilizationHealth(
+          Math.max(host.cpuUsagePercent, 100 * (1 - availableMemoryBytes / host.totalMemoryBytes)),
+        );
   return {
     health,
+    cpuHealth,
+    ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu}. Occupied RAM ${ram}; includes reclaimable cache, not memory pressure. Color reflects CPU utilization only.`,
+    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "—" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
   } as const;
 }
 
 export function observeHostStatus(
   visibility: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">,
   receive: (snapshot: HostStatusSnapshot | null) => void,
-  request = fetchHostStatus,
+  request: (signal: AbortSignal) => Promise<HostStatusSnapshot>,
 ) {
   let disposed = false;
   let pending = false;

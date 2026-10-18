@@ -1,3 +1,8 @@
+import { workstreamPageUrl } from "./gateway";
+import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import { runtime } from "../../lib/runtime";
 import { useEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { WorkstreamThreadLike } from "@t3tools/client-runtime/state/workstreams";
@@ -9,7 +14,7 @@ import {
 import type { T3WorkstreamMetadata, WorkstreamLifecycle } from "@t3tools/contracts";
 import type { MobileWorkstreams } from "./types";
 import type { MobileWorkstreamSnapshot } from "./projection";
-import { canEditWorkstreams, planNativeMembership } from "./actions";
+import { canEditWorkstreams, mobileMembershipBlock, planNativeMembership } from "./actions";
 
 export function MobileWorkstreamControls({
   api,
@@ -24,6 +29,7 @@ export function MobileWorkstreamControls({
 }) {
   const binding = useRef(api.bindingRevision);
   binding.current = api.bindingRevision;
+  const [colorOpen, setColorOpen] = useState(false);
   const [name, setName] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -33,13 +39,31 @@ export function MobileWorkstreamControls({
     setBusy(false);
     setHistory([]);
     setName("");
+    setColorOpen(false);
   }, [api.bindingRevision, selection]);
   const group = api.groups.find((item) => item.key === selection?.groupKey);
   const snapshot = selection?.thread
     ? api.snapshots.find((item) => item.prepared.environmentId === selection.thread?.environmentId)
     : (group?.snapshot ?? api.snapshots[0]);
   const editable =
-    !!snapshot && canEditWorkstreams(snapshot.data) && snapshot.placements?.readiness === "ready";
+    !!snapshot &&
+    !snapshot.stale &&
+    canEditWorkstreams(snapshot.data) &&
+    snapshot.placements?.readiness === "ready";
+  const threadKey = selection?.thread
+    ? nativeWorkstreamThreadKey(selection.thread.environmentId, selection.thread.id)
+    : null;
+  const membershipBlock =
+    snapshot && threadKey !== null
+      ? (mobileMembershipBlock({
+          snapshot,
+          threadKey,
+          conflictingThreadKeys: api.conflictingThreadKeys,
+        }) ??
+        (snapshot.identityKeys.has(threadKey)
+          ? null
+          : "This thread is outside the verified placement inventory."))
+      : "Unavailable";
   const action = (label: string, run: () => Promise<unknown>, disabled = false) => (
     <Pressable
       accessibilityRole="button"
@@ -75,14 +99,13 @@ export function MobileWorkstreamControls({
     });
   const membership = async (destination: string | null, secondary = false) => {
     if (!snapshot || !snapshot.placements || !selection?.thread) throw new Error("Unavailable");
-    if (
-      !snapshot.identityKeys.has(
-        nativeWorkstreamThreadKey(selection.thread!.environmentId, selection.thread!.id),
-      )
-    )
-      throw new Error("This thread is outside the verified placement inventory.");
-    const references = await api.pages(snapshot, "/references", (client, headers, cursor) =>
-      client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
+    if (membershipBlock !== null) throw new Error(membershipBlock);
+    const references = await api.pages(
+      snapshot,
+      (urls, cursor) =>
+        workstreamPageUrl(urls.references(), { limit: 50, ...(cursor ? { cursor } : {}) }),
+      (client, headers, cursor) =>
+        client.references({ headers, payload: { limit: 50, ...(cursor ? { cursor } : {}) } }),
     );
     const target = destination
       ? snapshot.data.items.find((item) => item.workstreamId === destination)
@@ -90,7 +113,11 @@ export function MobileWorkstreamControls({
     const episodes = target
       ? await api.pages(
           snapshot,
-          `/${encodeURIComponent(target.workstreamId)}/memberships`,
+          (urls, cursor) =>
+            workstreamPageUrl(urls.memberships({ params: { workstreamId: target.workstreamId } }), {
+              limit: 50,
+              ...(cursor ? { cursor } : {}),
+            }),
           (client, headers, cursor) =>
             client.memberships({
               headers,
@@ -107,6 +134,7 @@ export function MobileWorkstreamControls({
       thread: selection.thread,
       destination,
       now: Date.now(),
+      index: snapshot.index,
     });
     if (secondary) {
       if (!target) throw new Error("Unavailable");
@@ -132,12 +160,19 @@ export function MobileWorkstreamControls({
   const showHistory = async (bound: MobileWorkstreamSnapshot, item: T3WorkstreamMetadata) => {
     const startedBinding = api.bindingRevision;
     const [detail, historyPage, members] = await Promise.all([
-      api.read(bound, `/${encodeURIComponent(item.workstreamId)}`, (client, headers) =>
-        client.detail({ headers, params: { workstreamId: item.workstreamId } }),
+      api.read(
+        bound,
+        (urls) => urls.detail({ params: { workstreamId: item.workstreamId } }),
+        (client, headers) =>
+          client.detail({ headers, params: { workstreamId: item.workstreamId } }),
       ),
       api.pages(
         bound,
-        `/${encodeURIComponent(item.workstreamId)}/history`,
+        (urls, cursor) =>
+          workstreamPageUrl(urls.history({ params: { workstreamId: item.workstreamId } }), {
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
         (client, headers, cursor) =>
           client.history({
             headers,
@@ -147,7 +182,11 @@ export function MobileWorkstreamControls({
       ),
       api.pages(
         bound,
-        `/${encodeURIComponent(item.workstreamId)}/memberships`,
+        (urls, cursor) =>
+          workstreamPageUrl(urls.memberships({ params: { workstreamId: item.workstreamId } }), {
+            limit: 50,
+            ...(cursor ? { cursor } : {}),
+          }),
         (client, headers, cursor) =>
           client.memberships({
             headers,
@@ -200,7 +239,14 @@ export function MobileWorkstreamControls({
           {!snapshot ? (
             <Text>Workstreams are unavailable. Connect to an enrolled environment.</Text>
           ) : null}
+          {api.stale ? <Text>Showing the last loaded Workstreams. Refresh to update.</Text> : null}
           {snapshot && !editable ? <Text>Workstreams are read-only.</Text> : null}
+          {threadKey !== null && api.conflictingThreadKeys.has(threadKey) ? (
+            <Text accessibilityRole="alert">
+              This thread has conflicting Workstream assignments. Changes are blocked until it is
+              re-verified.
+            </Text>
+          ) : null}
           {snapshot?.placements?.readiness !== "ready" ? (
             <Text>Thread assignment requires current verified enrollment.</Text>
           ) : null}
@@ -235,6 +281,36 @@ export function MobileWorkstreamControls({
               )}
             </>
           ) : null}
+          {snapshot &&
+          group &&
+          snapshot.appearance?.permissions.includes("workstreams:write") &&
+          canEditWorkstreams(snapshot.data) ? (
+            <>
+              <Pressable accessibilityRole="button" onPress={() => setColorOpen(true)}>
+                <Text>Color…</Text>
+              </Pressable>
+              {colorOpen ? (
+                <WorkstreamColorPicker
+                  key={`${api.bindingRevision}:${group.key}`}
+                  name={group.name}
+                  saved={snapshot.appearance.items.find(
+                    (item) => item.workstream_id === group.workstream.workstreamId,
+                  )!}
+                  generation={snapshot.data.binding.serverGeneration}
+                  createCommandId={() =>
+                    runtime.runPromise(
+                      Crypto.Crypto.pipe(
+                        Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+                        Effect.map((id) => `t3-color-${id}`),
+                      ),
+                    )
+                  }
+                  save={(input) => api.saveAppearance(snapshot, input)}
+                  onClose={() => setColorOpen(false)}
+                />
+              ) : null}
+            </>
+          ) : null}
           {snapshot && group ? (
             <>
               <Text>
@@ -265,44 +341,19 @@ export function MobileWorkstreamControls({
           ) : null}
           {snapshot && selection?.thread ? (
             <>
-              {action(
-                "Move to Unassigned",
-                () => membership(null),
-                !editable ||
-                  snapshot.placements?.readiness !== "ready" ||
-                  !snapshot.identityKeys.has(
-                    nativeWorkstreamThreadKey(
-                      selection.thread!.environmentId,
-                      selection.thread!.id,
-                    ),
-                  ),
-              )}
+              {action("Move to Unassigned", () => membership(null), membershipBlock !== null)}
               {snapshot.data.items.map((item) => (
                 <View key={item.workstreamId}>
                   <Text style={{ fontWeight: "600" }}>{item.name}</Text>
                   {action(
                     `Assign to ${item.name}`,
                     () => membership(item.workstreamId),
-                    !editable ||
-                      snapshot.placements?.readiness !== "ready" ||
-                      !snapshot.identityKeys.has(
-                        nativeWorkstreamThreadKey(
-                          selection.thread!.environmentId,
-                          selection.thread!.id,
-                        ),
-                      ),
+                    membershipBlock !== null,
                   )}
                   {action(
                     `Link secondary: ${item.name}`,
                     () => membership(item.workstreamId, true),
-                    !editable ||
-                      snapshot.placements?.readiness !== "ready" ||
-                      !snapshot.identityKeys.has(
-                        nativeWorkstreamThreadKey(
-                          selection.thread!.environmentId,
-                          selection.thread!.id,
-                        ),
-                      ),
+                    membershipBlock !== null,
                   )}
                   {snapshot.placements?.items
                     .filter(
@@ -323,7 +374,8 @@ export function MobileWorkstreamControls({
                               expected_version: item.version,
                               membership_id: entry.membership_id,
                             }),
-                          !editable,
+                          !editable ||
+                            (threadKey !== null && api.conflictingThreadKeys.has(threadKey)),
                         )}
                       </View>
                     ))}

@@ -1,3 +1,5 @@
+import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
+import type { OperationReconciliation } from "../jones/updates/launcherOperation.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Qualified staging delegates to the Node-only launcher boundary and owns its scratch lifetime.
 import {
@@ -8,7 +10,7 @@ import {
   type ServerSelfUpdateResult,
   type ThreadId,
 } from "@t3tools/contracts";
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
@@ -21,13 +23,13 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 import {
   validateJonesStagedArtifact,
   type JonesStagedArtifact,
-} from "@t3tools/shared/jonesActions";
+} from "@t3tools/shared/jones/jonesActions";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
@@ -36,9 +38,9 @@ import {
   stageQualifiedRuntime,
   verifyStagedQualifiedRuntime,
   type StagedQualifiedRuntime,
-} from "./qualifiedRuntime.ts";
-import { extractQualifiedLinuxArchive } from "./qualifiedArchive.ts";
-import { extractQualifiedDarwinRuntime } from "./qualifiedDarwinRuntime.ts";
+} from "../jones/cloud/qualifiedRuntime.ts";
+import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts";
+import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
 
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
@@ -49,12 +51,16 @@ import {
   PinnedRuntimeInstallError,
   PinnedRuntimePreflightBlockedError,
 } from "./pinnedRuntime.ts";
-import { decodeServicePreflightResult } from "./servicePreflight.ts";
+import {
+  decodeServicePreflightResult,
+  qualifiedServicePreflightFailure,
+} from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 const isServiceLauncherClientError = Schema.is(ServiceLauncherClient.ServiceLauncherClientError);
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
@@ -76,10 +82,18 @@ export class ServerSelfUpdate extends Context.Service<
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly stageQualified?: (
       artifact: JonesStagedArtifact,
-    ) => Effect.Effect<StagedQualifiedRuntime, ServerSelfUpdateError>;
+    ) => Effect.Effect<
+      StagedQualifiedRuntime & { readonly migrationPlan?: MigrationPlan },
+      ServerSelfUpdateError
+    >;
     readonly installQualified?: (
-      input: { readonly stagedHandle: string; readonly continueRunningThreads?: boolean },
+      input: {
+        readonly stagedHandle: string;
+        readonly continueRunningThreads?: boolean;
+        readonly operationId?: string;
+      },
       onHandoffAccepted?: () => Effect.Effect<void>,
+      onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -97,9 +111,18 @@ export const withRunningThreadContinuation = Effect.fn(
   readonly clear: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<void, ServerSelfUpdateError>;
+  readonly reconcileQualifiedOperation?: (
+    operationId: string,
+  ) => Effect.Effect<OperationReconciliation>;
 }) {
   const desktopContinuationTokens = yield* Ref.make(HashSet.empty<string>());
-  const qualifiedInstallInFlight = yield* Ref.make(false);
+  const qualifiedInstallInFlight = yield* Ref.make<
+    | {
+        readonly operationId: string | undefined;
+        readonly uncertain: boolean;
+      }
+    | undefined
+  >(undefined);
   const uncertainQualifiedHandoff = (cause: Cause.Cause<ServerSelfUpdateError>) => {
     const error = Cause.findErrorOption(cause);
     return (
@@ -182,13 +205,37 @@ export const withRunningThreadContinuation = Effect.fn(
       ? {}
       : {
           installQualified: (
-            request: { readonly stagedHandle: string; readonly continueRunningThreads?: boolean },
+            request: {
+              readonly stagedHandle: string;
+              readonly continueRunningThreads?: boolean;
+              readonly operationId?: string;
+            },
             onAccepted?: () => Effect.Effect<void>,
+            onPrepared?: (
+              staged: StagedQualifiedRuntime,
+            ) => Effect.Effect<void, ServerSelfUpdateError>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
             return Effect.gen(function* () {
-              if (yield* Ref.getAndSet(qualifiedInstallInFlight, true))
+              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
+              if (
+                request.operationId !== undefined &&
+                inFlight?.operationId === request.operationId &&
+                inFlight.uncertain &&
+                input.reconcileQualifiedOperation !== undefined
+              ) {
+                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
+                if (receipt.operationId === request.operationId && receipt.state === "absent")
+                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
+                    current === inFlight ? undefined : current,
+                  );
+              }
+              const attempt = { operationId: request.operationId, uncertain: false };
+              const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
+                current === undefined ? ([true, attempt] as const) : ([false, current] as const),
+              );
+              if (!claimed)
                 return yield* new ServerSelfUpdateError({
                   reason: "A qualified Install has already started or needs reconciliation.",
                 });
@@ -196,10 +243,13 @@ export const withRunningThreadContinuation = Effect.fn(
                 Effect.gen(function* () {
                   continuationThreadIds =
                     request.continueRunningThreads === true ? yield* input.prepare : [];
-                  return yield* input.selfUpdate.installQualified!(request, () =>
-                    Effect.sync(() => {
-                      handoffAccepted = true;
-                    }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
+                  return yield* input.selfUpdate.installQualified!(
+                    request,
+                    () =>
+                      Effect.sync(() => {
+                        handoffAccepted = true;
+                      }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
+                    onPrepared,
                   );
                 }),
                 () => continuationThreadIds,
@@ -207,9 +257,12 @@ export const withRunningThreadContinuation = Effect.fn(
                 true,
               ).pipe(
                 Effect.catchCause((cause) =>
-                  (handoffAccepted || uncertainQualifiedHandoff(cause)
-                    ? Effect.void
-                    : Ref.set(qualifiedInstallInFlight, false)
+                  Ref.update(qualifiedInstallInFlight, (current) =>
+                    current !== attempt
+                      ? current
+                      : handoffAccepted || uncertainQualifiedHandoff(cause)
+                        ? { ...attempt, uncertain: !handoffAccepted }
+                        : undefined,
                   ).pipe(Effect.andThen(Effect.failCause(cause))),
                 ),
               );
@@ -254,10 +307,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const runner = yield* ProcessRunner.ProcessRunner;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const platform = yield* HostProcessPlatform;
-  const arch = yield* HostProcessArchitecture;
-  // Archive-distributed targets download from GitHub Releases. The client is
-  // optional so callers without one (tests, npm-only hosts) still construct.
+  const platform = yield* HostProcess.Platform;
+  const arch = yield* HostProcess.Architecture;
   const httpClient = yield* HttpClient.HttpClient;
   const releaseBaseUrl = Option.getOrUndefined(
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
@@ -277,9 +328,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     "cloud.server_self_update.update",
   )(function* (input, reportProgress = () => Effect.void, onHandoffAccepted = () => Effect.void) {
     if (capability === "desktop-managed") {
-      // input.targetVersion is meaningless here: the desktop app's own
-      // update feed decides what it downloads, and the result carries what
-      // it actually got.
       if (desktopAppUpdate.available) {
         return yield* desktopAppUpdate.run(reportProgress);
       }
@@ -391,7 +439,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         Effect.mapError((error) =>
           error._tag === "PinnedRuntimePreflightBlockedError"
             ? failWith(error.reason, error)
-            : failWith(`Could not prepare t3@${targetVersion}.`, error),
+            : error._tag === "JonesRuntimePolicyError"
+              ? failWith(error.message, error)
+              : failWith(`Could not prepare t3@${targetVersion}.`, error),
         ),
       );
 
@@ -419,10 +469,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
   });
 
-  const requireQualifiedLauncher = () => {
+  const requireQualifiedLauncher = (install = false) => {
     if (
       capability !== "boot-service" ||
-      launcher.qualifiedUpdates !== true ||
+      (install ? launcher.qualifiedUpdates !== true : launcher.qualifiedStaging !== true) ||
       launcher.currentVersion === undefined
     ) {
       throw new Error(
@@ -431,6 +481,49 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
     return launcher.currentVersion;
   };
+  const validateQualifiedCandidate = (entryPath: string, databasePath: string, version: string) =>
+    Effect.gen(function* () {
+      const result = yield* runner
+        .run({
+          command: entryPath,
+          args: [
+            "__service-preflight",
+            "--database-path",
+            databasePath,
+            "--launcher-protocol",
+            String(SERVICE_LAUNCHER_PROTOCOL),
+          ],
+          timeout: PREFLIGHT_TIMEOUT,
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            failWith(
+              "startup-gate-unavailable: Could not preflight the qualified candidate.",
+              cause,
+            ),
+          ),
+        );
+      if (result.timedOut || result.stdoutTruncated || result.stdoutInvalidUtf8)
+        return yield* failWith(
+          "startup-gate-unavailable: The candidate preflight response was incomplete.",
+        );
+      const reason = qualifiedServicePreflightFailure({
+        code: result.code,
+        stdout: result.stdout,
+        version,
+      });
+      if (reason !== undefined) return yield* failWith(reason);
+      const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
+        Effect.mapError((cause) =>
+          failWith(
+            "startup-gate-unavailable: The candidate returned an invalid service preflight.",
+            cause,
+          ),
+        ),
+      );
+      const decoded = decodeServicePreflightResult(parsed);
+      return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
+    });
   const stageQualified = (artifact: JonesStagedArtifact) =>
     Effect.tryPromise({
       try: async () => {
@@ -475,7 +568,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             });
           } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
           await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), staged.candidate);
-          return await stageQualifiedRuntime({
+          let migrationPlan: MigrationPlan | undefined;
+          const qualifiedStage = await stageQualifiedRuntime({
             artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
             binding,
             host: { platform, architecture: arch },
@@ -483,32 +577,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               // Darwin Download inspects app metadata and ASAR; it never launches
               // an unsigned candidate against the owner's native service home.
               if (staged.candidate.platform === "darwin") return;
-              const result = await runPromise(
-                runner.run({
-                  command: entryPath,
-                  args: [
-                    "__service-preflight",
-                    "--database-path",
-                    binding.dbPath,
-                    "--launcher-protocol",
-                    String(SERVICE_LAUNCHER_PROTOCOL),
-                  ],
-                  timeout: PREFLIGHT_TIMEOUT,
-                }),
+              migrationPlan = await runPromise(
+                validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
               );
-              const preflight = decodeServicePreflightResult(
-                JSON.parse(result.stdout.trim()) as unknown,
-              );
-              if (
-                result.code !== 0 ||
-                preflight?.status !== "ready" ||
-                preflight.version !== staged.receipt.version
-              )
-                throw new Error(
-                  "The qualified candidate did not pass its read-only service preflight.",
-                );
             },
           });
+          return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
         } finally {
           await NodeFSP.rm(scratch, { recursive: true, force: true });
         }
@@ -522,13 +596,14 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
     input,
     onHandoffAccepted = () => Effect.void,
+    onPrepared = () => Effect.void,
   ) =>
     Effect.gen(function* () {
       const staged = yield* Effect.tryPromise({
         try: () =>
           verifyStagedQualifiedRuntime(
             serverConfig.baseDir,
-            requireQualifiedLauncher(),
+            requireQualifiedLauncher(true),
             input.stagedHandle,
             { platform, architecture: arch },
           ),
@@ -544,12 +619,19 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       });
       if (staged.binding.dbPath !== actualDatabase)
         return yield* failWith("The staged update belongs to a different running database.");
+      yield* validateQualifiedCandidate(
+        NodePath.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
+        staged.binding.dbPath,
+        staged.receipt.version,
+      );
+      yield* onPrepared(staged);
       const updateId = yield* Effect.uninterruptible(
         launcher
           .requestUpdate({
             targetVersion: staged.receipt.version,
             dbPath: staged.binding.dbPath,
             stagedHandle: staged.stagedHandle,
+            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
           })
           .pipe(
             Effect.mapError((cause) => failWith(cause.message, cause)),

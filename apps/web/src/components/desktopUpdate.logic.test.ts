@@ -35,45 +35,6 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
-  it("retains the Jones staged Install action and links its qualified run", () => {
-    const state: DesktopUpdateState = {
-      ...baseState,
-      status: "available",
-      availableVersion: "newer",
-      jones: {
-        source: "jones-actions",
-        channel: "jones-main",
-        phase: "staged",
-        stagedHandle: "fixed-candidate",
-        capability: { check: true, download: true, install: true },
-        provenance: {
-          repository: "Jones-Systems/Jones-Code",
-          sourceSha: "source",
-          sourceTree: "tree",
-          workflow: ".github/workflows/artifact-desktop-mac.yml",
-          runId: 123,
-          runAttempt: 2,
-          artifactId: 456,
-          artifactDigest: "sha256:verified",
-          platform: "darwin",
-          architecture: "arm64",
-        },
-      },
-    };
-    expect(resolveDesktopUpdateButtonAction(state)).toBe("install");
-    expect(getDesktopUpdateReleaseUrl("newer", state)).toBe(
-      "https://github.com/Jones-Systems/Jones-Code/actions/runs/123",
-    );
-    expect(
-      isDesktopUpdateButtonDisabled({ ...state, jones: { ...state.jones!, phase: "installing" } }),
-    ).toBe(true);
-    expect(
-      resolveDesktopUpdateButtonAction({
-        ...state,
-        jones: { ...state.jones!, capability: { check: true, download: true, install: false } },
-      }),
-    ).toBe("none");
-  });
   it("shows a download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,
@@ -94,6 +55,26 @@ describe("desktop update button state", () => {
     };
     expect(resolveDesktopUpdateButtonAction(state)).toBe("download");
     expect(getDesktopUpdateButtonTooltip(state)).toContain("Click to retry");
+  });
+
+  it("says when the same version did not apply before", () => {
+    const state: DesktopUpdateState = {
+      ...baseState,
+      status: "downloaded",
+      availableVersion: "1.1.0",
+      downloadedVersion: "1.1.0",
+      notAppliedVersion: "1.1.0",
+    };
+    expect(getDesktopUpdateButtonTooltip(state)).toBe(
+      "Update 1.1.0 did not apply. Click to retry.",
+    );
+    expect(
+      getDesktopUpdateButtonTooltip({
+        ...state,
+        availableVersion: "1.2.0",
+        downloadedVersion: "1.2.0",
+      }),
+    ).toContain("1.2.0 downloaded");
   });
 
   it("keeps install action available after an install error", () => {

@@ -54,10 +54,136 @@ const fixtureFetch = (
     );
   });
 const config = { vps: { url: "https://netdata.example", token: "test-only-secret" } };
+const swap = (input: unknown = 128, output: unknown = -128, timestamp = now / 1000) => ({
+  api: 3,
+  db: { last_entry: timestamp },
+  view: { units: "KiB/s" },
+  result: { labels: ["time", "in", "out"], data: [[timestamp, input, output]] },
+});
+const swapFetch = (payload: unknown = swap()) => {
+  const fallback = fixtureFetch();
+  return vi.fn<typeof fetch>(async (input, init) =>
+    new URL(String(input)).searchParams.get("contexts") === "mem.swapio"
+      ? Response.json(payload)
+      : fallback(input, init),
+  );
+};
 
 afterEach(() => vi.useRealTimers());
 
 describe("Netdata host status", () => {
+  it("preserves legacy hosts and validates optional finite nonnegative swap bytes per second", () => {
+    const decode = Schema.decodeUnknownSync(HostStatus);
+    const host = {
+      id: "mini",
+      status: "available",
+      cpuUsagePercent: 40,
+      occupiedMemoryBytes: 1024,
+      totalMemoryBytes: 2048,
+      logicalCpuCount: 8,
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    };
+    expect(decode(host)).not.toHaveProperty("swapIoBytesPerSecond");
+    for (const swapIoBytesPerSecond of [0, 0.5, 1024])
+      expect(decode({ ...host, swapIoBytesPerSecond })).toMatchObject({ swapIoBytesPerSecond });
+    for (const swapIoBytesPerSecond of [-1, NaN, Infinity, null, "0"])
+      expect(() => decode({ ...host, swapIoBytesPerSecond })).toThrow();
+  });
+
+  it.each(["mini", "home"] as const)(
+    "adds signed swap directions for %s using the exact selected node and ten-second average",
+    async (id) => {
+      const fetcher = swapFetch(swap(128, -128, now / 1000 - 4));
+      const index = id === "mini" ? 2 : 3;
+      const host = (
+        await readHostStatus({ [id]: { ...config.vps, node: guid } }, fetcher, () => now)
+      ).hosts[index];
+      expect(host).toMatchObject({
+        status: "available",
+        cpuUsagePercent: 16,
+        swapIoBytesPerSecond: 256 * 1024,
+        sampledAt: "2027-01-15T07:59:56.000Z",
+      });
+      const queries = fetcher.mock.calls.map(([input]) => new URL(String(input)));
+      const query = queries.filter((url) => url.searchParams.get("contexts") === "mem.swapio");
+      expect(query).toHaveLength(1);
+      expect(Object.fromEntries(query[0]!.searchParams)).toEqual({
+        scope_nodes: guid,
+        nodes: guid,
+        contexts: "mem.swapio",
+        dimensions: "*",
+        after: "-10",
+        points: "1",
+        time_group: "average",
+        format: "json",
+        options: "jsonwrap",
+        group_by: "dimension",
+      });
+    },
+  );
+
+  it.each([
+    [0, 0],
+    [0.125, -0.25],
+    [8, 0],
+    [0, -8],
+  ])("accepts zero and fractional swap rates (%s in, %s out)", async (input, output) => {
+    const host = (
+      await readHostStatus({ mini: config.vps }, swapFetch(swap(input, output)), () => now)
+    ).hosts[2];
+    expect(host).toMatchObject({ swapIoBytesPerSecond: (input - output) * 1024 });
+  });
+
+  it.each([
+    ["missing", { api: 3 }],
+    ["null", null],
+    ["null direction", swap(null, -1)],
+    ["negative input", swap(-1, -1)],
+    ["positive output", swap(1, 1)],
+    ["nonfinite", swap(Infinity, -1)],
+    ["overflow", swap(Number.MAX_VALUE, -Number.MAX_VALUE)],
+    ["missing direction", data("in", 1, "KiB/s")],
+    [
+      "extra direction",
+      {
+        ...swap(),
+        result: { labels: ["time", "in", "out", "other"], data: [[now / 1000, 1, -1, 0]] },
+      },
+    ],
+    ["wrong units", { ...swap(), view: { units: "KiB" } }],
+    ["stale bucket", swap(1, -1, now / 1000 - 31)],
+    ["stale source", { ...swap(), db: { last_entry: now / 1000 - 31 } }],
+  ])("omits %s swap without losing CPU or RAM or aging its timestamp", async (_label, payload) => {
+    const host = (await readHostStatus({ mini: config.vps }, swapFetch(payload), () => now))
+      .hosts[2];
+    expect(host).toMatchObject({
+      status: "available",
+      cpuUsagePercent: 16,
+      occupiedMemoryBytes: 8589934592 - 4096.5 * 1024 ** 2,
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    });
+    expect(host).not.toHaveProperty("swapIoBytesPerSecond");
+  });
+
+  it("omits failed swap requests and never queries swap for Linux host slots", async () => {
+    const fallback = fixtureFetch();
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      if (new URL(String(input)).searchParams.get("contexts") === "mem.swapio")
+        throw new Error("optional collector unavailable");
+      return fallback(input, init);
+    });
+    const hosts = (
+      await readHostStatus({ mini: config.vps, ...config, test: config.vps }, fetcher, () => now)
+    ).hosts;
+    expect(hosts.slice(0, 3).every((host) => host.status === "available")).toBe(true);
+    expect(hosts[2]).not.toHaveProperty("swapIoBytesPerSecond");
+    expect(
+      fetcher.mock.calls.filter(
+        ([input]) => new URL(String(input)).searchParams.get("contexts") === "mem.swapio",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("enforces CPU percentage bounds and the occupied RAM wire contract", () => {
     const decode = Schema.decodeUnknownSync(HostStatus);
     const host = {
@@ -77,6 +203,79 @@ describe("Netdata host status", () => {
       expect(() => decode({ ...host, occupiedMemoryBytes })).toThrow();
     const { cpuUsagePercent: _cpu, occupiedMemoryBytes: _ram, ...legacy } = host;
     expect(() => decode({ ...legacy, load1: 1, availableMemoryBytes: 1024 })).toThrow();
+  });
+
+  it("reads available Linux RAM separately from free RAM and retains legacy occupied semantics", async () => {
+    const fallback = fixtureFetch();
+    const fetcher = vi.fn<typeof fetch>(async (input, init) =>
+      new URL(String(input)).searchParams.get("contexts") === "mem.available"
+        ? Response.json(data("avail", 6144.5, "MiB", now / 1000 - 4))
+        : fallback(input, init),
+    );
+    expect((await readHostStatus(config, fetcher, () => now)).hosts[0]).toMatchObject({
+      status: "available",
+      availableMemoryBytes: 6144.5 * 1024 ** 2,
+      occupiedMemoryBytes: 8589934592 - 4096.5 * 1024 ** 2,
+      sampledAt: "2027-01-15T07:59:56.000Z",
+    });
+  });
+
+  it("estimates Mac available RAM including speculative, inactive, and purgeable pages", async () => {
+    const memory = data("free", 1024, "MiB");
+    memory.result.labels.push(
+      "speculative",
+      "inactive",
+      "purgeable",
+      "active",
+      "wired",
+      "compressed",
+    );
+    memory.result.data[0]!.push(256, 2048, 512, 2048, 1024, 128);
+    const macCpu = {
+      ...cpu(),
+      result: { labels: ["time", "user", "nice", "system"], data: [[now / 1000, 10, 0, 10]] },
+    };
+    expect(
+      (await readHostStatus(config, fixtureFetch(macCpu, memory), () => now)).hosts[0],
+    ).toMatchObject({
+      status: "available",
+      availableMemoryBytes: 3840 * 1024 ** 2,
+      occupiedMemoryBytes: 7 * 1024 ** 3,
+    });
+  });
+
+  it.each([data("avail", 0, "MiB"), data("avail", 8192, "MiB")])(
+    "accepts zero and total available RAM",
+    async (payload) => {
+      const fallback = fixtureFetch();
+      const fetcher: typeof fetch = async (input, init) =>
+        new URL(String(input)).searchParams.get("contexts") === "mem.available"
+          ? Response.json(payload)
+          : fallback(input, init);
+      expect((await readHostStatus(config, fetcher, () => now)).hosts[0]).toMatchObject({
+        status: "available",
+        availableMemoryBytes: Number(payload.result.data[0]![1]) * 1024 ** 2,
+      });
+    },
+  );
+
+  it.each([
+    data("avail", null, "MiB"),
+    data("avail", -1, "MiB"),
+    data("avail", 8193, "MiB"),
+    data("avail", 1, "MB"),
+    data("free", 1, "MiB"),
+    data("avail", 1, "MiB", now / 1000 - 31),
+    { api: 3 },
+  ])("keeps CPU usable without claiming unavailable or invalid available RAM", async (payload) => {
+    const fallback = fixtureFetch();
+    const fetcher: typeof fetch = async (input, init) =>
+      new URL(String(input)).searchParams.get("contexts") === "mem.available"
+        ? Response.json(payload)
+        : fallback(input, init);
+    const host = (await readHostStatus(config, fetcher, () => now)).hosts[0];
+    expect(host).toMatchObject({ status: "available", cpuUsagePercent: 16 });
+    expect(host).not.toHaveProperty("availableMemoryBytes");
   });
 
   it("always returns fixed ordered unavailable hosts when unconfigured without fetching", async () => {
@@ -123,7 +322,7 @@ describe("Netdata host status", () => {
       sampledAt: "2027-01-15T07:59:58.000Z",
     });
     const calls = fetcher.mock.calls;
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     for (const [input, init] of calls) {
       expect(init?.redirect).toBe("error");
       expect(init?.headers).toMatchObject({ authorization: "Bearer test-only-secret" });
@@ -271,14 +470,15 @@ describe("Netdata host status", () => {
       { id: "mini", status: "unavailable", reason: "not_configured" },
       { id: "home", status: "unavailable", reason: "not_configured" },
     ]);
-    expect(fetcher).toHaveBeenCalledTimes(6);
+    expect(fetcher).toHaveBeenCalledTimes(8);
     const queries = fetcher.mock.calls
       .map(([input]) => new URL(String(input)))
       .filter((url) => url.pathname.endsWith("data"));
     for (const selected of [guid, testGuid]) {
       const scoped = queries.filter((url) => url.searchParams.get("nodes") === selected);
-      expect(scoped).toHaveLength(2);
+      expect(scoped).toHaveLength(3);
       expect(scoped.map((url) => url.searchParams.get("contexts")).sort()).toEqual([
+        "mem.available",
         "system.cpu",
         "system.ram",
       ]);
@@ -288,7 +488,7 @@ describe("Netdata host status", () => {
           scope_nodes: selected,
           nodes: selected,
           contexts: url.searchParams.get("contexts"),
-          dimensions: url.searchParams.get("contexts") === "system.cpu" ? "*" : "free",
+          dimensions: url.searchParams.get("contexts") === "mem.available" ? "avail" : "*",
           after: "-5",
           points: "1",
           format: "json",
@@ -470,24 +670,27 @@ describe("Netdata host status", () => {
     const fetcher = fixtureFetch();
     const result = await readHostStatus(shared, fetcher, () => now);
     expect(result.hosts.every((host) => host.status === "available")).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(12);
+    expect(fetcher).toHaveBeenCalledTimes(18);
     const credentials = fetcher.mock.calls.map(([input, init]) => ({
       origin: new URL(String(input)).origin,
       authorization: new Headers(init?.headers).get("authorization"),
     }));
     expect(credentials.filter(({ origin }) => origin === "https://override.example")).toEqual(
-      Array.from({ length: 3 }, () => ({
+      Array.from({ length: 4 }, () => ({
         origin: "https://override.example",
         authorization: null,
       })),
     );
     for (const authorization of ["Bearer shared-test-token", "Bearer mini-test-token"]) {
       expect(credentials.filter((call) => call.authorization === authorization)).toEqual(
-        Array.from({ length: 3 }, () => ({ origin: "https://collector.example", authorization })),
+        Array.from({ length: authorization === "Bearer mini-test-token" ? 5 : 4 }, () => ({
+          origin: "https://collector.example",
+          authorization,
+        })),
       );
     }
     expect(credentials.filter(({ origin }) => origin === "https://home.example")).toEqual(
-      Array.from({ length: 3 }, () => ({
+      Array.from({ length: 5 }, () => ({
         origin: "https://home.example",
         authorization: "Bearer home-test-token",
       })),

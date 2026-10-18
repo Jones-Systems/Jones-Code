@@ -1,3 +1,4 @@
+import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type { ThreadFeedEntry } from "../../lib/threadActivity";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 
@@ -6,7 +7,6 @@ export type PendingThreadFeedEntry = ThreadFeedEntry & {
   readonly acknowledged?: boolean;
 };
 
-/** Append the outbox after all presented activity, until the server echoes each message. */
 export function appendPendingThreadMessages(
   presentedFeed: ReadonlyArray<ThreadFeedEntry>,
   feed: ReadonlyArray<ThreadFeedEntry>,
@@ -19,7 +19,11 @@ export function appendPendingThreadMessages(
   return [
     ...presentedFeed,
     ...queuedMessages
-      .filter((message) => !deliveredIds.has(message.messageId))
+      .filter(
+        (message) =>
+          !deliveredIds.has(message.messageId) &&
+          !isWorkModeSentinelMessage({ ...message, role: "user" }),
+      )
       .map((pendingMessage): PendingThreadFeedEntry => ({
         type: "message",
         id: pendingMessage.messageId,
@@ -29,11 +33,14 @@ export function appendPendingThreadMessages(
           id: pendingMessage.messageId,
           role: "user",
           text: pendingMessage.text,
+          attachments: [],
           context: pendingMessage.context,
           createdAt: pendingMessage.createdAt,
           updatedAt: pendingMessage.createdAt,
-          turnId: null,
+          runId: null,
           streaming: false,
+          visibility: "local",
+          sourceThreadId: pendingMessage.threadId,
         },
       })),
   ];

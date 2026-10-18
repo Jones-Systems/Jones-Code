@@ -19,13 +19,10 @@ The source includes:
   Antigravity.
 - Project and thread management, terminals, source-control integration, and
   checkpoint-based workspace diffs and restore.
-- Jones-specific Workstreams, Voice, host-status views, saved usage accounting,
-  and updater integration.
 
 These describe integrated source, not a guarantee that every feature is
-configured or usable in a particular installation. Provider access and
-Jones-specific integrations depend on the owning server's configuration,
-authentication, and available services.
+configured or usable in a particular installation. Provider access depends
+on the owning server's configuration, authentication, and available services.
 
 The development route below starts from this repository's source. Upstream
 T3 installers, npm packages, app-store listings, and hosted services are
@@ -62,8 +59,16 @@ vp run dev
 Installation writes dependencies and runs repository lifecycle scripts.
 The development process creates state in the linked worktree's gitignored
 `.t3` directory. Read the selected ports and base directory from the
-`[dev-runner]` output, then open the printed pairing URL in your browser.
-The bare origin does not authenticate a new browser.
+`[dev-runner]` output. Startup logs withhold pairing credentials. In a separate
+terminal, explicitly request a pairing link for that base directory:
+
+```sh
+node apps/server/src/bin.ts pair --base-dir <printed-base-directory>
+```
+
+Open that command's pairing URL in your browser and keep its output private.
+The bare origin does not authenticate a new browser. Alternatively, start with
+`vp run dev --browser` to open the startup pairing URL automatically.
 
 A successful first run displays the paired web client connected to its local
 environment. To send an agent turn, configure and authenticate a supported

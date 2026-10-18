@@ -1,6 +1,36 @@
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveProjectThreadCreationBranch } from "./projectThreadCreationValidation";
+import {
+  resolveProjectThreadCreationBranch,
+  validateProjectThreadCreation,
+} from "./projectThreadCreationValidation";
+
+describe("validateProjectThreadCreation", () => {
+  it("accepts a worktree task while its automatic base is still loading", () => {
+    expect(
+      validateProjectThreadCreation({
+        environmentId: EnvironmentId.make("environment"),
+        projectId: ProjectId.make("project"),
+        environmentMode: "worktree",
+        branch: null,
+        initialMessageText: "Start the task",
+      }),
+    ).toBeNull();
+  });
+
+  it("still rejects an empty worktree task", () => {
+    expect(
+      validateProjectThreadCreation({
+        environmentId: EnvironmentId.make("environment"),
+        projectId: ProjectId.make("project"),
+        environmentMode: "worktree",
+        branch: null,
+        initialMessageText: " \n ",
+      }),
+    ).toMatchObject({ _tag: "ProjectThreadTaskRequiredError" });
+  });
+});
 
 describe("resolveProjectThreadCreationBranch", () => {
   it("uses the live checkout for an untouched local draft label and recorded branch", () => {

@@ -1,13 +1,16 @@
 import type { Dispatch, ReactElement, SetStateAction } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
+  AuthProvidersManageScope,
+  type AuthEnvironmentScope,
   type EnvironmentId,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 
+import { buildLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.logic";
 import type {
   LocalEnvironmentUpdateGroup,
   ProviderUpdateCandidate,
@@ -16,6 +19,7 @@ import type {
 
 const testState = vi.hoisted(() => ({
   groups: [] as LocalEnvironmentUpdateGroup[],
+  permittedEnvironmentIds: new Set<EnvironmentId>(),
   updateProvider: vi.fn(),
 }));
 
@@ -88,6 +92,15 @@ vi.mock("react/compiler-runtime", () => ({
 
 vi.mock("~/state/server", () => ({
   serverEnvironment: { updateProvider: Symbol("updateProvider") },
+}));
+
+vi.mock("~/state/session", () => ({
+  readEnvironmentScope: (environmentId: EnvironmentId, scope: AuthEnvironmentScope) =>
+    scope === AuthProvidersManageScope && testState.permittedEnvironmentIds.has(environmentId),
+  useEnvironmentScope: (environmentId: EnvironmentId | null, scope: AuthEnvironmentScope) =>
+    environmentId !== null &&
+    scope === AuthProvidersManageScope &&
+    testState.permittedEnvironmentIds.has(environmentId),
 }));
 
 vi.mock("~/state/use-atom-command", () => ({
@@ -176,6 +189,8 @@ describe("ProviderUpdateEnvironmentRows", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     hooks.reset();
+    testState.permittedEnvironmentIds.clear();
+    testState.permittedEnvironmentIds.add(environmentId);
     testState.updateProvider.mockReset();
     const candidate = provider() as ProviderUpdateCandidate;
     testState.groups = [
@@ -193,6 +208,61 @@ describe("ProviderUpdateEnvironmentRows", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
+
+  it.each(["npm install -g @openai/codex@latest", "bun add -g @openai/codex@latest"])(
+    "dispatches and completes every environment instance with sibling command %s",
+    async (updateCommand) => {
+      const secondEnvironmentId = "env-primary" as EnvironmentId;
+      const personal = { ...provider(), instanceId: ProviderInstanceId.make("personal") };
+      const work = {
+        ...provider(),
+        instanceId: ProviderInstanceId.make("work"),
+        versionAdvisory: { ...provider().versionAdvisory!, updateCommand },
+      };
+      testState.permittedEnvironmentIds.add(secondEnvironmentId);
+      testState.groups = buildLocalEnvironmentUpdateGroups(
+        [environmentId, secondEnvironmentId].map((id) => ({
+          environmentId: id,
+          label: id,
+          isPrimary: id === secondEnvironmentId,
+          connectionState: "ready",
+          providers: [personal, work, personal],
+        })),
+      ).groups;
+      testState.updateProvider.mockImplementation(async () =>
+        AsyncResult.success({
+          providers: [personal, work].map((snapshot) => ({
+            ...provider("succeeded"),
+            instanceId: snapshot.instanceId,
+          })),
+        }),
+      );
+      const renderRows = () => {
+        hooks.beginRender();
+        return (
+          ProviderUpdateEnvironmentRows({}) as ReactElement<{
+            readonly children: RowElement[];
+          }>
+        ).props.children;
+      };
+
+      for (const row of renderRows()) row.props.onUpdate();
+      await flushPromises();
+
+      expect(
+        testState.updateProvider.mock.calls.map(([request]) => [
+          request.environmentId,
+          request.input.instanceId,
+        ]),
+      ).toEqual([
+        [environmentId, "personal"],
+        [environmentId, "work"],
+        [secondEnvironmentId, "personal"],
+        [secondEnvironmentId, "work"],
+      ]);
+      expect(renderRows().map((row) => row.props.status.kind)).toEqual(["success", "success"]);
+    },
+  );
 
   it("keeps a successor pending when an expired request resolves late, then shows its success", async () => {
     const firstRequest =

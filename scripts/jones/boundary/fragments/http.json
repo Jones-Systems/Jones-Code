@@ -1,0 +1,14 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "http-registration",
+  "jonesOwnedPaths": ["packages/contracts/src/jones/", "apps/server/src/jones/http/"],
+  "hookPaths": ["packages/contracts/src/environmentHttp.ts", "apps/server/src/server.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/environmentHttpGroups.ts"
+    },
+    { "from": "apps/server/src/server.ts", "to": "apps/server/src/jones/http/registration.ts" }
+  ]
+}

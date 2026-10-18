@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import { RemoteEnvironmentAuthorization } from "../authorization/service.ts";
 import { PrimaryConnectionTarget, type PreparedConnection } from "../connection/model.ts";
 import { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
-import { remoteHttpClientLayer } from "../rpc/http.ts";
+import { layerRemoteHttpClient } from "../rpc/http.ts";
 import { fetchEnvironmentConversationLibraryRequest } from "./http.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -55,7 +55,7 @@ describe("conversation library HTTP transport", () => {
         signer: Option.none(),
       }).pipe(
         Effect.provide(
-          remoteHttpClientLayer(
+          layerRemoteHttpClient(
             fetchWithJson(hello, 200, (request, init) => calls.push([request, init])),
           ),
         ),
@@ -86,7 +86,7 @@ describe("conversation library HTTP transport", () => {
         signer: Option.none(),
       }).pipe(
         Effect.provide(
-          remoteHttpClientLayer(
+          layerRemoteHttpClient(
             fetchWithJson(hello, 200, (_request, init) => {
               requestInit = init;
             }),
@@ -135,7 +135,7 @@ describe("conversation library HTTP transport", () => {
       }).pipe(
         Effect.provideService(RemoteEnvironmentAuthorization, remoteAuthorization),
         Effect.provide(
-          remoteHttpClientLayer(
+          layerRemoteHttpClient(
             fetchWithJson(hello, 200, (_request, init) => {
               requestInit = init;
             }),
@@ -166,7 +166,7 @@ describe("conversation library HTTP transport", () => {
         prepared: prepared(),
         request: { kind: "hello" },
         signer: Option.none(),
-      }).pipe(Effect.provide(remoteHttpClientLayer(fetchWithJson(unsupported, 501))), Effect.flip);
+      }).pipe(Effect.provide(layerRemoteHttpClient(fetchWithJson(unsupported, 501))), Effect.flip);
 
       expect(error).toMatchObject({ code: "unsupported", traceId: "trace-old-server" });
     }),
@@ -184,7 +184,7 @@ describe("conversation library HTTP transport", () => {
         prepared: prepared(),
         request: { kind: "import", accountId: "account-1", conversations: [] },
         signer: Option.none(),
-      }).pipe(Effect.provide(remoteHttpClientLayer(fetchWithJson(conflict, 409))), Effect.flip);
+      }).pipe(Effect.provide(layerRemoteHttpClient(fetchWithJson(conflict, 409))), Effect.flip);
 
       expect(error).toMatchObject({ code: "conflict", traceId: "trace-conflict" });
     }),

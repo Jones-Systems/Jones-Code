@@ -69,7 +69,7 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
   return { guid, logicalCpuCount, totalMemoryBytes };
 }
 
-function metric(payload: unknown, units: string, now: number) {
+function metric(payload: unknown, units: string, now: number, signedSwap = false) {
   const root = record(payload);
   const view = record(root.view);
   const result = record(root.result);
@@ -100,7 +100,13 @@ function metric(payload: unknown, units: string, now: number) {
   for (let index = 1; index < result.labels.length; index++) {
     const label: unknown = result.labels[index];
     if (typeof label !== "string" || values.has(label)) throw new InvalidResponse();
-    values.set(label, finiteNonnegative(row[index]));
+    const value: unknown = row[index];
+    if (signedSwap) {
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new InvalidResponse();
+      values.set(label, value);
+    } else {
+      values.set(label, finiteNonnegative(value));
+    }
   }
   return { values, sampledAt: Math.min(sampledAt, lastEntry) };
 }
@@ -193,39 +199,87 @@ async function readHost(
       );
     };
     const node = nodeInfo(await request("nodes"), config.node);
-    const getMetric = (context: string, dimension: string) =>
+    const getMetric = (context: string, dimension: string, swapAverage = false) =>
       request("data", {
         scope_nodes: node.guid,
         nodes: node.guid,
         contexts: context,
         dimensions: dimension,
-        after: "-5",
+        after: swapAverage ? "-10" : "-5",
         points: "1",
+        ...(swapAverage ? { time_group: "average" } : {}),
         format: "json",
         options: "jsonwrap",
         group_by: "dimension",
       });
     const [cpuPayload, memoryPayload] = await Promise.all([
       getMetric("system.cpu", "*"),
-      getMetric("system.ram", "free"),
+      getMetric("system.ram", "*"),
     ]);
     const at = now();
     const cpu = metric(cpuPayload, "percentage", at);
     const cpuUsagePercent = cpuUsage(cpu.values);
     const memory = metric(memoryPayload, "MiB", at);
     const freeMiB = memory.values.get("free");
-    if (memory.values.size !== 1 || freeMiB === undefined) throw new InvalidResponse();
+    if (freeMiB === undefined) throw new InvalidResponse();
     const freeMemoryBytes = Math.round(freeMiB * 1024 * 1024);
     if (!Number.isSafeInteger(freeMemoryBytes) || freeMemoryBytes > node.totalMemoryBytes)
       throw new InvalidResponse();
+    let availableMemoryBytes: number | undefined;
+    let availableSampledAt = Math.min(cpu.sampledAt, memory.sampledAt);
+    try {
+      const isMac = !cpu.values.has("irq");
+      const available = isMac
+        ? memory
+        : metric(await getMetric("mem.available", "avail"), "MiB", now());
+      // Match Netdata's macOS estimate: chart free excludes speculative pages.
+      const dimensions = isMac ? ["free", "speculative", "inactive", "purgeable"] : ["avail"];
+      if (dimensions.some((dimension) => !available.values.has(dimension)))
+        throw new InvalidResponse();
+      const bytes = Math.round(
+        dimensions.reduce((sum, dimension) => sum + available.values.get(dimension)!, 0) *
+          1024 ** 2,
+      );
+      if (!Number.isSafeInteger(bytes) || bytes > node.totalMemoryBytes)
+        throw new InvalidResponse();
+      availableMemoryBytes = bytes;
+      availableSampledAt = Math.min(availableSampledAt, available.sampledAt);
+    } catch {
+      // Older collectors can lack available memory; retain CPU without mislabeling free RAM.
+    }
+    let swapIoBytesPerSecond: number | undefined;
+    if (id === "mini" || id === "home") {
+      try {
+        const swap = metric(await getMetric("mem.swapio", "*", true), "KiB/s", now(), true);
+        const input = swap.values.get("in");
+        const output = swap.values.get("out");
+        if (
+          swap.values.size !== 2 ||
+          input === undefined ||
+          output === undefined ||
+          input < 0 ||
+          output > 0
+        )
+          throw new InvalidResponse();
+        // Netdata plots swap-out below zero; subtract it to combine both KiB/s directions.
+        const bytesPerSecond = (input - output) * 1024;
+        if (!Number.isFinite(bytesPerSecond)) throw new InvalidResponse();
+        swapIoBytesPerSecond = bytesPerSecond;
+        availableSampledAt = Math.min(availableSampledAt, swap.sampledAt);
+      } catch {
+        // Missing or invalid optional swap data must not turn an unknown rate into zero.
+      }
+    }
     return {
       id,
       status: "available",
       cpuUsagePercent,
       logicalCpuCount: node.logicalCpuCount,
       occupiedMemoryBytes: node.totalMemoryBytes - freeMemoryBytes,
+      ...(availableMemoryBytes === undefined ? {} : { availableMemoryBytes }),
+      ...(swapIoBytesPerSecond === undefined ? {} : { swapIoBytesPerSecond }),
       totalMemoryBytes: node.totalMemoryBytes,
-      sampledAt: DateTime.formatIso(DateTime.makeUnsafe(Math.min(cpu.sampledAt, memory.sampledAt))),
+      sampledAt: DateTime.formatIso(DateTime.makeUnsafe(availableSampledAt)),
     };
   } catch (error) {
     return {
