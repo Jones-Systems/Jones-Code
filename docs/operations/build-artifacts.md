@@ -199,6 +199,19 @@ These facts hold for the DMG above and affect any install or update plan:
 
   Never edit the admission record or transaction files to get past the fence.
 
+- An Install whose native preparation never reached the backend leaves only a
+  preparation claim. A held claim blocks Install, Discard and manual install.
+  The updater now shows the cause and releases the claim when evidence proves
+  that no request is still pending. That evidence is a recorded backend
+  refusal, or a recorded requester that has exited. If the hold message asks
+  for recovery, quit Jones Code first. Then run the native helper's
+  `--inspect-preparation TRANSACTION --quiescent` route. If it reports `ready`,
+  run `--retire-preparation TRANSACTION --plan-sha256 PLAN --quiescent` with
+  the reported plan hash. Both routes refuse while a writer is active, or once
+  any dispatch record exists. Retirement deletes nothing. It moves the
+  transaction to `runtime/jones-updates/retired-preparations/` and writes a
+  receipt there.
+
 - A successful activation keeps the replaced bundle beside the stable app as
   `Jones Code.app.jones-previous-GENERATION`. Staging can also leave
   `Jones Code.app.jones-incoming-GENERATION`. These siblings are recovery
