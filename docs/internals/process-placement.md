@@ -102,3 +102,43 @@ checks exercise argv, environment handling and termination orchestration, not
 kernel membership or cgroup-wide descendant coverage. They never discover or
 sweep inherited cgroup siblings. Real cgroup qualification requires a separate,
 explicitly bounded fixture protocol; ordinary unit commands do not opt into it.
+
+## Retained command and operation permits
+
+The Codex app-server launch records its exact command object's originating
+AgentScope and captured stop effect. The placing spawner claims that annotation
+once and registers the original stop, without creating a second, empty outer
+scope. Owner substitution and repeated claims fail closed. Copied argv or JSON
+has no annotation. This is command-local provenance, not a lifetime registry.
+
+`jones/runtime/RuntimeOperationPermit.ts` defines a source-only operation port.
+Production providers and the ordinary-checkout consumer are not wired to it.
+The existing executor must supply its captured binding, issuer, generation,
+evidence revision/reference, exact participant writer coverage, serialized
+current-runtime invocation, and retained old-scope observation. A successful
+stop alone cannot supply those missing contracts. No database migration or
+restart history reconciliation is installed by this port.
+
+The permit captures one native invocation and linearizes its claim against
+revocation. The consumer's durable-start effect runs before invocation. The
+runtime owner must hold its existing lifecycle guard while rechecking the exact
+binding and performing invocation; an earlier currentness check is insufficient.
+Coverage is frozen at issuance and covers only the declared participant writers.
+The consumer still accounts for every other association and derived effect.
+
+| Situation | Source-port result |
+| --- | --- |
+| Revoke before any durable-start attempt | Participant `not_invoked` |
+| Start attempted, committed, or response lost; no confirmed invocation | `unknown` |
+| Confirmed invocation, complete declared coverage, current owner | Participant `active`; not operation completion |
+| Partial coverage or escaped/unknown descendants | `unknown` |
+| Interrupted or uncertain invocation | `unknown` until independently complete retirement evidence |
+| Complete old-scope quiescence, no pending/future permit invocation | Exact participant `quiescent`, including after invocation-permit expiry |
+| Scope observation overlaps a permit transition | `unknown`; stale emptiness cannot retire later work |
+| Warm reuse, unsupported provider, or restarted issuer | Typed `unavailable` |
+
+There is no post-restart `not_invoked` inference from a dead issuer, lock,
+timeout, or new placement. Warm-provider progression needs a separate qualified
+operation-specific coverage contract; this port never kills a warm runtime or
+silently holds all ordinary operations until it exits. These synthetic contracts
+are neither runtime adoption nor workload/performance qualification.

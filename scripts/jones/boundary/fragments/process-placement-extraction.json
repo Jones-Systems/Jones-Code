@@ -14,7 +14,11 @@
     "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
     "apps/server/src/jones/processPlacement/processPlacementAcp.ts",
     "apps/server/src/jones/processPlacement/processPlacementRuntime.ts",
-    "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts"
+    "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+    "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+    "apps/server/src/jones/processPlacement/scopedCommand.ts",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.ts",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [
@@ -37,6 +41,10 @@
     {
       "from": "apps/server/src/resourceTelemetry/NativeTelemetryClient.ts",
       "to": "apps/server/src/jones/processPlacement/processPlacementSpawner.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/processPlacement/scopedCommand.ts"
     }
   ]
 }

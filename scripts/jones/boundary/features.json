@@ -213,7 +213,9 @@
         "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
         "apps/server/src/process/agentScope.test.ts",
         "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
-        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts"
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+        "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
       ]
     },
     {

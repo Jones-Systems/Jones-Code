@@ -1,3 +1,4 @@
+import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.ts";
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
@@ -1428,7 +1429,8 @@ export const makeCodexAppServerSpawnCommand = Effect.fn(
   readonly extendEnv?: boolean | undefined;
   readonly threadId?: string | undefined;
 }) {
-  const launch = yield* (yield* AgentScope).wrap({
+  const agentScope = yield* AgentScope;
+  const launch = yield* agentScope.wrap({
     command: input.command,
     args: input.args,
     name: "codex",
@@ -1439,12 +1441,16 @@ export const makeCodexAppServerSpawnCommand = Effect.fn(
     ...(input.env === undefined ? {} : { env: input.env }),
     ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
   });
-  return ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
-    ...(input.env === undefined ? {} : { env: input.env }),
-    ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
-    shell: spawnCommand.shell,
-  });
+  return retainScopedCommand(
+    ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      ...(input.env === undefined ? {} : { env: input.env }),
+      ...(input.extendEnv === undefined ? {} : { extendEnv: input.extendEnv }),
+      shell: spawnCommand.shell,
+    }),
+    agentScope,
+    launch,
+  );
 });
 
 const layerCodexAppServerClientFactoryCommand = (

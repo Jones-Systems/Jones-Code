@@ -1,3 +1,4 @@
+import { claimScopedCommand } from "./scopedCommand.ts";
 import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import type * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -65,6 +66,13 @@ function placeScopedCommand(
     }
     if (roles.get(command) === "control")
       return yield* Effect.sync(() => placeCommand(command, binding, platform));
+    const retained = yield* Effect.sync(() => claimScopedCommand(command, scope));
+    if (retained !== undefined) {
+      if (retained.stop === undefined)
+        return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
+      yield* Effect.addFinalizer(() => retained.stop!.pipe(Effect.ignoreCause({ log: true })));
+      return command;
+    }
     const shell = command.options.shell;
     const payload = shell
       ? {

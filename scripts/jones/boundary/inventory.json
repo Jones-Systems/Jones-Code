@@ -1100,7 +1100,11 @@
     "apps/web/src/hooks/useLiveRefresh.test.ts": "jones-tests-in-upstream",
     "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx": "jones-tests-in-upstream",
-    "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream"
+    "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/processPlacement/scopedCommand.test.ts": "jones-owned",
+    "apps/server/src/jones/processPlacement/scopedCommand.ts": "jones-owned",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.ts": "jones-owned",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
