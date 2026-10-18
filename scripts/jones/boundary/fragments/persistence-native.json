@@ -53,6 +53,14 @@
       "to": "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/EffectOutbox.ts",
+      "to": "apps/server/src/jones/nativeCreation/NativeEffectCompletion.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
       "to": "apps/server/src/jones/nativeCreation/NativeCreationProviderExecution.ts"
     },

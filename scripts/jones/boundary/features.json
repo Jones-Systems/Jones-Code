@@ -564,9 +564,13 @@
         "apps/server/src/persistence/DatabaseMaintenance.test.ts",
         "apps/server/src/cli/doctor.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
-        "apps/server/src/jones/persistence/Migrations.test.ts"
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/persistence/JonesTablePresence.test.ts",
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts"
       ],
-      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows."
+      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows; 110 adds only Jones thread indexes. Receiving startup preserves populated foreign 7-13 history. Ordinary outbox success reads no Jones table; native success keeps the strict envelope decode and confirmed-lease proof. Event sink hooks keep their key lookups without per-command schema reads."
     },
     {
       "id": "composer-thread-query",

@@ -12,6 +12,7 @@ import type {
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
 import { captureNativeProviderSettlementProof } from "../jones/workstreams/nativeProvider/settlementProof.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
 import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
@@ -492,7 +493,8 @@ const layerBase: Layer.Layer<
     // of its transaction and holds it until it has published. Publishing never
     // waits, so a writer that holds the transaction while it waits for the
     // lane is not blocked for long.
-    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql);
+    const jonesTables = makeJonesTablePresence(sql);
+    const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -991,16 +993,10 @@ const layerBase: Layer.Layer<
               });
           const imported = input.importedHistory;
           if (imported === undefined) {
-            const installed =
-              yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jones_imported_history_choices'`;
-            const reservedChoices =
-              installed.length === 0
-                ? []
-                : yield* sql`SELECT command_id FROM jones_imported_history_choices WHERE command_id = ${input.commandId}`;
-            if (reservedChoices.length !== 0)
-              return yield* new ImportedChoice.ImportedHistoryChoiceError({
-                code: "private_imported_lineage_required",
-              });
+            yield* ImportedChoice.assertOrdinaryCommandUnreserved(
+              input.commandId,
+              jonesTables,
+            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           } else if (
             imported.command.commandId !== input.commandId ||
             imported.command.threadId !== input.threadId ||
@@ -1910,7 +1906,7 @@ const layerBase: Layer.Layer<
       assertImportedHistoryStartAllowed: (input) =>
         sql
           .withTransaction(
-            ImportedChoice.claimImportedHistoryStart(input).pipe(
+            ImportedChoice.claimImportedHistoryStart(input, jonesTables).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
             ),
           )

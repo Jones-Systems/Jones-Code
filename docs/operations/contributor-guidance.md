@@ -108,7 +108,9 @@ those objects without knowing about Jones.
   payloads or columns. Read upstream rows from Jones-owned queries through
   existing upstream keys and indexes. Do not add joins, scans or schema checks
   to upstream per-event or per-command paths; a necessary hook does a
-  primary-key lookup and is recorded as a hook.
+  primary-key lookup and is recorded as a hook. A hook that needs an optional
+  Jones table checks it through `JonesTablePresence`, which reads the schema
+  only until it finds the table.
 - **Environment identity.** Jones rows are meaningful only beside the upstream
   rows of the same database. Do not copy or restore Jones tables separately
   from the upstream data they describe.
@@ -128,10 +130,21 @@ those objects without knowing about Jones.
   full database scans, content hashing or a separate migration rehearsal.
 
 [`UpstreamIsolation.test.ts`](../../apps/server/src/jones/persistence/UpstreamIsolation.test.ts)
-checks the schema rules against the complete Jones manifest. Some earlier
-integrations predate these rules, for example the native-creation reference in
-effect outbox payloads and Jones table checks in the event sink. They are not
-precedent for new work.
+checks the schema rules against the complete Jones manifest.
+[`ForeignHistoryCompatibility.test.ts`](../../apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts)
+checks that receiving startup preserves populated foreign Jones history.
+Two earlier integrations predate these rules and are not precedent:
+
+- **Native effect envelope.** Native-creation effects wrap their request with
+  a native reference in the outbox payload. Upstream workers cannot decode the
+  wrapper, so they never run a native effect. Keep this interlock until native
+  effects have their own queue. Do not put other Jones metadata in upstream
+  payloads; a new interlock of this kind needs owner approval.
+- **Foreign history 7-13.** Databases from those foreign Jones migrations hold
+  `orchestration_v2_*` tables that reference upstream rows. Jones preserves
+  them as found. Their references block deletes of the rows they name and
+  would block an upstream rebuild of the referenced tables. Rebuilding or
+  removing them needs an owner decision.
 
 ### Install path changes
 
