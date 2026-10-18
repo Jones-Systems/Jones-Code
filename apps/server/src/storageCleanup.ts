@@ -901,7 +901,7 @@ const make = Effect.gen(function* () {
             yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
           yield* cleanupGit(
             project.workspaceRoot,
-            ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", worktreePath],
+            ["-c", "status.showUntrackedFiles=normal", "worktree", "remove", "--", worktreePath],
             "git worktree remove",
           );
         }

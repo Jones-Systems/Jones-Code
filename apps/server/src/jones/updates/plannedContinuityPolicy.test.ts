@@ -227,3 +227,42 @@ it("does not mistake a Stop reusing the planned Work command ID for a Work dispa
     true,
   );
 });
+
+it("ignores a recovery-cancelled provider wake without ignoring a user Stop or hold", () => {
+  const projection = queuedFixture();
+  const root = projection.runs[0]!;
+  const wake = {
+    ...root,
+    id: RunId.make("never-started-provider-wake"),
+    ordinal: 3,
+    status: "cancelled" as const,
+    requestedAt: DateTime.makeUnsafe(1),
+    startedAt: null,
+    completedAt: DateTime.makeUnsafe(2),
+  };
+  const recovered = { ...projection, runs: [...projection.runs, wake] };
+  const snapshot = capture(recovered)!;
+  expect(snapshot.sourceRunId).toBe(root.id);
+  expect(canReleasePlannedQueue(snapshot, recovered)).toBe(true);
+  for (const command_type of ["turn.interrupt", "thread.runtime.stop", "queue.hold"])
+    expect(
+      changesPlannedControl(
+        { command_id: "explicit-user-control", command_type },
+        snapshot,
+        continuationRunIds(snapshot, recovered),
+      ),
+    ).toBe(true);
+  for (const status of ["interrupted", "failed"] as const) {
+    const stopped = { ...projection, runs: [...projection.runs, { ...wake, status }] };
+    expect(capture(stopped)).toBeUndefined();
+    expect(canReleasePlannedQueue(snapshot, stopped)).toBe(false);
+  }
+  expect(
+    capture({
+      ...recovered,
+      runs: recovered.runs.map((run) =>
+        run.status === "queued" ? { ...run, queueHeld: true } : run,
+      ),
+    }),
+  ).toBeUndefined();
+});

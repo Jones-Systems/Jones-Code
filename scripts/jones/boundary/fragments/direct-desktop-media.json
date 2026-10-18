@@ -37,6 +37,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
+      "to": "apps/web/src/jones/device/useDeviceStreamRoute.ts"
+    },
+    {
       "from": "apps/server/src/device/DeviceService.test.ts",
       "to": "apps/server/src/jones/device/DeviceDirectGrants.ts"
     },

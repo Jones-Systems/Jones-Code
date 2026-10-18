@@ -1,5 +1,5 @@
 import type { WorkQueueMetadataResult } from "@t3tools/contracts";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 
 export type WorkQueueMetadataLoader = (signal: AbortSignal) => Promise<WorkQueueMetadataResult>;
@@ -48,25 +48,37 @@ export function WorkQueueMetadataPanel({
   const [loading, setLoading] = useState(true);
   const [observedAt, setObservedAt] = useState(Date.now);
   const active = useRef<AbortController | null>(null);
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     active.current?.abort();
     const controller = new AbortController();
     active.current = controller;
+    return await (async () => {
+      try {
+        const next = await load(controller.signal);
+        if (!controller.signal.aborted) {
+          setObservedAt(Date.now());
+          setResult(next);
+        }
+      } catch {
+        if (!controller.signal.aborted) setFailed(true);
+      }
+    })().finally(() => {
+      if (!controller.signal.aborted) setLoading(false);
+    });
+  };
+  const [previousLoad, setPreviousLoad] = useState(() => load);
+  if (previousLoad !== load) {
+    setPreviousLoad(() => load);
     setLoading(true);
     setFailed(false);
     setResult(null);
-    try {
-      const next = await load(controller.signal);
-      if (!controller.signal.aborted) {
-        setObservedAt(Date.now());
-        setResult(next);
-      }
-    } catch {
-      if (!controller.signal.aborted) setFailed(true);
-    } finally {
-      if (!controller.signal.aborted) setLoading(false);
-    }
-  }, [load]);
+  }
+  const requestRefresh = () => {
+    setLoading(true);
+    setFailed(false);
+    setResult(null);
+    return refresh();
+  };
   useEffect(() => {
     void refresh();
     return () => {
@@ -97,7 +109,12 @@ export function WorkQueueMetadataPanel({
           <h2 className="font-medium">Work queue</h2>
           <p className="text-sm text-muted-foreground">Read-only request status.</p>
         </div>
-        <Button variant="outline" size="compact" disabled={loading} onClick={() => void refresh()}>
+        <Button
+          variant="outline"
+          size="compact"
+          disabled={loading}
+          onClick={() => void requestRefresh()}
+        >
           Refresh metadata
         </Button>
       </div>

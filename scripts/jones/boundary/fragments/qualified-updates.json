@@ -128,7 +128,7 @@
     "packages/client-runtime/package.json",
     "packages/client-runtime/src/state/server.ts",
     "apps/web/src/components/ServerUpdateAction.tsx",
-    "apps/web/src/components/ServerUpdateAction.test.tsx",
+    "apps/web/src/components/ServerUpdateAction.browser.test.tsx",
     "apps/web/src/components/settings/ConnectionsSettings.tsx",
     "apps/mobile/src/features/settings/environment-maintenance.ts",
     "apps/mobile/src/features/settings/environment-maintenance.test.ts",
@@ -212,6 +212,10 @@
     "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ServerUpdateAction.browser.test.tsx",
+      "to": "apps/web/src/jones/updates/jonesUpdates.ts"
+    },
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/updates/clientUpdateBanner.tsx"

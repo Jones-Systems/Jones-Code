@@ -23,6 +23,7 @@ import { use, useCallback, useEffect, useMemo, useRef, useState, type ComponentP
 import {
   Platform,
   ScrollView,
+  useWindowDimensions,
   View,
   type ScrollViewProps,
   type GestureResponderEvent,
@@ -35,6 +36,10 @@ import type { SwipeableMethods } from "react-native-gesture-handler/ReanimatedSw
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { cn } from "../../lib/cn";
+import {
+  ANDROID_READING_MAX_WIDTH,
+  deriveCenteredContentHorizontalPadding,
+} from "../../lib/layout";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import type { WorkspaceEnvironment, WorkspaceState } from "../../state/workspaceModel";
@@ -64,6 +69,8 @@ import {
   ThreadListV2WorkingShelfHeader,
 } from "../threads/thread-list-v2-items";
 import { useThreadRowProviderInstanceResolver } from "../threads/thread-provider-instance";
+import { useOpenThreadPullRequests } from "../threads/use-open-thread-pull-requests";
+import type { ThreadPrPresentation } from "../../state/thread-pr-presentation";
 import {
   buildThreadListV2Items,
   getThreadListV2OrderedSection,
@@ -271,6 +278,17 @@ export function HomeScreen(props: HomeScreenProps) {
   const contentSideInsets = usesNativeWorkspaceColumns
     ? (columnMetrics ?? screenMetrics)?.safeArea
     : undefined;
+  // Android lists that span a wide window (foldables in portrait) keep the
+  // reading width, so rows stay clear of the edges and the camera cutout.
+  const { width: windowWidth } = useWindowDimensions();
+  const androidListGutter =
+    Platform.OS === "android"
+      ? deriveCenteredContentHorizontalPadding({
+          viewportWidth: windowWidth,
+          maxContentWidth: ANDROID_READING_MAX_WIDTH,
+          minimumPadding: 0,
+        })
+      : 0;
   const iosBottomClearance = Math.max(
     columnMetrics?.safeArea.bottom ?? insets.bottom,
     24,
@@ -321,6 +339,14 @@ export function HomeScreen(props: HomeScreenProps) {
   const handleScrollBeginDrag = useCallback(() => {
     openSwipeableRef.current?.close();
   }, []);
+  const openThreadPullRequests = useOpenThreadPullRequests();
+  const handleOpenThreadPullRequests = useCallback(
+    (thread: EnvironmentThreadShell, pr: ThreadPrPresentation) => {
+      openSwipeableRef.current?.close();
+      openThreadPullRequests(thread, pr);
+    },
+    [openThreadPullRequests],
+  );
   const onFabScroll = useFabScroll();
   const listRef = useRef<LegendListRef>(null);
   const searchMode = workspace?.state.tabs.threads.searchMode;
@@ -803,6 +829,7 @@ export function HomeScreen(props: HomeScreenProps) {
           )}
           searchQuery={props.searchQuery}
           onSelectThread={props.onSelectThread}
+          onOpenThreadPullRequests={handleOpenThreadPullRequests}
           onDeleteThread={handleDeleteThread}
           onArchiveThread={props.onArchiveThread}
           onRenameThread={handleRenameThread}
@@ -840,6 +867,7 @@ export function HomeScreen(props: HomeScreenProps) {
       workstreams.openGroup,
       workstreams.openThread,
       moveWithinWorkstream,
+      handleOpenThreadPullRequests,
       activeReorderEnvironmentIds,
       handleMoveThread,
       handlePinThread,
@@ -1087,8 +1115,10 @@ export function HomeScreen(props: HomeScreenProps) {
               {...scrollGateHandlers}
               scrollEventThrottle={16}
               contentContainerStyle={{
-                paddingLeft: (contentSideInsets?.left ?? 0) + (primaryColumn ? 8 : 0),
-                paddingRight: (contentSideInsets?.right ?? 0) + (primaryColumn ? 8 : 0),
+                paddingLeft:
+                  (contentSideInsets?.left ?? 0) + (primaryColumn ? 8 : 0) + androidListGutter,
+                paddingRight:
+                  (contentSideInsets?.right ?? 0) + (primaryColumn ? 8 : 0) + androidListGutter,
                 paddingBottom:
                   Platform.OS === "ios"
                     ? iosBottomClearance

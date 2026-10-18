@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { JonesUpdateBridgeInput } from "@t3tools/client-runtime/jones/fleet-updates";
@@ -6,6 +6,7 @@ import { createRuntimeCommand } from "@t3tools/client-runtime/state/runtime";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../../components/ui/button";
+import { useStableCallback } from "../../hooks/useStableCallback";
 import type { JonesSourceCurrency } from "./sourceCurrency";
 import { executeBlockedHostUpdate } from "./blockedHostCommand";
 
@@ -25,14 +26,15 @@ export function JonesBlockedHostUpdates({
 }) {
   const execute = useAtomCommand(command, { reportFailure: false });
   const [state, setState] = useState<JonesUpdateState | null>(null);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState(true);
   const [message, setMessage] = useState<string>();
   const [unknownInstall, setUnknownInstall] = useState(false);
   const [currency, setCurrency] = useState<JonesSourceCurrency>("unknown");
-  const run = useCallback(
-    async (request: JonesUpdateBridgeInput) => {
-      setPending(true);
-      const result = await execute({ environmentId, request });
+  const requestGeneration = useRef(0);
+  const run = useStableCallback((target: EnvironmentId, request: JonesUpdateBridgeInput) => {
+    const generation = requestGeneration.current;
+    return execute({ environmentId: target, request }).then((result) => {
+      if (generation !== requestGeneration.current) return;
       setPending(false);
       if (result._tag === "Failure") {
         if (request.action === "install") setUnknownInstall(true);
@@ -50,13 +52,20 @@ export function JonesBlockedHostUpdates({
           ? "This host does not provide qualified Jones updates. It needs host-side setup."
           : result.value.state.message,
       );
-    },
-    [environmentId, execute],
-  );
+    });
+  });
+
+  const requestUpdate = (request: JonesUpdateBridgeInput) => {
+    setPending(true);
+    return run(environmentId, request);
+  };
 
   useEffect(() => {
-    void run({ action: "state" });
-  }, [run]);
+    void run(environmentId, { action: "state" });
+    return () => {
+      requestGeneration.current += 1;
+    };
+  }, [environmentId, run]);
 
   const busy = pending || state?.phase === "preparing" || state?.phase === "installing";
   return (
@@ -80,7 +89,7 @@ export function JonesBlockedHostUpdates({
           size="xs"
           variant="outline"
           disabled={pending}
-          onClick={() => void run({ action: "state" })}
+          onClick={() => void requestUpdate({ action: "state" })}
         >
           Refresh status
         </Button>
@@ -89,7 +98,7 @@ export function JonesBlockedHostUpdates({
             size="xs"
             variant="outline"
             disabled={busy || unknownInstall}
-            onClick={() => void run({ action: "check" })}
+            onClick={() => void requestUpdate({ action: "check" })}
           >
             Check for builds
           </Button>
@@ -100,7 +109,7 @@ export function JonesBlockedHostUpdates({
             disabled={busy || unknownInstall}
             onClick={() => {
               if (state.provenance)
-                void run({
+                void requestUpdate({
                   action: "download",
                   input: {
                     artifactId: state.provenance.artifactId,
@@ -118,7 +127,7 @@ export function JonesBlockedHostUpdates({
             disabled={busy || unknownInstall}
             onClick={() => {
               if (state.stagedHandle && state.currentVersion)
-                void run({
+                void requestUpdate({
                   action: "install",
                   input: {
                     stagedHandle: state.stagedHandle,

@@ -47,15 +47,7 @@ import {
   RefreshCwIcon,
   Trash2Icon,
 } from "lucide-react";
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { WorkspacePageHeader } from "../WorkspacePageHeader";
@@ -132,8 +124,8 @@ export function ConversationLibraryPage() {
   const helloStartedFor = useRef<string | null>(null);
   const preferredAccountId = useRef<string | null>(null);
   const detailPanelRef = useRef<HTMLDivElement>(null);
-  const reader = useMemo(() => new ConversationLibraryReader(), []);
-  const importer = useMemo(() => new ConversationLibraryImport(), []);
+  const [reader] = useState(() => new ConversationLibraryReader());
+  const [importer] = useState(() => new ConversationLibraryImport());
   const state = useSyncExternalStore(reader.subscribe, reader.getSnapshot, reader.getSnapshot);
   const importState = useSyncExternalStore(
     importer.subscribe,
@@ -157,13 +149,10 @@ export function ConversationLibraryPage() {
     selectedEnvironmentId === null ? null : environmentCatalog.stateAtom(selectedEnvironmentId),
   );
   const prepared = usePreparedConnection(selectedEnvironmentId);
-  const binding = useMemo(
-    (): LibraryReaderBinding | null =>
-      selectedEnvironmentId === null
-        ? null
-        : { environmentId: selectedEnvironmentId, generation: connection.data?.generation ?? 0 },
-    [connection.data?.generation, selectedEnvironmentId],
-  );
+  const binding =
+    selectedEnvironmentId === null
+      ? null
+      : { environmentId: selectedEnvironmentId, generation: connection.data?.generation ?? 0 };
   const currentBindingKey = bindingKey(binding);
   const readerBindingKey = bindingKey(state.binding);
   const connected = connection.data?.phase === "connected" && Option.isSome(prepared);
@@ -179,146 +168,144 @@ export function ConversationLibraryPage() {
     state.accounts.value?.find((account) => account.id === state.filter.accountId) ??
     null;
 
-  useLayoutEffect(() => {
-    reader.bind(binding);
-    importer.bind(binding, false);
-    helloStartedFor.current = null;
-    preferredAccountId.current = null;
+  const [previousBindingKey, setPreviousBindingKey] = useState(currentBindingKey);
+  if (previousBindingKey !== currentBindingKey) {
+    setPreviousBindingKey(currentBindingKey);
     setImportOpen(false);
     setCreateAccountOpen(false);
     setCreateAccountPending(false);
     setRemoveOpen(false);
     setSmallScreenDetailRequested(false);
+  }
+  useLayoutEffect(() => {
+    reader.bind(binding);
+    importer.bind(binding, false);
+    helloStartedFor.current = null;
+    preferredAccountId.current = null;
   }, [binding, importer, reader]);
 
   useLayoutEffect(() => {
     if (readerBindingKey === currentBindingKey) importer.bind(state.binding, state.canWrite);
   }, [currentBindingKey, importer, readerBindingKey, state.binding, state.canWrite]);
 
-  const executeReaderTicket = useCallback(
-    async function executeReaderTicket(ticket: LibraryReaderTicket) {
-      if (!reader.isPending(ticket)) return;
-      const result = await runRequest({
-        environmentId: EnvironmentId.make(ticket.binding.environmentId),
-        input: ticket.request,
-      });
-      if (!reader.isPending(ticket)) return;
-      if (result._tag === "Failure") {
-        reader.reject(ticket, conversationLibraryErrorMessage(Cause.squash(result.cause)));
-        return;
-      }
-      const reply = result.value;
-      if (!conversationLibraryReplyMatchesRequest(ticket.request, reply)) {
-        reader.reject(ticket, "The library returned a reply that did not match the request.");
-        return;
-      }
+  const executeReaderTicket = async function executeReaderTicket(ticket: LibraryReaderTicket) {
+    if (!reader.isPending(ticket)) return;
+    const result = await runRequest({
+      environmentId: EnvironmentId.make(ticket.binding.environmentId),
+      input: ticket.request,
+    });
+    if (!reader.isPending(ticket)) return;
+    if (result._tag === "Failure") {
+      reader.reject(ticket, conversationLibraryErrorMessage(Cause.squash(result.cause)));
+      return;
+    }
+    const reply = result.value;
+    if (!conversationLibraryReplyMatchesRequest(ticket.request, reply)) {
+      reader.reject(ticket, "The library returned a reply that did not match the request.");
+      return;
+    }
 
-      switch (ticket.request.kind) {
-        case "hello": {
-          if (reply.kind !== "hello" || !reader.acceptHello(ticket, reply)) return;
-          const accountsTicket = reader.requestAccounts();
-          if (accountsTicket) void executeReaderTicket(accountsTicket);
-          return;
-        }
-        case "accounts": {
-          if (reply.kind !== "accounts" || !reader.acceptAccounts(ticket, reply.accounts)) return;
-          const filter = reader.getSnapshot().filter;
-          const preferred = preferredAccountId.current;
-          const accountId =
-            preferred !== null && reply.accounts.some((account) => account.id === preferred)
-              ? preferred
-              : filter.accountId !== null &&
-                  reply.accounts.some((account) => account.id === filter.accountId)
-                ? filter.accountId
-                : (reply.accounts[0]?.id ?? null);
-          if (preferredAccountId.current === accountId) preferredAccountId.current = null;
-          reader.setFilter({ ...filter, accountId });
-          return;
-        }
-        case "list":
-          if (reply.kind === "list" && reader.acceptList(ticket, reply)) {
-            const current = reader.getSnapshot();
-            if (current.detail.status === "stale" && current.selection !== null) {
-              const detailTicket = reader.requestDetail(current.selection);
-              if (detailTicket) void executeReaderTicket(detailTicket);
-            }
-          }
-          return;
-        case "detail":
-          if (reply.kind === "detail" && reader.acceptDetail(ticket, reply)) {
-            const current = reader.getSnapshot();
-            if (current.list.status === "stale") {
-              const listTicket = reader.requestList();
-              if (listTicket) void executeReaderTicket(listTicket);
-            }
-          }
-          return;
-        case "update":
-        case "selectSnapshot":
-        case "remove": {
-          if (reply.kind !== "updated" && reply.kind !== "removed") return;
-          if (
-            !reader.acceptMutation(
-              ticket as LibraryReaderTicket<
-                Extract<LibraryRequest, { kind: "update" | "selectSnapshot" | "remove" }>
-              >,
-              reply as Extract<LibraryReply, { kind: "updated" | "removed" }>,
-            )
-          )
-            return;
-          const listTicket = reader.requestList();
-          if (listTicket) void executeReaderTicket(listTicket);
-          const selection =
-            ticket.request.kind === "selectSnapshot"
-              ? {
-                  kind: "detail" as const,
-                  key: ticket.request.key,
-                  snapshotId: ticket.request.snapshotId,
-                  offset: 0,
-                }
-              : reader.getSnapshot().selection;
-          if (selection !== null) {
-            const detailTicket = reader.requestDetail(selection);
+    switch (ticket.request.kind) {
+      case "hello": {
+        if (reply.kind !== "hello" || !reader.acceptHello(ticket, reply)) return;
+        const accountsTicket = reader.requestAccounts();
+        if (accountsTicket) void executeReaderTicket(accountsTicket);
+        return;
+      }
+      case "accounts": {
+        if (reply.kind !== "accounts" || !reader.acceptAccounts(ticket, reply.accounts)) return;
+        const filter = reader.getSnapshot().filter;
+        const preferred = preferredAccountId.current;
+        const accountId =
+          preferred !== null && reply.accounts.some((account) => account.id === preferred)
+            ? preferred
+            : filter.accountId !== null &&
+                reply.accounts.some((account) => account.id === filter.accountId)
+              ? filter.accountId
+              : (reply.accounts[0]?.id ?? null);
+        if (preferredAccountId.current === accountId) preferredAccountId.current = null;
+        reader.setFilter({ ...filter, accountId });
+        return;
+      }
+      case "list":
+        if (reply.kind === "list" && reader.acceptList(ticket, reply)) {
+          const current = reader.getSnapshot();
+          if (current.detail.status === "stale" && current.selection !== null) {
+            const detailTicket = reader.requestDetail(current.selection);
             if (detailTicket) void executeReaderTicket(detailTicket);
           }
-          return;
         }
-        case "preview":
-        case "import":
-        case "createAccount":
+        return;
+      case "detail":
+        if (reply.kind === "detail" && reader.acceptDetail(ticket, reply)) {
+          const current = reader.getSnapshot();
+          if (current.list.status === "stale") {
+            const listTicket = reader.requestList();
+            if (listTicket) void executeReaderTicket(listTicket);
+          }
+        }
+        return;
+      case "update":
+      case "selectSnapshot":
+      case "remove": {
+        if (reply.kind !== "updated" && reply.kind !== "removed") return;
+        if (
+          !reader.acceptMutation(
+            ticket as LibraryReaderTicket<
+              Extract<LibraryRequest, { kind: "update" | "selectSnapshot" | "remove" }>
+            >,
+            reply as Extract<LibraryReply, { kind: "updated" | "removed" }>,
+          )
+        )
           return;
+        const listTicket = reader.requestList();
+        if (listTicket) void executeReaderTicket(listTicket);
+        const selection =
+          ticket.request.kind === "selectSnapshot"
+            ? {
+                kind: "detail" as const,
+                key: ticket.request.key,
+                snapshotId: ticket.request.snapshotId,
+                offset: 0,
+              }
+            : reader.getSnapshot().selection;
+        if (selection !== null) {
+          const detailTicket = reader.requestDetail(selection);
+          if (detailTicket) void executeReaderTicket(detailTicket);
+        }
+        return;
       }
-    },
-    [reader, runRequest],
-  );
+      case "preview":
+      case "import":
+      case "createAccount":
+        return;
+    }
+  };
 
-  const executeImportTicket = useCallback(
-    async (ticket: ConversationImportTicket) => {
-      if (!importer.isPending(ticket)) return;
-      const result = await runRequest({
-        environmentId: EnvironmentId.make(ticket.binding.environmentId),
-        input: ticket.request,
-      });
-      if (!importer.isPending(ticket)) return;
-      if (result._tag === "Failure") {
-        importer.reject(ticket, conversationLibraryErrorMessage(Cause.squash(result.cause)));
-        return;
+  const executeImportTicket = async (ticket: ConversationImportTicket) => {
+    if (!importer.isPending(ticket)) return;
+    const result = await runRequest({
+      environmentId: EnvironmentId.make(ticket.binding.environmentId),
+      input: ticket.request,
+    });
+    if (!importer.isPending(ticket)) return;
+    if (result._tag === "Failure") {
+      importer.reject(ticket, conversationLibraryErrorMessage(Cause.squash(result.cause)));
+      return;
+    }
+    if (!conversationLibraryReplyMatchesRequest(ticket.request, result.value)) {
+      importer.reject(ticket, "The library returned a reply that did not match the request.");
+      return;
+    }
+    if (ticket.request.kind === "preview" && result.value.kind === "preview") {
+      importer.acceptPreview(ticket, result.value);
+    } else if (ticket.request.kind === "import" && result.value.kind === "imported") {
+      if (importer.acceptImport(ticket, result.value)) {
+        const listTicket = reader.requestList();
+        if (listTicket) void executeReaderTicket(listTicket);
       }
-      if (!conversationLibraryReplyMatchesRequest(ticket.request, result.value)) {
-        importer.reject(ticket, "The library returned a reply that did not match the request.");
-        return;
-      }
-      if (ticket.request.kind === "preview" && result.value.kind === "preview") {
-        importer.acceptPreview(ticket, result.value);
-      } else if (ticket.request.kind === "import" && result.value.kind === "imported") {
-        if (importer.acceptImport(ticket, result.value)) {
-          const listTicket = reader.requestList();
-          if (listTicket) void executeReaderTicket(listTicket);
-        }
-      }
-    },
-    [executeReaderTicket, importer, reader, runRequest],
-  );
+    }
+  };
 
   useEffect(() => {
     if (!connected) {
@@ -342,6 +329,13 @@ export function ConversationLibraryPage() {
       return;
     const timeout = window.setTimeout(
       () => {
+        const currentFilter = reader.getSnapshot().filter;
+        if (
+          currentFilter.accountId !== state.filter.accountId ||
+          currentFilter.query !== state.filter.query ||
+          currentFilter.view !== state.filter.view
+        )
+          return;
         const ticket = reader.requestList();
         if (ticket) void executeReaderTicket(ticket);
       },
@@ -364,6 +358,7 @@ export function ConversationLibraryPage() {
     const detail = state.detail.value;
     if (state.detail.status !== "ready" || detail === null || state.displayed) return;
     const frame = window.requestAnimationFrame(() => {
+      if (!smallScreenDetailRequested && window.matchMedia("(max-width: 1023px)").matches) return;
       if (
         !acknowledgeVisibleConversationDetail(detailPanelRef.current, detail, (visibleDetail) =>
           reader.acknowledgeDisplayed(visibleDetail),
@@ -383,68 +378,55 @@ export function ConversationLibraryPage() {
     state.displayed,
   ]);
 
-  const reload = useCallback(() => {
+  const reload = () => {
     const ticket = reader.requestList();
     if (ticket) void executeReaderTicket(ticket);
-  }, [executeReaderTicket, reader]);
+  };
 
-  const chooseRow = useCallback(
-    (row: LibrarySummary) => {
-      const ticket = reader.requestDetail({
-        kind: "detail",
-        key: row.key,
-        snapshotId: row.snapshotId,
-      });
-      setSmallScreenDetailRequested(true);
-      if (ticket) void executeReaderTicket(ticket);
-    },
-    [executeReaderTicket, reader],
-  );
+  const chooseRow = (row: LibrarySummary) => {
+    const ticket = reader.requestDetail({
+      kind: "detail",
+      key: row.key,
+      snapshotId: row.snapshotId,
+    });
+    setSmallScreenDetailRequested(true);
+    if (ticket) void executeReaderTicket(ticket);
+  };
 
-  const openPage = useCallback(
-    (detail: LibraryDetail, changes: Parameters<typeof libraryDetailPage>[1]) => {
-      const ticket = reader.requestDetail(libraryDetailPage(detail, changes));
-      if (ticket) void executeReaderTicket(ticket);
-    },
-    [executeReaderTicket, reader],
-  );
+  const openPage = (detail: LibraryDetail, changes: Parameters<typeof libraryDetailPage>[1]) => {
+    const ticket = reader.requestDetail(libraryDetailPage(detail, changes));
+    if (ticket) void executeReaderTicket(ticket);
+  };
 
-  const onImportFile = useCallback(
-    async (file: File | undefined) => {
-      const accountId = state.filter.accountId;
-      if (file === undefined || accountId === null) return;
-      const fileTicket = importer.beginFileRead(accountId);
-      if (fileTicket === null) return;
-      try {
-        const conversations = await readConversationExportFile(file);
-        const ticket = importer.requestPreviewForFile(fileTicket, conversations);
-        if (ticket) await executeImportTicket(ticket);
-      } catch (error) {
-        importer.rejectFileRead(
-          fileTicket,
-          error instanceof Error ? error.message : "The export could not be read.",
-        );
-      }
-    },
-    [executeImportTicket, importer, state.filter.accountId],
-  );
+  const onImportFile = async (file: File | undefined) => {
+    const accountId = state.filter.accountId;
+    if (file === undefined || accountId === null) return;
+    const fileTicket = importer.beginFileRead(accountId);
+    if (fileTicket === null) return;
+    try {
+      const conversations = await readConversationExportFile(file);
+      const ticket = importer.requestPreviewForFile(fileTicket, conversations);
+      if (ticket) await executeImportTicket(ticket);
+    } catch (error) {
+      importer.rejectFileRead(
+        fileTicket,
+        error instanceof Error ? error.message : "The export could not be read.",
+      );
+    }
+  };
 
-  const startImport = useCallback(() => {
+  const startImport = () => {
     const ticket = importer.requestImport();
     if (ticket) void executeImportTicket(ticket);
-  }, [executeImportTicket, importer]);
+  };
 
-  const createAccountRequest = useMemo(
-    () =>
-      createConversationLibraryAccountRequest(
-        createAccountLabel,
-        createAccountWorkspace,
-        state.canWrite,
-        connected,
-      ),
-    [connected, createAccountLabel, createAccountWorkspace, state.canWrite],
+  const createAccountRequest = createConversationLibraryAccountRequest(
+    createAccountLabel,
+    createAccountWorkspace,
+    state.canWrite,
+    connected,
   );
-  const createAccount = useCallback(async () => {
+  const createAccount = async () => {
     if (!createAccountRequest || binding === null) {
       setCreateAccountError(
         !state.canWrite
@@ -478,23 +460,12 @@ export function ConversationLibraryPage() {
     setCreateAccountOpen(false);
     const ticket = reader.requestAccounts();
     if (ticket) void executeReaderTicket(ticket);
-  }, [
-    binding,
-    connected,
-    createAccountRequest,
-    executeReaderTicket,
-    reader,
-    runRequest,
-    state.canWrite,
-  ]);
+  };
 
-  const runMutation = useCallback(
-    (makeTicket: () => LibraryReaderTicket | null) => {
-      const ticket = makeTicket();
-      if (ticket) void executeReaderTicket(ticket);
-    },
-    [executeReaderTicket],
-  );
+  const runMutation = (makeTicket: () => LibraryReaderTicket | null) => {
+    const ticket = makeTicket();
+    if (ticket) void executeReaderTicket(ticket);
+  };
 
   const list = state.list.value;
   const accountLabel = selectedAccount

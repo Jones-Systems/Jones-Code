@@ -507,7 +507,8 @@ describe("ssh tunnel scripts", () => {
               kills += 1;
             });
           }
-          if (args.includes("--")) return makeSuccessfulProcess('{"remotePort":3773}\n');
+          if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--"))
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
           if (args.includes("sh")) stops += 1;
           return makeSuccessfulProcess("");
         }),
@@ -557,7 +558,7 @@ describe("ssh tunnel scripts", () => {
             tunnelKillCount += 1;
           });
         }
-        if (args.includes("sh") && args.includes("--")) {
+        if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
           return makeSuccessfulProcess('{"remotePort":3773}\n');
         }
         if (args.includes("sh")) {
@@ -592,6 +593,7 @@ describe("ssh tunnel scripts", () => {
       assert.include(firstTunnelArgs, "ControlMaster=no");
       assert.include(firstTunnelArgs, "ControlPath=none");
       assert.include(firstTunnelArgs, "ControlPersist=no");
+      assert.deepEqual(firstTunnelArgs?.slice(-2), ["--", "julius@devbox"]);
 
       const disconnected = yield* Effect.result(manager.disconnectEnvironment(target));
       assert.isTrue(Result.isSuccess(disconnected));
@@ -651,7 +653,7 @@ describe("ssh tunnel scripts", () => {
             }
             return tunnel;
           }
-          if (args.includes("--")) {
+          if (args.some((arg, index) => arg === "-s" && args[index + 1] === "--")) {
             if (isTarget) {
               launches += 1;
               remoteRunning = true;
@@ -780,7 +782,11 @@ describe("client tunnel lifetime", () => {
           assert.deepEqual(killed, [41773]);
           assert.deepEqual(yield* second.ensureEnvironment(target), secondConnection);
           assert.equal(remoteCommands.length, action === "stale reconnect" ? 3 : 2);
-          assert.isTrue(remoteCommands.every((args) => args.includes("--")));
+          assert.isTrue(
+            remoteCommands.every((args) =>
+              args.some((arg, index) => arg === "-s" && args[index + 1] === "--"),
+            ),
+          );
         }).pipe(Effect.provide(services), Effect.scoped);
       }),
   );

@@ -1,8 +1,16 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
+    {
+      "id": "usage",
+      "tests": [
+        "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+      ],
+      "scope": "Jones usage range, refresh, and provider-detail integration retains cached content and selected dates beside upstream browser navigation coverage."
+    },
     {
       "id": "physical-process-evidence",
       "tests": [
@@ -28,7 +36,7 @@
         "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
         "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts",
-        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
         "packages/client-runtime/src/state/workstreams/placements.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
@@ -310,7 +318,7 @@
         "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
         "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
         "apps/server/src/jones/device/directDeviceGateway.test.ts",
-        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
         "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
         "apps/web/src/jones/device/device.test.tsx",
         "packages/client-runtime/src/device/stream.test.ts",
@@ -446,7 +454,7 @@
         "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
         "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
         "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
-        "apps/web/src/components/chat/QueuedRunsControl.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "apps/web/src/composerDraftStore.test.ts",
         "apps/web/src/components/ChatView.logic.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
@@ -536,10 +544,10 @@
         "apps/server/src/jones/previewCompanion/outcome.test.ts",
         "apps/server/src/jones/previewCompanion/stream.test.ts",
         "apps/server/src/jones/previewCompanion/streamCloseReason.test.ts",
-        "apps/web/src/browser/HostedBrowserWebview.test.tsx",
-        "apps/web/src/components/preview/PreviewView.test.tsx",
+        "apps/web/src/browser/HostedBrowserWebview.browser.test.tsx",
+        "apps/web/src/components/preview/PreviewView.browser.test.tsx",
         "apps/web/src/components/settings/IntegrationsSettings.logic.test.ts",
-        "apps/web/src/components/settings/IntegrationsSettings.test.tsx",
+        "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
         "apps/web/src/jones/previewCompanion/controller.test.ts",
         "apps/web/src/jones/previewCompanion/guest.test.ts",
         "apps/web/src/jones/previewCompanion/inventory.test.ts",
@@ -816,7 +824,7 @@
         "packages/client-runtime/src/state/pullRequests.test.ts",
         "apps/web/src/hooks/useLiveRefresh.test.ts",
         "apps/web/src/state/query.test.ts",
-        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx",
         "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
         "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
         "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"

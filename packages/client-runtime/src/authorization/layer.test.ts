@@ -496,6 +496,7 @@ describe("RemoteEnvironmentAuthorization", () => {
 
   it.effect.each([
     { name: "read-only", grantScopes: ["orchestration:read"] },
+    { name: "default", grantScopes: AuthStandardClientScopes },
     { name: "administrative", grantScopes: AuthAdministrativeScopes },
   ] as const)(
     "inherits $name pairing grant scopes for websocket authorization and HTTP renewal",

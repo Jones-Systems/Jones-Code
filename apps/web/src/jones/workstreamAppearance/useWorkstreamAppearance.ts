@@ -19,26 +19,27 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
     ? workstreamBindingKey(data.binding) +
       JSON.stringify(data.items.map((item) => item.workstreamId))
     : null;
-  const current = useRef(key);
+  const [revision, setRevision] = useState(0);
+  const current = useRef({ key, revision });
   const latest = useRef(data);
   useLayoutEffect(() => {
-    current.current = key;
+    current.current = { key, revision };
     latest.current = data;
-  }, [key, data]);
+  }, [key, data, revision]);
   const [state, setState] = useState<{
     key: string | null;
     writable: boolean;
     colors: ReadonlyMap<string, WorkstreamAppearance>;
   }>({ key: null, writable: false, colors: new Map() });
-  const [revision, setRevision] = useState(0);
   useEffect(() => {
+    const data = latest.current;
     if (!data || !key) return;
     const abort = new AbortController();
     let loading = false;
     const load = async () => {
       if (loading || document.hidden) return;
       loading = true;
-      try {
+      await (async () => {
         const colors = new Map<string, WorkstreamAppearance>();
         let writable = data.binding.permissions.includes("workstreams:write");
         const ids = data.items.map((item) => item.workstreamId);
@@ -60,16 +61,27 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
             break;
           }
           validateAppearanceBinding(result.page, data.binding, batch);
-          writable &&= result.page.permissions.includes("workstreams:write");
+          writable = writable && result.page.permissions.includes("workstreams:write");
           for (const item of result.page.items) colors.set(item.workstream_id, item);
         }
-        if (!abort.signal.aborted && current.current === key) setState({ key, writable, colors });
-      } catch {
-        if (!abort.signal.aborted && current.current === key)
-          setState((previous) => ({ ...previous, writable: false }));
-      } finally {
-        loading = false;
-      }
+        if (
+          !abort.signal.aborted &&
+          current.current.key === key &&
+          current.current.revision === revision
+        )
+          setState({ key, writable, colors });
+      })()
+        .catch(() => {
+          if (
+            !abort.signal.aborted &&
+            current.current.key === key &&
+            current.current.revision === revision
+          )
+            setState((previous) => ({ ...previous, writable: false }));
+        })
+        .finally(() => {
+          loading = false;
+        });
     };
     void load();
     const timer = window.setInterval(() => void load(), 30_000);
@@ -99,7 +111,7 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
           ),
         ),
       );
-      if (current.current !== started) throw new Error("Workstream access changed.");
+      if (current.current.key !== started) throw new Error("Workstream access changed.");
       setRevision((value) => value + 1);
       return result;
     },
