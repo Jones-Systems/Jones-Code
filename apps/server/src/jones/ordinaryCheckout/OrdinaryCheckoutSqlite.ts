@@ -252,8 +252,11 @@ const make = Effect.gen(function* () {
         if (path.dirname(ancestor) === ancestor) break;
       }
       const prefix = key.endsWith(path.sep) ? key : `${key}${path.sep}`;
+      // The prefix ends in an ASCII separator, so incrementing that separator is
+      // its exclusive BINARY successor, including every Unicode descendant suffix.
+      const successor = `${prefix.slice(0, -1)}${String.fromCharCode(path.sep.charCodeAt(0) + 1)}`;
       const rows = yield* sql<Owner>`SELECT * FROM jones_ordinary_checkout_owners
-      WHERE ${sql.in("checkout_key", ancestors)} OR (checkout_key>=${prefix} AND checkout_key<${`${prefix}\uffff`})`;
+      WHERE ${sql.in("checkout_key", ancestors)} OR (checkout_key>=${prefix} AND checkout_key<${successor})`;
       for (const row of rows)
         if (row.state !== "released" && overlaps(key, row.checkout_key, path.sep))
           result.push({ kind: "ordinary", checkoutKey: row.checkout_key, owner: row });
@@ -520,7 +523,7 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "identity" });
     });
-  const verifyClaim = (a: Admission, source: Source, now: string) =>
+  const verifyLinkedSource = (a: Admission, source: Source) =>
     Effect.gen(function* () {
       if (source.kind !== "outbox") return;
       const actual = yield* effectRequest(source.effectId);
@@ -535,6 +538,11 @@ const make = Effect.gen(function* () {
         links[0]!.request_digest !== digest(actual.request)
       )
         return yield* new CheckoutError({ reason: "identity" });
+    });
+  const verifyClaim = (a: Admission, source: Source, now: string) =>
+    Effect.gen(function* () {
+      yield* verifyLinkedSource(a, source);
+      if (source.kind !== "outbox") return;
       const claims =
         yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_id=${source.effectId}
       AND status='running' AND lease_owner=${source.workerId} AND attempt_count=${source.attempt}
@@ -660,7 +668,16 @@ const make = Effect.gen(function* () {
     transaction(
       Effect.gen(function* () {
         const { row, admission: a } = yield* currentEvent(input);
-        if (row.state !== "reserved" || input.evidence.outcome !== "active")
+        if (
+          row.state !== "reserved" ||
+          input.evidence.outcome !== "active" ||
+          !sourceMatches(row, input.binding.source) ||
+          (yield* latestAssociations(row.operation_id)).some(
+            (event) =>
+              event.association_id === associationId(input.binding) &&
+              event.event_kind === "retire",
+          )
+        )
           return yield* new CheckoutError({ reason: "stale" });
         yield* currentTarget(input.target);
         if (
@@ -737,7 +754,13 @@ const make = Effect.gen(function* () {
   const reconcileEvidence: OrdinaryCheckout["Service"]["reconcileEvidence"] = (input) =>
     transaction(
       Effect.gen(function* () {
-        const { row } = yield* currentEvent(input, true);
+        const candidate = yield* use(input.binding.operationId);
+        const cancellingLink =
+          candidate.started_at === null &&
+          input.binding.source.kind === "outbox" &&
+          input.evidence.outcome === "not_invoked" &&
+          input.evidence.coverage === "complete";
+        const { row, admission: a } = yield* currentEvent(input, true, cancellingLink);
         const latest = (yield* latestAssociations(row.operation_id)).find(
           (event) => event.association_id === associationId(input.binding),
         );
@@ -746,6 +769,12 @@ const make = Effect.gen(function* () {
           latest?.event_kind === "retire"
         )
           return yield* new CheckoutError({ reason: "identity" });
+        if (!latest) {
+          if (!cancellingLink) return yield* new CheckoutError({ reason: "identity" });
+          // Add only an already-retired exact link: no join or invocation capability
+          // is issued, and a pending outbox row is never claimed on its behalf.
+          yield* verifyLinkedSource(a, input.binding.source);
+        }
         const authority = yield* CheckoutExecutorAuthority;
         // Reconciliation is deliberately separate from current invocation authority: old, expired executors can prove retirement.
         yield* authority.reconcile(input.binding, input.evidence);
@@ -753,8 +782,12 @@ const make = Effect.gen(function* () {
           return yield* append(row, input, "unknown", "unknown");
         if (input.evidence.outcome !== "quiescent" && input.evidence.outcome !== "not_invoked")
           return yield* new CheckoutError({ reason: "identity" });
-        if (input.evidence.outcome === "not_invoked" && row.started_at !== null)
-          return yield* new CheckoutError({ reason: "unknown" });
+        if (input.evidence.outcome === "not_invoked") {
+          const activated = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_lifecycle_events
+          WHERE operation_id=${row.operation_id} AND association_id=${associationId(input.binding)}
+          AND event_kind='activate' LIMIT 1`;
+          if (activated.length > 0) return yield* new CheckoutError({ reason: "unknown" });
+        }
         const otherUnknown = (yield* latestAssociations(row.operation_id)).some(
           (event) =>
             event.association_id !== associationId(input.binding) && event.event_kind === "unknown",
