@@ -10,7 +10,7 @@ import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon
 import { Button } from "../../components/ui/button";
 import { PROVIDER_PRESENTATION } from "../../components/usage/usageProviders";
 
-export const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
+const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
 
 export function UsageProviderSummary({
   provider,
