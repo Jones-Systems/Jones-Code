@@ -18,6 +18,49 @@ const Manifest = Schema.Struct({
 
 const decodeManifest = Schema.decodeUnknownSync(Schema.fromJsonString(Manifest));
 
+/** A refusal before dispatch; its fixed message is safe to show and record. */
+export class NativePreparationRefusal extends Error {}
+
+/**
+ * Records that this backend refused the claim before dispatch. The desktop
+ * helper accepts it as proof that this claim's one request created no effect.
+ * Missing or unbound claims record nothing and stay held for reconciliation.
+ */
+export async function recordNativePreparationRefusal(input: {
+  home: string;
+  handle: string;
+  transactionId: string;
+  reason: string;
+}): Promise<void> {
+  if (!/^[a-f0-9]{64}$/.test(input.handle) || !/^[a-f0-9]{64}$/.test(input.transactionId)) return;
+  try {
+    const home = await NodeFSP.realpath(input.home);
+    const directory = NodePath.join(
+      home,
+      "runtime",
+      "jones-updates",
+      "transactions",
+      input.transactionId,
+    );
+    if ((await NodeFSP.realpath(directory)) !== directory) return;
+    const claim = await boundedJson(NodePath.join(directory, "prepare-intent.json"));
+    if (
+      claim.value.transactionId !== input.transactionId ||
+      claim.value.stagedHandle !== input.handle
+    )
+      return;
+    await publish(NodePath.join(directory, "prepare-refused.json"), {
+      protocol: 1,
+      transactionId: input.transactionId,
+      stagedHandle: input.handle,
+      claimSha256: NodeCrypto.createHash("sha256").update(claim.raw).digest("hex"),
+      reason: input.reason,
+    });
+  } catch {
+    // The claim remains held; the refusal reason still reaches the desktop response.
+  }
+}
+
 async function boundedJson(path: string): Promise<{ raw: string; value: Record<string, unknown> }> {
   const info = await NodeFSP.lstat(path);
   if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024)
@@ -55,9 +98,42 @@ export async function prepareNativeContinuationReceipt(input: {
   prepare: () => Promise<ReadonlyArray<string>>;
   clear: (threadIds: ReadonlyArray<string>) => Promise<void>;
 }): Promise<void> {
-  if (!/^[a-f0-9]{64}$/.test(input.handle)) throw new Error("Invalid staged handle.");
-  if (!/^[a-f0-9]{64}$/.test(input.transactionId))
-    throw new Error("Invalid native transaction ID.");
+  let dispatching = false;
+  try {
+    await prepareOnce(input, () => {
+      dispatching = true;
+    });
+  } catch (cause) {
+    if (dispatching) throw cause;
+    const reason =
+      cause instanceof NativePreparationRefusal
+        ? cause.message
+        : `Native preparation metadata could not be validated (${errorCode(cause)}).`;
+    await recordNativePreparationRefusal({ ...input, reason });
+    throw new NativePreparationRefusal(reason, { cause });
+  }
+}
+
+function refuse(message: string): never {
+  throw new NativePreparationRefusal(message);
+}
+
+function errorCode(cause: unknown): string {
+  return typeof cause === "object" &&
+    cause !== null &&
+    "code" in cause &&
+    typeof cause.code === "string" &&
+    /^[A-Z0-9_]{1,32}$/.test(cause.code)
+    ? cause.code
+    : "invalid";
+}
+
+async function prepareOnce(
+  input: Parameters<typeof prepareNativeContinuationReceipt>[0],
+  dispatch: () => void,
+): Promise<void> {
+  if (!/^[a-f0-9]{64}$/.test(input.handle)) refuse("Invalid staged handle.");
+  if (!/^[a-f0-9]{64}$/.test(input.transactionId)) refuse("Invalid native transaction ID.");
   const manifestPath = NodePath.join(input.home, "runtime", "jones-active-install.json");
   const active = await boundedJson(manifestPath);
   const manifest = decodeManifest(active.raw);
@@ -69,7 +145,7 @@ export async function prepareNativeContinuationReceipt(input: {
     manifest.environmentId !== input.environmentId ||
     manifest.version !== input.version
   ) {
-    throw new Error("The active native manifest changed before preparation.");
+    refuse("The active native manifest changed before preparation.");
   }
   const directory = NodePath.join(
     home,
@@ -79,7 +155,7 @@ export async function prepareNativeContinuationReceipt(input: {
     input.transactionId,
   );
   if ((await NodeFSP.realpath(directory)) !== directory)
-    throw new Error("Native preparation transaction path is not canonical.");
+    refuse("Native preparation transaction path is not canonical.");
   const claimPath = NodePath.join(directory, "prepare-intent.json");
   const claim = (await boundedJson(claimPath)).value;
   const selectionPath = claim.selectionPath;
@@ -92,7 +168,7 @@ export async function prepareNativeContinuationReceipt(input: {
     typeof selectionSha256 !== "string" ||
     !/^[a-f0-9]{64}$/.test(selectionSha256)
   )
-    throw new Error("Native preparation requires an exact selection claim.");
+    refuse("Native preparation requires an exact selection claim.");
   const expectedClaim = {
     protocol: 1,
     preparationClaimProtocol: 2,
@@ -106,7 +182,7 @@ export async function prepareNativeContinuationReceipt(input: {
     environmentId: input.environmentId,
   };
   if (!NodeUtil.isDeepStrictEqual(claim, expectedClaim))
-    throw new Error("Native preparation requires the current helper claim protocol.");
+    refuse("Native preparation requires the current helper claim protocol.");
   const selection = await boundedJson(selectionPath);
   const selectedApp = selection.value.app;
   if (
@@ -122,7 +198,7 @@ export async function prepareNativeContinuationReceipt(input: {
     Array.isArray(selectedApp) ||
     (selectedApp as Record<string, unknown>).handle !== input.handle
   )
-    throw new Error("The claimed native selection changed before preparation.");
+    refuse("The claimed native selection changed before preparation.");
   const receiptPath = NodePath.join(directory, "continuation.json");
   const receipt = {
     ...expectedClaim,
@@ -130,9 +206,11 @@ export async function prepareNativeContinuationReceipt(input: {
   };
   const prior = await boundedJson(receiptPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return undefined;
+    dispatch();
     throw error;
   });
   if (prior !== undefined) {
+    dispatch();
     if (
       !NodeUtil.isDeepStrictEqual(prior.value, receipt) ||
       !NodeUtil.isDeepStrictEqual(
@@ -147,7 +225,15 @@ export async function prepareNativeContinuationReceipt(input: {
     (await boundedJson(manifestPath)).raw !== active.raw ||
     !NodeUtil.isDeepStrictEqual((await boundedJson(claimPath)).value, expectedClaim)
   )
-    throw new Error("The native preparation claim changed before dispatch.");
+    refuse("The native preparation claim changed before dispatch.");
+  const refused = await NodeFSP.lstat(NodePath.join(directory, "prepare-refused.json")).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  if (refused !== undefined) refuse("This preparation claim was already refused.");
+  dispatch();
   // The helper's claim prevents discard. A separate durable dispatch record
   // makes a lost backend response an unknown effect, never a repeatable call.
   await publish(NodePath.join(directory, "prepare-dispatched.json"), expectedClaim);

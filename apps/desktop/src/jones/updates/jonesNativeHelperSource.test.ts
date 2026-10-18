@@ -1461,6 +1461,238 @@ with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM ident
     }
   });
 
+  const preparationOnlyScenario = String.raw`
+# The retained laptop shape: the helper claim survived and no backend dispatch was recorded.
+for name in ('intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+for path, scope in native_writer_lease_paths(expected): initialize_native_lease(path, scope)
+claim_bytes, attempt_bytes = (tx / 'prepare-intent.json').read_bytes(), attempt_path.read_bytes()
+claim_sha = hashlib.sha256(claim_bytes).hexdigest()
+retired = root / 'runtime' / 'jones-updates' / 'retired-preparations' / transaction_id
+def held():
+    assert (tx / 'prepare-intent.json').read_bytes() == claim_bytes
+    assert attempt_path.read_bytes() == attempt_bytes
+    assert not retired.exists()
+def pending():
+    assert selection_command('discard-staged', expected, staged['handle'], str(selection_path), selection_digest)['reason'] == 'activation-pending'
+    assert selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id='0' * 64)['reason'] == 'activation-pending'
+def recovered(outcome, evidence):
+    assert outcome['status'] == 'retired' and outcome['evidence'] == evidence, outcome
+    assert not tx.exists() and outcome['retiredPath'] == str(retired)
+    assert (retired / 'prepare-intent.json').read_bytes() == claim_bytes
+    assert (retired / 'attempt-selection.json').read_bytes() == attempt_bytes and not attempt_path.exists()
+    assert read(retired / 'preparation-retirement-receipt.json') == {'protocol': 1, 'transactionId': transaction_id, 'planSha256': outcome['planSha256'], 'status': 'retired', 'evidence': evidence}
+    assert preparation_command('retire-preparation', expected, transaction_id, outcome['planSha256'])['status'] == 'retired'
+    inspect_selection_transactions(expected)
+    fresh = 'a' * 64
+    durable(attempt_path, dict(read(retired / 'attempt-selection.json'), transactionId=fresh), True)
+    assert selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=fresh)['status'] == 'preparation-claimed'
+`;
+
+  it.each([
+    "writers-quiescent",
+    "writer-busy",
+    "writer-active",
+    "no-evidence",
+    "prepare-dispatched.json",
+    "continuation.json",
+    "activation-request.json",
+    "intent.json",
+    "journal.json",
+    "late-dispatch",
+    "plan-changed",
+    "foreign-claim",
+    "corrupt-claim",
+    "unknown-record",
+    "attempt-mismatch",
+    "maintenance",
+    "requester-alive",
+    "requester-exited",
+    "requester-reused",
+    "backend-refused",
+    "refusal-mismatch",
+    "interrupted-before-commit",
+    "interrupted-receipt",
+  ])("retires a preparation-only claim only with proof for %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const nativeFunctions = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      )[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+def synthetic_quiescence(active):
+    if fault == 'writer-active': raise RuntimeError('Native state still has open writers; recovery held.')
+prove_quiescence = synthetic_quiescence
+identities, starts = {}, {}
+process_identity = lambda pid: identities.get(pid)
+process_start = lambda pid: starts.get(pid)
+def inspect(quiescent=True): return preparation_command('inspect-preparation', expected, transaction_id, quiescent=quiescent)
+def retire(plan, quiescent=True): return preparation_command('retire-preparation', expected, transaction_id, plan, quiescent)
+pending()
+if fault in ('prepare-dispatched.json', 'continuation.json', 'activation-request.json', 'intent.json', 'journal.json'):
+    durable(tx / fault, claim, True)
+    assert inspect()['reason'] == 'preparation-dispatched'
+    held()
+elif fault == 'writer-busy':
+    lease = native_writer_lease_paths(expected)[0][0]
+    holder = subprocess.Popen([sys.executable, '-c', "import sqlite3,sys; c=sqlite3.connect(sys.argv[1], isolation_level=None); c.execute('BEGIN'); c.execute('SELECT * FROM jones_native_writer_lease').fetchall(); print('held', flush=True); sys.stdin.read()", str(lease)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == 'held'
+        assert inspect()['reason'] == 'writer-busy'
+    finally:
+        holder.stdin.close(); holder.wait(timeout=5)
+    held()
+elif fault == 'writer-active':
+    assert inspect()['reason'] == 'writer-active'
+    held()
+elif fault == 'no-evidence':
+    outcome = inspect(quiescent=False)
+    assert outcome['status'] == 'refused' and outcome['reason'] == 'writer-unknown' and len(outcome['planSha256']) == 64, outcome
+    assert retire(outcome['planSha256'], quiescent=False)['reason'] == 'writer-unknown'
+    held()
+elif fault == 'late-dispatch':
+    plan = inspect()['planSha256']
+    durable(tx / 'prepare-dispatched.json', claim, True)
+    assert retire(plan)['reason'] == 'preparation-dispatched'
+    held()
+elif fault == 'plan-changed':
+    plan = inspect()['planSha256']
+    durable(tx / 'prepare-failure.json', {'protocol': 1, 'reason': 'recorded after inspection'}, True)
+    outcome = retire(plan)
+    assert outcome['status'] == 'refused' and outcome['reason'] == 'plan-changed', outcome
+    held()
+elif fault == 'foreign-claim':
+    durable(tx / 'prepare-intent.json', dict(claim, environmentId='other-environment'))
+    assert inspect()['reason'] == 'claim-mismatch'
+    assert not retired.exists()
+elif fault == 'corrupt-claim':
+    (tx / 'prepare-intent.json').write_text('{"protocol": 1,')
+    assert inspect()['reason'] == 'unknown-state'
+    assert not retired.exists()
+elif fault == 'unknown-record':
+    durable(tx / 'unrecognized.json', {}, True)
+    assert inspect()['reason'] == 'unknown-state'
+    held()
+elif fault == 'attempt-mismatch':
+    durable(attempt_path, dict(read(attempt_path), transactionId='0' * 64))
+    assert inspect()['reason'] == 'selection-mismatch'
+    assert (tx / 'prepare-intent.json').read_bytes() == claim_bytes and not retired.exists()
+elif fault == 'maintenance':
+    (manifest_path.parent / 'jones-maintenance').mkdir()
+    assert inspect()['reason'] == 'unknown-state'
+    held()
+elif fault.startswith('requester-'):
+    identity = 'Sat Oct 18 10:00:00 2026 /Applications/Jones Code.app/Contents/MacOS/Jones Code'
+    durable(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': claim_sha, 'processes': [{'pid': 321, 'identity': identity}]}, True)
+    if fault == 'requester-alive': identities[321] = identity
+    if fault == 'requester-reused':
+        identities[321] = 'Sun Oct 19 09:00:00 2026 /usr/bin/unrelated'
+        starts[321] = ('S', 'Sun Oct 19 09:00:00 2026')
+    outcome = inspect(quiescent=False)
+    if fault == 'requester-alive':
+        assert outcome['reason'] == 'writer-unknown', outcome
+        held()
+    else: recovered(retire(outcome['planSha256'], quiescent=False), 'requester-exited')
+elif fault in ('backend-refused', 'refusal-mismatch'):
+    durable(tx / 'prepare-refused.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': claim_sha if fault == 'backend-refused' else '0' * 64, 'reason': 'Native preparation was refused.'}, True)
+    outcome = inspect(quiescent=False)
+    if fault == 'refusal-mismatch':
+        assert outcome['reason'] == 'unknown-state', outcome
+        held()
+    else: recovered(retire(outcome['planSha256'], quiescent=False), 'backend-refused')
+elif fault == 'interrupted-before-commit':
+    plan = inspect()['planSha256']
+    native_rename = os.rename
+    def interrupted(source, target):
+        if pathlib.Path(source) == tx: raise OSError('Synthetic interruption before the commit rename')
+        return native_rename(source, target)
+    os.rename = interrupted
+    assert retire(plan)['status'] == 'uncertain'
+    os.rename = native_rename
+    # Older readers still hold the claim; the recorded evidence finishes the same plan.
+    assert (tx / 'preparation-retirement.json').exists() and not attempt_path.exists()
+    pending()
+    assert inspect(quiescent=False)['status'] == 'ready'
+    recovered(retire(plan, quiescent=False), 'writers-quiescent')
+elif fault == 'interrupted-receipt':
+    plan = inspect()['planSha256']
+    native_durable = durable
+    def interrupted(path, value, exclusive=False):
+        if pathlib.Path(path).name == 'preparation-retirement-receipt.json': raise OSError('Synthetic interruption after commit')
+        return native_durable(path, value, exclusive)
+    durable = interrupted
+    assert retire(plan)['status'] == 'uncertain'
+    durable = native_durable
+    assert not tx.exists() and retired.exists()
+    assert retire('0' * 64)['reason'] == 'plan-changed'
+    recovered(retire(plan, quiescent=False), 'writers-quiescent')
+else:
+    outcome = inspect(quiescent=False)
+    assert outcome['reason'] == 'writer-unknown'
+    recovered(retire(inspect()['planSha256']), 'writers-quiescent')
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+with sqlite3.connect(database) as db: assert db.execute('SELECT value FROM identity').fetchone()[0] == 'previous-state'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        [
+          "-c",
+          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+          f.directory,
+          fault,
+        ],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 10000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it("recovers the retained preparation claim through the operator command under the actual lock", async () => {
+    const f = await fixture();
+    try {
+      const [nativeFunctions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(f.directory, "operator-helper.py"),
+        // The fixture has no signed bundle or lsof-visible native writers.
+        `${nativeFunctions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nprove_quiescence = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+      );
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+command = ['python3', str(root / 'operator-helper.py'), '--manifest', str(manifest_path)]
+def run(*arguments):
+    result = subprocess.run(command + list(arguments), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+pending()
+assert run('--inspect-preparation', transaction_id)['reason'] == 'writer-unknown'
+inspected = run('--inspect-preparation', transaction_id, '--quiescent')
+assert inspected['status'] == 'ready' and inspected['evidence'] == 'writers-quiescent', inspected
+assert inspected['records'] == {'prepare-intent.json': claim_sha} and inspected['attemptSelection'] == str(attempt_path)
+with open(manifest_path.with_name('jones-activation.lock'), 'r+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'], '--quiescent')['reason'] == 'busy'
+held()
+recovered(run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'], '--quiescent'), 'writers-quiescent')
+assert run('--discard-staged', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest)['reason'] == 'activation-pending'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        [
+          "-c",
+          `${nativeFunctions}\n${setup}\n${preparationOnlyScenario}\n${scenario}`,
+          f.directory,
+          "operator",
+        ],
+        { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 20000 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("refuses a selection command while the actual activation lock is owned", async () => {
     const f = await fixture();
     try {

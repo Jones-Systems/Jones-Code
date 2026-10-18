@@ -25,7 +25,8 @@ vi.mock("./qualification.ts", () => ({
   isJonesRuntime: () => true,
   isPreviewRuntime: () => false,
 }));
-vi.mock("./nativePreparation.ts", () => ({
+vi.mock(import("./nativePreparation.ts"), async (importOriginal) => ({
+  ...(await importOriginal()),
   prepareNativeContinuationReceipt: vi.fn(async (input: { prepare: () => Promise<unknown> }) => {
     await input.prepare();
   }),

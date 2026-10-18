@@ -4,7 +4,11 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
-import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
+import {
+  NativePreparationRefusal,
+  prepareNativeContinuationReceipt,
+  recordNativePreparationRefusal,
+} from "./nativePreparation.ts";
 
 async function fixture(body: (value: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
   const temporary = await NodeFSP.mkdtemp(
@@ -183,13 +187,70 @@ it.each([
         claimPath,
         JSON.stringify({ ...claim, selectionPath: NodePath.join(directory, "outside.json") }),
       );
-    await expect(prepareNativeContinuationReceipt(input)).rejects.toThrow();
+    await expect(prepareNativeContinuationReceipt(input)).rejects.toBeInstanceOf(
+      NativePreparationRefusal,
+    );
     expect(prepares()).toBe(0);
     await expect(
       NodeFSP.stat(NodePath.join(directory, "prepare-dispatched.json")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+    // Only a readable claim bound to this request can carry the refusal proof.
+    const refusal = NodePath.join(directory, "prepare-refused.json");
+    if (["missing-claim", "legacy-claim", "wrong-transaction"].includes(fault)) {
+      await expect(NodeFSP.stat(refusal)).rejects.toMatchObject({ code: "ENOENT" });
+      return;
+    }
+    const claimRaw = await NodeFSP.readFile(claimPath);
+    expect(JSON.parse(await NodeFSP.readFile(refusal, "utf8"))).toEqual({
+      protocol: 1,
+      transactionId: claim.transactionId,
+      stagedHandle: input.handle,
+      claimSha256: NodeCrypto.createHash("sha256").update(claimRaw).digest("hex"),
+      reason: expect.stringMatching(
+        fault === "discarded-selection" ? /could not be validated \(ENOENT\)/ : /^Native|^The/,
+      ),
+    });
+    // A recorded refusal fences any later dispatch for the same claim.
+    await NodeFSP.writeFile(claimPath, JSON.stringify(claim));
+    await expect(prepareNativeContinuationReceipt(input)).rejects.toBeInstanceOf(
+      NativePreparationRefusal,
+    );
+    expect(prepares()).toBe(0);
   }),
 );
+
+it("records no refusal once dispatch may have happened", async () =>
+  fixture(async ({ directory, input }) => {
+    const failing = {
+      ...input,
+      prepare: async () => {
+        throw new Error("Unknown effect");
+      },
+    };
+    await expect(prepareNativeContinuationReceipt(failing)).rejects.toThrow("Unknown effect");
+    await expect(prepareNativeContinuationReceipt(failing)).rejects.toMatchObject({
+      code: "EEXIST",
+    });
+    await expect(
+      NodeFSP.stat(NodePath.join(directory, "prepare-refused.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }));
+
+it("leaves a retired claim untouched when its late request arrives", async () =>
+  fixture(async ({ home, directory, input, prepares }) => {
+    const retired = NodePath.join(home, "runtime", "jones-updates", "retired-preparations");
+    await NodeFSP.mkdir(retired);
+    await NodeFSP.rename(directory, NodePath.join(retired, input.transactionId));
+    await expect(prepareNativeContinuationReceipt(input)).rejects.toBeInstanceOf(
+      NativePreparationRefusal,
+    );
+    await recordNativePreparationRefusal({ ...input, reason: "late" });
+    expect(prepares()).toBe(0);
+    await expect(NodeFSP.lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await NodeFSP.readdir(NodePath.join(retired, input.transactionId))).toEqual([
+      "prepare-intent.json",
+    ]);
+  }));
 
 it("admits only one of two concurrent backend preparation calls", async () =>
   fixture(async ({ input }) => {
