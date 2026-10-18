@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 
 import {
   AgentScope,
+  AgentScopeStopError,
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
@@ -42,6 +43,7 @@ export function agentSliceMemoryLimits(totalBytes: number) {
 
 export interface ScopeState {
   readonly loadState: string;
+  readonly controlGroup?: string;
   readonly activeState: string;
   readonly result: string;
   readonly oomKills: number;
@@ -110,8 +112,11 @@ export const make = Effect.gen(function* () {
       Effect.provideService(HostProcess.Platform, platform),
     );
 
-  const run = (command: string, args: ReadonlyArray<string>) =>
-    runner.run({ command, args, timeout: "5 seconds" }).pipe(Effect.option);
+  const run = (
+    command: string,
+    args: ReadonlyArray<string>,
+    timeout: ProcessRunner.ProcessRunInput["timeout"] = "5 seconds",
+  ) => runner.run({ command, args, timeout }).pipe(Effect.option);
 
   const readCgroupFile = (controlGroup: string, file: string) =>
     fileSystem
@@ -226,11 +231,37 @@ export const make = Effect.gen(function* () {
       const populated = parseCgroupCounter(cgroupEvents, "populated");
       return {
         loadState: values.get("LoadState") ?? "",
+        controlGroup,
         activeState: values.get("ActiveState") ?? "",
         result: values.get("Result") ?? "",
         oomKills: parseCgroupCounter(memoryEvents, "oom_kill") ?? 0,
         populated: populated === undefined ? undefined : populated === 1,
       } satisfies ScopeState;
+    });
+
+  // The returned effect captures one unit, not the thread's replaceable map entry.
+  const stopScope = (systemctl: string, unit: string) =>
+    Effect.gen(function* () {
+      const empty = (state: ScopeState | undefined) =>
+        state !== undefined &&
+        (state.loadState === "not-found" ||
+          ((state.activeState === "inactive" || state.activeState === "failed") &&
+            (state.controlGroup === "" || state.populated === false)));
+      const before = yield* readScope(systemctl, unit);
+      if (empty(before)) return;
+      if (before === undefined || before.loadState !== "loaded")
+        return yield* new AgentScopeStopError({
+          unit,
+          detail: "Agent scope retirement unavailable",
+        });
+      // Existing scope TimeoutStopSec sends SIGKILL after the graceful stop period.
+      // Reconcile the observed postcondition even when the command response is lost.
+      yield* run(systemctl, ["--user", "stop", unit], "30 seconds");
+      if (!empty(yield* readScope(systemctl, unit)))
+        return yield* new AgentScopeStopError({
+          unit,
+          detail: "Agent scope retirement remains unknown",
+        });
     });
 
   const clearFailed = (systemctl: string, unit: string) =>
@@ -334,7 +365,10 @@ export const make = Effect.gen(function* () {
         // the unit even when it fails.
         options: threadId === undefined ? [...scope.scopeOptions, "--collect"] : scope.scopeOptions,
       };
-      return agentScopeCommand({ command: resolved, args, scope: systemdScope });
+      return {
+        ...agentScopeCommand({ command: resolved, args, scope: systemdScope }),
+        stop: yield* Effect.cached(stopScope(scope.systemctl, unit)),
+      };
     }),
     oomKilled,
     clear,

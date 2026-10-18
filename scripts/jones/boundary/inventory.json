@@ -1084,7 +1084,12 @@
     "scripts/jones/updates/offline-preparation-build.ts": "jones-owned",
     "scripts/jones/updates/paired-executor-fixture.mjs": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts": "jones-owned",
-    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts": "jones-owned"
+    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts": "jones-owned",
+    "packages/shared/src/AgentScope.ts": "accepted-shared",
+    "apps/server/src/process/agentScope.ts": "accepted-shared",
+    "apps/server/src/process/agentScope.test.ts": "jones-tests-in-upstream",
+    "packages/provider-acp/src/server/AcpSessionRuntime.ts": "accepted-shared",
+    "apps/server/src/resourceTelemetry/NativeTelemetryClient.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

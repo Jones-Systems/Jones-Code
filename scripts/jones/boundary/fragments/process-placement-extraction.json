@@ -10,8 +10,11 @@
     "apps/server/src/jones/processPlacement/processPlacementSpawner.ts",
     "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
     "apps/server/src/jones/processPlacement/qualificationPayload.mjs",
-    "apps/server/src/jones/processPlacement/processPlacementPty.test.ts",
-    "apps/server/src/jones/processPlacement/processPlacementPty.ts"
+    "apps/server/src/jones/processPlacement/processPlacementAgentScope.ts",
+    "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacementAcp.ts",
+    "apps/server/src/jones/processPlacement/processPlacementRuntime.ts",
+    "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [
@@ -25,7 +28,15 @@
   "allowedImports": [
     {
       "from": "apps/server/src/server.ts",
-      "to": "apps/server/src/jones/processPlacement/processPlacementPty.ts"
+      "to": "apps/server/src/jones/processPlacement/processPlacementRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/NativeTelemetryClient.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacementSpawner.ts"
     }
   ]
 }

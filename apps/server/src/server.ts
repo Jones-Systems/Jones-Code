@@ -1,4 +1,5 @@
-import * as ProcessPlacementPty from "./jones/processPlacement/processPlacementPty.ts";
+import { assertServerProcessPlacement } from "./jones/processPlacement/processPlacement.ts";
+import * as ProcessPlacementRuntime from "./jones/processPlacement/processPlacementRuntime.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
 import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
@@ -48,7 +49,6 @@ import * as ServerHttp from "./http.ts";
 import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
-import * as AgentScopeLive from "./process/agentScope.ts";
 import {
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
@@ -249,7 +249,7 @@ const layerProviderEventLoggers = Layer.effect(
   }),
 );
 
-const layerPtyAdapter = ProcessPlacementPty.layer.pipe(Layer.provide(NodePtyAdapter.layer));
+const layerPtyAdapter = NodePtyAdapter.layer;
 
 const layerServerSettings = ServerSettings.layer.pipe(
   Layer.provide(ServerSecretStore.layer),
@@ -775,6 +775,7 @@ const layerMakeRoutes = Layer.mergeAll(
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
+    yield* Effect.sync(() => assertServerProcessPlacement());
     const config = yield* ServerConfig.ServerConfig;
     // Before anything opens the database: one server per T3 home.
     const ownership = yield* ServerOwnership.acquireServerOwnership(config.serverRuntimeStatePath);
@@ -1130,11 +1131,12 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(layerApplicationObservability),
       Layer.provideMerge(FetchHttpClient.layer),
       Layer.provide(VcsProcess.layer),
-      Layer.provideMerge(AgentScopeLive.layer),
+      Layer.provide(ProcessRunner.layer),
+      Layer.provideMerge(ProcessPlacementRuntime.layer),
       Layer.provideMerge(layerPlatformServices),
     );
   }),
-).pipe(Layer.provide(ProcessRunner.layer));
+).pipe(Layer.provide(Layer.fresh(ProcessRunner.layer)));
 
 // Keep the required services explicit: tsc-rs widens inferred requirements to any
 // when the CLI imports this effect, despite resolving them inside this module.

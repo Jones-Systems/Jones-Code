@@ -31,6 +31,7 @@ import {
 } from "@t3tools/contracts";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import { resolveSelfInvocation } from "@t3tools/shared/nodeRuntime";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -105,6 +106,8 @@ const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 const layerHost = TestProviderHost.layer().pipe(Layer.provide(NodeServices.layer));
 
 const layerTest = Layer.mergeAll(
+  // Unit fixtures must not discover or sweep the runner's inherited cgroup.
+  Layer.succeed(AcpSessionRuntime.AcpLinuxCgroupControllerRef, { create: () => undefined }),
   NodeServices.layer,
   IdAllocator.layer,
   McpProviderSessions.layer,
@@ -2364,6 +2367,86 @@ describe("AcpAdapterV2", () => {
       yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
       assert.equal(containment, "process-ledger-reduced-guarantee");
     }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
+  it.live(
+    "uses the controller reference and captured AgentScope cleanup for descendant ownership",
+    () => {
+      let stopCalls = 0;
+      let createCalls = 0;
+      return Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) !== "linux") return;
+        const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const path = yield* Path.Path;
+        const selfInvocation = yield* resolveSelfInvocation();
+        const mockAgentPath = yield* path.fromFileUrl(
+          new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+        );
+        let captured: AcpSessionRuntime.AcpSessionRuntime["Service"] | undefined;
+        let containment:
+          | AcpSessionRuntime.AcpSessionRuntime["Service"]["processContainment"]
+          | undefined;
+        const instanceId = ProviderInstanceId.make("acp-test-cgroup-unavailable");
+        const adapter = yield* makeAcpAdapterV2({
+          instanceId,
+          flavor: {
+            driver: ACP_TEST_DRIVER,
+            capabilities: AcpProviderCapabilitiesV2,
+            makeRuntime: makeMockRuntime({
+              childProcessSpawner,
+              mockAgentPath,
+              ownDescendantProcessGroups: true,
+              ownDetachedProcessGroup: true,
+              wrapRuntime: (runtime) => {
+                captured = runtime;
+                containment = runtime.processContainment;
+                return runtime;
+              },
+            }),
+          },
+          selfInvocation,
+        });
+        const threadId = ThreadId.make("thread-acp-cgroup-unavailable");
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+        });
+        const modelSelection = { instanceId, model: "default" } as const;
+        const runtime = yield* adapter.openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-cgroup-unavailable"),
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+        assert.equal(containment, "process-ledger-reduced-guarantee");
+        assert.equal(createCalls, 1);
+        assert.isDefined(captured?.terminateProcessGroup);
+        yield* captured!.terminateProcessGroup!;
+        assert.equal(stopCalls, 1);
+      }).pipe(
+        Effect.provideService(AcpSessionRuntime.AcpLinuxCgroupControllerRef, {
+          create: () => {
+            createCalls += 1;
+            return undefined;
+          },
+        }),
+        Effect.provideService(AgentScope, {
+          ...AgentScope.defaultValue(),
+          wrap: ({ command, args }) =>
+            Effect.succeed({
+              command,
+              args,
+              stop: Effect.sync(() => {
+                stopCalls += 1;
+              }),
+            }),
+        }),
+        Effect.provide(layerTest),
+        Effect.scoped,
+      );
+    },
   );
 
   it.live("cleans a cgroup lease when the pre-exec join wrapper fails", () =>

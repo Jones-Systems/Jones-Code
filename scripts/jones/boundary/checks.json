@@ -287,10 +287,14 @@
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-        "apps/server/src/jones/processPlacement/processPlacementPty.test.ts"
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts apps/server/src/jones/processPlacement/processPlacementPty.test.ts apps/server/src/terminal/NodePtyAdapter.test.ts"
+        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts apps/server/src/process/agentScope.test.ts apps/server/src/terminal/NodePtyAdapter.test.ts"
       ]
     },
     {

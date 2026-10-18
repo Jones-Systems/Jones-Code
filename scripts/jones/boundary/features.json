@@ -208,8 +208,12 @@
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-        "apps/server/src/jones/processPlacement/processPlacementPty.test.ts",
-        "native/process-placement/build.test.mjs"
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "native/process-placement/build.test.mjs",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts"
       ]
     },
     {
@@ -464,7 +468,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
