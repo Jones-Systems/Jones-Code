@@ -13,7 +13,7 @@ import {
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode, type DragEvent } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
 
 import { WorkstreamAddPrDialog } from "../../jones/workstreams/WorkstreamAddPrDialog";
 import {
@@ -71,21 +71,25 @@ export function WorkstreamCreateForm({
   const pendingRef = useRef(false);
   const formRef = useRef<HTMLFormElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const sessionRef = useRef(0);
   const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
+  const [session, setSession] = useState({ binding, open });
+  const sessionRef = useRef<typeof session | null>(null);
   const bindingRef = useRef(binding);
   const canWrite = canEditWorkstreams(controller.data);
+  if (session.binding !== binding || session.open !== open) {
+    setSession({ binding, open });
+    setName("");
+    setError(null);
+  }
 
   useLayoutEffect(() => {
     if (bindingRef.current !== binding) onClose();
     bindingRef.current = binding;
-    sessionRef.current += 1;
-    setName("");
-    setError(null);
+    sessionRef.current = session;
     return () => {
-      sessionRef.current += 1;
+      sessionRef.current = null;
     };
-  }, [binding, open, onClose]);
+  }, [binding, session, onClose]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -228,7 +232,7 @@ export function WorkstreamSidebarSection(props: {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof loadDetail>> | null>(null);
   const detailRequest = useRef<AbortController | null>(null);
   const manualRefreshRequest = useRef<AbortController | null>(null);
-  const items = useMemo(() => orderWorkstreamMetadata(data?.items ?? []), [data]);
+  const items = orderWorkstreamMetadata(data?.items ?? []);
   const bindingKey = data ? workstreamBindingKey(data.binding) : null;
   const bindingKeyRef = useRef(bindingKey);
   const referenceController: WorkstreamReferenceController | null =
@@ -244,14 +248,9 @@ export function WorkstreamSidebarSection(props: {
     ? workstreamBindingKey({ ...data.binding, registryVersion: 0 })
     : null;
   const prAuthorityKeyRef = useRef(prAuthorityKey);
-  prAuthorityKeyRef.current = prAuthorityKey;
-
-  useLayoutEffect(() => {
-    bindingKeyRef.current = bindingKey;
-    detailRequest.current?.abort();
-    detailRequest.current = null;
-    manualRefreshRequest.current?.abort();
-    manualRefreshRequest.current = null;
+  const [stateBindingKey, setStateBindingKey] = useState(bindingKey);
+  if (stateBindingKey !== bindingKey) {
+    setStateBindingKey(bindingKey);
     setDetail(null);
     setPullRequestStatus({});
     setReceipt(null);
@@ -264,6 +263,17 @@ export function WorkstreamSidebarSection(props: {
       setAddingPr(null);
       setSelected(null);
     }
+  }
+
+  useLayoutEffect(() => {
+    prAuthorityKeyRef.current = prAuthorityKey;
+  }, [prAuthorityKey]);
+  useLayoutEffect(() => {
+    bindingKeyRef.current = bindingKey;
+    detailRequest.current?.abort();
+    detailRequest.current = null;
+    manualRefreshRequest.current?.abort();
+    manualRefreshRequest.current = null;
     return () => {
       detailRequest.current?.abort();
       detailRequest.current = null;
@@ -411,7 +421,11 @@ export function WorkstreamSidebarSection(props: {
       {!canWrite ? (
         <p className="px-1 pb-1 text-xs text-muted-foreground">Workstreams are read-only.</p>
       ) : null}
-      {placementInventory.coverage === "partial" ? (
+      {placementInventory.proofsUnavailable ? (
+        <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
+          This server cannot verify thread placements, so assignments show as recorded.
+        </p>
+      ) : placementInventory.coverage === "partial" ? (
         <p className="px-1 pb-1 text-xs text-sidebar-muted-foreground">
           Thread placement lookup scope is partial (
           {placementInventory.identities.length.toLocaleString()} of{" "}

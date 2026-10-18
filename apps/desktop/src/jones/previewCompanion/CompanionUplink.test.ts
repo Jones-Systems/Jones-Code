@@ -1,3 +1,5 @@
+import * as NodeEvents from "node:events";
+import { watchCompanionRenderer } from "./RendererReadiness.ts";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
@@ -404,4 +406,93 @@ it.each([
   "wss://example.invalid/api/jones/preview-companion/ws?wsTicket=a&token=secret",
 ])("rejects non-ticket or generic outbound URL %s", (value) => {
   expect(isCompanionTicketUrl(value)).toBe(false);
+});
+
+describe("renderer lifetime", () => {
+  it("retains the live host and assigned browser through hash and subframe navigation", () => {
+    const f = fixture();
+    const socket = f.connect();
+    const renderer = new NodeEvents.EventEmitter();
+    const unwatch = watchCompanionRenderer(renderer, () => f.controller.setReady(false));
+    try {
+      for (const [inPlace, mainFrame] of [
+        [true, true],
+        [false, false],
+        [true, false],
+      ]) {
+        renderer.emit(
+          "did-start-navigation",
+          {},
+          "t3code://app/#/settings/connections",
+          inPlace,
+          mainFrame,
+        );
+        expect(f.controller.getState()).toMatchObject({
+          status: "online",
+          connectionGeneration: 3,
+          assignments: [tab],
+        });
+        expect(socket.closed).toEqual([]);
+        expect(f.requests).toHaveLength(1);
+        expect(f.power()).toBe(1);
+      }
+    } finally {
+      unwatch();
+      f.controller.dispose();
+    }
+  });
+
+  it.each(["navigation", "destroyed", "render-process-gone"])(
+    "revokes the host and assignments when the renderer is lost through %s",
+    (event) => {
+      const f = fixture();
+      const socket = f.connect();
+      const renderer = new NodeEvents.EventEmitter();
+      const unwatch = watchCompanionRenderer(renderer, () => f.controller.setReady(false));
+      try {
+        if (event === "navigation")
+          renderer.emit("did-start-navigation", {}, "t3code://app/", false, true);
+        else renderer.emit(event);
+        expect(f.controller.getState()).toMatchObject({
+          status: "awaiting_ticket",
+          connectionGeneration: null,
+          assignments: [],
+        });
+        expect(socket.closed).toHaveLength(1);
+        expect(f.power()).toBe(0);
+        expect(renderer.eventNames()).toEqual([]);
+        f.controller.setReady(true);
+        const request = f.requests.at(-1)!;
+        f.controller.completeTicket({ ...request, result: { _tag: "ready", url } });
+        const replacement = f.sockets.at(-1)!;
+        replacement.open();
+        replacement.receive(welcome);
+        replacement.receive({ type: "assignments", tabs: [tab] });
+        renderer.emit("destroyed");
+        expect(f.controller.getState().status).toBe("online");
+        expect(replacement.closed).toEqual([]);
+      } finally {
+        unwatch();
+        f.controller.dispose();
+      }
+    },
+  );
+
+  it("detaches a superseded renderer without revoking the current host", () => {
+    const f = fixture();
+    const socket = f.connect();
+    const renderer = new NodeEvents.EventEmitter();
+    const unwatch = watchCompanionRenderer(renderer, () => f.controller.setReady(false));
+    try {
+      unwatch();
+      renderer.emit("did-start-navigation", {}, "t3code://app/", false, true);
+      renderer.emit("render-process-gone");
+      expect(renderer.eventNames()).toEqual([]);
+      expect(f.controller.getState().status).toBe("online");
+      expect(socket.closed).toEqual([]);
+    } finally {
+      unwatch();
+      f.controller.dispose();
+    }
+  });
 });

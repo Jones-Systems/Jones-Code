@@ -29,6 +29,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 106, name: "PlannedUpdateContinuity" },
         { migration_id: 107, name: "WorkstreamsSettlementProofs" },
         { migration_id: 108, name: "PhysicalProcessEvidence" },
+        { migration_id: 109, name: "OrdinaryCheckoutLifecycle" },
       ],
     );
     assert.deepEqual(

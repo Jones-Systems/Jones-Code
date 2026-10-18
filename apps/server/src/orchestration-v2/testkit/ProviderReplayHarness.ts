@@ -1,3 +1,4 @@
+import type * as CheckoutIntent from "../../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -264,6 +265,11 @@ export function layerWithRegistry<Error>(
     McpProviderSessions.McpProviderSessions
   >,
   options: {
+    readonly eventStoreLayer?: Layer.Layer<EventStore.EventStoreV2, never, SqlClient.SqlClient>;
+    readonly checkoutIntentLayer?: Layer.Layer<
+      CheckoutIntent.CheckoutIntent,
+      MigrationError | PlatformError.PlatformError | SqlError
+    >;
     readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
     readonly databaseLayer?: Layer.Layer<
       SqlClient.SqlClient,
@@ -309,7 +315,7 @@ export function layerWithRegistry<Error>(
       : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
   }).pipe(Layer.orDie);
   const layerStores = Layer.mergeAll(
-    EventStore.layer,
+    options.eventStoreLayer ?? EventStore.layer,
     ProjectionStore.layer,
     ProjectStore.layer,
     CommandReceiptStore.layer,
@@ -317,7 +323,9 @@ export function layerWithRegistry<Error>(
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(layerDatabase));
   const layerEventSinkProvided = EventSink.layerFromStores.pipe(
-    Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
+    Layer.provide(
+      Layer.mergeAll(layerStores, layerDatabase, options.checkoutIntentLayer ?? Layer.empty),
+    ),
   );
   const layerCommandReceiptStoreProvided = CommandReceiptStore.layer.pipe(
     Layer.provide(layerDatabase),
@@ -411,6 +419,8 @@ export function layerWithRegistry<Error>(
         }),
         layerRunExecutionServiceProvided,
         layerRuntime,
+        layerServerConfig,
+        layerServerSettings,
       ),
     ),
   );
@@ -430,6 +440,8 @@ export function layerWithRegistry<Error>(
         layerProviderSessionManagerProvided,
         ThreadCommandExecutor.layer,
         layerRuntime,
+        layerServerConfig,
+        layerServerSettings,
       ),
     ),
   );
@@ -459,6 +471,7 @@ export function layerWithRegistry<Error>(
         CommandPolicy.layer,
         layerContextHandoffServiceProvided,
         layerPersistence,
+        options.checkoutIntentLayer ?? Layer.empty,
         layerProvidedRegistry,
         layerContinuationRequests,
         layerRuntime,

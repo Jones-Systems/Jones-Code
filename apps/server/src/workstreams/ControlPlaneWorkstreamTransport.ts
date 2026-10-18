@@ -12,6 +12,9 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  WorkstreamCountsCapabilities,
+  WorkstreamRegistryCounts,
   WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_CONTRACT_VERSION,
   WORKSTREAM_MAX_RESPONSE_BYTES,
@@ -216,6 +219,7 @@ async function performRequest(input: {
   readonly fetch: WorkstreamFetch;
   readonly config: ControlPlaneWorkstreamActivation;
   readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
+  readonly countsContract?: boolean;
   readonly method: "GET" | "POST";
   readonly target: string;
   readonly body: string;
@@ -223,6 +227,15 @@ async function performRequest(input: {
   readonly idempotencyKey?: string;
   readonly signal: AbortSignal;
 }): Promise<string> {
+  const counts = input.countsContract === true;
+  if (
+    counts &&
+    (input.method !== "GET" ||
+      input.body !== "" ||
+      input.idempotencyKey !== undefined ||
+      !["/workstreams/v1/capabilities", "/workstreams/v1/counts"].includes(input.target))
+  )
+    throw new BoundedTransportFailure("invalid_target");
   const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
   const registrationVersion =
     input.registrationContextVersion === undefined ? "1.0.0" : input.registrationContextVersion;
@@ -302,7 +315,9 @@ async function performRequest(input: {
           ? WORKSTREAM_APPEARANCE_MANIFEST
           : placement
             ? T3_PLACEMENT_MANIFEST_SHA256
-            : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+            : counts
+              ? WORKSTREAM_COUNTS_MANIFEST_SHA256
+              : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
       "x-control-nonce": nonce,
@@ -314,6 +329,14 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  if (
+    counts &&
+    (response.headers.get("x-control-contract-version") !== WORKSTREAM_CONTRACT_HEADER_VERSION ||
+      response.headers.get("x-control-contract-manifest") !== WORKSTREAM_COUNTS_MANIFEST_SHA256)
+  ) {
+    await response.body?.cancel();
+    throw new BoundedTransportFailure("http_error");
+  }
   if (appearance) {
     if (response.status === 404 && response.headers.get("x-control-contract-version") === null) {
       await response.body?.cancel();
@@ -401,6 +424,7 @@ export function makeControlPlaneWorkstreamTransport(
     schema: S,
     body = "",
     idempotencyKey?: string,
+    countsContract = false,
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
@@ -413,6 +437,7 @@ export function makeControlPlaneWorkstreamTransport(
             target,
             body,
             sentAt,
+            countsContract,
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
             signal,
           }),
@@ -564,6 +589,26 @@ export function makeControlPlaneWorkstreamTransport(
               NodeCrypto.randomUUID(),
             ),
           ),
+        ),
+      getCountsCapabilities: () =>
+        request(
+          "counts_capabilities",
+          "GET",
+          "/workstreams/v1/capabilities",
+          WorkstreamCountsCapabilities,
+          "",
+          undefined,
+          true,
+        ),
+      getRegistryCounts: () =>
+        request(
+          "registry_counts",
+          "GET",
+          "/workstreams/v1/counts",
+          WorkstreamRegistryCounts,
+          "",
+          undefined,
+          true,
         ),
       getCapabilities: () =>
         request("capabilities", "GET", "/workstreams/v1/capabilities", WorkstreamCapabilities),

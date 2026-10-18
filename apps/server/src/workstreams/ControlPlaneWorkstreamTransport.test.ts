@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import {
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
@@ -12,8 +13,10 @@ import {
   WORKSTREAM_APPEARANCE_CONTRACT,
   WORKSTREAM_APPEARANCE_MANIFEST,
   WORKSTREAM_CONTRACT_FAMILY,
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
+  WorkstreamCapabilities,
 } from "@t3tools/contracts";
 import {
   makeControlPlaneWorkstreamTransport,
@@ -26,6 +29,8 @@ import {
   v2Response,
   encodeFixtureJson,
 } from "../jones/workstreams/registrationContext/testFixtures.ts";
+
+const decodeCapabilities = Schema.decodeUnknownSync(WorkstreamCapabilities);
 
 const registrationHeaders = {
   "x-control-contract-version": WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
@@ -709,5 +714,131 @@ it.effect("invalid activation performs no registration or ordinary registry fetc
         .pipe(Effect.flip)).effect,
     ).toBe("no-effect");
     expect(calls).toBe(0);
+  }),
+);
+
+it.effect("isolates the counts manifest from legacy capabilities, metadata and commands", () =>
+  Effect.gen(function* () {
+    const requests: Array<{ path: string; manifest: string | null }> = [];
+    const configured = makeControlPlaneWorkstreamTransport(activation, async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      const manifest = new Headers(init?.headers).get("x-control-contract-manifest");
+      requests.push({ path, manifest });
+      const caps = decodeCapabilities(await capabilitiesResponse().json());
+      const payload =
+        path === "/workstreams/v1/counts"
+          ? {
+              context: caps.context,
+              principal_id: activation.value.principalId,
+              observed_at: "2026-10-18T00:00:00Z",
+              authority_effect: "none",
+              total: 9,
+              active: 3,
+              unknown_lifecycle: 1,
+            }
+          : path === "/workstreams/v1/capabilities"
+            ? {
+                ...caps,
+                manifest_sha256: manifest,
+                ...(manifest === WORKSTREAM_COUNTS_MANIFEST_SHA256
+                  ? {
+                      registry_counts: {
+                        version: 1,
+                        path: "/workstreams/v1/counts",
+                        active_definition: "latest_owner_lifecycle_declaration_active",
+                      },
+                    }
+                  : {}),
+              }
+            : { context: caps.context, items: [], next_cursor: null };
+      return new Response(JSON.stringify(payload), {
+        headers: {
+          "x-control-contract-version": "workstreams/1.0.0",
+          "x-control-contract-manifest": manifest!,
+        },
+      });
+    });
+    const legacy = {
+      contractVersion: "workstreams/1.0.0",
+      contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+    } as const;
+    yield* configured.transport.getCountsCapabilities!();
+    expect((yield* configured.transport.getRegistryCounts!()).total).toBe(9);
+    yield* configured.transport.getCapabilities(legacy);
+    yield* configured.transport.listWorkstreams({ ...legacy, limit: 1 });
+    // The synthetic command response is intentionally invalid; its request must still use legacy headers.
+    yield* configured.transport
+      .submitCommand({
+        ...legacy,
+        body: "{}",
+        command: {
+          command_id: "synthetic-command-0001",
+          expected_server_generation: 7,
+          expected_registry_version: 11,
+          action: {
+            operation: "update_workstream",
+            workstream_id: "ws-core-v1",
+            expected_version: 3,
+            name: "Synthetic",
+            lifecycle: "active",
+            progress: { state: "progressing" },
+            sort_order: 10,
+          },
+        },
+        idempotencyKey: "synthetic-command-0001",
+      })
+      .pipe(Effect.flip);
+    expect(requests).toEqual([
+      { path: "/workstreams/v1/capabilities", manifest: WORKSTREAM_COUNTS_MANIFEST_SHA256 },
+      { path: "/workstreams/v1/counts", manifest: WORKSTREAM_COUNTS_MANIFEST_SHA256 },
+      { path: "/workstreams/v1/capabilities", manifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256 },
+      { path: "/workstreams/v1/workstreams", manifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256 },
+      { path: "/workstreams/v1/commands", manifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256 },
+    ]);
+  }),
+);
+
+it.effect.each([
+  "absent-headers",
+  "legacy-manifest",
+  "wrong-version",
+  "invalid-counts",
+  "unavailable",
+] as const)("rejects counts response %s", (response) =>
+  Effect.gen(function* () {
+    const configured = makeControlPlaneWorkstreamTransport(
+      activation,
+      async () =>
+        new Response(
+          JSON.stringify({
+            context: { owner_id: "owner-fixture", server_generation: 7, registry_version: 11 },
+            principal_id: "principal-fixture",
+            observed_at: "2026-10-18T00:00:00Z",
+            authority_effect: "none",
+            total: response === "invalid-counts" ? 3 : 9,
+            active: 3,
+            unknown_lifecycle: 1,
+          }),
+          {
+            status: response === "unavailable" ? 404 : 200,
+            headers:
+              response === "absent-headers"
+                ? {}
+                : {
+                    "x-control-contract-version":
+                      response === "wrong-version" ? "workstreams/2.0.0" : "workstreams/1.0.0",
+                    "x-control-contract-manifest":
+                      response === "legacy-manifest"
+                        ? WORKSTREAM_CONTRACT_MANIFEST_SHA256
+                        : WORKSTREAM_COUNTS_MANIFEST_SHA256,
+                  },
+          },
+        ),
+    );
+    expect(yield* configured.transport.getRegistryCounts!().pipe(Effect.flip)).toMatchObject({
+      _tag: "WorkstreamTransportError",
+      operation: "registry_counts",
+      effect: "no-effect",
+    });
   }),
 );

@@ -3,10 +3,22 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4"
+    "commit": "9c161462c94f7d9d6d9169da5c841457cbadf213"
   },
-  "baseline": "bf990c625e7548a7b5b0d7886cf8befd9d94e2f4",
+  "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/web/src/state/device.ts": "accepted-shared",
+    "apps/server/src/cli/auth.ts": "accepted-shared",
+    "apps/server/src/auth/PairingGrantStore.ts": "accepted-shared",
+    "apps/server/src/auth/PairingGrantStore.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/auth/McpOAuth.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/auth/EnvironmentAuthAdmin.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/auth/EnvironmentAuth.ts": "accepted-shared",
+    "apps/server/src/auth/EnvironmentAuth.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/usage/UsagePage.jones.test.tsx": "jones-owned",
+    "apps/web/src/test/reactElementTree.ts": "jones-owned",
+    "packages/client-runtime/src/authorization/layer.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/serverLogger.test.ts": "jones-tests-in-upstream",
     "scripts/jones/boundary/fragments/physical-process-evidence.json": "jones-owned",
     "packages/client-runtime/src/composerThreadItems.ts": "hook",
     "packages/client-runtime/src/jones/composerThreadMatching.ts": "jones-owned",
@@ -175,7 +187,7 @@
     "apps/mobile/src/features/workstreams/projection.test.ts": "jones-owned",
     "apps/mobile/src/features/workstreams/projection.ts": "jones-owned",
     "apps/mobile/src/features/workstreams/types.ts": "jones-owned",
-    "apps/mobile/src/features/workstreams/useWorkstreams.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/useWorkstreams.tsx": "jones-owned",
     "apps/mobile/src/jones/workMode/WorkModeSettings.tsx": "jones-owned",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx": "jones-owned",
     "apps/mobile/src/lib/modelOptions.test.ts": "jones-tests-in-upstream",
@@ -567,7 +579,6 @@
     "apps/web/src/components/BranchToolbar.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/BranchToolbar.logic.ts": "accepted-shared",
     "apps/web/src/components/BranchToolbarBranchSelector.tsx": "accepted-shared",
-    "apps/web/src/components/ChatMarkdown.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/ChatMarkdown.tsx": "accepted-shared",
     "apps/web/src/components/ChatView.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/ChatView.logic.ts": "accepted-shared",
@@ -594,7 +605,7 @@
     "apps/web/src/components/chat/ProviderInstanceShortcuts.tsx": "jones-owned",
     "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx": "jones-owned",
     "apps/web/src/components/chat/ProviderModelPicker.tsx": "accepted-shared",
-    "apps/web/src/components/chat/QueuedRunsControl.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/chat/ReasoningEffortShortcuts.test.tsx": "jones-owned",
     "apps/web/src/components/chat/ReasoningEffortShortcuts.tsx": "jones-owned",
     "apps/web/src/components/chat/TraitsPicker.tsx": "accepted-shared",
@@ -614,9 +625,9 @@
     "apps/web/src/components/conversations/ConversationLibraryPage.tsx": "jones-owned",
     "apps/web/src/components/desktopUpdate.logic.ts": "hook",
     "apps/web/src/components/desktopUpdate.toast.tsx": "hook",
-    "apps/web/src/components/device/DeviceStreamView.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/device/DeviceStreamView.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/device/DeviceStreamView.tsx": "hook",
-    "apps/web/src/components/files/AttachmentFilePreview.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/files/AttachmentFilePreview.tsx": "accepted-shared",
     "apps/web/src/components/files/BrowserDocumentFrame.tsx": "accepted-shared",
     "apps/web/src/components/files/FilePreviewPanel.tsx": "accepted-shared",
@@ -648,8 +659,6 @@
     "apps/web/src/components/threadActionMenu.logic.ts": "accepted-shared",
     "apps/web/src/components/usage/SavedTokenAccounting.test.tsx": "jones-owned",
     "apps/web/src/components/usage/SavedTokenAccounting.tsx": "jones-owned",
-    "apps/web/src/components/usage/UsagePage.refresh.test.tsx": "jones-tests-in-upstream",
-    "apps/web/src/components/usage/UsagePage.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/usage/UsagePage.tsx": "accepted-shared",
     "apps/web/src/components/usage/UsageProviderChart.interaction.test.tsx": "jones-owned",
     "apps/web/src/components/usage/UsageProviderChart.tsx": "accepted-shared",
@@ -736,7 +745,7 @@
     "apps/web/src/state/tokenAccounting.ts": "jones-owned",
     "apps/web/src/state/workstreams.test.ts": "jones-owned",
     "apps/web/src/state/workstreams.ts": "jones-owned",
-    "apps/web/src/test/reactHookHarness.ts": "accepted-shared",
+    "apps/web/src/test/reactHookHarness.ts": "jones-owned",
     "apps/web/src/workQueuePreview.tsx": "jones-owned",
     "assets/jones-code/jc-macos-1024.png": "jones-owned",
     "assets/jones-code/jc-mark.svg": "jones-owned",
@@ -1099,7 +1108,7 @@
     "packages/contracts/src/pullRequestRateLimit.test.ts": "jones-tests-in-upstream",
     "apps/web/src/hooks/useLiveRefresh.test.ts": "jones-tests-in-upstream",
     "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx": "jones-tests-in-upstream",
     "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/processPlacement/scopedCommand.test.ts": "jones-owned",
     "apps/server/src/jones/processPlacement/scopedCommand.ts": "jones-owned",
@@ -1122,6 +1131,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
+      "to": "apps/web/src/components/files/PdfPreview.tsx"
+    },
+    {
       "from": "apps/desktop/src/app/DesktopUserData.ts",
       "to": "apps/desktop/src/app/DesktopUserDataOverride.ts"
     },
@@ -1135,7 +1148,7 @@
     },
     {
       "from": "apps/mobile/src/features/home/HomeScreen.tsx",
-      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.tsx"
     },
     {
       "from": "apps/mobile/src/features/threads/NewTaskDraftScreen.tsx",
@@ -1147,7 +1160,7 @@
     },
     {
       "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
-      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.tsx"
     },
     {
       "from": "apps/mobile/src/features/threads/threadListV2.test.ts",

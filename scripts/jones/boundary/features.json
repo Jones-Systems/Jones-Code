@@ -1,8 +1,16 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
+    {
+      "id": "usage",
+      "tests": [
+        "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+      ],
+      "scope": "Jones usage range, refresh, and provider-detail integration retains cached content and selected dates beside upstream browser navigation coverage."
+    },
     {
       "id": "physical-process-evidence",
       "tests": [
@@ -28,7 +36,7 @@
         "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
         "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts",
-        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
         "packages/client-runtime/src/state/workstreams/placements.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
@@ -160,8 +168,12 @@
         "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
         "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/entrypoint.test.ts"
-      ]
+        "apps/server/src/entrypoint.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
+      ],
+      "scope": "Workstreams registry integration. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
     },
     {
       "id": "native-store-authority",
@@ -313,7 +325,7 @@
         "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
         "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
         "apps/server/src/jones/device/directDeviceGateway.test.ts",
-        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
         "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
         "apps/web/src/jones/device/device.test.tsx",
         "packages/client-runtime/src/device/stream.test.ts",
@@ -449,7 +461,7 @@
         "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
         "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
         "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
-        "apps/web/src/components/chat/QueuedRunsControl.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "apps/web/src/composerDraftStore.test.ts",
         "apps/web/src/components/ChatView.logic.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
@@ -539,10 +551,10 @@
         "apps/server/src/jones/previewCompanion/outcome.test.ts",
         "apps/server/src/jones/previewCompanion/stream.test.ts",
         "apps/server/src/jones/previewCompanion/streamCloseReason.test.ts",
-        "apps/web/src/browser/HostedBrowserWebview.test.tsx",
-        "apps/web/src/components/preview/PreviewView.test.tsx",
+        "apps/web/src/browser/HostedBrowserWebview.browser.test.tsx",
+        "apps/web/src/components/preview/PreviewView.browser.test.tsx",
         "apps/web/src/components/settings/IntegrationsSettings.logic.test.ts",
-        "apps/web/src/components/settings/IntegrationsSettings.test.tsx",
+        "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
         "apps/web/src/jones/previewCompanion/controller.test.ts",
         "apps/web/src/jones/previewCompanion/guest.test.ts",
         "apps/web/src/jones/previewCompanion/inventory.test.ts",
@@ -559,7 +571,7 @@
         "scripts/jones/preview-companion/packageVariant.test.ts",
         "apps/server/src/persistence/AuthPairingLinks.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",
@@ -801,9 +813,14 @@
         "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "packages/shared/src/projectSettings.test.ts"
+        "packages/shared/src/projectSettings.test.ts",
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
       ],
-      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
     },
     {
       "id": "pr-read-efficiency",
@@ -814,12 +831,27 @@
         "packages/client-runtime/src/state/pullRequests.test.ts",
         "apps/web/src/hooks/useLiveRefresh.test.ts",
         "apps/web/src/state/query.test.ts",
-        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx",
         "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
         "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
         "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
       ],
       "scope": "Typed PR read pauses terminate alternate routing; bounded qualified-head REST discovery preserves shared cooldown; PR focus reuse and held-data pause presentation. Shared contract/service/router/hook edits are small extensions of existing mechanisms; integration tests retain existing private harnesses."
+    },
+    {
+      "id": "ordinary-checkout-lifecycle",
+      "tests": [
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/persistence/Migrations/109_JonesOrdinaryCheckoutLifecycle.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
+      ],
+      "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Includes inactive accepted-intent transaction hooks and reciprocal native/deletion adapters. Production composition and physical execution remain separate; no positive executor authority is installed."
     }
   ]
 }

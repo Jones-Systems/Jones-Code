@@ -1,28 +1,32 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 import type { MergedUsage } from "@t3tools/shared/usageMerge";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 
 import { selectUsageBreakdown } from "../../components/usage/usageBreakdown";
 import { providersWithUsage } from "../../components/usage/usageProviders";
 
-export function useUsageProviderDetails(merged: MergedUsage, isPending: boolean) {
-  const [selectedProvider, setSelectedProvider] = useState<UsageProviderKind | null>(null);
-  const [expandedModelKey, setExpandedModelKey] = useState<string | null>(null);
-  const detailBreakdown = useMemo(
-    () => selectUsageBreakdown(merged, selectedProvider),
-    [merged, selectedProvider],
-  );
+export function useUsageProviderDetails(merged: MergedUsage, isPending: boolean, scope = "all") {
+  const [selection, setSelection] = useState<{
+    scope: string;
+    provider: UsageProviderKind | null;
+    expandedModelKey: string | null;
+  }>({ scope, provider: null, expandedModelKey: null });
+  const activeProviders = providersWithUsage(merged.providers);
+  const shouldReset =
+    selection.scope !== scope ||
+    (!isPending && selection.provider !== null && !activeProviders.includes(selection.provider));
+  const selectedProvider = shouldReset ? null : selection.provider;
+  const expandedModelKey = shouldReset ? null : selection.expandedModelKey;
+  if (shouldReset) {
+    setSelection({ scope, provider: null, expandedModelKey: null });
+  }
+  const detailBreakdown = selectUsageBreakdown(merged, selectedProvider);
   const focusedProvider = detailBreakdown.providerTotals?.provider ?? null;
-  const activeProviders = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
-  useEffect(() => {
-    if (!isPending && selectedProvider !== null && !activeProviders.includes(selectedProvider)) {
-      setSelectedProvider(null);
-      setExpandedModelKey(null);
-    }
-  }, [activeProviders, isPending, selectedProvider]);
   const selectProvider = (provider: UsageProviderKind | null) => {
-    setSelectedProvider(provider);
-    setExpandedModelKey(null);
+    setSelection({ scope, provider, expandedModelKey: null });
+  };
+  const setExpandedModelKey = (key: string | null) => {
+    setSelection({ scope, provider: selectedProvider, expandedModelKey: key });
   };
   return {
     detailBreakdown,

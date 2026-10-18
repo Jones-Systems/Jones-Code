@@ -68,7 +68,7 @@ function EnvironmentWorkModePill({
     pendingRef.current = true;
     setPending(true);
     setError(null);
-    try {
+    await (async () => {
       const result = await updateSettings({
         environmentId: environment.environmentId,
         input: { patch: { workModeEnabled: !enabled } },
@@ -76,12 +76,14 @@ function EnvironmentWorkModePill({
       if (result._tag !== "Success" || result.value.workModeEnabled !== !enabled) {
         setError("Could not save Work mode. Reconnect to confirm the saved state before retrying.");
       }
-    } catch {
-      setError("Could not save Work mode. Reconnect to confirm the saved state before retrying.");
-    } finally {
-      pendingRef.current = false;
-      setPending(false);
-    }
+    })()
+      .catch(() => {
+        setError("Could not save Work mode. Reconnect to confirm the saved state before retrying.");
+      })
+      .finally(() => {
+        pendingRef.current = false;
+        setPending(false);
+      });
   }
 
   return (

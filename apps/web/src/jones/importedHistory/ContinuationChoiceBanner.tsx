@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   CommandId,
   type EnvironmentId,
@@ -35,99 +35,110 @@ export function ContinuationChoiceBanner(props: {
   const start = useAtomCommand(importedHistoryCommands.start, { reportFailure: false });
   const observe = useAtomCommand(importedHistoryCommands.observe, { reportFailure: false });
   const identity = useAtomCommand(importedHistoryCommands.identity, { reportFailure: false });
-  const storage = useMemo(
-    () => importedHistoryCorrelationStorage(scopeThreadRef(props.environmentId, props.threadId)),
-    [props.environmentId, props.threadId],
+  const storage = importedHistoryCorrelationStorage(
+    scopeThreadRef(props.environmentId, props.threadId),
   );
-  const controller = useMemo(
-    () =>
-      createImportedHistoryChoiceController(storage, {
-        start: async (input) => {
-          const result = await start({ environmentId: props.environmentId, input });
-          return result._tag === "Success" ? result.value : null;
+  const controller = createImportedHistoryChoiceController(storage, {
+    start: async (input) => {
+      const result = await start({ environmentId: props.environmentId, input });
+      return result._tag === "Success" ? result.value : null;
+    },
+    observe: async (input) => {
+      const result = await observe({ environmentId: props.environmentId, input });
+      return result._tag === "Success" ? result.value : null;
+    },
+  });
+  const readSavedChoice = () => {
+    try {
+      return { saved: storage.read() !== null, state: null as ImportedHistoryChoiceState | null };
+    } catch {
+      return {
+        saved: true,
+        state: {
+          status: "unknown" as const,
+          intentAccepted: false,
+          reason: "Saved choice is unavailable. Resolve storage before another start.",
         },
-        observe: async (input) => {
-          const result = await observe({ environmentId: props.environmentId, input });
-          return result._tag === "Success" ? result.value : null;
-        },
-      }),
-    [storage, start, observe, props.environmentId],
-  );
-  const [state, setState] = useState<ImportedHistoryChoiceState | null>(null);
-  const [saved, setSaved] = useState(false);
+      };
+    }
+  };
+  const [initialChoice] = useState(readSavedChoice);
+  const [state, setState] = useState<ImportedHistoryChoiceState | null>(initialChoice.state);
+  const [saved, setSaved] = useState(initialChoice.saved);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const scope = `${props.environmentId}:${props.threadId}`;
-  const scopeRef = useRef(scope);
-  scopeRef.current = scope;
-  useEffect(() => {
-    setState(null);
-    try {
-      setSaved(storage.read() !== null);
-    } catch {
-      setSaved(true);
-      setState({
-        status: "unknown",
-        intentAccepted: false,
-        reason: "Saved choice is unavailable. Resolve storage before another start.",
-      });
-    }
-  }, [storage, props.prepared, props.reason]);
+  const scopeRef = useRef<string | null>(scope);
+  useLayoutEffect(() => {
+    scopeRef.current = scope;
+    return () => {
+      scopeRef.current = null;
+    };
+  }, [scope]);
+  const [basis, setBasis] = useState({ scope, prepared: props.prepared, reason: props.reason });
+  if (basis.scope !== scope || basis.prepared !== props.prepared || basis.reason !== props.reason) {
+    setBasis({ scope, prepared: props.prepared, reason: props.reason });
+    const next = readSavedChoice();
+    setSaved(next.saved);
+    setState(next.state);
+  }
   const act = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
-    try {
-      let next: ImportedHistoryChoiceState;
-      if (saved) next = await controller.observe();
-      else {
-        const prepared = props.prepared;
-        if (prepared === null || !prepared.unchanged()) return;
-        const commandId =
-          prepared.delivery.type === "message"
-            ? prepared.delivery.command.commandId
-            : CommandId.make(randomUUID());
-        const command = {
-          type: "thread.imported-history.start" as const,
-          commandId,
-          threadId: props.threadId,
-          reviewedBasis: prepared.reviewedBasis,
-          delivery: prepared.delivery,
-        };
-        const digests = await identity({ environmentId: props.environmentId, input: command });
-        if (digests._tag !== "Success") {
-          next = {
+    return await (async () => {
+      try {
+        let next: ImportedHistoryChoiceState;
+        if (saved) next = await controller.observe();
+        else {
+          const prepared = props.prepared;
+          if (prepared === null || !prepared.unchanged()) return;
+          const commandId =
+            prepared.delivery.type === "message"
+              ? prepared.delivery.command.commandId
+              : CommandId.make(randomUUID());
+          const command = {
+            type: "thread.imported-history.start" as const,
+            commandId,
+            threadId: props.threadId,
+            reviewedBasis: prepared.reviewedBasis,
+            delivery: prepared.delivery,
+          };
+          const digests = await identity({ environmentId: props.environmentId, input: command });
+          if (digests._tag !== "Success") {
+            next = {
+              status: "unknown",
+              intentAccepted: false,
+              reason: "Could not bind the reviewed command. No start was submitted.",
+            };
+          } else
+            next = await controller.start(
+              {
+                environmentId: props.environmentId,
+                command,
+                draftIdentity: prepared.draftIdentity,
+                ...digests.value,
+              },
+              () => scopeRef.current === scope && prepared.unchanged(),
+            );
+        }
+        if (scopeRef.current === scope) {
+          setState(next);
+          setSaved(storage.read() !== null);
+          if (next.status === "rejected") props.onDismiss?.();
+        }
+      } catch {
+        if (scopeRef.current === scope)
+          setState({
             status: "unknown",
             intentAccepted: false,
-            reason: "Could not bind the reviewed command. No start was submitted.",
-          };
-        } else
-          next = await controller.start(
-            {
-              environmentId: props.environmentId,
-              command,
-              draftIdentity: prepared.draftIdentity,
-              ...digests.value,
-            },
-            () => scopeRef.current === scope && prepared.unchanged(),
-          );
+            reason: "Observe the saved choice before continuing.",
+          });
       }
-      if (scopeRef.current === scope) {
-        setState(next);
-        setSaved(storage.read() !== null);
-        if (next.status === "rejected") props.onDismiss?.();
-      }
-    } catch {
-      if (scopeRef.current === scope)
-        setState({
-          status: "unknown",
-          intentAccepted: false,
-          reason: "Observe the saved choice before continuing.",
-        });
-    } finally {
+    })().finally(() => {
       busyRef.current = false;
       setBusy(false);
-    }
+    });
   };
   if (!saved && props.prepared === null && !props.reason && state === null) return null;
   return (

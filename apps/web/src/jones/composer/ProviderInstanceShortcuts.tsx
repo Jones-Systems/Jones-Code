@@ -107,7 +107,10 @@ export function resolveProviderInstanceShortcut(input: {
   };
 }
 
-export function ProviderInstanceShortcuts(props: {
+export function ProviderInstanceShortcuts({
+  groupRef,
+  ...props
+}: {
   instanceEntries: ReadonlyArray<ProviderInstanceEntry>;
   settings: UnifiedSettings;
   modelOptionsByInstance?: ReadonlyMap<ProviderInstanceId, ReadonlyArray<AppModelOption>>;
@@ -148,7 +151,7 @@ export function ProviderInstanceShortcuts(props: {
   // Keep the same width and layout while hidden so measuring cannot toggle visibility.
   return (
     <div
-      ref={props.groupRef}
+      ref={groupRef}
       role="group"
       aria-label="Provider accounts"
       aria-hidden={!visible || undefined}

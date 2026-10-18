@@ -4,7 +4,6 @@ import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreati
 import { isWorkModeKeepWarm, workModeProviderPrompt } from "../jones/provider/workModePrompt.ts";
 import { continuationPrompt } from "../jones/updates/continuationPrompt.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import {
   modelSelectionsEqual,
@@ -36,10 +35,13 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
+import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { makeIsManagedWorktreePath } from "../worktreesDirectory.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import {
@@ -122,6 +124,7 @@ export const layer: Layer.Layer<
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
   | Path.Path
+  | ServerConfig.ServerConfig
   | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
@@ -149,6 +152,7 @@ export const layer: Layer.Layer<
     );
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
     const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
 
@@ -537,7 +541,7 @@ export const layer: Layer.Layer<
             runId,
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
-        if (!exists) {
+        if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),

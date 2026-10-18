@@ -112,6 +112,31 @@ describe("Work mode sidebar interaction", () => {
     }
   });
 
+  it("releases the save latch after a rejected request so the owner can retry", async () => {
+    state.update.mockRejectedValueOnce(new Error("disconnected"));
+    const renderer = await mount();
+    try {
+      await act(async () => {
+        renderer.root.findByType("button").props.onClick();
+      });
+      expect(renderer.root.findByType("button").props["aria-busy"]).toBe(false);
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(false);
+      expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain(
+        "Could not save",
+      );
+      await act(async () => {
+        renderer.root.findByType("button").props.onClick();
+      });
+      expect(state.update).toHaveBeenCalledTimes(2);
+      expect(renderer.root.findByType("button").props["aria-busy"]).toBe(false);
+      expect(renderer.root.findByProps({ role: "status" }).children.join("")).not.toContain(
+        "Could not save",
+      );
+    } finally {
+      await dispose(renderer);
+    }
+  });
+
   it("suppresses duplicate clicks while saving and reports failed saves without changing state", async () => {
     let finish!: (value: unknown) => void;
     state.update.mockImplementation(

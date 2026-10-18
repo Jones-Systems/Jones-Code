@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { shouldUseCompactComposerFooter } from "../../components/composerFooterLayout";
 import { observeResize } from "~/lib/observeResize";
 
@@ -66,7 +66,7 @@ export function useComposerShortcutRails(input: {
   } = input;
   const [layout, setLayout] = useState({ visible: false, height: 0 });
   const visibleRef = useRef(false);
-  const measure = useCallback(() => {
+  const measure = () => {
     const form = formRef.current;
     const band = bandRef.current;
     if (!host || !workspace || !form || !band) return;
@@ -105,16 +105,15 @@ export function useComposerShortcutRails(input: {
     setLayout((previous) =>
       previous.visible === visible && previous.height === height ? previous : { visible, height },
     );
-  }, [
-    host,
-    workspace,
-    formRef,
-    bandRef,
-    accountGroupRef,
-    effortGroupRef,
-    eligible,
-    hasWideActions,
-  ]);
+  };
+
+  const measuredContent = useRef(contentKey);
+  useLayoutEffect(() => {
+    if (measuredContent.current !== contentKey) {
+      measuredContent.current = contentKey;
+      measure();
+    }
+  }, [contentKey, measure]);
 
   useLayoutEffect(() => {
     measure();
@@ -134,7 +133,7 @@ export function useComposerShortcutRails(input: {
       stopResize();
       document.fonts?.removeEventListener("loadingdone", measure);
     };
-  }, [host, workspace, formRef, bandRef, accountGroupRef, effortGroupRef, contentKey, measure]);
+  }, [host, workspace, formRef, bandRef, accountGroupRef, effortGroupRef, measure]);
 
   return { visible: eligible && layout.visible, height: eligible ? layout.height : 0 };
 }

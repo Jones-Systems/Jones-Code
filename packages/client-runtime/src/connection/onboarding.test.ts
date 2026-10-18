@@ -425,6 +425,7 @@ describe("connection onboarding", () => {
   );
   it.effect.each([
     { label: "read-only", scopes: ["orchestration:read"] },
+    { label: "default", scopes: AuthStandardClientScopes },
     { label: "administrative", scopes: AuthAdministrativeScopes },
   ] as const)("preserves the $label grant when pairing a remote environment", ({ scopes }) =>
     Effect.gen(function* () {
@@ -643,6 +644,8 @@ describe("connection onboarding", () => {
           connectionId: 'ssh:environment-ssh:["devbox","devbox.example.test","developer",22]',
           target,
         },
+        // Saved so the first connect reuses this pairing instead of adding another.
+        credential: { token: "bearer-token" },
       });
     }),
   );

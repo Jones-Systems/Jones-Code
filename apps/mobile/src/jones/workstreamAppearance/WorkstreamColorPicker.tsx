@@ -95,7 +95,7 @@ export function WorkstreamColorPicker(props: {
     busyRef.current = true;
     setBusy(true);
     setError(null);
-    try {
+    await (async () => {
       const request = retry ?? {
         command_id: await props.createCommandId(),
         workstream_id: saved.workstream_id,
@@ -106,12 +106,14 @@ export function WorkstreamColorPicker(props: {
       setRetry(request);
       await props.save(request);
       props.onClose();
-    } catch {
-      setError("Could not confirm the color. Retry this save or refresh to check the result.");
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    })()
+      .catch(() => {
+        setError("Could not confirm the color. Retry this save or refresh to check the result.");
+      })
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
   };
   return (
     <View style={{ gap: 12, paddingVertical: 12 }}>

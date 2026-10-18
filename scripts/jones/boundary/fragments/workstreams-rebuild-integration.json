@@ -2,6 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-rebuild-integration",
   "jonesOwnedPaths": [
+    "apps/web/src/test/reactHookHarness.ts",
+    "apps/web/src/test/reactElementTree.ts",
     "apps/mobile/src/features/workstreams/Controls.tsx",
     "apps/mobile/src/features/workstreams/actions.fixtures.ts",
     "apps/mobile/src/features/workstreams/actions.test.ts",
@@ -17,7 +19,7 @@
     "apps/mobile/src/features/workstreams/projection.test.ts",
     "apps/mobile/src/features/workstreams/projection.ts",
     "apps/mobile/src/features/workstreams/types.ts",
-    "apps/mobile/src/features/workstreams/useWorkstreams.ts",
+    "apps/mobile/src/features/workstreams/useWorkstreams.tsx",
     "apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
     "apps/server/src/cli/workstream.ts",
@@ -138,7 +140,8 @@
     "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
     "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts",
     "apps/web/src/jones/workstreams/remoteThreadAssignment.ts",
-    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+    "packages/contracts/src/workstreams-fixtures/registry-counts.conformance.json.fixture"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -164,7 +167,6 @@
     "apps/web/src/components/sidebar/SidebarThreadHeader.tsx",
     "apps/web/src/lib/runtime.test.ts",
     "apps/web/src/lib/runtime.ts",
-    "apps/web/src/test/reactHookHarness.ts",
     "packages/client-runtime/src/authorization/index.ts",
     "packages/contracts/src/auth.ts",
     "vite.config.ts",
@@ -176,7 +178,7 @@
     "apps/web/src/components/Sidebar.pointer.ts",
     "apps/web/src/components/threadActionMenu.logic.ts"
   ],
-  "tombstones": [],
+  "tombstones": ["apps/mobile/src/features/workstreams/useWorkstreams.ts"],
   "allowedImports": [
     {
       "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
@@ -196,7 +198,7 @@
     },
     {
       "from": "apps/mobile/src/features/home/HomeScreen.tsx",
-      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.tsx"
     },
     {
       "from": "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -204,7 +206,7 @@
     },
     {
       "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",
-      "to": "apps/mobile/src/features/workstreams/useWorkstreams.ts"
+      "to": "apps/mobile/src/features/workstreams/useWorkstreams.tsx"
     },
     {
       "from": "apps/mobile/src/features/threads/ThreadNavigationSidebar.tsx",

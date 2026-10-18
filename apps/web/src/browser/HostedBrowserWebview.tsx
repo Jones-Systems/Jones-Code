@@ -7,7 +7,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useShallow } from "zustand/react/shallow";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { previewBridge } from "~/components/preview/previewBridge";
 import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
@@ -148,15 +148,16 @@ export function HostedBrowserWebview(props: {
   );
 
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
-  const latestUrlRef = useRef(initialUrl);
+  const remountCrashedWebview = useEffectEvent(() => {
+    setRecoverySrc(companion ? "about:blank" : (initialUrl ?? initialSrc));
+    setWebviewGeneration((generation) => generation + 1);
+  });
 
-  useEffect(() => {
-    latestUrlRef.current = initialUrl;
-  }, [initialUrl]);
+  const readInitialUrl = useEffectEvent(() => initialUrl);
 
-  const setWebviewRef = useCallback((node: HTMLElement | null) => {
+  const setWebviewRef = (node: HTMLElement | null) => {
     webviewRef.current = node as ElectronWebview | null;
-  }, []);
+  };
 
   useEffect(() => {
     const webview = webviewRef.current;
@@ -171,36 +172,38 @@ export function HostedBrowserWebview(props: {
       if (!lease || (companion && registered) || registering) return;
       registering = true;
       void (async () => {
-        try {
-          // The main-process tab and the DOM webview are created by separate
-          // effects. Wait for the former so registration cannot race and fail
-          // with PreviewTabNotFoundError on a fast about:blank attachment.
-          const isCurrent = () => !disposed && webviewRef.current === webview;
-          const registerWebview = async () => {
-            const webContentsId = webview.getWebContentsId();
-            if (!Number.isInteger(webContentsId) || webContentsId <= 0)
-              throw new Error("Guest is not attached.");
-            await bridge.registerWebview(runtimeTabId, webContentsId);
-          };
-          if (companion) {
-            registered = await registerCompanionGuest({
-              ready: lease.ready,
-              isCurrent,
-              register: registerWebview,
-              url: () => latestUrlRef.current,
-              navigate: (url) => {
-                webview.src = url;
-              },
-            });
-          } else {
-            await lease.ready;
-            if (isCurrent()) await registerWebview();
+        return await (async () => {
+          try {
+            // The main-process tab and the DOM webview are created by separate
+            // effects. Wait for the former so registration cannot race and fail
+            // with PreviewTabNotFoundError on a fast about:blank attachment.
+            const isCurrent = () => !disposed && webviewRef.current === webview;
+            const registerWebview = async () => {
+              const webContentsId = webview.getWebContentsId();
+              if (!Number.isInteger(webContentsId) || webContentsId <= 0)
+                throw new Error("Guest is not attached.");
+              await bridge.registerWebview(runtimeTabId, webContentsId);
+            };
+            if (companion) {
+              registered = await registerCompanionGuest({
+                ready: lease.ready,
+                isCurrent,
+                register: registerWebview,
+                url: () => readInitialUrl(),
+                navigate: (url) => {
+                  webview.src = url;
+                },
+              });
+            } else {
+              await lease.ready;
+              if (isCurrent()) await registerWebview();
+            }
+          } catch {
+            // did-attach/dom-ready will retry if the guest was not ready yet.
           }
-        } catch {
-          // did-attach/dom-ready will retry if the guest was not ready yet.
-        } finally {
+        })().finally(() => {
           registering = false;
-        }
+        });
       })();
     };
     const recoverGuest = () => {
@@ -210,10 +213,7 @@ export function HostedBrowserWebview(props: {
       crashRecoveryRef.current = recovery.state;
       recoveryTimeout = setTimeout(() => {
         recoveryTimeout = null;
-        if (!disposed) {
-          setRecoverySrc(companion ? "about:blank" : (latestUrlRef.current ?? initialSrc));
-          setWebviewGeneration((generation) => generation + 1);
-        }
+        if (!disposed) remountCrashedWebview();
       }, recovery.delayMs);
     };
     // A click inside the guest only reaches this document as a webview focus
@@ -237,7 +237,14 @@ export function HostedBrowserWebview(props: {
       webview.removeEventListener("render-process-gone", recoverGuest);
       webview.removeEventListener("focus", dismissHostPopups);
     };
-  }, [clientSettingsHydrated, companion, config, initialSrc, runtimeTabId, webviewGeneration]);
+  }, [
+    clientSettingsHydrated,
+    companion,
+    config,
+    runtimeTabId,
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.
+    webviewGeneration,
+  ]);
 
   const active = presentation.visible && presentation.rect !== null;
   const lastRect = presentation.rect;
@@ -248,26 +255,26 @@ export function HostedBrowserWebview(props: {
     viewportWidth === null || viewportHeight === null ? null : viewportWidth / viewportHeight;
   const lockedAspectRatio =
     aspectRatioLocked && viewportAspectRatio !== null ? viewportAspectRatio : null;
-  const handleAspectRatioChange = useCallback((aspectRatio: number | null) => {
+  const handleAspectRatioChange = (aspectRatio: number | null) => {
     setAspectRatioLocked(aspectRatio !== null);
-  }, []);
-  const hiddenContentSize = presentation.content
-    ? {
-        width: presentation.content.width / presentation.content.scale,
-        height: presentation.content.height / presentation.content.scale,
-      }
-    : null;
-  const hiddenSize =
+  };
+  const content = presentation.content;
+  const hiddenWidth =
     viewport._tag !== "fill"
-      ? {
-          width: viewport.width * normalizedZoomFactor,
-          height: viewport.height * normalizedZoomFactor,
-        }
-      : {
-          width: hiddenContentSize?.width ?? lastRect?.width ?? 1280,
-          height: hiddenContentSize?.height ?? lastRect?.height ?? 800,
-        };
-  const containerSize = active && lastRect ? lastRect : hiddenSize;
+      ? viewport.width * normalizedZoomFactor
+      : content
+        ? content.width / content.scale
+        : (lastRect?.width ?? 1280);
+  const hiddenHeight =
+    viewport._tag !== "fill"
+      ? viewport.height * normalizedZoomFactor
+      : content
+        ? content.height / content.scale
+        : (lastRect?.height ?? 800);
+  // Built from primitives on each side of the resize hook, so neither object is
+  // shared across it and both stay cached; the hook's layout keys the sync effect.
+  const containerSize =
+    active && lastRect ? lastRect : { width: hiddenWidth, height: hiddenHeight };
   const deviceToolbarVisible = active && viewport._tag !== "fill" && !presentation.fitSourceContent;
   const {
     activeDrag,
@@ -297,7 +304,7 @@ export function HostedBrowserWebview(props: {
       ? resolveBrowserViewportLayout(lastRect, fittedSourceViewport, normalizedZoomFactor)
       : viewportLayout;
 
-  const syncContentPresentation = useCallback(() => {
+  const syncContentPresentation = () => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
     useBrowserSurfaceStore.getState().presentContent(runtimeTabId, {
@@ -309,7 +316,7 @@ export function HostedBrowserWebview(props: {
       scrollLeft: wrapper.scrollLeft,
       scrollTop: wrapper.scrollTop,
     });
-  }, [layout, runtimeTabId]);
+  };
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(syncContentPresentation);
@@ -320,7 +327,13 @@ export function HostedBrowserWebview(props: {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
     wrapper.scrollTo({ left: 0, top: 0 });
-  }, [runtimeTabId, viewport._tag, viewportHeight, viewportWidth]);
+  }, [
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A new tab or viewport size starts the canvas scrolled to its origin.
+    runtimeTabId,
+    viewport._tag,
+    viewportHeight,
+    viewportWidth,
+  ]);
 
   if (!clientSettingsHydrated || !config) return null;
 
@@ -333,7 +346,7 @@ export function HostedBrowserWebview(props: {
     cornerRadius: presentation.cornerRadius,
     zIndex: presentation.zIndex,
     rect: lastRect,
-    hiddenSize,
+    hiddenSize: { width: hiddenWidth, height: hiddenHeight },
   });
 
   return (
@@ -349,7 +362,7 @@ export function HostedBrowserWebview(props: {
         {deviceToolbarVisible && effectiveViewport._tag !== "fill" ? (
           <BrowserDeviceToolbar
             setting={effectiveViewport}
-            width={Math.max(1, Math.round(containerSize.width))}
+            width={Math.max(1, Math.round(active && lastRect ? lastRect.width : hiddenWidth))}
             aspectRatio={lockedAspectRatio}
             onAspectRatioChange={handleAspectRatioChange}
             onChange={commitViewportChange}

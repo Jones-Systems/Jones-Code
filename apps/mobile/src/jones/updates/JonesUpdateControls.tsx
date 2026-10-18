@@ -31,11 +31,9 @@ export function JonesUpdateControls({
   const run = async (input: Parameters<typeof action>[0]["input"]) => {
     setPending(true);
     setActionError(null);
-    try {
+    await (async () => {
       setActionError(jonesUpdateActionError(await action({ environmentId, input })));
-    } finally {
-      setPending(false);
-    }
+    })().finally(() => setPending(false));
   };
   const presentation = jonesUpdatePresentation(state);
   const busy = pending || presentation.busy || observation.freshness !== "fresh";

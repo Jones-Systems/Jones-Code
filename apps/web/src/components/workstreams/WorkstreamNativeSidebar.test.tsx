@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState, useCallback, useRef } from "react";
+import { act, useState, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -699,7 +699,7 @@ describe("native Workstream sidebar interactions", () => {
 function CreationHeader({ controller }: { readonly controller: WorkstreamListView }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const close = useCallback(() => setOpen(false), []);
+  const close = () => setOpen(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
   return (
     <SidebarProvider>
@@ -1199,9 +1199,7 @@ describe("durable Workstream assignment display", () => {
       stale: true,
     });
     await render(threads, threads, options);
-    expect(container.textContent).toContain(
-      "Showing the last loaded Workstreams. Refresh to update.",
-    );
+    expect(container.textContent).toContain("Showing the last loaded Workstreams. Refresh");
     expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
       threads[1]!.title,
     );
@@ -1216,6 +1214,28 @@ describe("durable Workstream assignment display", () => {
     expect(menuButton("beta")?.disabled).toBe(true);
     expect(menuButton("Unassigned (remove primary)")?.disabled).toBe(true);
     expect(assignment).not.toHaveBeenCalled();
+  });
+
+  it("offers Refresh from the stale notice and disables it while loading", async () => {
+    const retry = vi.fn(async () => undefined);
+    const options = useIndex(index([episode("membership", "alpha")]), { stale: true, retry });
+    await render(threads, threads, options);
+    const notice = [...container.querySelectorAll('[role="status"]')].find((node) =>
+      node.textContent?.includes("Showing the last loaded Workstreams"),
+    );
+    const button = notice?.querySelector("button");
+    expect(button?.textContent).toBe("Refresh");
+    expect(button?.disabled).toBe(false);
+    await act(async () => button!.click());
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(controller.refresh).not.toHaveBeenCalled();
+
+    controller = { ...controller, loading: true };
+    await render(threads, threads, options);
+    const loadingNotice = [...container.querySelectorAll('[role="status"]')].find((node) =>
+      node.textContent?.includes("Showing the last loaded Workstreams"),
+    );
+    expect(loadingNotice?.querySelector("button")?.disabled).toBe(true);
   });
 
   it("warns about conflicting primaries and blocks every membership change", async () => {

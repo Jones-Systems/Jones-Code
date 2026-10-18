@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { threadShellFromProjection } from "../../orchestration-v2/ProjectionStore.ts";
+import { cancelledBeforeStart } from "../../orchestration-v2/RestartBackgroundNote.ts";
 import { restartContinuationRun } from "../../orchestration-v2/RestartContinuation.ts";
 import { workModeCandidate, workModeCommand, workModeContext } from "../workMode/Policy.ts";
 
@@ -97,7 +98,7 @@ export function captureThreadContinuity(input: {
   )
     return undefined;
   const latest = projection.runs
-    .filter((run) => run.status !== "queued")
+    .filter((run) => run.status !== "queued" && !cancelledBeforeStart(run))
     .reduce<(typeof projection.runs)[number] | undefined>(
       (previous, run) => (previous === undefined || runRanAfter(run, previous) ? run : previous),
       undefined,
@@ -183,7 +184,7 @@ export function canReleasePlannedQueue(
     return false;
   const ids = continuationRunIds(snapshot, projection);
   const latest = projection.runs
-    .filter((run) => run.status !== "queued")
+    .filter((run) => run.status !== "queued" && !cancelledBeforeStart(run))
     .reduce<(typeof projection.runs)[number] | undefined>(
       (previous, run) => (previous === undefined || runRanAfter(run, previous) ? run : previous),
       undefined,

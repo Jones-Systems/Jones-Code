@@ -313,6 +313,7 @@ it.effect(
       const upstreamLedger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [108, "PhysicalProcessEvidence"],
+        [109, "OrdinaryCheckoutLifecycle"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -329,4 +330,63 @@ it.effect(
       );
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
     }).pipe(Effect.provide(memory)),
+);
+
+it.effect("upstream migration 63 preserves Jones rows and durable settlement proofs", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA foreign_keys = ON`;
+    yield* runMigrations({ toMigrationInclusive: 62 });
+    yield* runJonesMigrations(jonesMigrationEntries);
+    yield* seedReferencedRows;
+    const proof = JSON.stringify({
+      receipt: {
+        commandId: "settle-command",
+        aggregateKind: "thread",
+        aggregateId: "thread",
+        commandType: "thread.settle",
+        acceptedAt: "2026-01-01T00:00:00.000Z",
+        resultSequence: 1,
+        status: "accepted",
+      },
+      events: [
+        {
+          eventId: "settle-event",
+          commandId: "settle-command",
+          aggregateKind: "thread",
+          aggregateId: "thread",
+          sequence: 1,
+          type: "thread.settled",
+          occurredAt: "2026-01-01T00:00:00.000Z",
+          applicationEventVersion: 2,
+        },
+      ],
+    });
+    yield* sql`INSERT INTO jones_workstreams_settlement_proofs VALUES
+      ('settle-command', 'thread', 'settle', ${proof})`;
+    yield* sql`INSERT INTO projection_thread_messages
+      (message_id, thread_id, role, text, is_streaming, created_at, updated_at)
+      VALUES ('legacy-message', 'thread', 'user', 'retained transcript', 0, '2026-01-01', '2026-01-01')`;
+    const tables = (yield* readObjects)
+      .filter(({ type, name }) => type === "table" && isJonesTable(name))
+      .map(({ name }) => name);
+    const before = yield* Effect.forEach(tables, readTable);
+    const upstreamLedger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+    yield* runMigrations();
+    assert.deepStrictEqual(yield* Effect.forEach(tables, readTable), before);
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM effect_sql_migrations WHERE migration_id <= 62 ORDER BY migration_id`,
+      upstreamLedger,
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+        ('projection_thread_activities', 'projection_turns', 'projection_thread_proposed_plans',
+         'projection_pending_approvals', 'projection_state', 'checkpoint_diff_blobs')`,
+      [],
+    );
+    assert.deepStrictEqual(yield* sql`SELECT text FROM projection_thread_messages`, [
+      { text: "retained transcript" },
+    ]);
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+  }).pipe(Effect.provide(memory)),
 );
