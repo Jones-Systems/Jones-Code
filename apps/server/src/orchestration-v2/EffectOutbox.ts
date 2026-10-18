@@ -1,4 +1,5 @@
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
+import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -223,6 +224,11 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         },
         { discard: true },
       );
+    // Neither native envelope key is present. json_type is SQL NULL only for a
+    // missing key, so an explicit JSON null still takes the strict native path.
+    // This predicate reads no Jones table, so it works on upstream-only schema.
+    const ordinaryPayload = sql`json_type(payload_json, '$.request') IS NULL
+      AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL`;
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -569,24 +575,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: ({ effectId, workerId }) =>
         Effect.gen(function* () {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const current = yield* sql<{
-            payload_json: string;
-          }>`SELECT payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
-          if (current.length === 1) {
-            const payload = yield* decodeOrchestrationEffectPayloadV2(current[0]!.payload_json);
-            if ("nativeCreationExecutionReference" in payload) {
-              const confirmed =
-                yield* sql`SELECT effect.effect_id FROM orchestration_v2_effect_outbox effect
-                JOIN jones_native_creation_execution_confirmations confirmation ON confirmation.effect_id=effect.effect_id
-                JOIN jones_native_creation_execution_starts start ON start.effect_id=effect.effect_id
-                WHERE effect.effect_id=${effectId} AND effect.lease_owner=${workerId} AND effect.lease_expires_at>${now}
-                AND confirmation.worker_id=${workerId} AND confirmation.expected_attempt=effect.attempt_count
-                AND start.lease_expires_at=effect.lease_expires_at
-                AND NOT EXISTS(SELECT 1 FROM jones_native_creation_execution_holds hold WHERE hold.effect_id=effect.effect_id)`;
-              if (confirmed.length !== 1) return false;
-            }
-          }
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const settle = (guard: typeof ordinaryPayload) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'succeeded',
@@ -598,8 +587,26 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${guard}
             RETURNING effect_id
           `;
+          let rows = yield* settle(ordinaryPayload);
+          if (rows.length === 0) {
+            const current = yield* sql<{ readonly payload_json: string }>`
+              SELECT payload_json FROM orchestration_v2_effect_outbox
+              WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId}
+            `;
+            // A native envelope must pass the strict decode and its proof. The
+            // payload match binds that proof to the row that was decoded.
+            if (
+              current.length === 1 &&
+              "nativeCreationExecutionReference" in
+                (yield* decodeOrchestrationEffectPayloadV2(current[0]!.payload_json))
+            )
+              rows = yield* settle(
+                sql`payload_json = ${current[0]!.payload_json} AND ${confirmedNativeCompletion(sql, { workerId, now })}`,
+              );
+          }
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);

@@ -22,6 +22,10 @@ import {
   nativeCreationCanonicalJson as canonical,
   nativeCreationSha256 as sha256,
 } from "../nativeCreation/NativeCreationPreparation.ts";
+import {
+  makeJonesTablePresence,
+  type JonesTablePresence,
+} from "../persistence/JonesTablePresence.ts";
 
 export class ImportedHistoryChoiceError extends Schema.TaggedError<ImportedHistoryChoiceError>()(
   "ImportedHistoryChoiceError",
@@ -337,15 +341,32 @@ export const recordImportedHistoryOutcome = Effect.fnUntraced(function* (
   yield* sql`INSERT INTO jones_imported_history_outcomes (command_id, receipt_command_id, outcome_json)
     VALUES (${outcome.commandId}, ${outcome.commandId}, ${canonical(encoded)})`;
 });
-export const claimImportedHistoryStart = Effect.fnUntraced(function* (input: {
-  threadId: ThreadId;
-  runId: RunId;
-  providerThreadId: string;
-}) {
+/** Rejects an ordinary command whose ID is reserved for an imported-history choice. */
+export const assertOrdinaryCommandUnreserved = Effect.fnUntraced(function* (
+  commandId: CommandId,
+  presence: JonesTablePresence,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const installed =
-    yield* sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jones_imported_history_start_reservations'`;
-  if (installed.length === 0) return;
+  if (!(yield* presence("jones_imported_history_choices"))) return;
+  const reserved =
+    yield* sql`SELECT command_id FROM jones_imported_history_choices WHERE command_id = ${commandId}`;
+  if (reserved.length !== 0)
+    return yield* new ImportedHistoryChoiceError({ code: "private_imported_lineage_required" });
+});
+
+export const claimImportedHistoryStart = Effect.fnUntraced(function* (
+  input: {
+    threadId: ThreadId;
+    runId: RunId;
+    providerThreadId: string;
+  },
+  presence?: JonesTablePresence,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (
+    !(yield* (presence ?? makeJonesTablePresence(sql))("jones_imported_history_start_reservations"))
+  )
+    return;
   const rows = yield* sql<{
     effect_id: string;
     command_id: string;
@@ -357,7 +378,7 @@ export const claimImportedHistoryStart = Effect.fnUntraced(function* (input: {
   if (rows.length === 0) {
     const owned = yield* sql`SELECT outcome.command_id FROM jones_imported_history_outcomes outcome
       JOIN jones_imported_history_choices choice ON choice.command_id = outcome.command_id
-      WHERE choice.thread_id = ${input.threadId} AND json_extract(outcome.outcome_json, '$.runId') = ${input.runId}`;
+      WHERE choice.thread_id = ${input.threadId} AND json_extract(outcome.outcome_json, '$.runId') = ${input.runId} LIMIT 1`;
     if (owned.length !== 0) return yield* deny("start_reservation_unavailable");
     return;
   }

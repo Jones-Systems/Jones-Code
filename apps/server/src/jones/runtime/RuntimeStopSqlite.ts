@@ -11,6 +11,10 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as SqlClient from "effect/sql/SqlClient";
 import { nativeCreationCanonicalJson } from "../nativeCreation/NativeCreationPreparation.ts";
+import {
+  makeJonesTablePresence,
+  type JonesTablePresence,
+} from "../persistence/JonesTablePresence.ts";
 export class RuntimeStopError extends Schema.TaggedError<RuntimeStopError>()("RuntimeStopError", {
   reason: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -31,12 +35,11 @@ export interface RuntimeStopCommitContext {
   readonly revalidate: Effect.Effect<void, RuntimeStopError>;
 }
 // These methods use EventSink's existing transaction and command receipt owner.
-export const makeRuntimeStopMethods = (sql: SqlClient.SqlClient) => {
-  const available = Effect.gen(function* () {
-    const rows =
-      yield* sql`SELECT name FROM sqlite_master WHERE type='table' AND name='jones_runtime_stop_intents'`;
-    return rows.length === 1;
-  });
+export const makeRuntimeStopMethods = (
+  sql: SqlClient.SqlClient,
+  presence: JonesTablePresence = makeJonesTablePresence(sql),
+) => {
+  const available = presence("jones_runtime_stop_intents");
   const read = Effect.fnUntraced(function* (commandId: CommandId) {
     if (!(yield* available)) return null;
     const rows = yield* sql<{
@@ -90,12 +93,12 @@ export const makeRuntimeStopMethods = (sql: SqlClient.SqlClient) => {
   }) {
     if (!(yield* available)) return;
     const rows =
-      yield* sql`SELECT command_id FROM jones_runtime_stop_fences WHERE thread_id=${input.threadId} AND run_id=${input.runId}`;
+      yield* sql`SELECT command_id FROM jones_runtime_stop_fences WHERE thread_id=${input.threadId} AND run_id=${input.runId} LIMIT 1`;
     if (rows.length !== 0)
       return yield* new RuntimeStopError({ reason: "queued_start_crosses_captured_runtime_stop" });
     if (input.providerThreadId !== undefined) {
       const lineage =
-        yield* sql`SELECT command_id FROM jones_runtime_stop_intents WHERE thread_id=${input.threadId} AND json_extract(identity_json,'$.request.target.binding.providerThreadId')=${input.providerThreadId} AND (${input.runtimeGeneration ?? null} IS NULL OR json_extract(identity_json,'$.request.target.binding.runtimeGeneration')=${input.runtimeGeneration ?? null})`;
+        yield* sql`SELECT command_id FROM jones_runtime_stop_intents WHERE thread_id=${input.threadId} AND json_extract(identity_json,'$.request.target.binding.providerThreadId')=${input.providerThreadId} AND (${input.runtimeGeneration ?? null} IS NULL OR json_extract(identity_json,'$.request.target.binding.runtimeGeneration')=${input.runtimeGeneration ?? null}) LIMIT 1`;
       if (lineage.length !== 0)
         return yield* new RuntimeStopError({
           reason: "queued_start_crosses_captured_runtime_lineage",

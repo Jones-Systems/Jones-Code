@@ -27,6 +27,8 @@ import JonesMigration0108 from "./Migrations/108_JonesPhysicalProcessEvidence.ts
 
 import JonesMigration0109 from "./Migrations/109_JonesOrdinaryCheckoutLifecycle.ts";
 
+import JonesMigration0110 from "./Migrations/110_JonesThreadLookupIndexes.ts";
+
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -44,6 +46,7 @@ export const jonesMigrationEntries = [
   [107, "WorkstreamsSettlementProofs", JonesMigration0107],
   [108, "PhysicalProcessEvidence", JonesMigration0108],
   [109, "OrdinaryCheckoutLifecycle", JonesMigration0109],
+  [110, "ThreadLookupIndexes", JonesMigration0110],
 ] as const;
 
 export const runMigrations = () =>
