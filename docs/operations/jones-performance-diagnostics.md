@@ -198,9 +198,11 @@ initializer; the initializer's absent-destination copy path has separate
 Native backup drains to settlement before cleanup even after cancellation.
 
 The migration report uses `/v2` semantics and retains native-backup `/v1` evidence.
-It records header and sidecar observations honestly, without granting read-only
-health qualification. `successor-138` remains unavailable until the separately
-bound `138_JonesThreadCreationLookupIndex` manifest exists. Current qualification
-also explicitly holds native acceptance coverage until its dedicated source is
-bound. Default checks, historical pins and synthetic reports do not resolve those
-holds or establish installed-runtime qualification.
+Header and sidecar observations do not grant read-only health qualification. The
+`receiving-creation-lookup` case targets `055_OrchestrationV2/RecoveryIndexes` and
+checks the receiving lookup while preserving foreign history without adopting
+its features. Current qualification includes the receiving lookup and native
+bootstrap acceptance oracles; it still requires an explicit candidate and runtime
+binding. Default checks do not execute the bound qualification runs. Neither
+source coverage nor synthetic qualification establishes installed-runtime
+qualification, and current qualification does not qualify historical sources.

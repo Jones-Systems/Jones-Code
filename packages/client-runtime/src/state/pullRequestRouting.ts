@@ -1,6 +1,7 @@
 import {
   WS_METHODS,
   PullRequestRef,
+  PullRequestOperationError,
   PullRequestInvalidateInput,
   PullRequestState,
   type EnvironmentId,
@@ -83,25 +84,33 @@ const routedReads = new WeakMap<
   Map<string, RoutedRead>
 >();
 const isUnregistered = Schema.is(EnvironmentRegistry.EnvironmentNotRegisteredError);
+const isOperationError = Schema.is(PullRequestOperationError);
+function isRateLimited(error: unknown): error is PullRequestOperationError {
+  return isOperationError(error) && error.reason === "rate-limited";
+}
 const encodeKey = Schema.encodeSync(
   Schema.fromJsonString(Schema.Array(Schema.NullOr(Schema.String))),
 );
-type PendingMetadata<A> = WeakMap<RpcSession, Map<string, Deferred.Deferred<Exit.Exit<A>>>>;
+type PendingMetadata<A> = WeakMap<
+  RpcSession,
+  Map<string, Deferred.Deferred<Exit.Exit<A, PullRequestOperationError>>>
+>;
 const pendingRouting: PendingMetadata<PullRequestRoutingResult | null> = new WeakMap();
 const pendingIdentities: PendingMetadata<PullRequestRoutingIdentityResult | null> = new WeakMap();
 
 function shareMetadataRead<A, R>(
   pending: PendingMetadata<A>,
   key: string,
-  probe: Effect.Effect<A, never, R>,
-): Effect.Effect<A, never, R | EnvironmentSupervisor.EnvironmentSupervisor> {
+  probe: Effect.Effect<A, PullRequestOperationError, R>,
+): Effect.Effect<A, PullRequestOperationError, R | EnvironmentSupervisor.EnvironmentSupervisor> {
   return Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const session = yield* SubscriptionRef.get(supervisor.session);
       if (Option.isNone(session)) return yield* restore(probe);
       const entries =
-        pending.get(session.value) ?? new Map<string, Deferred.Deferred<Exit.Exit<A>>>();
+        pending.get(session.value) ??
+        new Map<string, Deferred.Deferred<Exit.Exit<A, PullRequestOperationError>>>();
       pending.set(session.value, entries);
       const existing = entries.get(key);
       if (existing !== undefined) {
@@ -111,7 +120,7 @@ function shareMetadataRead<A, R>(
           Exit.hasInterrupts(result) ? shareMetadataRead(pending, key, probe) : result,
         );
       }
-      const result = Deferred.makeUnsafe<Exit.Exit<A>>();
+      const result = Deferred.makeUnsafe<Exit.Exit<A, PullRequestOperationError>>();
       entries.set(key, result);
       return yield* restore(probe).pipe(
         Effect.onExit((exit) =>
@@ -272,7 +281,12 @@ export function createPullRequestRouter() {
       ref.repository.toLowerCase(),
       String(ref.number),
     ]);
-    const finish = (operation: ReturnType<typeof request<T>>) =>
+    type RoutedOperation = Effect.Effect<
+      Effect.Success<ReturnType<typeof request<T>>>,
+      Effect.Error<ReturnType<typeof request<T>>> | PullRequestOperationError,
+      Effect.Services<ReturnType<typeof request<T>>>
+    >;
+    const finish = (operation: RoutedOperation) =>
       operation.pipe(
         Effect.tap(() => {
           if (!writes.has(tag) || used.size === 0) return Effect.void;
@@ -338,9 +352,11 @@ export function createPullRequestRouter() {
 
     const identityProbe = request(WS_METHODS.pullRequestsRouting, ref).pipe(
       Effect.timeout("2 seconds"),
-      Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-      ),
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+        const error = Cause.squash(cause);
+        return isRateLimited(error) ? Effect.fail(error) : Effect.succeed(null);
+      }),
     );
     const identity = yield* reads.has(tag)
       ? shareMetadataRead(
@@ -401,7 +417,7 @@ export function createPullRequestRouter() {
             : error,
         ),
       );
-    const visit = (index: number): ReturnType<typeof request<T>> => {
+    const visit = (index: number): RoutedOperation => {
       const id = candidates[index];
       if (id === undefined) return guardedSource;
       return Effect.gen(function* () {
@@ -413,9 +429,11 @@ export function createPullRequestRouter() {
             host: identity.host,
           }).pipe(
             Effect.timeout("2 seconds"),
-            Effect.catchCause((cause) =>
-              Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-            ),
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+              const error = Cause.squash(cause);
+              return isRateLimited(error) ? Effect.fail(error) : Effect.succeed(null);
+            }),
           );
           const alternate = yield* registry
             .run(
@@ -426,9 +444,11 @@ export function createPullRequestRouter() {
             )
             .pipe(
               Effect.timeout("2 seconds"),
-              Effect.catchCause((cause) =>
-                Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed(null),
-              ),
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+                const error = Cause.squash(cause);
+                return isRateLimited(error) ? Effect.fail(error) : Effect.succeed(null);
+              }),
             );
           if (
             alternate === null ||
@@ -445,7 +465,9 @@ export function createPullRequestRouter() {
         return yield* (reads.has(tag) ? operation.pipe(readTimeout(id)) : operation).pipe(
           Effect.catchIf(
             (error) =>
-              (reads.has(tag) || rejectedBeforeDispatch(error)) && index + 1 < candidates.length,
+              !isRateLimited(error) &&
+              (reads.has(tag) || rejectedBeforeDispatch(error)) &&
+              index + 1 < candidates.length,
             () => visit(index + 1),
           ),
           Effect.map((result) =>
@@ -493,10 +515,16 @@ export function createPullRequestRouter() {
     const routed = routedRequest(tag, strictInput, source);
     return yield* (
       sourceEntry !== undefined && isLocal(sourceEntry)
-        ? source.pipe(Effect.catch(() => routed))
+        ? source.pipe(
+            Effect.catchIf(
+              (error) => !isRateLimited(error),
+              () => routed,
+            ),
+          )
         : routed
     ).pipe(
       Effect.catch((error) =>
+        !isRateLimited(error) &&
         input.allowStale !== false &&
         (tag === WS_METHODS.pullRequestsSummary || tag === WS_METHODS.pullRequestsDetail)
           ? request(tag, input)
