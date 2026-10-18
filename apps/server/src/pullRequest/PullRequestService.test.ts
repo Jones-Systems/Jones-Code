@@ -131,6 +131,103 @@ function hostedChangeRequest(body: string, additions = 1) {
   };
 }
 
+it.effect("reuses rich reads for sixty seconds with their original observation", () =>
+  Effect.gen(function* () {
+    const reads = { detail: 0, activity: 0, preview: 0 };
+    const service = yield* makeService({
+      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+      providers: [
+        fakeProvider(SourceControlProviderKind.make("github"), {
+          getChangeRequest: () =>
+            Effect.sync(() => {
+              reads.detail++;
+              return hostedChangeRequest("body");
+            }),
+          getChangeRequestActivity: () =>
+            Effect.sync(() => {
+              reads.activity++;
+              return {
+                comments: [],
+                commentCount: 0,
+                commentsTruncated: false,
+                reviewThreads: [],
+                commits: [],
+              };
+            }),
+          getChangeRequestPreview: ({ number }) =>
+            Effect.sync(() => {
+              reads.preview++;
+              return changeRequest(number, "2026-07-02T00:00:00Z");
+            }),
+        }),
+      ],
+    });
+    const ref = {
+      projectId: "p1" as ProjectId,
+      repository: "acme/web",
+      number: 1,
+      allowStale: false,
+    };
+    const read = () =>
+      Effect.all(
+        [service.detail(ref), service.activity(ref), service.preview({ ...ref, number: 2 })],
+        { concurrency: "unbounded" },
+      );
+    const [first, concurrent] = yield* Effect.all([read(), read()], { concurrency: 2 });
+    assert.deepStrictEqual(concurrent, first);
+    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
+    yield* TestClock.adjust("59 seconds");
+    assert.deepStrictEqual(yield* read(), first);
+    assert.deepStrictEqual(reads, { detail: 1, activity: 1, preview: 1 });
+    yield* TestClock.adjust("2 seconds");
+    const fresh = yield* read();
+    assert.deepStrictEqual(reads, { detail: 2, activity: 2, preview: 2 });
+    assert.isAbove(fresh[0].observedAt!, first[0].observedAt!);
+  }),
+);
+
+it.effect("does not cache rich read failures or infer pauses from error text", () =>
+  Effect.gen(function* () {
+    for (const reason of ["failed", "rate-limited"] as const) {
+      let reads = 0;
+      const service = yield* makeService({
+        projects: [
+          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
+        ],
+        providers: [
+          fakeProvider(SourceControlProviderKind.make("github"), {
+            getChangeRequestPreview: () =>
+              Effect.suspend(() => {
+                reads++;
+                return reads === 1
+                  ? Effect.fail(
+                      new PullRequestProviderError({
+                        provider: SourceControlProviderKind.make("github"),
+                        operation: "preview",
+                        reason,
+                        detail: "rate limit paused",
+                        retryAt: Infinity,
+                      }),
+                    )
+                  : Effect.succeed(changeRequest(1, "2026-07-02T00:00:00Z"));
+              }),
+          }),
+        ],
+      });
+      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
+      const error = yield* Effect.flip(service.preview(ref));
+      assert.instanceOf(error, PullRequestOperationError);
+      if (error._tag !== "PullRequestOperationError") return;
+      assert.strictEqual(error.reason, reason === "rate-limited" ? reason : undefined);
+      assert.strictEqual(error.retryAt, undefined);
+      if (reason === "failed") {
+        yield* service.preview(ref);
+        assert.strictEqual(reads, 2);
+      }
+    }
+  }),
+);
+
 it.effect("caches narrow previews and invalidates them after refresh or mutation", () =>
   Effect.gen(function* () {
     let reads = 0;
@@ -206,12 +303,16 @@ it.effect("keeps cached previews available and pauses uncached previews until qu
     assert.instanceOf(limited, PullRequestOperationError);
     if (limited._tag !== "PullRequestOperationError") return;
     assert.include(limited.detail, "paused");
+    assert.strictEqual(limited.reason, "rate-limited");
+    assert.strictEqual(limited.retryAt, retryAt);
     assert.strictEqual((yield* service.preview(ref)).number, 1);
     for (const number of [2, 3, 4]) {
       const paused = yield* Effect.flip(service.preview({ ...ref, number }));
       assert.instanceOf(paused, PullRequestOperationError);
       if (paused._tag !== "PullRequestOperationError") return;
       assert.include(paused.detail, "paused");
+      assert.strictEqual(paused.reason, "rate-limited");
+      assert.strictEqual(paused.retryAt, retryAt);
     }
     assert.strictEqual(reads, 2);
     yield* TestClock.setTime(retryAt);

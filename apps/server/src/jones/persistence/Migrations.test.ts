@@ -497,6 +497,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
     assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
       [107, "WorkstreamsSettlementProofs"],
       [108, "PhysicalProcessEvidence"],
+      [109, "OrdinaryCheckoutLifecycle"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

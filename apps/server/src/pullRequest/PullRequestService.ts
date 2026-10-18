@@ -420,7 +420,14 @@ function toPullRequestError(
       : new PullRequestOperationError({
           operation,
           detail: error.detail,
-          ...(error.reason === "not-found" ? { reason: "not-found" as const } : {}),
+          ...(error.reason === "not-found" || error.reason === "rate-limited"
+            ? { reason: error.reason }
+            : {}),
+          ...(error.reason === "rate-limited" &&
+          error.retryAt !== undefined &&
+          Number.isFinite(error.retryAt)
+            ? { retryAt: error.retryAt }
+            : {}),
           cause: error,
         });
 }

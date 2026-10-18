@@ -25,6 +25,7 @@
     "apps/server/src/orchestration-v2/ProviderTurnControlService.ts": "accepted-shared",
     "scripts/jones/ci-test-progress-reporter.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellFanout.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellCost.diagnostic.test.ts": "jones-owned",
     "apps/server/src/device/DeviceHubProxy.stream.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts": "jones-tests-in-upstream",
     "apps/server/src/persistence/OrchestrationEventStore.test.ts": "jones-tests-in-upstream",
@@ -1084,7 +1085,17 @@
     "scripts/jones/updates/offline-preparation-build.ts": "jones-owned",
     "scripts/jones/updates/paired-executor-fixture.mjs": "jones-owned",
     "apps/server/src/jones/cloud/qualifiedQuiescence.ts": "jones-owned",
-    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts": "jones-owned"
+    "apps/server/src/jones/cloud/qualifiedQuiescence.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pr-read-efficiency.json": "jones-owned",
+    "packages/client-runtime/src/state/pullRequestRouting.ts": "accepted-shared",
+    "apps/web/src/hooks/useLiveRefresh.ts": "accepted-shared",
+    "apps/server/src/pullRequest/PullRequestService.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/pullRequests.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/pullRequestRateLimit.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/hooks/useLiveRefresh.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/state/query.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx": "jones-tests-in-upstream",
+    "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

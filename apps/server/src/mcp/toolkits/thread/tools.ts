@@ -23,6 +23,7 @@ import * as Crypto from "effect/Crypto";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
+import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -30,7 +31,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
 const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   description:
-    "Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active.",
+    'Pin, snooze, settle, archive, or mark a thread unread. Omit threadId for this thread. snooze requires snoozedUntil. Existing thread lifecycle rules apply. Settling this thread takes effect when your turn completes, returning settlesWhenTurnEnds=true; a turn that fails or is interrupted, or a queued message, leaves it active. For pin, placement chooses the slot in the pinned list: position top or bottom, or above or below anchorThreadId, which must be a pinned thread (threads sharing the anchor\'s order key stay together with it). An already pinned thread moves to that slot. To pin an ordered run under a thread, pin each one below the previous: A with placement {position:"below",anchorThreadId:<anchor>}, then B below A, and so on. A placed pin returns its pinOrderKey and any other threads whose keys were rewritten to keep their order. Without placement, a new pin joins the unarranged pins below every arranged one.',
   parameters: Schema.Struct({
     threadId: Schema.optional(ThreadId),
     action: Schema.Literals([
@@ -45,8 +46,11 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "mark_unread",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
+    placement: Schema.optional(JonesPinPlacement.PinPlacement),
   }),
   success: Schema.Union([
+    // First, so encoding a placed pin keeps its readback fields.
+    JonesPinPlacement.PinPlacementResult,
     OrchestrationV2DispatchCommandResult,
     Schema.Struct({ settlesWhenTurnEnds: Schema.Literal(true) }),
   ]),

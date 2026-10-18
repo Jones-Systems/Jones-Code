@@ -84,6 +84,7 @@ import { useProjects, useServerConfigs } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
+import { PullRequestReadPauseBanner } from "~/jones/pullRequestReads/PullRequestReadPauseBanner";
 import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import {
   pullRequestEnvironment,
@@ -813,7 +814,7 @@ export function PullRequestDetailPanel({
     () => {
       detailQuery.refresh();
     },
-    { key: `pull-request:${environmentId}:${pullRequestKey}` },
+    { key: `pull-request:${environmentId}:${pullRequestKey}`, minimumIntervalMs: 60_000 },
   );
   const invalidate = useAtomCommand(pullRequestEnvironment.invalidate, { reportFailure: false });
   const [isInvalidating, setIsInvalidating] = useState(false);
@@ -2715,6 +2716,13 @@ export function PullRequestDetailPanel({
           </PullRequestDetailTabBar>
         ) : null}
       </div>
+
+      <PullRequestReadPauseBanner
+        detailFailure={detailQuery.failure}
+        activityFailure={activityQuery.failure}
+        hasDetail={detail !== null}
+        observedAt={resolvedCoreDetail?.observedAt}
+      />
 
       <div
         className="relative flex min-h-0 flex-1 flex-col overflow-hidden"

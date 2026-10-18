@@ -160,8 +160,12 @@
         "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
         "apps/server/src/jones/workstreams/enrollment/cli.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
-        "apps/server/src/entrypoint.test.ts"
-      ]
+        "apps/server/src/entrypoint.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
+      ],
+      "scope": "Workstreams registry integration. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
     },
     {
       "id": "native-store-authority",
@@ -268,6 +272,11 @@
         "packages/contracts/src/jones/organizationMetadata.test.ts"
       ],
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
+    },
+    {
+      "id": "mcp-pin-placement",
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
+      "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
     },
     {
       "id": "work-queue-metadata",
@@ -463,7 +472,7 @@
         "scripts/jones/performance/current-qualification.node-test.mjs",
         "scripts/jones/performance/migration-restore.node-test.mjs"
       ],
-      "scope": "Qualification discovery includes receiving100–104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
+      "scope": "Qualification discovery includes receiving100\u2013104 owners and exact bootstrap/historical-wire/lookup oracles. Actual055 birth lookup, missing-index refusal and rollback are synthetically tested; foreign007 remains foreign and installed-runtime qualification stays opt-in/unverified."
     },
     {
       "id": "preview-runtime-identity",
@@ -547,7 +556,7 @@
         "scripts/jones/preview-companion/packageVariant.test.ts",
         "apps/server/src/persistence/AuthPairingLinks.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",
@@ -789,9 +798,43 @@
         "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
         "apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts",
         "apps/server/src/mcp/McpSessionRegistry.test.ts",
-        "packages/shared/src/projectSettings.test.ts"
+        "packages/shared/src/projectSettings.test.ts",
+        "packages/contracts/src/workstreams.conformance.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
       ],
-      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access."
+      "scope": "Explicit opt-in enableAgentDecisionSnapshotAccess, default off, with project overrides like agent device access. Small hooks add the key to the shared settings schema, add the capability in ProviderSessionManager thread credential preparation and reuse a credential only on complete grant equality so any access change rotates it, and render a Jones-owned Integrations toggle with a search entry. External OAuth clients and the default registry set stay without the capability. Release manifests accept a closed host_binding provenance with exact generator repository, commit and path only for the non-executable account binding file; fixture rejection, path closure, link and startup binding rules are unchanged. The collector launches the normalized absolute Python runtime bound by that verified manifest, preserving /usr/bin/python3 compatibility and isolated startup flags. Mobile has no toggle, matching device access. Negotiated exact registry_counts v1 uses the pinned provider counts manifest and revalidated session binding; unsupported capabilities remain unavailable. This source adapter does not establish deployed-provider or production native-packet parity."
+    },
+    {
+      "id": "pr-read-efficiency",
+      "tests": [
+        "packages/contracts/src/pullRequestRateLimit.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts",
+        "packages/client-runtime/src/state/pullRequests.test.ts",
+        "apps/web/src/hooks/useLiveRefresh.test.ts",
+        "apps/web/src/state/query.test.ts",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
+        "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
+        "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
+      ],
+      "scope": "Typed PR read pauses terminate alternate routing; bounded qualified-head REST discovery preserves shared cooldown; PR focus reuse and held-data pause presentation. Shared contract/service/router/hook edits are small extensions of existing mechanisms; integration tests retain existing private harnesses."
+    },
+    {
+      "id": "ordinary-checkout-lifecycle",
+      "tests": [
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
+        "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts",
+        "apps/server/src/jones/persistence/Migrations/109_JonesOrdinaryCheckoutLifecycle.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
+      ],
+      "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Physical integration and reciprocal native/deletion hooks remain separate."
     }
   ]
 }

@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "ordinary-checkout-lifecycle",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutProtocol.ts",
+    "apps/server/src/jones/ordinaryCheckout/CheckoutTarget.ts",
+    "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckoutSqlite.ts",
+    "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.ts",
+    "apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

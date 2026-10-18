@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
+import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import * as RuntimeCensus from "../../runtime/RuntimeCensus.ts";
 import { type ProjectId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -57,7 +58,7 @@ interface RegistryObservation {
     readonly registryVersion: number;
     readonly authorizationRevision: number;
   };
-  // Paginated or otherwise incomplete registry observations must remain partial.
+  // Completeness requires exact-count negotiation and binding revalidation.
   readonly complete: boolean;
 }
 export class DecisionSnapshotNativeCounts extends Context.Service<
@@ -73,7 +74,13 @@ export const DecisionSnapshotNativeCountsLive = Layer.effect(
   DecisionSnapshotNativeCounts,
   Effect.gen(function* () {
     const census = yield* RuntimeCensus.RuntimeCensus;
+    const workstreams = yield* WorkstreamGateway.WorkstreamGateway;
     return DecisionSnapshotNativeCounts.of({
+      readRegistryCounts: () =>
+        workstreams.readRegistryCounts().pipe(
+          Effect.map((observation) => ({ ...observation, complete: true })),
+          Effect.mapError(() => new NativeCountReadError({ source: "workstreams" })),
+        ),
       readOperatingCounts: (projectId) =>
         census
           .readOperatingCounts(projectId)
