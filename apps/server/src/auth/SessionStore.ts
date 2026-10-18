@@ -59,7 +59,6 @@ export interface VerifiedSession {
   readonly subject: string;
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly proofKeyThumbprint?: string;
-  /** The most an MCP client approved through OAuth may hand to the threads it drives. */
   readonly runtimeModeCeiling?: RuntimeMode;
 }
 
@@ -378,12 +377,7 @@ export class SessionStore extends Context.Service<
       readonly client?: AuthClientMetadata;
       readonly proofKeyThumbprint?: string;
       readonly runtimeModeCeiling?: RuntimeMode;
-      /**
-       * Atomically revoke active sessions with the same subject and method
-       * before storing this session.
-       */
       readonly replaceActiveForSubjectAndMethod?: boolean;
-      /** Replace only this session, of the same method, in the issuance transaction. */
       readonly replaceSessionId?: AuthSessionId;
     }) => Effect.Effect<IssuedSession, SessionCredentialInternalError>;
     readonly verify: (token: string) => Effect.Effect<VerifiedSession, SessionCredentialError>;
@@ -506,6 +500,82 @@ export const matchesReservedAuthSession = (
   record.client.os === expected.client.os &&
   record.client.browser === expected.client.browser;
 
+const encodeReservedSessionClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
+
+/**
+ * Jones Workstreams native enrollment hook. Signs a bearer only for an already
+ * reserved, unrevoked, current session whose stored record exactly matches the
+ * expected reservation; it never creates a session or widens its scopes.
+ * Enrollment reads the existing signing key; SessionStore startup still owns
+ * key creation.
+ */
+export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
+  const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const secret = yield* secrets
+    .get(SIGNING_SECRET_NAME)
+    .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
+  if (Option.isNone(secret) || secret.value.byteLength !== 32)
+    return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
+  const signingSecret = secret.value;
+  return (expected: AuthSessions.CreateAuthSessionInput) =>
+    Effect.gen(function* () {
+      const row = yield* authSessions
+        .getById({ sessionId: expected.sessionId })
+        .pipe(
+          Effect.mapError(
+            (cause) => new SessionCredentialIssueError({ sessionId: expected.sessionId, cause }),
+          ),
+        );
+      const now = yield* DateTime.now;
+      if (
+        expected.method !== "bearer-access-token" ||
+        Option.isNone(row) ||
+        row.value.revokedAt !== null ||
+        !matchesReservedAuthSession(row.value, expected) ||
+        expected.issuedAt.epochMilliseconds > now.epochMilliseconds ||
+        expected.expiresAt.epochMilliseconds <= now.epochMilliseconds ||
+        expected.expiresAt.epochMilliseconds <= expected.issuedAt.epochMilliseconds
+      ) {
+        return yield* new SessionCredentialIssueError({
+          sessionId: expected.sessionId,
+          cause: "reserved_session_mismatch",
+        });
+      }
+      const payload = yield* encodeReservedSessionClaims({
+        v: 1,
+        kind: "session",
+        sid: expected.sessionId,
+        sub: expected.subject,
+        scopes: expected.scopes,
+        method: "bearer-access-token",
+        iat: expected.issuedAt.epochMilliseconds,
+        exp: expected.expiresAt.epochMilliseconds,
+      }).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError(
+          (cause) =>
+            new SessionCredentialIssueError({
+              sessionId: expected.sessionId,
+              cause: new SessionClaimsEncodingError({
+                sessionId: expected.sessionId,
+                operation: "encode_session_claims",
+                cause,
+              }),
+            }),
+        ),
+      );
+      return {
+        sessionId: expected.sessionId,
+        token: `${payload}.${signPayload(payload, signingSecret)}`,
+        method: "bearer-access-token",
+        client: toClientMetadata(expected.client),
+        expiresAt: expected.expiresAt,
+        scopes: expected.scopes,
+      } satisfies IssuedSession;
+    });
+});
+
 export const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -625,7 +695,6 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markConnected"),
     );
 
-  // Best-effort: connection metadata must never block or fail a connect.
   const recordClientConnection: SessionStore["Service"]["recordClientConnection"] = (
     sessionId,
     client,

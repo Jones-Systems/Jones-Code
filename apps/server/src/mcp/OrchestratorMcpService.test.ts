@@ -220,7 +220,6 @@ describe("OrchestratorMcpService", () => {
             status: "cancelled",
             delegatedTaskId: taskId,
           },
-          // An unrelated later run cannot supply this follow-up's result.
           { id: RunId.make("run:mcp-restart-later"), ordinal: 2, status: "running" },
         ],
         contextTransfers: [],
@@ -273,7 +272,6 @@ describe("OrchestratorMcpService", () => {
         assert.equal(held.status, "running");
         assert.equal(held.workState, "working");
         assert.isNull(held.summary);
-        // Acknowledging the cut run would suppress the real result's wake.
         assert.equal(yield* Ref.get(dispatched), 0);
         awaitsRestart = false;
         const settled = yield* service.taskStatus(scope, taskId);
@@ -320,7 +318,6 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
-          // The child still runs within the parent's modes.
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -398,7 +395,6 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
-          // The child still runs within the parent's modes.
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -479,7 +475,6 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
-          // The child still runs within the parent's modes.
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -535,7 +530,6 @@ describe("OrchestratorMcpService", () => {
       const childRunId = RunId.make("run:mcp-cancel-dispose-failed-child");
       const taskId = NodeId.make("node:mcp-cancel-dispose-failed-task");
       const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
-      // The parent runs Supervised in plan mode.
       const parentProjection = {
         thread: { id: parentThreadId, runtimeMode: "approval-required", interactionMode: "plan" },
         runs: [],
@@ -567,7 +561,6 @@ describe("OrchestratorMcpService", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
-          // Its user has since raised the child to full access.
           getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
           dispatch: (command) =>
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
@@ -612,13 +605,8 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  /**
-   * A Supervised parent cancels its Supervised child, under which a task
-   * now runs at full access. Reports what the cancel did.
-   */
   const cancelOverRaisedGrandchild = (child: {
     readonly deleted: boolean;
-    /** The grandchild passes the check, and its user raises it before the stop reaches it. */
     readonly raisedDuringStop?: boolean;
   }) =>
     Effect.gen(function* () {
@@ -638,7 +626,6 @@ describe("OrchestratorMcpService", () => {
         result: null,
         completionDelivery: { state: "pending" },
       });
-      // A Supervised parent delegated a Supervised child, which delegated a task of its own.
       const projections = new Map([
         [
           parentThreadId,
@@ -684,8 +671,6 @@ describe("OrchestratorMcpService", () => {
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           getThreadRecords: (threadId) => Effect.succeed(projections.get(threadId)!),
-          // The child still runs Supervised; its user has since raised the task under it
-          // to full access.
           getThreadShell: (threadId) =>
             Effect.succeed(
               threadId === grandchildThreadId && child.raisedDuringStop !== true
@@ -698,8 +683,6 @@ describe("OrchestratorMcpService", () => {
             Ref.update(dispatched, (commands) => [...commands, command]).pipe(
               Effect.as({} as never),
             ),
-          // Stands in for the orchestrator, which finds the grandchild raised
-          // under its lock, when the stop runs under the parent's limit.
           stopDelegatedTasks: () =>
             Effect.gen(function* () {
               const limit = yield* DispatchModeLimit;
@@ -831,7 +814,6 @@ describe("OrchestratorMcpService provider resolution", () => {
     skills: [],
   });
 
-  /** A registry whose probes report the same snapshots it already holds. */
   const providerRegistryLayer = (providers: ReadonlyArray<ServerProvider>) =>
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(providers),
@@ -931,16 +913,11 @@ describe("OrchestratorMcpService provider resolution", () => {
             driver: ProviderDriverKind.make("acpRegistry"),
             model: "acp-model",
           }),
-          // Antigravity has a live orchestration adapter through the provider
-          // instance registry even though no adapter driver entry exists in
-          // the static built-in list.
           providerSnapshot({
             instanceId: antigravityInstanceId,
             driver: ProviderDriverKind.make("antigravity"),
             model: "ant-model",
           }),
-          // A second Antigravity instance whose adapter resolves but whose
-          // provider state still blocks delegation.
           providerSnapshot({
             instanceId: disabledAntigravityInstanceId,
             driver: ProviderDriverKind.make("antigravity"),
@@ -1065,7 +1042,6 @@ describe("OrchestratorMcpService provider resolution", () => {
             models: [
               ...codex.models,
               { slug: "gpt-5.4-mini", name: "Mini", isCustom: false, capabilities: null },
-              // Custom models cannot be hidden, matching the client pickers.
               { slug: "my-model", name: "Mine", isCustom: true, capabilities: null },
             ],
           },
@@ -1349,8 +1325,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           hasReceipt: () => Effect.succeed(false),
           getThreadRecords: () => Effect.succeed(parentProjection([])),
-          // ThreadManagementService.dispatch is the chokepoint now: it is the
-          // one that refuses, not a separate pre-dispatch assert.
           dispatch: () =>
             Effect.fail(
               new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
@@ -1423,8 +1397,6 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ? parentProjection(delegated ? [task] : [])
                 : childProjection,
             ),
-          // The parent's own instance is off for this project; the other
-          // instance of the same driver is on.
           isProviderInstanceEnabledForProject: ({ instanceId }) =>
             Effect.succeed(instanceId !== codexInstanceId),
           assertProviderInstanceEnabled: ({ projectId, instanceId }) =>
@@ -1532,11 +1504,7 @@ describe("OrchestratorMcpService provider resolution", () => {
                     : childProjection,
                 ),
               ),
-            // A command id already accepted once, even if the project later
-            // disables every candidate: its retry must replay, not re-resolve.
             hasReceipt: () => Ref.get(accepted),
-            // Effective settings once the project turns every instance off,
-            // ignoring the already-accepted command's replay exemption.
             isProviderInstanceEnabledForProject: () =>
               Ref.get(everyCandidateDisabled).pipe(Effect.map((disabled) => !disabled)),
             assertProviderInstanceEnabled: ({ projectId, instanceId }) =>
@@ -1596,8 +1564,6 @@ describe("OrchestratorMcpService provider resolution", () => {
           });
           assert.equal(first.status, "running");
 
-          // The project turns off every instance of this driver only after
-          // the delegation above was already accepted.
           yield* Ref.set(everyCandidateDisabled, true);
 
           const retry = yield* service.delegateTask(scope, {
@@ -1658,7 +1624,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         driver: ProviderDriverKind.make("codex"),
         model: "gpt-5.4",
       });
-      // The cache still says the CLI is missing; a probe reports `cliInstalled`.
       let cliInstalled = false;
       const probes = yield* Ref.make(0);
       const dispatched = yield* Ref.make(0);
@@ -2057,7 +2022,6 @@ describe("OrchestratorMcpService provider resolution", () => {
                   NodeServices.layer,
                   Layer.mock(ThreadManagementService.ThreadManagementService)({
                     getThreadShell: () => Effect.succeed(null),
-                    // Its turn ended: no run is active.
                     getThreadRecords: () => Effect.succeed(idleThreadProjection(shell)),
                   }),
                   ServerSettings.layerTest(),
@@ -2103,7 +2067,6 @@ describe("OrchestratorMcpService provider resolution", () => {
     it.effect("checks a bound task against its thread's current modes", () =>
       Effect.gen(function* () {
         const upserted = yield* Ref.make(0);
-        // Scheduled while the thread was Supervised; the thread now runs in full access.
         const bound = task({ threadId: boundThreadId });
         const layer = service(
           [bound],
@@ -2131,7 +2094,6 @@ describe("OrchestratorMcpService provider resolution", () => {
         const upserted = yield* Ref.make(0);
         const bound = task({ threadId: boundThreadId });
         const lookups = yield* Ref.make(0);
-        // The edit's own check reads the thread; the read after the save fails.
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
           Effect.provide(
             layerOrchestratorService.pipe(
@@ -2181,7 +2143,6 @@ describe("OrchestratorMcpService provider resolution", () => {
   });
 
   describe("resolveRuntimeMode", () => {
-    // Muse offers only these two, and runs any other mode as Supervised.
     const muse = {
       modelSelection: { instanceId: ProviderInstanceId.make("muse"), model: "muse-model" },
       supportedRuntimeModes: ["approval-required", "full-access"] as const,

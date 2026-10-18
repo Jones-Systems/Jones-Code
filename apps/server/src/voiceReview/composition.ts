@@ -12,7 +12,11 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway, WorkstreamGatewayError } from "../workstreams/WorkstreamGateway.ts";
 import { makeVoiceReviewNativeReadPort, type VoiceReviewNativeIdentity } from "./native.ts";
 import type { VoiceReviewNativeReadPort } from "./bridge.ts";
-import type { VoiceReviewConfig, VoiceReviewNativeBinding } from "./config.ts";
+import {
+  isVoiceReviewPrincipalEnrolled,
+  type VoiceReviewConfig,
+  type VoiceReviewNativeBinding,
+} from "./config.ts";
 
 export interface VoiceReviewCompositionInput {
   readonly binding: VoiceReviewNativeBinding | null;
@@ -28,7 +32,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
 ) {
   if (input.binding === null || input.reviewConfig === null) return undefined;
   if (
-    !input.reviewConfig.allowed_session_ids.has(input.principal.sessionId) ||
+    !isVoiceReviewPrincipalEnrolled(input.reviewConfig, input.principal) ||
     !input.principal.scopes.has(AuthOrchestrationReadScope)
   )
     return yield* new VoiceReviewForbiddenError({});

@@ -104,3 +104,45 @@ export const WorkstreamsRegistrationContextResponse = closed(
 );
 export type WorkstreamsRegistrationContextResponse =
   typeof WorkstreamsRegistrationContextResponse.Type;
+
+// Producer: Jones-Systems/chatgpt-control-plane at this immutable contract checkpoint.
+export const WORKSTREAMS_REGISTRATION_CONTEXT_V2_PRODUCER_COMMIT =
+  "0817d23ca2547c5ff8b88b0034e6e2b1de0dd431";
+export const WORKSTREAMS_REGISTRATION_CONTEXT_V2_VERSION = "2.0.0";
+export const WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL =
+  "workstreams-registration-context/2.0.0";
+export const WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256 =
+  "9a8c1d320713cd3d9fcc010b635a172b241e04bf34236a6d022322f2c0fcd765";
+export type WorkstreamsRegistrationContextVersion =
+  | typeof WORKSTREAMS_REGISTRATION_CONTEXT_VERSION
+  | typeof WORKSTREAMS_REGISTRATION_CONTEXT_V2_VERSION;
+
+export const WorkstreamsRegistrationContextV2Sources = Schema.Array(
+  WorkstreamsRegistrationContextSource,
+).check(
+  Schema.isMaxLength(5),
+  Schema.makeFilter(
+    (sources) =>
+      sources.filter((source) => source.provider === "t3").length <= 4 &&
+      sources.filter((source) => source.provider === "github").length <= 1 &&
+      new Set(sources.map((source) => `${source.provider}:${source.source_instance_id}`)).size ===
+        sources.length,
+  ),
+);
+export const WorkstreamsRegistrationContextV2Response = closed(
+  Schema.Struct({
+    ...WorkstreamsRegistrationContextResponse.fields,
+    protocol: Schema.Literal(WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL),
+    sources: WorkstreamsRegistrationContextV2Sources,
+  }),
+);
+export type WorkstreamsRegistrationContextV2Response =
+  typeof WorkstreamsRegistrationContextV2Response.Type;
+
+// Local clients accept either explicitly selected upstream family, preserving its protocol.
+export const WorkstreamsRegistrationContextAcceptedResponse = Schema.Union([
+  WorkstreamsRegistrationContextResponse,
+  WorkstreamsRegistrationContextV2Response,
+]);
+export type WorkstreamsRegistrationContextAcceptedResponse =
+  typeof WorkstreamsRegistrationContextAcceptedResponse.Type;

@@ -7,7 +7,9 @@
     "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
     "apps/server/src/jones/processPlacement/processPlacementBootstrap.ts",
     "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
-    "apps/server/src/jones/processPlacement/processPlacementSpawner.ts"
+    "apps/server/src/jones/processPlacement/processPlacementSpawner.ts",
+    "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
+    "apps/server/src/jones/processPlacement/qualificationPayload.mjs"
   ],
   "hookPaths": [],
   "tombstones": [

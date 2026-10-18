@@ -148,6 +148,10 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
         new URL("../../../packages/shared/src/jones/nativeWriterFence.ts", import.meta.url),
         NodePath.join(sharedPackageDirectory, "nativeWriterFence.ts"),
       ),
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/desktopNativeOwner.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "desktopNativeOwner.ts"),
+      ),
       NodeFSP.writeFile(
         NodePath.join(sharedPackageDirectory, "package.json"),
         JSON.stringify({
@@ -156,6 +160,7 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
           exports: {
             "./jones/previewCompanionProduct": "./previewCompanionProduct.ts",
             "./jones/nativeWriterFence": "./nativeWriterFence.ts",
+            "./jones/desktopNativeOwner": "./desktopNativeOwner.ts",
           },
         }),
       ),

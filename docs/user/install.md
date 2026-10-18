@@ -3,6 +3,15 @@
 T3 Code runs coding agents on your computer and lets you control them from its
 desktop, web, or mobile app. Set up the machine where the agents will work first.
 
+> **Jones Code:** every installer on this page installs upstream T3 Code, not
+> Jones Code. That includes the `install.sh` and `install.ps1` scripts, `npx t3`,
+> GitHub Releases, package managers, and the mobile store apps. Jones Code Mac
+> builds are unsigned preview artifacts. See
+> [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
+> for how they install and update. The upstream macOS app uses the same bundle
+> identifier as Jones Code. If both are installed, verify which app opens
+> `t3code://` links and app lookups before using them.
+
 ## Requirements
 
 You need an installed, authenticated provider before starting a thread. You can
@@ -25,13 +34,14 @@ afterwards, that directory is not on your `PATH` yet; the installer prints the
 line to add. Set `T3CODE_CHANNEL=nightly` to install the nightly train, or
 `T3CODE_VERSION` to pin an exact version.
 
-| Task                                             | Command                                                   |
-| ------------------------------------------------ | --------------------------------------------------------- |
-| Start the server and open the web app            | `t3`                                                      |
-| Start the server without a browser               | `t3 serve`                                                |
-| Keep it running in the background (macOS, Linux) | `t3 service install` ([details](./background-service.md)) |
-| Move to the newest release                       | `t3 update`                                               |
-| Remove it again                                  | `t3 uninstall`                                            |
+| Task                                             | Command                                                                 |
+| ------------------------------------------------ | ----------------------------------------------------------------------- |
+| Start the server and open the web app            | `t3`                                                                    |
+| Start the server without a browser               | `t3 serve`                                                              |
+| Keep it running in the background (macOS, Linux) | `t3 service install` ([details](./background-service.md))               |
+| Move to the newest release                       | `t3 update`                                                             |
+| Reclaim database space                           | `t3 doctor` ([details](./background-service.md#reclaim-database-space)) |
+| Remove it again                                  | `t3 uninstall`                                                          |
 
 Run `t3 help` or `t3 --help` for the full reference. To start in a new working
 directory, use an explicit path such as `t3 ./my-project`. A bare directory name
@@ -113,12 +123,12 @@ Install T3 Code from the
 The phone connects to a server on another machine. Follow
 [remote access](./remote-access.md) to link it through T3 Connect or a pairing URL.
 
-Nightly builds need the beta app. The store apps cannot connect to them. A Nightly build also
-shows these links as QR codes in **Settings → General → Mobile app**.
+Store links and QR codes are also available in **Settings → General → Mobile app**
+on web and desktop. The store apps work with both stable and Nightly servers. Test builds are optional:
 
-- **iPhone and iPad:** join the [TestFlight beta](https://testflight.apple.com/join/XgaxaRtd).
-- **Android:** download and install the APK from the
-  [Android beta release](https://github.com/pingdotgg/t3code/releases/tag/android-nightly).
+- **iPhone and iPad:** TestFlight is invite-only.
+- **Android:** download an APK from the
+  [Android beta releases](https://github.com/pingdotgg/t3code/releases?q=android-beta-).
 
 If the app crashes during launch, open Settings → Diagnostics on the next launch
 that succeeds. It lists startup crashes from the last 7 days with the error and

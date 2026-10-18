@@ -115,7 +115,6 @@ function previewProfileName(
 
 const localApi = typeof window === "undefined" ? null : ensureLocalApi();
 
-/** Resolves stream access only while a server tab shows a file it downloaded. */
 function ServerTabFileNotShown(props: {
   readonly threadRef: ScopedThreadRef;
   readonly tabId: string;
@@ -140,10 +139,6 @@ function ServerTabFileNotShown(props: {
   );
 }
 
-/**
- * Single-tab preview surface: chrome row on top, one webview below, empty
- * state when no session exists for the thread.
- */
 export function PreviewView({
   threadRef,
   tabId: requestedTabId,
@@ -205,21 +200,17 @@ export function PreviewView({
         : findActiveBrowserRecordingRuntimeTabId(threadRef, tabId)
       : null;
   const snapshot = tabId ? (previewState.sessions[tabId] ?? null) : null;
-  // Server tabs run in the environment's browser and stream to any client, except the
-  // desktop app's own server's tabs, which render here natively while the server drives them.
   const companionBinding = useCompanionBindings(threadRef);
   const companionTab =
     companionBinding?.status === "ready" &&
     companionBinding.value.tabs.some((tab) => tab.tabId === tabId && tab.hostId !== null);
   const nativeServerTab = useRendersServerTabNatively(threadRef.environmentId, snapshot);
   const isServerTab = snapshot?.runtime === "server" && !nativeServerTab;
-  /** The server owns this tab's appearance, zoom, and size, whoever renders it. */
   const serverOwnsRendering = snapshot?.runtime === "server";
   const serverSurfaceRef = useRef<ServerBrowserHandle | null>(null);
   const [serverAspectRatioLocked, setServerAspectRatioLocked] = useState(false);
   const serverBodyRef = useRef<HTMLDivElement | null>(null);
   const [serverToolbarWidth, setServerToolbarWidth] = useState(0);
-  // The streamed tab's device toolbar spans the panel; only measured while it shows.
   const serverToolbarShown =
     snapshot?.runtime === "server" && (snapshot.viewport ?? FILL_PREVIEW_VIEWPORT)._tag !== "fill";
   useEffect(() => {
@@ -246,10 +237,6 @@ export function PreviewView({
   const controller = desktopOverlay?.controller ?? "none";
   const viewport = snapshot?.viewport ?? FILL_PREVIEW_VIEWPORT;
   const browserDefaults = useBrowserDefaults();
-  // A tab created before profiles existed carries no profile of its own. It
-  // runs in the built-in `default` partition — the scope the browser used
-  // before profiles — not in whatever profile is configured as the default
-  // now, so that is what its label names and its clear actions target.
   // Passing the snapshot's raw `undefined` through would reach the IPC layer
   // as "every profile".
   const activeProfileId = snapshot?.profileId ?? DEFAULT_BROWSER_PROFILE_ID;
@@ -264,9 +251,7 @@ export function PreviewView({
   const threadKey = scopedThreadKey(threadRef);
   useEffect(() => {
     if (!navUrl || !navTitle || !latestHistoryUrl) return;
-    // Agent-driven pages only enrich an existing requested URL.
     setTitleForThreadUrl(threadRefRef.current, navUrl, navTitle, environmentHostname);
-    // threadKey stands in for threadRef, whose identity churns on every thread update.
   }, [environmentHostname, latestHistoryUrl, navTitle, navUrl, threadKey]);
 
   const navigateToResolvedUrl = useCallback(
@@ -278,7 +263,6 @@ export function PreviewView({
         return true;
       }
       if (runtimeTabId && previewBridge) {
-        // The bridge mirrors the resolved URL back to the server.
         await previewBridge.navigate(runtimeTabId, resolvedUrl);
         rememberPreviewUrl(threadRef, resolvedUrl);
         return true;
@@ -306,9 +290,7 @@ export function PreviewView({
         if (await navigateToResolvedUrl(resolved)) {
           recordVisitForThread(threadRef, resolved);
         }
-      } catch {
-        // Only empty input or an unsupported scheme lands here; the bar keeps the text.
-      }
+      } catch {}
     },
     [navigateToResolvedUrl, threadRef],
   );
@@ -316,7 +298,6 @@ export function PreviewView({
   const handleOpenServerUrl = useCallback(
     async (next: string) => {
       try {
-        // A server tab's browser runs on the environment, where loopback is already right.
         const resolved =
           isServerTab || !previewBridge
             ? normalizePreviewUrl(next)
@@ -324,9 +305,7 @@ export function PreviewView({
         if (await navigateToResolvedUrl(resolved)) {
           recordVisitForThread(threadRef, next);
         }
-      } catch {
-        // Server-side `failed` event renders the unreachable view.
-      }
+      } catch {}
     },
     [isServerTab, navigateToResolvedUrl, threadRef],
   );
@@ -336,7 +315,6 @@ export function PreviewView({
     else if (previewBridge && runtimeTabId) void previewBridge.refresh(runtimeTabId);
   }, [isServerTab, runtimeTabId]);
 
-  /** Appearance and zoom of a server tab, through the server for every client. */
   const adjustServerTab = useCallback(
     async (change: Omit<PreviewAdjustInput, "threadId" | "tabId">) => {
       if (!tabId) return;
@@ -453,8 +431,6 @@ export function PreviewView({
     void localApi.shell.openExternal(url).catch(() => undefined);
   }, [url]);
 
-  // A desktop tab of a remote environment can only reach what this computer
-  // reaches; the environment's browser reaches its own network, and its agents.
   const moveTarget = alternatePreviewRuntime(
     threadRef.environmentId,
     primaryEnvironmentId,
@@ -468,7 +444,6 @@ export function PreviewView({
     const result = await openPreviewSession({
       openPreview: open,
       threadRef,
-      // Loopback means the environment's machine, which this computer reaches by its address.
       ...(url
         ? {
             url:
@@ -505,11 +480,6 @@ export function PreviewView({
     useRightPanelStore.getState().close(threadRef);
   }, [miniPlayerTabId, tabId, threadRef]);
 
-  /**
-   * The menu's actions. A server tab, streamed or rendered natively here, runs
-   * them through its environment, so every client and agent sees one state.
-   * Opening DevTools and a separate window need the desktop's own page.
-   */
   const desktopCall = (op: ((tabId: string) => Promise<void>) | undefined) => () => {
     if (op && runtimeTabId) void op(runtimeTabId).catch(() => undefined);
   };
@@ -814,11 +784,9 @@ export function PreviewView({
       void previewBridge.cancelPickElement(runtimeTabId).catch(() => undefined);
       return;
     }
-    // Snapshot whatever the user was focused on (typically the chat
-    // composer textarea or the chrome-row pick button) BEFORE main steals
-    // focus into the guest webContents. We restore it when the pick
-    // resolves so the user's typing context isn't lost — otherwise after
-    // every pick they'd have to click back into the textarea.
+    // Snapshot whatever the user was focused on (typically the chat composer
+    // textarea or the chrome-row pick button) BEFORE main steals focus into the
+    // guest webContents.
     const previouslyFocused =
       typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
     const pickRequest = { cancelled: false };
@@ -835,9 +803,9 @@ export function PreviewView({
         if (pickRequest.cancelled) return;
         const result = await previewBridge.pickElement(runtimeTabId);
         if (!result || pickRequest.cancelled) return;
-        // The user has submitted. Nothing that happens after this point (a
-        // second picker click, a tab change, unmount) may discard it, so the
-        // pick stops being cancellable here rather than in `finally`.
+        // Nothing that happens after this point (a second picker click, a tab
+        // change, unmount) may discard it, so the pick stops being cancellable
+        // here rather than in `finally`.
         if (pickActiveRef.current === pickRequest) {
           pickActiveRef.current = null;
           if (isMountedRef.current) setPickActive(false);
@@ -850,8 +818,6 @@ export function PreviewView({
         // The stored copy drops the screenshot on failure, otherwise the prompt
         // would tell the agent a crop is attached when none was sent.
         const capture = capturePreviewAnnotationScreenshot(picked);
-        // Main reports a crop that failed or timed out on its side; the local
-        // conversion can fail too. Either way the user should hear about it.
         const cropDropped = screenshotFailed || capture.status === "failed";
         const annotation = capture.status === "failed" ? { ...picked, screenshot: null } : picked;
         addPreviewAnnotation(threadRef, annotation);
@@ -860,8 +826,6 @@ export function PreviewView({
             stackedThreadToast({
               type: "error",
               title: "Could not capture the picked element",
-              // The send path reports its own outcome, so only say what this
-              // handler knows: the crop was dropped.
               description: "The annotation was kept without the screenshot.",
             }),
           );
@@ -889,19 +853,12 @@ export function PreviewView({
           onSendAnnotation?.(annotation, image);
         }
       } catch {
-        // Picker failed (e.g. webview navigated). Treat as silent cancel.
       } finally {
-        // A submitted pick already released itself above; a cancelled or
-        // failed one releases here. Avoid `setState on unmounted component`
-        // if the panel/thread closed while the pick was in flight.
         const isCurrentPick = pickActiveRef.current === pickRequest;
         if (isCurrentPick) {
           pickActiveRef.current = null;
           if (isMountedRef.current) setPickActive(false);
         }
-        // Best-effort: restore focus to whatever the user had before the
-        // pick stole it into the guest webContents. Skip if the previously-
-        // focused element was unmounted or is no longer focusable.
         if (
           (isCurrentPick || submitted) &&
           previouslyFocused &&
@@ -910,9 +867,7 @@ export function PreviewView({
         ) {
           try {
             previouslyFocused.focus({ preventScroll: true });
-          } catch {
-            // Some elements throw on .focus() (detached iframes, etc.).
-          }
+          } catch {}
         }
       }
     })();
@@ -925,9 +880,6 @@ export function PreviewView({
       .catch(() => undefined);
   }, [canSendAnnotation, pickActive, runtimeTabId]);
 
-  // If the active tab changes mid-pick (close, thread switch, hot restart),
-  // tell main to tear down the in-flight session AND reset our local toggle
-  // state so the button doesn't get stuck pressed against a stale tab id.
   useEffect(() => {
     return () => {
       if (!pickActiveRef.current) return;
@@ -986,8 +938,6 @@ export function PreviewView({
         onRefresh={handleRefresh}
         onSubmit={(next) => void handleSubmitUrl(next)}
         onOpenInBrowser={tabId ? handleOpenInBrowser : undefined}
-        // Capture, annotation, and the more menu drive the desktop webview, so
-        // server tabs leave them out. Floating works for both.
         onCapture={
           previewBridge && tabId && !isServerTab && !companionTab ? handleCapture : undefined
         }
@@ -1004,25 +954,12 @@ export function PreviewView({
           previewBridge && tabId && !isServerTab && !companionTab ? handlePickElement : undefined
         }
         pickActive={pickActive}
-        // Disable when there's no tab (nothing to pick on) OR the page
-        // failed to load (a React overlay covers the webview, so the
-        // user wouldn't be able to actually click anything underneath).
         pickDisabled={!tabId || isUnreachable}
         pickDisabledReason={
           isUnreachable ? "Page didn't load — pick unavailable until the page renders" : undefined
         }
         leadingActions={
-          // Only when it differs from the default: labelling every tab
-          // "Default" would be noise on the common case, while a tab in
-          // another profile is exactly what needs calling out.
           activeProfileId !== browserDefaults.profileId ? (
-            // Capped: profile names run to 48 characters, and an unbounded
-            // badge in this row takes its width from the URL input, the only
-            // flexible element in the compact chrome. The cap sits on the
-            // badge and the truncation on an inner span, because `Badge` is an
-            // `inline-flex` with `whitespace-nowrap` — `text-overflow` never
-            // reaches a bare text node inside it, so the name would be cut off
-            // at both ends with no ellipsis.
             <Tooltip>
               <TooltipTrigger render={<Badge variant="outline" className="max-w-28 shrink-0" />}>
                 <span className="truncate">{activeProfileName}</span>

@@ -43,21 +43,24 @@ def tree_storage_size(root):
             raise RuntimeError('Native storage contains an unsupported file type.')
     return total
 
-def recovery_topology(expected, transaction):
+def recovery_topology(expected, transaction, legacy_profile=False):
     database = pathlib.Path(expected['databasePath'])
     profile = pathlib.Path(expected['profile'])
-    roots = [database.parent.resolve(strict=True), profile.resolve(strict=True), pathlib.Path(transaction).resolve(strict=True)]
-    state, profile, transaction = roots
-    if state == profile or state.is_relative_to(profile) or profile.is_relative_to(state):
-        raise RuntimeError('Native database and profile roots overlap; installation held.')
-    if any(transaction == source or transaction.is_relative_to(source) for source in (state, profile)):
+    state, transaction = database.parent.resolve(strict=True), pathlib.Path(transaction).resolve(strict=True)
+    roots = [state, transaction]
+    if legacy_profile:
+        profile = profile.resolve(strict=True)
+        roots.append(profile)
+        if state == profile or state.is_relative_to(profile) or profile.is_relative_to(state):
+            raise RuntimeError('Native database and profile roots overlap; installation held.')
+    if any(transaction == source or transaction.is_relative_to(source) for source in roots if source != transaction) or transaction == state:
         raise RuntimeError('Native recovery would copy its own destination; installation held.')
     if len({path.stat().st_dev for path in roots}) != 1:
-        raise RuntimeError('Native state and profile require same-volume recovery; installation held.')
-    return roots`,
+        raise RuntimeError('Native state and recovery require same-volume recovery; installation held.')
+    return state, profile, transaction`,
   recoveryAndPair: String.raw`def recovery_state_bytes(expected):
     database = pathlib.Path(expected['databasePath'])
-    state_bytes = tree_storage_size(expected['profile'])
+    state_bytes = 0
     for path in [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')] + [database.parent / name for name in SETTINGS]:
         if path.exists():
             if path.is_symlink() or not path.is_file(): raise RuntimeError('Native recovery file type is unknown.')
@@ -70,7 +73,7 @@ def storage_preflight(expected, staged, transaction):
     app_parent = pathlib.Path(expected['appPath']).parent.resolve(strict=True)
     candidate_bytes = tree_storage_size(staged['appPath'])
     requirements = {}
-    for path, amount in ((transaction, state_bytes * 2), (app_parent, candidate_bytes)):
+    for path, amount in ((transaction, state_bytes), (app_parent, candidate_bytes)):
         device = path.stat().st_dev
         if device not in requirements: requirements[device] = [path, RECOVERY_HEADROOM]
         requirements[device][1] += amount
@@ -139,7 +142,7 @@ def reserve_recovery_capacity(expected, transaction, storage):
     try:
         journal_bytes = min(4 * 1024 * 1024, RECOVERY_HEADROOM // 4)
         reserves.append(dict(allocate_recovery_file(transaction / 'recovery-journal-reserve.bin', journal_bytes), purpose='journal'))
-        reserves.append(dict(allocate_recovery_file(transaction / 'recovery-reserve.bin', storage['stateBytes'] + RECOVERY_HEADROOM - journal_bytes), purpose='recovery'))
+        reserves.append(dict(allocate_recovery_file(transaction / 'recovery-reserve.bin', RECOVERY_HEADROOM - journal_bytes), purpose='recovery'))
         if transaction.stat().st_dev != app_parent.stat().st_dev:
             reserves.append(dict(allocate_recovery_file(app_parent / ('.jones-recovery-reserve-' + transaction.name), RECOVERY_HEADROOM), purpose='recovery'))
         return reserves
@@ -150,7 +153,9 @@ def reserve_recovery_capacity(expected, transaction, storage):
 def recovery_capacity_before_restore(expected, pair):
     state = pathlib.Path(expected['databasePath']).parent
     app_parent = pathlib.Path(expected['appPath']).parent
-    requirements = [(state, tree_storage_size(pair) + RECOVERY_HEADROOM // 2)]
+    snapshot = read(pathlib.Path(pair) / 'pair.json')
+    copy_bytes = 0 if snapshot.get('stateScope') == 'database-settings' else tree_storage_size(pair)
+    requirements = [(state, copy_bytes + RECOVERY_HEADROOM // 2)]
     if state.stat().st_dev != app_parent.stat().st_dev:
         requirements.append((app_parent, RECOVERY_HEADROOM // 2))
     for path, required in requirements:
@@ -183,41 +188,73 @@ def pair_state(expected, directory):
         presence[name] = source.exists()
         if source.exists():
             if not clone_file(source, directory / name): shutil.copy2(source, directory / name)
-    clone_tree(expected['profile'], directory / 'profile', profile=True)
+    files = {suffix: (directory / ('state.sqlite' + suffix)).exists() for suffix in ('', '-wal', '-shm')}
     sync_tree(directory)
-    durable(directory / 'pair.json', {'expected': expected, 'settings': presence,
+    durable(directory / 'pair.json', {'expected': expected, 'stateScope': 'database-settings', 'files': files, 'settings': presence,
             'recovery': {'method': method, 'bytes': sum((directory / ('state.sqlite' + suffix)).stat().st_size for suffix in ('', '-wal', '-shm') if (directory / ('state.sqlite' + suffix)).exists()),
                          'startedAt': started, 'completedAt': time.time()}}, True)
 
-def restore_pair(expected, directory, advanced):
+def restore_pair(expected, directory, advanced, candidate):
     pair = read(directory / 'pair.json')
-    if pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or not (directory / 'profile').is_dir():
+    database_settings = pair.get('stateScope') == 'database-settings'
+    if pair.get('stateScope') not in (None, 'database-settings') or pair['expected'] != expected or not (directory / 'state.sqlite').is_file() or (not database_settings and not (directory / 'profile').is_dir()):
         raise RuntimeError('Recovery pair no longer binds the previous app and state.')
-    if set(pair['settings']) != set(SETTINGS): raise RuntimeError('Recovery settings presence is unknown.')
-    recovery_topology(expected, advanced.parent)
+    if set(pair['settings']) != set(SETTINGS) or any(type(value) is not bool for value in pair['settings'].values()): raise RuntimeError('Recovery settings presence is unknown.')
+    recovery_topology(expected, advanced.parent, legacy_profile=not database_settings)
+    if database_settings:
+        files = pair.get('files')
+        if not isinstance(files, dict) or set(files) != {'', '-wal', '-shm'} or files[''] is not True or any(type(value) is not bool for value in files.values()):
+            raise RuntimeError('Recovery database inventory is unknown.')
+        names = {('state.sqlite' + suffix) for suffix, exists in files.items() if exists}
+        names.update(name for name, exists in pair['settings'].items() if exists)
+        if {path.name for path in directory.iterdir()} != names | {'pair.json'}:
+            raise RuntimeError('Recovery file inventory changed; restore held before state mutation.')
+        device = pathlib.Path(expected['databasePath']).parent.stat().st_dev
+        live_names = [pathlib.Path(expected['databasePath']).name + suffix for suffix in ('', '-wal', '-shm')] + list(SETTINGS)
+        for path in [directory] + [directory / name for name in names] + [pathlib.Path(expected['databasePath']).parent / name for name in live_names]:
+            if not path.exists() and not path.is_symlink(): continue
+            info = path.lstat()
+            if info.st_dev != device or path.is_symlink() or (path != directory and not stat.S_ISREG(info.st_mode)):
+                raise RuntimeError('Recovery files require regular same-device storage; restore held before state mutation.')
     prove_quiescence(expected)
     advanced.mkdir(mode=0o700)
     sync_parent(advanced)
     database = pathlib.Path(expected['databasePath'])
+    guard = native_authority_transition(expected, candidate, 'fence')
+    durable(advanced.with_name(advanced.name + '-authority-guard.json'), {'protocol': 1, 'guard': guard}, True)
+    # Finish retaining every live file before consuming any snapshot file.
     for name in (database.name, database.name + '-wal', database.name + '-shm') + SETTINGS:
         source = database.parent / name
         if source.exists():
             os.rename(source, advanced / name)
             sync_parent(source)
             sync_parent(advanced / name)
-    os.rename(expected['profile'], advanced / 'profile')
-    sync_parent(expected['profile'])
-    sync_parent(advanced / 'profile')
+    if not database_settings:
+        os.rename(expected['profile'], advanced / 'profile')
+        sync_parent(expected['profile'])
+        sync_parent(advanced / 'profile')
     sync_tree(advanced)
     for suffix in ('', '-wal', '-shm'):
         source = directory / ('state.sqlite' + suffix)
-        if source.exists() and not clone_file(source, pathlib.Path(str(database) + suffix)):
-            shutil.copy2(source, pathlib.Path(str(database) + suffix))
+        if source.exists():
+            target = pathlib.Path(str(database) + suffix)
+            if database_settings:
+                os.rename(source, target)
+                sync_parent(source)
+                sync_parent(target)
+            elif not clone_file(source, target): shutil.copy2(source, target)
     for name, exists in pair['settings'].items():
-        if exists and not clone_file(directory / name, database.parent / name): shutil.copy2(directory / name, database.parent / name)
-    clone_tree(directory / 'profile', pathlib.Path(expected['profile']), profile=True)
-    sync_tree(expected['profile'])
-    sync_parent(expected['profile'])
+        if exists:
+            source, target = directory / name, database.parent / name
+            if database_settings:
+                os.rename(source, target)
+                sync_parent(source)
+                sync_parent(target)
+            elif not clone_file(source, target): shutil.copy2(source, target)
+    if not database_settings:
+        clone_tree(directory / 'profile', pathlib.Path(expected['profile']), profile=True)
+        sync_tree(expected['profile'])
+        sync_parent(expected['profile'])
     restored_files = [pathlib.Path(str(database) + suffix) for suffix in ('', '-wal', '-shm')]
     restored_files += [database.parent / name for name, exists in pair['settings'].items() if exists]
     for restored in restored_files:
@@ -226,7 +263,8 @@ def restore_pair(expected, directory, advanced):
         try: os.fsync(descriptor)
         finally: os.close(descriptor)
     sync_parent(database)
-    durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)`,
+    durable(advanced / 'retained.json', {'protocol': PROTOCOL, 'previous': expected}, True)
+    native_authority_transition(expected, candidate, 'advance', guard)`,
   syncParent: String.raw`def sync_parent(path):
     descriptor = os.open(pathlib.Path(path).parent, os.O_RDONLY)
     try: os.fsync(descriptor)

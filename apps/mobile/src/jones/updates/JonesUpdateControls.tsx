@@ -6,7 +6,7 @@ import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
-import { AppText as Text } from "../../components/AppText";
+import { AppText as Text } from "../../components/ui/AppText";
 import { jonesUpdates } from "./jonesUpdates";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "../../features/settings/components/SettingsSection";

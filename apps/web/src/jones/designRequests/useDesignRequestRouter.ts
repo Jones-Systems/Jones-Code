@@ -59,10 +59,11 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     [shells],
   );
 
+  const boundWorkstreamId = binding?.workstreamId ?? null;
   useEffect(() => {
     const controller = new AbortController();
     setRegistry(LOADING);
-    loadDesignRequestRegistry(latest.current.shells, controller.signal).then(
+    loadDesignRequestRegistry(latest.current.shells, controller.signal, boundWorkstreamId).then(
       (snapshot) => {
         if (!controller.signal.aborted) {
           setNow(Date.now());
@@ -75,7 +76,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
       },
     );
     return () => controller.abort();
-  }, [revision, threadIdentityKey]);
+  }, [revision, threadIdentityKey, boundWorkstreamId]);
 
   // Re-evaluate when the earliest placement expires so an expired primary is held, not shown.
   useEffect(() => {
@@ -110,7 +111,11 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
         jonesOrigin: window.location.origin,
         resolveRoute: async () => {
           const current = latest.current;
-          const snapshot = await loadDesignRequestRegistry(current.shells);
+          const snapshot = await loadDesignRequestRegistry(
+            current.shells,
+            undefined,
+            current.binding?.workstreamId ?? null,
+          );
           setNow(Date.now());
           setRegistry(snapshot);
           return resolveDesignRequestRoute({

@@ -17,6 +17,12 @@ import {
   retractLauncherCapabilityReceipt,
 } from "./jones/cloud/launcherCapability.ts";
 import {
+  launcherDriftNotice,
+  QualifiedCommitFailure,
+  qualifiedRollbackRefusal,
+  type QualifiedCommitAttempt,
+} from "./jones/cloud/qualifiedCommitAttempt.ts";
+import {
   verifyStagedQualifiedRuntime,
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
@@ -24,19 +30,14 @@ import {
   type StagedQualifiedRuntime,
 } from "./jones/cloud/qualifiedRuntime.ts";
 
-import {
-  assertQualifiedReadinessObservable,
-  proveQualifiedStateQuiescence,
-  QUALIFIED_STARTUP_STATE_FILES,
-  QualifiedQuiescenceError,
-  type QualifiedQuiescenceAdapter,
-} from "./jones/cloud/qualifiedQuiescence.ts";
+import { withStoppedServerOwnership } from "./jones/cloud/stoppedServerOwnership.ts";
 import {
   assertQualifiedTrialBinding,
   readJonesStartupGateProtocol,
   type QualifiedTrialReceipt,
 } from "./jones/cloud/qualifiedStartup.ts";
 import {
+  QUALIFIED_STARTUP_STATE_FILES,
   copyQualifiedBackupFile,
   preflightQualifiedBackup,
   retainQualifiedAdvancedState,
@@ -88,12 +89,9 @@ import {
 
 const HANDOFF_DELAY_MS = 2_000;
 /**
- * How long a trial has to report prepared. Migrations and the open-time
- * `PRAGMA optimize` count toward it and scale with the database: tens of GB on
- * a cold page cache take minutes. They run synchronously on the child's main
- * thread, so it cannot report progress meanwhile. A missed window rolls back
- * the database, so the next attempt pays the same cost. Crashes are caught at
- * exit; this only bounds a trial that is alive but stuck.
+ * Migrations and the open-time `PRAGMA optimize` count toward it and scale with the database:
+ * tens of GB on a cold page cache take minutes. A missed window rolls back the database, so
+ * the next attempt pays the same cost.
  */
 export const PREPARED_TIMEOUT_MS = 30 * 60_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
@@ -114,9 +112,6 @@ interface ManagedChild {
   readonly process: NodeChildProcess.ChildProcess;
 }
 
-// Mirrors pinnedRuntimePaths: a runtime is an unpacked release archive whose
-// executable runs on its own. Kept inline so this file stays on Node
-// built-ins only.
 const runtimePaths = (baseDir: string, version: string) => {
   const versionDir = NodePath.join(baseDir, "runtime", "versions", version);
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -178,7 +173,6 @@ const runtimeSpawnArguments = (paths: ReturnType<typeof runtimePaths>) => ({
   args: ["serve"],
 });
 
-/** SQLite persists across the main file plus its WAL and shared-memory sidecars. */
 const DB_FILE_SUFFIXES = ["", "-wal", "-shm"] as const;
 const RESTORE_MARKER = ".restore-pending";
 const PAIRED_SETTINGS = QUALIFIED_STARTUP_STATE_FILES;
@@ -241,12 +235,7 @@ function runCp(args: ReadonlyArray<string>): Promise<boolean> {
 }
 
 /**
- * Copies a database file as a copy-on-write clone where the filesystem has
- * them (APFS via `cp -c`, btrfs/XFS reflinks via `cp --reflink=auto`), which
- * takes no extra space and finishes instantly for a database of tens of GB.
- * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a
- * full copy. Anywhere cloning is unavailable, or `cp` fails, this is a
- * regular copy.
+ * Node's own clone flag is not used: on macOS `fs.copyFile` falls back to a full copy.
  */
 async function copyDatabaseFile(source: string, destination: string): Promise<void> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -273,10 +262,6 @@ const GIB = 1024 ** 3;
 const CLONED_BACKUP_MIN_HEADROOM_BYTES = GIB;
 const CLONED_BACKUP_HEADROOM_FRACTION = 0.1;
 
-/**
- * Stats of the database and its existing sidecars, following symlinks. A main
- * file that cannot be read is an error.
- */
 async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.Stats>> {
   const stats: Array<NodeFS.Stats> = [];
   for (const suffix of DB_FILE_SUFFIXES) {
@@ -290,16 +275,10 @@ async function statDatabaseFiles(dbPath: string): Promise<ReadonlyArray<NodeFS.S
 }
 
 /**
- * Whether `copyDatabaseFile` will clone the database into the backup
- * directory rather than copy it.
  * - macOS: `cp -c` clones within one APFS volume and silently copies
  *   anywhere else, so every existing database file must share the backup
  *   directory's device, whose filesystem type must match the system volume's,
  *   which is always APFS.
- * - Linux: clone each existing database file with `cp --reflink=always`,
- *   which fails instead of copying when a file cannot be reflinked (another
- *   filesystem, or a btrfs file marked No_COW), then discard the clones.
- * - Elsewhere: never.
  */
 async function backupCanClone(dbPath: string, backupRoot: string): Promise<boolean> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone launcher has no Effect runtime.
@@ -311,9 +290,6 @@ async function backupCanClone(dbPath: string, backupRoot: string): Promise<boole
       NodeFSP.statfs("/"),
     ]);
     if (backupFs.type !== systemFs.type) return false;
-    // A file linked from another volume is caught because `stat` follows
-    // symlinks. A hard-linked file is restored by a full copy, so it needs the
-    // full space.
     return (await statDatabaseFiles(dbPath)).every(
       (source) => source.dev === backupDirectory.dev && source.nlink === 1,
     );
@@ -348,10 +324,8 @@ const filesystemBackupSpaceProbe: BackupSpaceProbe = {
 };
 
 /**
- * Returns a client-visible reason when the pre-update database backup cannot
- * fit, or undefined when it can. Runs before the server is stopped so a full
- * disk refuses the update instead of causing an outage and a cold restart.
- * Throws when the database or the filesystem cannot be inspected.
+ * Runs before the server is stopped so a full disk refuses the update instead of causing an
+ * outage and a cold restart.
  */
 export async function databaseBackupBlocker(
   baseDir: string,
@@ -376,8 +350,7 @@ export async function databaseBackupBlocker(
 }
 
 /**
- * Snapshots the database once per update before the first trial. A completed
- * backup is never overwritten because a restarted launcher may be looking at
+ * A completed backup is never overwritten because a restarted launcher may be looking at
  * database writes from an earlier attempt by the same trial.
  */
 async function backupDatabaseOnce(
@@ -566,7 +539,6 @@ async function restoreTarget(path: string): Promise<string> {
   throw new Error(`Too many symbolic links resolving ${path}.`);
 }
 
-/** Restore is retryable after any process crash while the backup directory remains. */
 async function restoreDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
@@ -608,11 +580,39 @@ async function restoreDatabaseBackup(
   advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
-async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
+async function discardDatabaseBackup(
+  baseDir: string,
+  updateId: string,
+  retainReceipts = false,
+): Promise<void> {
   const backupDir = databaseBackupDir(baseDir, updateId);
   if (!(await pathExists(backupDir))) return;
-  await NodeFSP.rm(backupDir, { recursive: true, force: true });
-  await syncDirectory(NodePath.dirname(backupDir));
+  if (retainReceipts) {
+    // Startup still reserves resume here, and update status reads the timing receipt.
+    // Remove only recovery payload; leave their directory and all metadata in place.
+    for (const name of ["database", "database-wal", "database-shm", ...PAIRED_SETTINGS]) {
+      await NodeFSP.rm(NodePath.join(backupDir, name), { force: true });
+    }
+    await NodeFSP.rm(NodePath.join(backupDir, "advanced-state"), { recursive: true, force: true });
+    await syncDirectory(backupDir);
+  } else {
+    await NodeFSP.rm(backupDir, { recursive: true, force: true });
+    await syncDirectory(NodePath.dirname(backupDir));
+  }
+}
+
+async function cleanupTerminalDatabaseBackup(
+  baseDir: string,
+  updateId: string,
+  retainReceipts: boolean,
+): Promise<void> {
+  try {
+    await discardDatabaseBackup(baseDir, updateId, retainReceipts);
+  } catch {
+    process.stderr.write(
+      "[service-launcher] Recovery payload cleanup did not finish; the durable update outcome is unchanged and remaining recovery files were retained.\n",
+    );
+  }
 }
 
 export async function readServiceState(filePath: string): Promise<ServiceState> {
@@ -622,7 +622,6 @@ export async function readServiceState(filePath: string): Promise<ServiceState> 
   return state;
 }
 
-/** Durable same-directory replacement used for every runtime state transition. */
 export async function writeServiceState(filePath: string, state: ServiceState): Promise<void> {
   const directory = NodePath.dirname(filePath);
   await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
@@ -716,8 +715,8 @@ const restartPendingPath = (baseDir: string) =>
 export class Launcher {
   readonly #baseDir: string;
   readonly #statePath: string;
-  readonly #quiescenceAdapter: QualifiedQuiescenceAdapter | undefined;
   readonly #startupGateProtocol: 1 | undefined;
+  readonly #preparedTimeoutMs: number;
   readonly #backupAdapter: QualifiedBackupAdapter | undefined;
   readonly #updateOperationIO: {
     readonly archive: typeof archiveUpdateOperation;
@@ -731,7 +730,8 @@ export class Launcher {
   #stopRequested = false;
   #stopping = false;
   #done = false;
-  #qualifiedPointerCommitAttempted = false;
+  // Bound to one update: a commit attempt never blocks a later update's rollback.
+  #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
   readonly #backupSpaceProbe: Partial<BackupSpaceProbe> | undefined;
 
@@ -740,8 +740,8 @@ export class Launcher {
     state: ServiceState,
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
-      readonly quiescenceAdapter?: QualifiedQuiescenceAdapter;
       readonly startupGateProtocol?: 1;
+      readonly preparedTimeoutMs?: number;
       readonly backupAdapter?: QualifiedBackupAdapter;
       readonly updateOperationIO?: {
         readonly archive: typeof archiveUpdateOperation;
@@ -755,8 +755,8 @@ export class Launcher {
     this.#backupSpaceProbe = options.backupSpaceProbe;
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
     this.#state = state;
-    this.#quiescenceAdapter = options.quiescenceAdapter;
     this.#startupGateProtocol = options.startupGateProtocol;
+    this.#preparedTimeoutMs = options.preparedTimeoutMs ?? PREPARED_TIMEOUT_MS;
     this.#backupAdapter = options.backupAdapter;
     this.#updateOperationIO = options.updateOperationIO ?? {
       archive: archiveUpdateOperation,
@@ -904,11 +904,12 @@ export class Launcher {
       return;
     }
     if (update.qualified !== undefined) {
-      // Terminal records start normally without replaying a trial grant. Pending
-      // restart recovery proves no writers remain before restoring the old pair.
+      // Pending restart recovery holds state ownership before changing the old pair.
       if (update.phase === "accepted") {
-        await this.#proveQuiescence();
-        await this.#finishWithoutTrial(update, "launcher-restarted");
+        await withStoppedServerOwnership(this.#baseDir, () =>
+          this.#finishWithoutTrial(update, "launcher-restarted", false),
+        );
+        await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
       } else await this.#returnToPrevious(update, "rolled-back", "launcher-restarted");
       return;
     }
@@ -935,14 +936,6 @@ export class Launcher {
     await this.#startTrial(update);
   }
 
-  async #proveQuiescence(allowedProcessIds: readonly number[] = []): Promise<void> {
-    await proveQualifiedStateQuiescence({
-      baseDir: this.#baseDir,
-      allowedProcessIds,
-      ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
-    });
-  }
-
   async #startTrial(pending: PendingServiceUpdate): Promise<void> {
     if (pending.qualified !== undefined) {
       const staged = await verifyStagedQualifiedRuntime(
@@ -953,13 +946,12 @@ export class Launcher {
       if (JSON.stringify(staged) !== JSON.stringify(pending.qualified))
         throw new Error("The qualified trial binding changed after handoff.");
     }
-    // Owned child exit alone does not prove another same-home writer stopped.
-    // Keep this proof outside backup failure recovery: uncertainty must retain
-    // pending state rather than restart a potentially competing old writer.
-    if (pending.qualified !== undefined) await this.#proveQuiescence();
     if (pending.phase === "accepted") {
       try {
-        await backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        const backup = () => backupDatabaseOnce(this.#baseDir, pending, this.#backupAdapter);
+        if (pending.qualified !== undefined)
+          await withStoppedServerOwnership(this.#baseDir, backup);
+        else await backup();
       } catch (cause) {
         if (pending.qualified !== undefined) throw cause;
         await this.#finishWithoutTrial(pending, "db-backup-failed");
@@ -984,7 +976,11 @@ export class Launcher {
     }
   }
 
-  async #finishWithoutTrial(pending: PendingServiceUpdate, reason: string): Promise<void> {
+  async #finishWithoutTrial(
+    pending: PendingServiceUpdate,
+    reason: string,
+    startChild = true,
+  ): Promise<void> {
     const outcome = terminalUpdate({ pending, status: "failed", reason });
     const next: ServiceState = {
       ...this.#state,
@@ -993,9 +989,8 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    await cleanupTerminalDatabaseBackup(this.#baseDir, pending.id, pending.qualified !== undefined);
+    if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
@@ -1096,10 +1091,15 @@ export class Launcher {
       });
     }
 
+    if (role === "active") {
+      const notice = launcherDriftNotice(packageJson.version, version);
+      if (notice !== undefined) process.stderr.write(notice);
+    }
+
     if (role === "trial") {
       this.#timer = setTimeout(
         () => this.#enqueue(() => this.#handlePreparedTimeout(managed)),
-        PREPARED_TIMEOUT_MS,
+        this.#preparedTimeoutMs,
       );
     }
   }
@@ -1255,27 +1255,18 @@ export class Launcher {
           throw new Error("Install target differs from its staged handle.");
         if (child.process.pid === undefined)
           throw new Error("The requesting child has no native process identity.");
-        // Refuse before acceptance when the readiness commit could never prove
-        // that its captured writer alone holds the state.
-        await assertQualifiedReadinessObservable({
-          baseDir: this.#baseDir,
-          allowedProcessIds: [child.process.pid],
-          ...(this.#quiescenceAdapter === undefined ? {} : { adapter: this.#quiescenceAdapter }),
-        });
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
         await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
         if (this.#child !== child || this.#stopRequested || this.#stopping)
           throw new Error("The requesting child stopped during candidate preflight.");
       } catch (cause) {
         await reject(
-          cause instanceof QualifiedQuiescenceError
-            ? `writer-proof-${cause.reason}: The readiness commit cannot prove exclusive state ownership on this host; Install was not admitted.`
-            : cause instanceof QualifiedCandidatePreflightError ||
-                (cause instanceof Error &&
-                  (cause.message.startsWith("startup-gate-unavailable:") ||
-                    cause.message.startsWith("recovery-capacity:")))
-              ? cause.message
-              : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
+          cause instanceof QualifiedCandidatePreflightError ||
+            (cause instanceof Error &&
+              (cause.message.startsWith("startup-gate-unavailable:") ||
+                cause.message.startsWith("recovery-capacity:")))
+            ? cause.message
+            : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
         return;
       }
@@ -1290,8 +1281,6 @@ export class Launcher {
       (error: unknown) =>
         `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
     );
-    // The child may have exited during the check. Its queued exit transition
-    // reports that; answering it or recording a pending update would not.
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
@@ -1433,8 +1422,6 @@ export class Launcher {
     }
     if (pending.qualified !== undefined) {
       if (child.process.pid === undefined) throw new Error("Trial writer identity is unavailable.");
-      // Only the captured trial may own writable state at the pointer commit.
-      await this.#proveQuiescence([child.process.pid]);
       this.#assertQualifiedChildLive(child);
       if (this.#exchangeExpired(receivedAt)) {
         // The trial may have abandoned its prepared exchange and could never
@@ -1458,24 +1445,40 @@ export class Launcher {
     if (pending.qualified !== undefined) {
       this.#assertQualifiedChildLive(child);
       // From this point a failed fsync/response can leave a committed pointer; rollback is forbidden.
-      this.#qualifiedPointerCommitAttempted = true;
+      this.#qualifiedCommitAttempt = { updateId: pending.id, step: "pointer-write" };
     }
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    if (pending.qualified !== undefined) this.#assertQualifiedChildLive(child);
-    child.role = "active";
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, committed.id).catch(() => undefined);
-    await sendMessage(child.process, {
-      type: "committed",
-      updateId: committed.id,
-      ...(startupReceipt === undefined
-        ? {}
-        : {
-            startupGateProtocol: 1 as const,
-            qualified: { ...startupReceipt, generation: committed.id },
-          }),
-    });
+    try {
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      if (pending.qualified !== undefined) {
+        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "post-write-liveness" };
+        this.#assertQualifiedChildLive(child);
+      }
+      child.role = "active";
+      const notice = launcherDriftNotice(packageJson.version, child.version);
+      if (notice !== undefined) process.stderr.write(notice);
+      if (pending.qualified !== undefined)
+        this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
+      await sendMessage(child.process, {
+        type: "committed",
+        updateId: committed.id,
+        ...(startupReceipt === undefined
+          ? {}
+          : {
+              startupGateProtocol: 1 as const,
+              qualified: { ...startupReceipt, generation: committed.id },
+            }),
+      });
+      await cleanupTerminalDatabaseBackup(
+        this.#baseDir,
+        committed.id,
+        pending.qualified !== undefined,
+      );
+    } catch (cause) {
+      const attempt = this.#qualifiedCommitAttempt;
+      if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
+      throw new QualifiedCommitFailure(attempt, cause);
+    }
   }
 
   #assertQualifiedChildLive(child: ManagedChild): void {
@@ -1539,10 +1542,9 @@ export class Launcher {
   }
 
   /**
-   * Another server owns the T3 home. Exiting would make systemd or launchd
-   * start another refused server, so stay idle until stopped or restarted.
-   * A pending update fails without restoring its backup: the other owner may
-   * have written to the database since.
+   * Exiting would make systemd or launchd start another refused server, so stay
+   * idle until stopped or restarted. A pending update fails without restoring
+   * its backup: the other owner may have written to the database since.
    */
   async #idleWhileStateDirOwned(): Promise<void> {
     this.#clearTimer();
@@ -1555,7 +1557,8 @@ export class Launcher {
       };
       await writeServiceState(this.#statePath, next);
       this.#state = next;
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
+      if (pending.qualified === undefined)
+        await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
     }
     // Signal listeners alone do not keep Node alive.
     this.#timer = setInterval(() => {}, 2_147_483_647);
@@ -1570,42 +1573,39 @@ export class Launcher {
     reason: string,
     child?: ManagedChild,
   ): Promise<void> {
-    if (pending.qualified !== undefined && this.#qualifiedPointerCommitAttempted)
-      throw new Error(
-        "Qualified pointer commit may have occurred; paired state is retained for reconciliation.",
-      );
+    const refusal =
+      pending.qualified === undefined
+        ? undefined
+        : qualifiedRollbackRefusal(this.#qualifiedCommitAttempt, pending.id, reason);
+    if (refusal !== undefined) throw new Error(refusal);
     if (child !== undefined) {
       this.#child = null;
       await terminateChild(child.process);
       await this.#retractCapability(child.process);
-      if (
-        pending.qualified !== undefined &&
-        child.process.exitCode === null &&
-        child.process.signalCode === null
-      )
-        throw new Error("Qualified trial stop is unproved; paired state was retained.");
     }
-    if (pending.qualified !== undefined) {
-      await this.#proveQuiescence();
-    }
-    await restoreDatabaseBackup(this.#baseDir, pending);
-    const outcome = terminalUpdate({ pending, status, reason });
-    const next: ServiceState = {
-      ...this.#state,
-      activeVersion: pending.fromVersion,
-      update: outcome,
+    const restore = async () => {
+      await restoreDatabaseBackup(this.#baseDir, pending);
+      const outcome = terminalUpdate({ pending, status, reason });
+      const next: ServiceState = {
+        ...this.#state,
+        activeVersion: pending.fromVersion,
+        update: outcome,
+      };
+      await writeServiceState(this.#statePath, next);
+      this.#state = next;
+      await cleanupTerminalDatabaseBackup(
+        this.#baseDir,
+        pending.id,
+        pending.qualified !== undefined,
+      );
     };
-    await writeServiceState(this.#statePath, next);
-    this.#state = next;
-    if (pending.qualified === undefined)
-      await discardDatabaseBackup(this.#baseDir, pending.id).catch(() => undefined);
-    await this.#startChild(next.activeVersion, "active", outcome);
+    if (pending.qualified !== undefined) await withStoppedServerOwnership(this.#baseDir, restore);
+    else await restore();
+    await this.#startChild(this.#state.activeVersion, "active", this.#state.update);
   }
 }
 
-export async function main(
-  options: { readonly quiescenceAdapter?: QualifiedQuiescenceAdapter } = {},
-): Promise<void> {
+export async function main(): Promise<void> {
   const baseDir = process.env.T3CODE_HOME?.trim();
   if (baseDir === undefined || baseDir === "") {
     throw new Error("T3CODE_HOME is required by the T3 Code service launcher.");
@@ -1613,7 +1613,6 @@ export async function main(
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
   await new Launcher(baseDir, state, {
-    ...options,
     startupGateProtocol: readJonesStartupGateProtocol(),
   }).run();
 }

@@ -16,6 +16,11 @@ export interface MobileWorkstreamProjection {
   readonly groups: readonly MobileWorkstreamGroup[];
   readonly collapsedKeys: ReadonlySet<string>;
   readonly secondaryLabelsByKey: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Rows a complete, live assignment index confirms as Unassigned. When given, every other
+   * ungrouped row is shown under "Assignment unknown" instead.
+   */
+  readonly confirmedUnassignedKeys?: ReadonlySet<string>;
   readonly selectedThreadKey?: string | null;
   readonly searching?: boolean;
 }
@@ -54,10 +59,15 @@ export function projectMobileWorkstreamList(
   }
   const buckets = new Map<string, ThreadListV2ThreadListItem[]>();
   const unassigned: ThreadListV2ThreadListItem[] = [];
+  const unknown: ThreadListV2ThreadListItem[] = [];
   for (const item of active) {
     const key = nativeWorkstreamThreadKey(item.item.thread.environmentId, item.item.thread.id);
     const group = groupForKey.get(key);
-    if (!group) unassigned.push(item);
+    if (!group)
+      (!projection.confirmedUnassignedKeys || projection.confirmedUnassignedKeys.has(key)
+        ? unassigned
+        : unknown
+      ).push(item);
     else {
       const bucket = buckets.get(group.key) ?? [];
       bucket.push(item);
@@ -97,6 +107,15 @@ export function projectMobileWorkstreamList(
   append(
     { key: "unassigned", name: "Unassigned", color: "#737373", threadKeys: new Set() },
     unassigned,
+  );
+  append(
+    {
+      key: "assignment-unknown",
+      name: "Assignment unknown",
+      color: "#737373",
+      threadKeys: new Set(),
+    },
+    unknown,
   );
   result.push(...tail);
   return result.map((item, index) => {

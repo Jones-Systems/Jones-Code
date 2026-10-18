@@ -10,6 +10,7 @@
     "apps/mobile/src/features/workstreams/commands.ts",
     "apps/mobile/src/features/workstreams/gateway.test.ts",
     "apps/mobile/src/features/workstreams/gateway.ts",
+    "apps/mobile/src/features/workstreams/listProjection.test.ts",
     "apps/mobile/src/features/workstreams/listProjection.ts",
     "apps/mobile/src/features/workstreams/loaders.test.ts",
     "apps/mobile/src/features/workstreams/loaders.ts",
@@ -17,6 +18,7 @@
     "apps/mobile/src/features/workstreams/projection.ts",
     "apps/mobile/src/features/workstreams/types.ts",
     "apps/mobile/src/features/workstreams/useWorkstreams.ts",
+    "apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx",
     "apps/mobile/src/jones/workstreamAppearance/WorkstreamColorPicker.tsx",
     "apps/server/src/cli/workstream.ts",
     "apps/server/src/environment/NativePlacementTrust.ts",
@@ -27,6 +29,7 @@
     "apps/server/src/environment/nativeStoreAuthorityPersistence.ts",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
     "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.ts",
+    "apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts",
     "apps/server/src/workstreams/SyntheticWorkstreamTransport.ts",
     "apps/server/src/workstreams/WorkstreamGateway.test.ts",
     "apps/server/src/workstreams/WorkstreamGateway.ts",
@@ -52,12 +55,18 @@
     "apps/web/src/jones/workstreamAppearance/useWorkstreamAppearance.ts",
     "apps/web/src/state/workstreams.test.ts",
     "apps/web/src/state/workstreams.ts",
+    "docs/operations/workstreams-activation.md",
+    "docs/operations/workstreams-native-enrollment.md",
     "docs/user/workstreams.md",
     "packages/client-runtime/src/state/workstreams/appearance.test.ts",
     "packages/client-runtime/src/state/workstreams/appearance.ts",
+    "packages/client-runtime/src/state/workstreams/assignmentIndex.test.ts",
+    "packages/client-runtime/src/state/workstreams/assignmentIndex.ts",
     "packages/client-runtime/src/state/workstreams/cache.ts",
     "packages/client-runtime/src/state/workstreams/colors.test.ts",
     "packages/client-runtime/src/state/workstreams/colors.ts",
+    "packages/client-runtime/src/state/workstreams/environmentTrust.test.ts",
+    "packages/client-runtime/src/state/workstreams/environmentTrust.ts",
     "packages/client-runtime/src/state/workstreams/index.ts",
     "packages/client-runtime/src/state/workstreams/lifecycle.test.ts",
     "packages/client-runtime/src/state/workstreams/lifecycle.ts",
@@ -100,12 +109,36 @@
     "packages/contracts/contracts/workstreams-t3-provider/v1/fixtures/negative-cases.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/manifest.json",
     "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnectRefresh.ts",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
     "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.tsx",
     "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.ts",
     "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
     "apps/web/src/jones/workstreams/workstreamActionSnapshot.ts",
-    "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    "apps/desktop/src/jones/workstreams/shellActivation.ts",
+    "packages/shared/src/jones/desktopNativeOwner.ts",
+    "packages/shared/src/jones/desktopNativeOwner.test.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts",
+    "apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts",
+    "packages/contracts/contracts/workstreams-registration-context/v2/README.md",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/conformance.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/negative-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/fixtures/semantic-cases.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/manifest.json",
+    "packages/contracts/contracts/workstreams-registration-context/v2/schemas/registration-context.schema.json",
+    "apps/web/src/jones/workstreams/nativeThreadAssignment.ts",
+    "apps/web/src/jones/workstreams/nativeThreadAssignment.test.ts",
+    "apps/web/src/jones/workstreams/workstreamReadErrors.ts",
+    "apps/web/src/jones/workstreams/workstreamsHttp.fixtures.ts",
+    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+    "apps/web/src/jones/workstreams/connectedWorkstreamTrust.ts",
+    "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
+    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.ts",
+    "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
+    "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.ts",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",
@@ -136,10 +169,27 @@
     "packages/contracts/src/auth.ts",
     "vite.config.ts",
     "apps/desktop/src/shell/DesktopShellEnvironment.ts",
-    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+    "apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
+    "packages/contracts/src/desktopBootstrap.ts",
+    "apps/server/src/bin.ts",
+    "apps/server/src/entrypoint.test.ts",
+    "apps/web/src/components/Sidebar.pointer.ts",
+    "apps/web/src/components/threadActionMenu.logic.ts"
   ],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/enrollment.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/DatabaseMaintenance.test.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/testFixtures.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workstreams/nativeProvider/settlementProof.ts"
+    },
     {
       "from": "packages/contracts/src/index.ts",
       "to": "packages/contracts/src/jones/workstreamAppearance.ts"
@@ -201,6 +251,14 @@
       "to": "apps/web/src/components/workstreams/WorkstreamNativeSidebar.tsx"
     },
     {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/connectedWorkstreamTrust.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.ts"
+    },
+    {
       "from": "packages/contracts/src/environment.ts",
       "to": "packages/contracts/src/queueProtocol.ts"
     },
@@ -259,6 +317,34 @@
     {
       "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
       "to": "apps/desktop/src/jones/workstreams/shellActivation.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "apps/desktop/src/jones/workstreams/DesktopNativeOwner.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "packages/shared/src/jones/nativeWriterFence.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeOwner.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/workstreams/nativeAuthorityTransition.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/workstreams/serverConfigNativeStoreAuthority.ts"
+    },
+    {
+      "from": "packages/contracts/src/server.ts",
+      "to": "packages/contracts/src/workstreamPlacements.ts"
     }
   ]
 }

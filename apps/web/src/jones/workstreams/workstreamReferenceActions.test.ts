@@ -236,7 +236,10 @@ describe("GitHub references", () => {
     ])
       expect(() => parseWorkstreamPrUrl(url)).toThrow(WorkstreamActionError);
   });
-  it("registers a separate PR identity then explicitly verifies and links it while T3 is absent", async () => {
+  it.each([
+    "workstreams-registration-context/1.0.0",
+    "workstreams-registration-context/2.0.0",
+  ] as const)("registers, verifies and links a PR while T3 is absent with %s", async (protocol) => {
     const f = fixture();
     vi.mocked(f.controller.loadActionSnapshot).mockImplementation(async () => {
       const value = f.snapshot();
@@ -245,6 +248,7 @@ describe("GitHub references", () => {
         placements: null,
         registrationContext: {
           ...value.registrationContext!,
+          protocol,
           sources: value.registrationContext!.sources.filter(
             (source) => source.provider === "github",
           ),

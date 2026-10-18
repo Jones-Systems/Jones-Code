@@ -33,7 +33,6 @@ import {
 import { applyWebBrandAssets } from "./apply-web-brand-assets.ts";
 import {
   decodeJonesDesktopBuildMetadata,
-  bundlesJonesNativeHelper,
   verifyJonesPackagedStartupGate,
   type JonesBuildSource,
 } from "./jones/updates/build-provenance.ts";
@@ -48,18 +47,6 @@ import {
   selectCliRuntimeExternalDependencies,
 } from "./lib/cli-external-packages.ts";
 import { loadRepoEnv } from "./lib/public-config.ts";
-import {
-  createJonesLegacyBootstrapBundle,
-  verifyJonesLegacyIdentityMachO,
-  readJonesLegacyBootstrapNativeProof,
-  type JonesLegacyBootstrapNativeInput,
-  type JonesLegacyBootstrapBundleFile,
-  type JonesLegacyBootstrapPreparationBundle,
-} from "./jones/updates/legacy-bootstrap-bundle.ts";
-import {
-  verifyJonesPreparationRuntime,
-  readPackagedBootstrapProof,
-} from "./jones/updates/legacy-bootstrap-after-pack.mjs";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
 
@@ -136,8 +123,6 @@ const decodeJsonString = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknow
 const decodeWorkspaceConfig = Schema.decodeEffect(fromYaml(WorkspaceConfig));
 const encodeStageWorkspaceConfig = Schema.encodeEffect(fromYaml(StageWorkspaceConfig));
 
-// Decodes the repo's pnpm-workspace.yaml. A PR CI test calls this too, so a bad
-// entry fails the PR instead of the nightly desktop build.
 export const readWorkspaceConfig = Effect.fn("readWorkspaceConfig")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1006,8 +991,6 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   // so the SDK's optional platform packages (each a ~200MB bundled executable)
   // are dead weight. The trailing dash keeps the SDK's own JS package.
   "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**/*",
-  // Nothing in the packaged app enables source maps or serves them: the web
-  // client's maps alone were 50 MB of app.asar that no request ever read.
   "!**/*.map",
   "!**/*.d.cts",
   "!apps/desktop/resources/browser-secret",
@@ -1037,9 +1020,7 @@ export const LINUX_FILE_EXCLUSIONS = [
 ] as const;
 
 // node-pty publishes both Darwin prebuilds in one package. Single-architecture
-// apps only need the native target; universal apps need both. An omitted arch
-// preserves the existing common exclusions for callers that only inspect the
-// generic platform config.
+// apps only need the native target; universal apps need both.
 export function resolveMacFileExclusions(arch?: typeof BuildArch.Type) {
   if (arch === undefined || arch === "universal") {
     return [...MAC_FILE_EXCLUSIONS];
@@ -1049,20 +1030,15 @@ export function resolveMacFileExclusions(arch?: typeof BuildArch.Type) {
   return [...MAC_FILE_EXCLUSIONS, `!**/node_modules/node-pty/prebuilds/darwin-${unusedArch}/**/*`];
 }
 // Windows ships the server tree (bundle + node_modules) as a separate
-// resources/server.asar sidecar instead of loose files: the NSIS installer
-// then extracts a handful of large archives instead of thousands of small
-// files, which dominates install (and update) time. The Windows primary runs
-// the server from inside server.asar via the asar-aware ELECTRON_RUN_AS_NODE
-// runtime. WSL does not use this sidecar: it runs the Linux CLI archive
-// embedded as resources/wsl-runtime.tar.gz (see WSL_RUNTIME_ARCHIVE_NAME).
+// resources/server.asar sidecar instead of loose files: the NSIS installer then
+// extracts a handful of large archives instead of thousands of small files,
+// which dominates install (and update) time.
 export const WINDOWS_SERVER_ASAR_RESOURCE = "server.asar";
 // dlopen/spawn need real files, so native modules, shared libraries, and
 // helper executables live in each archive's .unpacked sibling (the standard
 // asar redirect convention). Everything else stays packed.
 export const WINDOWS_NATIVE_ASAR_UNPACK_GLOB =
   "{**/*.node,**/*.dll,**/*.exe,**/*.so,**/*.so.*,**/*.dylib}";
-// ASAR matches these against basenames; globstars cannot cross hidden source ancestors.
-// The server sidecar unpacks .node files separately, keeping only Windows ones.
 export const WINDOWS_SERVER_ASAR_UNPACK_GLOBS = [
   "*.dll",
   "*.exe",
@@ -1102,10 +1078,6 @@ export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
-    // Copy the archive and its .unpacked sibling from one parent directory.
-    // Mapping the .unpacked directory as an independent FileSet silently
-    // omitted it from Windows packages even though electron-builder copied
-    // the adjacent archive.
     from: WINDOWS_SERVER_RESOURCE_SOURCE_DIR,
     to: ".",
     filter: [WINDOWS_SERVER_ASAR_RESOURCE, `${WINDOWS_SERVER_ASAR_RESOURCE}.unpacked/**/*`],
@@ -1122,11 +1094,6 @@ export const WSL_RUNTIME_ARCHIVE_HASH_EXTRA_RESOURCE = {
   to: WSL_RUNTIME_ARCHIVE_HASH_NAME,
 } as const;
 
-// The WSL runtime is the Linux CLI release archive (t3-<version>-linux-<arch>
-// .tar.gz, built by scripts/build-cli-archive.ts) copied in verbatim, so WSL
-// runs the exact bytes a Linux user downloads. This one predicate decides both
-// whether the archive is staged and whether the packaging config ships it:
-// listing an extraResource whose source was never written fails electron-builder.
 export const bundlesWslRuntime = (input: {
   readonly platform: typeof BuildPlatform.Type;
   readonly runtimeArchivePath: string | undefined;
@@ -1146,21 +1113,12 @@ export const DESKTOP_EXTRA_RESOURCES = [
     to: "resource-monitor",
   },
 ] as const;
-export const JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE = {
-  from: "apps/desktop/prod-resources/jones-bootstrap",
-  to: "jones-bootstrap",
-} as const;
-
 export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMacResources")(
   function* (input: {
     readonly packagedAsar: string;
     readonly version: string;
     readonly source: JonesBuildSource;
-    readonly bootstrapBundle: ReadonlyArray<JonesLegacyBootstrapBundleFile<string | Uint8Array>>;
-    readonly bootstrapRuntime?: JonesLegacyBootstrapPreparationBundle["runtime"];
   }) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
     const failure = (check: string, resource: string, cause: unknown) =>
       new BundleNotSelfContainedError({
         exitCode: -1,
@@ -1179,94 +1137,6 @@ export const verifyJonesPackagedMacResources = Effect.fn("verifyJonesPackagedMac
       try: () => verifyJonesPackagedStartupGate(metadata, input),
       catch: (cause) => failure("startup gate", "app.asar/package.json", cause),
     });
-    for (const file of input.bootstrapBundle) {
-      const packagedFile = path.join(path.dirname(input.packagedAsar), file.relativePath);
-      const observed = yield* Effect.tryPromise({
-        try: () => NodeFSP.lstat(packagedFile),
-        catch: (cause) => failure("bootstrap file stat", file.relativePath, cause),
-      });
-      if (!observed.isFile() || (observed.mode & 0o777) !== file.mode) {
-        return yield* failure(
-          "bootstrap file identity/mode",
-          file.relativePath,
-          `expected regular file mode 0o${file.mode.toString(8)}; observed ${observed.isFile() ? "regular file" : "non-regular file"} mode 0o${(observed.mode & 0o777).toString(8)}`,
-        );
-      }
-      const content = yield* fs
-        .readFile(packagedFile)
-        .pipe(Effect.mapError((cause) => failure("bootstrap file read", file.relativePath, cause)));
-      const expected =
-        typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content;
-      if (!Buffer.from(content).equals(Buffer.from(expected))) {
-        const digest = (value: string | Uint8Array) =>
-          NodeCrypto.createHash("sha256").update(value).digest("hex");
-        return yield* failure(
-          "bootstrap file bytes",
-          file.relativePath,
-          `expected SHA-256 ${digest(file.content)}; observed ${digest(content)}`,
-        );
-      }
-      if (file.relativePath === "jones-bootstrap/identity-native") {
-        yield* Effect.try({
-          try: () => verifyJonesLegacyIdentityMachO(content),
-          catch: (cause) => failure("native architecture", file.relativePath, cause),
-        });
-      }
-    }
-    if (input.bootstrapRuntime !== undefined) {
-      const runtime = input.bootstrapRuntime;
-      yield* Effect.tryPromise({
-        try: async () => {
-          const manifest = input.bootstrapBundle.find(
-            (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
-          );
-          if (manifest === undefined || typeof manifest.content !== "string")
-            throw new Error("Preparation resource requires the retained bundle proof.");
-          const proof = readPackagedBootstrapProof(manifest.content, {
-            repository: input.source.repository,
-            sourceSha: input.source.sha,
-            sourceTree: input.source.tree,
-            version: input.version,
-          });
-          if (
-            proof.schema !== 3 ||
-            proof.preparation.executable.sha256 !== runtime.sha256 ||
-            proof.preparation.executable.size !== runtime.size
-          )
-            throw new Error("Preparation runtime differs from the retained bundle proof.");
-          const resources = path.dirname(input.packagedAsar);
-          await verifyJonesPreparationRuntime(path.join(resources, runtime.relativePath), runtime);
-          const names = await NodeFSP.readdir(path.join(resources, "jones-bootstrap"));
-          const expected = [
-            ...input.bootstrapBundle.map((file) => path.basename(file.relativePath)),
-            path.basename(runtime.relativePath),
-          ];
-          names.sort();
-          expected.sort();
-          if (
-            names.length !== expected.length ||
-            names.some((name, index) => name !== expected[index])
-          )
-            throw new Error("Preparation resource inventory differs.");
-        },
-        catch: (cause) => failure("preparation runtime", runtime.relativePath, cause),
-      });
-    } else {
-      const manifest = input.bootstrapBundle.find(
-        (file) => file.relativePath === "jones-bootstrap/BUNDLE.json",
-      );
-      if (manifest && typeof manifest.content === "string") {
-        const value = yield* decodeJsonString(manifest.content).pipe(
-          Effect.mapError((cause) => failure("bundle JSON", manifest.relativePath, cause)),
-        );
-        if (typeof value === "object" && value !== null && "schema" in value && value.schema === 3)
-          return yield* failure(
-            "preparation runtime",
-            "jones-bootstrap/jones-offline-preparation",
-            "Missing independent runtime descriptor.",
-          );
-      }
-    }
   },
 );
 
@@ -1482,9 +1352,7 @@ function escapeXml(value: string): string {
  * claims a restricted entitlement its embedded profile does not carry.
  */
 export interface MacWebAuthnEntitlements {
-  /** Keychain group for Electron's Touch ID passkeys. */
   readonly touchIdKeychainAccessGroup: string | undefined;
-  /** Apple's managed browser entitlement, which allows passkeys for any site. */
   readonly browserPasskeys: boolean;
 }
 
@@ -1498,10 +1366,6 @@ const ProvisioningProfilePlist = Schema.Struct({
 });
 const isProvisioningProfilePlist = Schema.is(ProvisioningProfilePlist);
 
-/**
- * Reads the Entitlements dict of the XML plist a provisioning profile wraps in
- * its CMS envelope. Anything unreadable grants nothing.
- */
 const readProfileEntitlements = (provisioningProfile: string) => {
   const start = provisioningProfile.indexOf("<?xml");
   const end = provisioningProfile.indexOf("</plist>", start);
@@ -1624,7 +1488,6 @@ export const stageCursorSdkPlatformPackages = Effect.fn("stageCursorSdkPlatformP
     yield* fs.makeDirectory(destination, { recursive: true });
     const sdkDirectory = path.join(nodeModulesDir, "@cursor/sdk");
     if (!(yield* fs.exists(sdkDirectory))) return;
-    // pnpm's isolated layout puts optional packages beside the real SDK directory.
     const cursorDirectory = path.dirname(yield* fs.realPath(sdkDirectory));
     for (const name of yield* fs.readDirectory(cursorDirectory)) {
       if (!name.startsWith("sdk-")) continue;
@@ -1836,9 +1699,6 @@ const BuildEnvConfig = Config.all({
   verbose: Config.Boolean("T3CODE_DESKTOP_VERBOSE").pipe(Config.withDefault(false)),
   mockUpdates: Config.Boolean("T3CODE_DESKTOP_MOCK_UPDATES").pipe(Config.withDefault(false)),
   mockUpdateServerPort: Config.String("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(Config.option),
-  // Path to the Linux CLI release archive (t3-<version>-linux-x64.tar.gz) built
-  // by the build_linux_cli CI job. The Windows build embeds it verbatim as the
-  // WSL runtime.
   wslRuntime: Config.String("T3CODE_DESKTOP_WSL_RUNTIME").pipe(Config.option),
 });
 
@@ -2012,7 +1872,6 @@ export const preflightLinuxDesktopBuild = Effect.fn("preflightLinuxDesktopBuild"
   const reuseCaptureHelpers = yield* Config.Boolean(
     "T3CODE_DESKTOP_REUSE_LINUX_CAPTURE_HELPERS",
   ).pipe(Config.withDefault(false));
-  // Rust is only optional when every Linux Rust artifact comes from a cache.
   const needsRust = !reuseResourceMonitor || !reuseCaptureHelpers;
   const rustTarget = resolveResourceMonitorRustTargets("linux", arch)[0]!;
 
@@ -2145,14 +2004,6 @@ export const preflightWindowsDesktopBuild = Effect.fn("preflightWindowsDesktopBu
   },
 );
 
-/**
- * Every `node_modules` directory that would be visible from `startDir`.
- *
- * The self-containment check is only meaningful in a directory with none of
- * these: Node walks parents when resolving a bare import, so a stray
- * node_modules above the probe would satisfy imports that are missing from the
- * packaged tree and turn the check into a silent pass.
- */
 function trimTrailingSeparators(value: string): string {
   let end = value.length;
   while (end > 1 && (value[end - 1] === "/" || value[end - 1] === "\\")) end -= 1;
@@ -2160,8 +2011,6 @@ function trimTrailingSeparators(value: string): string {
 }
 
 /**
- * Length of the `\\server\share` prefix, or 0 when the path is not UNC.
- *
  * The share is the highest real directory on a UNC path: `\\server` on its own
  * is not one, so the ancestor walk must stop there.
  */
@@ -2185,8 +2034,6 @@ export function ancestorNodeModulesPaths(
   // rebuilt into a relative path that silently resolves against the build cwd.
   const paths: string[] = [];
   let current = trimTrailingSeparators(startDir);
-  // On a UNC path the share itself is the root: \\server is not a directory, so
-  // walking past \\server\share would emit paths that cannot exist.
   const uncRootLength = uncShareRootLength(current);
   for (;;) {
     const cut = Math.max(current.lastIndexOf("/"), current.lastIndexOf("\\"));
@@ -2210,7 +2057,6 @@ const decodeNativeMarkerManifest = Schema.decodeUnknownSync(
   Schema.fromJsonString(NativeMarkerManifest),
 );
 
-/** Locate a package inside the pnpm store, which is where the real files live. */
 const findStorePackageDirectory = Effect.fn("findStorePackageDirectory")(function* (
   repoRoot: string,
   packageName: string,
@@ -2234,7 +2080,6 @@ const findStorePackageDirectory = Effect.fn("findStorePackageDirectory")(functio
   return null;
 });
 
-/** Whether a package builds or ships a native addon it loads at runtime. */
 const hasNativeLoaderMarkers = Effect.fn("hasNativeLoaderMarkers")(function* (packageDir: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -2333,9 +2178,6 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
           output: `Could not extract ${input.asarPath} for the bundle self-containment check: ${String(cause)}`,
         }),
     });
-    // Keep the existing symlink isolation guard even though the sidecar stage
-    // is hoisted and should be physical. A future package-manager layout change
-    // must not let the probe resolve through the build tree.
     yield* copyDirectoryPreservingSymlinks(extractedApp, probeApp);
 
     // Guard the guard: if anything above the probe provides a node_modules, a
@@ -2358,12 +2200,6 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
       });
     }
 
-    // --version exercises the eagerly loaded module graph, which is where a
-    // missing dependency shows up, without starting a server or touching disk
-    // state. It does not cover lazily imported externals: node-pty is checked
-    // by the WSL preflight probe at runtime, while ffi-rs, @ff-labs/fff-node
-    // and the bun adapters are covered by the shared runtime-external closure
-    // and emitted-bundle checks.
     yield* runCommand(
       ChildProcess.make(
         process.execPath,
@@ -2376,9 +2212,6 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
           cwd: probeApp,
           stdout: "pipe",
           stderr: "pipe",
-          // NODE_PATH would let a createRequire call inside the bundle resolve
-          // a missing external from outside the packaged tree, which is the
-          // whole thing this is trying to rule out.
           env: { ...process.env, NODE_PATH: "" },
         },
       ),
@@ -2387,9 +2220,6 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
         verbose: input.verbose,
       },
     ).pipe(
-      // Printing a version should be immediate. A regression that blocks (on
-      // stdin, a port, a lock) would otherwise hang release CI until the job
-      // times out with nothing useful in the log.
       Effect.timeout(BUNDLE_SELF_CHECK_TIMEOUT),
       Effect.catchTags({
         TimeoutError: () =>
@@ -2472,70 +2302,6 @@ export const stageLinuxCaptureHelper = Effect.fn("stageLinuxCaptureHelper")(func
       path.join(destination, "protocols"),
     );
   }
-});
-
-const stageJonesLegacyIdentity = Effect.fn("stageJonesLegacyIdentity")(function* (input: {
-  readonly repoRoot: string;
-  readonly stageRoot: string;
-  readonly verbose: boolean;
-}) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const platform = yield* HostProcess.Platform;
-  if (platform !== "darwin")
-    return yield* new BundleNotSelfContainedError({
-      exitCode: -1,
-      output: "Native identity packaging requires a Darwin build host.",
-    });
-  const directory = path.join(input.stageRoot, "jones-identity-build");
-  yield* fs.makeDirectory(directory);
-  yield* fs.chmod(directory, 0o700);
-  const source = yield* fs.readFile(
-    path.join(input.repoRoot, "apps/desktop/src/jones/updates/jonesLegacyIdentityNative.c"),
-  );
-  const sourcePath = path.join(directory, "identity.c");
-  const binaryPath = path.join(directory, "identity-native");
-  yield* fs.writeFile(sourcePath, source);
-  yield* fs.chmod(sourcePath, 0o400);
-  const nativeEnvironment = {
-    ...process.env,
-    TMPDIR: directory,
-    CLANG_MODULE_CACHE_PATH: path.join(directory, "clang-cache"),
-  };
-  for (const [command, args] of [
-    [
-      "/usr/bin/clang",
-      [
-        "-target",
-        "arm64-apple-macos13.0",
-        "-std=c11",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        sourcePath,
-        "-o",
-        binaryPath,
-      ],
-    ],
-    ["/usr/bin/codesign", ["--force", "--sign", "-", "--timestamp=none", binaryPath]],
-    ["/usr/bin/codesign", ["--verify", "--strict", binaryPath]],
-  ] as const) {
-    yield* runCommand(
-      ChildProcess.make(command, args, { cwd: directory, env: nativeEnvironment }),
-      { label: `Jones native identity ${command}`, verbose: input.verbose },
-    );
-  }
-  yield* fs.chmod(binaryPath, 0o500);
-  const stat = yield* Effect.tryPromise(() => NodeFSP.lstat(binaryPath));
-  if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4194304)
-    return yield* new BundleNotSelfContainedError({
-      exitCode: -1,
-      output: "Native identity build output is not a bounded regular file.",
-    });
-  const identityNative = yield* fs.readFile(binaryPath);
-  yield* Effect.try(() => verifyJonesLegacyIdentityMachO(identityNative));
-  const identityNativeSourceSha256 = NodeCrypto.createHash("sha256").update(source).digest("hex");
-  return { identityNative, identityNativeSourceSha256 };
 });
 
 export const stageResourceMonitor = Effect.fn("stageResourceMonitor")(function* (input: {
@@ -2630,12 +2396,9 @@ export const stageBrowserSecret = Effect.fn("stageBrowserSecret")(function* (inp
 }) {
   if (input.platform !== "linux") return;
   // The helper links against the host's libsecret, so it can only be built on
-  // Linux; the build script is a no-op elsewhere. A Linux artifact from
-  // another host would ship without it and every v11 cookie import would
-  // report the keyring as unavailable, so refuse rather than package that
-  // silently. `universal` is a mac-only arch the option type still admits;
-  // the helper script rejects it, so it maps to the concrete x64 the Linux
-  // resource monitor uses for the same request.
+  // Linux; the build script is a no-op elsewhere. A Linux artifact from another
+  // host would ship without it and every v11 cookie import would report the
+  // keyring as unavailable, so refuse rather than package that silently.
   const hostPlatform = yield* HostProcess.Platform;
   if (hostPlatform !== "linux") {
     return yield* new LinuxBrowserSecretHostError({ hostPlatform });
@@ -2867,11 +2630,6 @@ function validateBundledClientAssets(clientDir: string) {
   });
 }
 
-// The main-process bundle inlines every JS dependency (see
-// apps/desktop/vite.config.ts), so the packaged app only installs the packages
-// that bundle leaves external: native addons and playwright-core. Everything
-// else already lives inside dist-electron and would only duplicate what the
-// server bundle carries too.
 export function resolveDesktopRuntimeDependencies(
   dependencies: Record<string, string> | undefined,
   catalog: Record<string, string>,
@@ -2917,13 +2675,6 @@ export function resolveDesktopUpdateChannel(version: string): "latest" | "nightl
   return /-nightly\.\d{8}\.\d+$/.test(version) ? "nightly" : "latest";
 }
 
-// Pull request builds (`-pr.<n>.`) and the maintainers' preview train
-// (`-preview.<date>.<run>[.<attempt>]`) are downloaded by hand and never through an
-// updater. Building them without a publish config means electron-builder
-// emits no `latest*.yml`/`nightly*.yml` manifests or blockmaps for them and
-// the app ships without `app-update.yml`, so neither a stable nor a nightly
-// install can be pointed at one of these releases, and the build itself
-// reports that no update feed is configured instead of polling.
 export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(version);
 }
@@ -2982,13 +2733,9 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
         readonly provisioningProfilePath: string;
       }
     | undefined,
-  // Windows only, and false when no Linux CLI archive was handed to the build:
-  // staging skips the archive in that case, and listing a resource whose
-  // source file was never written fails the electron-builder step.
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
   variant?: DesktopPackageVariant,
-  legacyBootstrapBundled = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: DESKTOP_APP_ID,
@@ -3014,9 +2761,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       : {}),
     extraResources: [
       ...DESKTOP_EXTRA_RESOURCES,
-      ...(platform === "mac" && variant !== "preview-companion" && legacyBootstrapBundled
-        ? [JONES_LEGACY_BOOTSTRAP_EXTRA_RESOURCE]
-        : []),
       ...(platform === "linux" ? LINUX_CAPTURE_EXTRA_RESOURCES : []),
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
@@ -3041,12 +2785,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   if (platform === "mac") {
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
-    if (variant !== "preview-companion" && legacyBootstrapBundled) {
-      buildConfig.afterPack = path.join(
-        repoRoot,
-        "scripts/jones/updates/legacy-bootstrap-after-pack.mjs",
-      );
-    }
     buildConfig.mac = {
       target: target === "dmg" ? [target, "zip"] : [target],
       icon: "icon.icns",
@@ -3074,8 +2812,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           name: "T3 Code",
           schemes: ["t3code", "t3code-dev"],
         },
-        // Lets people choose T3 Code as their default web browser, which opens
-        // each link in a new thread's browser panel.
         {
           name: "Web site URL",
           schemes: ["http", "https"],
@@ -3122,20 +2858,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.linux = {
-      // The .deb is built from the same unpacked app after the AppImage.
-      // electron-builder lists both in latest-linux.yml and writes
-      // resources/package-type into the .deb only, so electron-updater updates
-      // each install in its own format.
       target: target === "AppImage" ? [target, "deb"] : [target],
       executableName: "t3code",
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
-      // Required by the .deb control file.
       maintainer: "T3 Tools <hello@t3.codes>",
-      // electron-builder turns these into MimeType=x-scheme-handler/<scheme>;
-      // in the .desktop entry (Exec already gets %U), so browsers can hand
-      // t3code:// OAuth callbacks to the app.
       protocols: [
         {
           name: "T3 Code",
@@ -3150,13 +2878,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     };
     buildConfig.deb = {
       // FPM runs outside the staged app directory, so source paths must be absolute.
-      // AppStream consumers associate this metadata with our t3code.desktop entry.
       fpm: [
         `${path.join(repoRoot, "apps/desktop/resources/linux/com.t3tools.t3code.metainfo.xml")}=/usr/share/metainfo/com.t3tools.t3code.metainfo.xml`,
         `${path.join(repoRoot, "LICENSE")}=/usr/share/doc/t3code/copyright`,
       ],
-      // Electron's runtime libraries. Debian 13 and Ubuntu 24.04 renamed some
-      // for 64-bit time; the old name is the fallback for older releases.
+      // Debian 13 and Ubuntu 24.04 renamed some for 64-bit time; the old name
+      // is the fallback for older releases.
       depends: [
         "libasound2t64 | libasound2",
         "libatspi2.0-0t64 | libatspi2.0-0",
@@ -3175,9 +2902,6 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 
   if (platform === "win") {
     buildConfig.npmRebuild = false;
-    // Keep blockmap-based differential downloads enabled while changing the
-    // installed file topology. The optimization is in the payload shape, not
-    // in trading update bandwidth for install speed.
     buildConfig.nsis = { differentialPackage: true };
     const winConfig: Record<string, unknown> = {
       target: [target],
@@ -3221,10 +2945,9 @@ const assertPlatformBuildResources = Effect.fn("assertPlatformBuildResources")(f
   }
 });
 
-// Copy the Linux CLI release archive into the stage verbatim and record its
-// SHA-256 beside it. The desktop app verifies the digest inside the distro
-// before extracting, and the digest also names the extracted runtime's cache
-// directory, so it must be computed from the exact bytes that ship.
+// The desktop app verifies the digest inside the distro before extracting, and
+// the digest also names the extracted runtime's cache directory, so it must be
+// computed from the exact bytes that ship.
 export const stageWslRuntimeArchive = Effect.fn("stageWslRuntimeArchive")(function* (input: {
   readonly sourceArchivePath: string;
   readonly archivePath: string;
@@ -3263,11 +2986,6 @@ export const parseWslRuntimeArchiveMembers = (listing: string): ReadonlyArray<st
     .map((member) => member.replace(/^\.\//, "").replace(/\/$/, ""))
     .filter((member) => member.length > 0);
 
-// Stage and pack the Windows server sidecar: the bundled server plus a hoisted
-// install of only its runtime-external/native dependency closure for win32.
-// The Windows primary runs from the archive through the asar-aware
-// ELECTRON_RUN_AS_NODE runtime. Shipping one packed archive instead of
-// thousands of loose files is what makes the NSIS install/update fast.
 export const packWindowsServerAsar = Effect.fn("packWindowsServerAsar")(function* (input: {
   readonly sourceDir: string;
   readonly asarPath: string;
@@ -3538,8 +3256,6 @@ export const validateWindowsPackagedPayload = Effect.fn(
   readonly stageDistDir: string;
   readonly appExecutableName: string;
   readonly targetArch: typeof BuildArch.Type;
-  // The version the embedded Linux CLI archive must carry; its top-level
-  // directory is named t3-<version>-linux-<arch>.
   readonly appVersion: string;
   readonly expectWslRuntime?: boolean;
   readonly fileLimit?: number;
@@ -3585,9 +3301,6 @@ export const validateWindowsPackagedPayload = Effect.fn(
 
   const unpackedFiles = yield* Effect.try({
     try: () => {
-      // The entry lookup proves the archive contains the server executable,
-      // while the single header walk identifies every file ASAR redirects to
-      // the unpacked sibling at runtime.
       // @electron/asar resolves entry names using the host path separator.
       // POSIX separators work on Linux/macOS but fail on Windows even when the
       // entry is present in the archive.
@@ -3717,7 +3430,6 @@ export const validateWindowsPackagedPayload = Effect.fn(
     }
     const requiredMembers = [`${stem}/t3`, `${stem}/client`, `${stem}/node_modules`];
     const missingMembers = requiredMembers.filter((member) => !members.includes(member));
-    // node-pty can load a source build or the prebuild for the WSL target.
     const ptyCandidates = [
       `${stem}/node_modules/node-pty/build/Release/pty.node`,
       `${stem}/node_modules/node-pty/prebuilds/linux-${input.targetArch}/pty.node`,
@@ -3733,7 +3445,6 @@ export const validateWindowsPackagedPayload = Effect.fn(
         cause: new Error("WSL runtime archive is not a Linux CLI release archive"),
       });
     }
-    // The CLI archive runs the single-executable, never a loose server bundle.
     const bundleEntry = members.find((member) => member.endsWith("/bin.mjs"));
     if (bundleEntry !== undefined) {
       return yield* invalidWslRuntime(
@@ -3782,30 +3493,13 @@ export const allocateDesktopStageRoot = Effect.fn("allocateDesktopStageRoot")(fu
     prefix: `t3code-desktop-${platform}-stage-`,
     ...(directory === undefined ? {} : { directory }),
   });
-  // Preserve the allocator's cleanup path while passing canonical paths to
-  // electron-builder and its source-bound afterPack verification.
+  // Preserve the allocator's cleanup path while passing canonical paths to electron-builder.
   return yield* fs.realPath(allocatedRoot);
 });
-
-// No complete worker verifier exists yet. Neither a held artifact nor JSON evidence
-// supplied by a caller may substitute for that future in-memory producer capability.
-export function requireJonesPreparationProducer(requested: boolean): void {
-  if (requested)
-    throw new Error(
-      "BUNDLE3 requires a qualified complete preparation producer; the current producer is held.",
-    );
-}
 
 const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   options: ResolvedBuildOptions,
 ) {
-  const preparationRequested = yield* Config.Boolean("JONES_PACK_PREPARATION_BUNDLE").pipe(
-    Config.withDefault(false),
-  );
-  yield* Effect.try({
-    try: () => requireJonesPreparationProducer(preparationRequested),
-    catch: (cause) => new BundleNotSelfContainedError({ exitCode: -1, output: String(cause) }),
-  });
   const repoRoot = yield* RepoRoot;
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -3919,14 +3613,9 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     }
   }
 
-  // Assert against the emitted bundle, not the bundler config. `alwaysBundle`
-  // only forces packages IN, so a transitive dependency of an external package
-  // is bundled by default however the predicate is written — that silently
-  // inlined a native loader (node-gyp-build-optional-packages) while every
-  // list-based test still passed. An inlined native loader resolves its
-  // prebuilds relative to the bundle and quietly falls back to a slower
-  // pure-JS path, so this fails the build rather than shipping a silent
-  // regression.
+  // An inlined native loader resolves its prebuilds relative to the bundle and
+  // quietly falls back to a slower pure-JS path, so this fails the build rather
+  // than shipping a silent regression.
   {
     const chunkNames = (yield* fs.readDirectory(distDirs.serverDist)).filter((entry) =>
       entry.endsWith(".mjs"),
@@ -3953,17 +3642,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
         packages: ["<no module regions found; the bundle scan needs updating>"],
       });
     }
-    // The check above is one-directional: it only proves nothing external got
-    // inlined. A regression to externalizing everything would also pass it,
-    // since source-file regions still exist -- and that is the failure this
-    // whole change exists to prevent, because those packages are not in the
-    // selected sidecar closure and both backends would die on ERR_MODULE_NOT_FOUND.
-    // `effect` is imported by every server module, so it is inlined in any
-    // correctly bundled build.
-    // The list-based check above only sees packages someone already thought to
-    // list. bufferutil and utf-8-validate were inlined for exactly that reason:
-    // native, but absent from the list, so nothing flagged them. Ask the store
-    // what each inlined package actually is instead.
     const nativeInlined: string[] = [];
     for (const name of [...inlinedPackages].sort()) {
       const packageDir = yield* findStorePackageDirectory(repoRoot, name);
@@ -4020,8 +3698,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       options.verbose,
     );
   }
-  // On Windows the server tree ships in the server.asar sidecar instead of
-  // app.asar (see stageWindowsServerSidecar), so the app stage omits it.
   if (options.platform !== "win") {
     yield* fs.copy(distDirs.serverDist, path.join(stageAppDir, "apps/server/dist"));
   }
@@ -4104,10 +3780,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     );
   }
 
-  // Windows splits dependencies per process: app.asar carries only the
-  // desktop main-process externals, while the server bundle's externals live
-  // in the server.asar sidecar (see stageWindowsServerSidecar). macOS and
-  // Linux merge both sets into one app.asar.
   const stageDependencies =
     options.platform === "win"
       ? { ...resolvedDesktopRuntimeDependencies }
@@ -4132,10 +3804,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
       : {}),
   });
-  const legacyBootstrapBundled =
-    bundlesJonesNativeHelper(options.platform, appVersion, options.signed) &&
-    options.variant !== "preview-companion" &&
-    jonesBuildMetadata.jonesSource !== undefined;
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     ...companionPackageMetadata(options.variant),
@@ -4150,7 +3818,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     description:
       "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
     license: "MIT",
-    // Required by the .deb control file.
     homepage: "https://t3.codes",
     author: "T3 Tools",
     main: "apps/desktop/dist-electron/boot.cjs",
@@ -4170,61 +3837,12 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
       options.variant,
-      legacyBootstrapBundled,
     ),
     dependencies: stageDependencies,
     devDependencies: {
       electron: electronVersion,
     },
   };
-
-  const legacyBootstrapSource = stagePackageJson.jonesSource;
-  let legacyNative: JonesLegacyBootstrapNativeInput | undefined;
-  if (legacyBootstrapBundled && options.arch === "arm64") {
-    const native = yield* stageJonesLegacyIdentity({
-      repoRoot,
-      stageRoot,
-      verbose: options.verbose,
-    });
-    const { jonesLegacyMaintenanceSource } = yield* Effect.promise(
-      () => import("../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts"),
-    );
-    legacyNative = { ...native, maintenanceSource: jonesLegacyMaintenanceSource };
-  }
-  const legacyBootstrapBundle =
-    legacyBootstrapBundled && legacyBootstrapSource !== undefined
-      ? yield* Effect.try(() => {
-          const identity = {
-            repository: legacyBootstrapSource.repository,
-            sourceSha: legacyBootstrapSource.sha,
-            sourceTree: legacyBootstrapSource.tree,
-            version: appVersion,
-          };
-          return legacyNative === undefined
-            ? createJonesLegacyBootstrapBundle(identity)
-            : createJonesLegacyBootstrapBundle(identity, legacyNative);
-        })
-      : [];
-  const legacyNativeProof =
-    legacyNative === undefined ? undefined : String(legacyBootstrapBundle[2]!.content);
-  if (legacyNativeProof !== undefined && legacyBootstrapSource !== undefined)
-    yield* Effect.try(() =>
-      readJonesLegacyBootstrapNativeProof(legacyNativeProof, {
-        repository: legacyBootstrapSource.repository,
-        sourceSha: legacyBootstrapSource.sha,
-        sourceTree: legacyBootstrapSource.tree,
-        version: appVersion,
-      }),
-    );
-  for (const file of legacyBootstrapBundle) {
-    const destination = path.join(stageProdResourcesDir, file.relativePath);
-    yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
-    yield* fs.writeFile(
-      destination,
-      typeof file.content === "string" ? Buffer.from(file.content, "utf8") : file.content,
-    );
-    yield* fs.chmod(destination, file.mode);
-  }
 
   const stagePackageJsonString = yield* encodeJsonString(stagePackageJson);
   yield* fs.writeFileString(path.join(stageAppDir, "package.json"), `${stagePackageJsonString}\n`);
@@ -4257,8 +3875,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* stageClerkPasskeyNativeBinaries(stageAppDir, options.platform, options.arch);
   yield* stageKeyringNativeBinaries(stageAppDir, options.platform, options.arch);
 
-  // Only the Windows artifact carries the server sidecar and the WSL runtime;
-  // other platforms ignore the --wsl-runtime input.
   if (options.platform === "win" && windowsServerAsarPath) {
     yield* stageWindowsServerSidecar({
       stageRoot,
@@ -4299,10 +3915,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const buildEnv: NodeJS.ProcessEnv = {
     ...process.env,
   };
-  // Only this build's independently retained proof can authorize the copied native bytes.
-  delete buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF;
-  if (legacyNativeProof !== undefined)
-    buildEnv.JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF = legacyNativeProof;
   buildEnv.npm_config_user_agent = resolvePackageManagerUserAgent(rootPackageJson.packageManager);
   for (const [key, value] of Object.entries(buildEnv)) {
     if (value === "") {
@@ -4379,18 +3991,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     });
   }
 
-  // Prove the packaged bundle is self-contained by loading it the way the WSL
-  // backend does, rather than by reasoning about the emitted source.
-  //
-  // Static analysis kept getting this wrong here. Scanning for bare imports
-  // matched specifiers inside effect's JSDoc examples and inside ajv's runtime
-  // codegen template, and asserting that one sentinel package was inlined
-  // missed a build that inlined `effect` while leaving `yaml` external. Node's
-  // resolver has no such ambiguity: it either finds every import or it does not.
-  //
-  // Only Windows unpacks anything; macOS and Linux keep the whole tree inside
-  // the app asar. Windows validates and executes the separately packed server
-  // sidecar after electron-builder copies it into the final payload.
   if (options.platform === "win") {
     yield* validateWindowsPackagedPayload({
       stageDistDir,
@@ -4419,18 +4019,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       packagedAsar,
       version: appVersion,
       source,
-      bootstrapBundle: legacyBootstrapBundle,
     });
   }
 
   const stageEntries = yield* fs.readDirectory(stageDistDir);
   yield* fs.makeDirectory(options.outputDir, { recursive: true });
-
-  if (legacyNativeProof !== undefined)
-    yield* fs.writeFileString(
-      path.join(options.outputDir, "JONES_LEGACY_BOOTSTRAP_NATIVE_PROOF.json"),
-      legacyNativeProof,
-    );
 
   const copiedArtifacts: string[] = [];
   for (const entry of stageEntries) {

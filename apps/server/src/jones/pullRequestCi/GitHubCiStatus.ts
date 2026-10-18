@@ -10,7 +10,8 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-import * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
+import * as GitHubRequestPolicy from "@t3tools/source-control-github/server/GitHubRequestPolicy";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 
 const CI_RUN_STATUSES = ["in_progress", "queued", "waiting", "pending", "requested"] as const;
@@ -51,7 +52,7 @@ function ciReadReason(error: unknown): string {
 
 /** Read only under the caller's verified credential; error payloads never cross the wire. */
 export const readGitHubCiStatus = (
-  github: Pick<GitHubApi.GitHubApi["Service"], "rest">,
+  github: Pick<GitHubRest.GitHubRest["Service"], "rest">,
   input: {
     readonly cwd: string;
     readonly host: string;
@@ -66,7 +67,7 @@ export const readGitHubCiStatus = (
     const rateLimits = yield* Effect.serviceOption(SourceControlRateLimit.SourceControlRateLimit);
     const rateLimitKey = { provider: SourceControlProviderKind.make("github"), host: input.host };
     let lastLease: number | undefined;
-    const request: GitHubApi.GitHubApi["Service"]["rest"] = (requestInput) => {
+    const request: GitHubRest.GitHubRest["Service"]["rest"] = (requestInput) => {
       if (Option.isNone(rateLimits)) return github.rest(requestInput);
       return rateLimits.value.check(rateLimitKey).pipe(
         Effect.flatMap((lease) => {
@@ -87,7 +88,7 @@ export const readGitHubCiStatus = (
         Effect.catchTags({
           SourceControlRateLimitPausedError: (cause) =>
             Effect.fail(
-              new GitHubApi.GitHubApiRateLimitError({
+              new GitHubRequestPolicy.GitHubApiRateLimitError({
                 host: input.host,
                 operation: "PullRequestCiStatus.read",
                 retryAt: cause.retryAt,
