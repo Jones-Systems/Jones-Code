@@ -56,3 +56,20 @@ or architecture. Release integration must select the target helper, retain its
 manifest and bind the installed artifact before enabling placement. A compiled
 helper or passing rejection test does not prove delegation, positive placement,
 live responsiveness, or installed release provenance.
+
+## Systemd descendant binding (v2 source contract)
+
+Version 2 adds `workloadMode: "systemd-descendant"`. Control and workload remain
+separate sibling cgroups with pinned identities. Workload validation requires a
+readable `cpu.max`, but no writable root `cgroup.procs`. The native helper's
+`--verify-descendant` mode accepts workload only, verifies strict descendant
+membership through directory descriptors without following symlinks, resets
+workload scheduling and execs the payload. It never writes `cgroup.procs` in this
+mode. Version 1 retains its exact move behavior.
+
+This mode must run inside the final AgentScope systemd scope. The current outer
+PTY hook is not that composition and must be removed when the decorator is
+wired. Until AgentScope, ACP session termination and the shared spawner are
+qualified together, v2 is source preparation, not an enabled production path.
+Keep memory limits, OOM reporting, restart cleanup and session descendant
+termination load-bearing. Short-lived command overhead remains unqualified.
