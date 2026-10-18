@@ -1,5 +1,7 @@
 import {
   WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
+  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  type WorkstreamsRegistrationContextV2Response,
   type WorkstreamsRegistrationContextBuild,
   type WorkstreamsRegistrationContextGitHubSource,
   WorkstreamsRegistrationContextResponse,
@@ -91,3 +93,22 @@ export const makeRegistrationFixture = (overrides: Partial<RegistrationContextPo
   };
   return { ports, reads, service: makeWorkstreamsRegistrationContext(ports) };
 };
+
+export const remoteT3Source: WorkstreamsRegistrationContextT3Source = {
+  ...t3Source,
+  source_instance_id: "source-t3-remote",
+  authority_namespace: "authority-t3-remote",
+  store_generation: 23,
+  build: { ...build, sha: "c".repeat(40), tree: "d".repeat(40) },
+};
+export const v2Response: WorkstreamsRegistrationContextV2Response = {
+  ...response,
+  protocol: WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
+  sources: [remoteT3Source, githubSource, t3Source],
+};
+export const makeV2RegistrationFixture = (overrides: Partial<RegistrationContextPorts> = {}) =>
+  makeRegistrationFixture({
+    registrationContextVersion: "2.0.0",
+    readRegistrationContext: Effect.succeed(encodeFixtureJson(v2Response)),
+    ...overrides,
+  });

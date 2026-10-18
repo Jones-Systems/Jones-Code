@@ -1,6 +1,7 @@
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
+import { toastManager } from "../../components/ui/toast";
 import type {
   DesktopBridge,
   DesktopUpdateActionResult,
@@ -59,7 +60,7 @@ export async function installLocalDesktopUpdate(
   const blocked = getJonesDesktopUpdateBlockedMessage(state, "install");
   if (blocked) return Promise.reject(new Error(blocked));
   if (!state?.jones) return bridge.installUpdate();
-  const campaignId = await prepareLocalFleetCampaign(bridge, state);
+  const campaignId = await prepareOptionalLocalFleetCampaign(bridge, state);
   return campaignId === undefined
     ? bridge.installUpdate(state.jones.stagedHandle)
     : bridge.installUpdate(state.jones.stagedHandle, campaignId);
@@ -83,7 +84,7 @@ export async function downloadLocalDesktopUpdate(
     artifactId: provenance.artifactId,
     sourceSha: provenance.sourceSha,
   });
-  if (result.completed) await prepareLocalFleetCampaign(bridge, result.state);
+  if (result.completed) await prepareOptionalLocalFleetCampaign(bridge, result.state);
   return result;
 }
 
@@ -123,6 +124,23 @@ export function discardLocalDesktopUpdate(
   if (!bridge.discardUpdate || !canDiscardLocalDesktopUpdate(state) || !state?.jones?.stagedHandle)
     return Promise.reject(new Error("The downloaded selection cannot be discarded right now."));
   return bridge.discardUpdate(state.jones.stagedHandle);
+}
+
+async function prepareOptionalLocalFleetCampaign(
+  bridge: Pick<DesktopBridge, "fleetUpdates">,
+  state: DesktopUpdateState,
+): Promise<string | undefined> {
+  try {
+    return await prepareLocalFleetCampaign(bridge, state);
+  } catch {
+    toastManager.add({
+      type: "warning",
+      title: "Enrolled updates could not be prepared",
+      description:
+        "Installing this Mac only. Retry enrolled environments from Updates after restart.",
+    });
+    return undefined;
+  }
 }
 
 async function prepareLocalFleetCampaign(

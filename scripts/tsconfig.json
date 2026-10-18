@@ -7,14 +7,7 @@
   },
   "include": [
     "**/*.ts",
-    "../apps/desktop/src/jones/updates/jonesLegacyBootstrapSource.ts",
-    "../apps/desktop/src/jones/updates/jonesLegacyMaintenanceSource.ts",
     "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
-    "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
-    "../apps/desktop/src/jones/updates/jonesColdPairSource.ts",
-    "../apps/desktop/src/jones/updates/jonesColdReceiverSource.ts",
-    "../apps/desktop/src/jones/updates/jonesColdOwnerSource.ts",
-    "../apps/desktop/src/jones/updates/jonesPreparationWorkerSource.ts",
-    "jones/updates/legacy-bootstrap-after-pack.d.mts"
+    "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts"
   ]
 }

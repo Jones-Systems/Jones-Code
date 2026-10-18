@@ -10,32 +10,21 @@ import {
   type NativeProviderEvidence as NativeProviderEvidencePort,
 } from "./service.ts";
 
+import {
+  matchesSettlementProof,
+  NativeProviderMetadataSnapshot,
+  readNativeProviderCommandMetadata,
+  sameNativeProviderEvent,
+  sameNativeProviderReceipt,
+  SettlementProofJson,
+} from "./settlementProof.ts";
+
 export { NativeProviderEvidenceReadError } from "./service.ts";
 
 export class NativeProviderEvidence extends Context.Service<
   NativeProviderEvidence,
   NativeProviderEvidencePort
 >()("t3/jones/workstreams/nativeProvider/evidence/NativeProviderEvidence") {}
-
-const MetadataRow = Schema.Struct({
-  eventId: Schema.String,
-  commandId: Schema.NullOr(Schema.String),
-  aggregateKind: Schema.Literals(["thread", "project"]),
-  aggregateId: Schema.String,
-  sequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  type: Schema.String,
-  occurredAt: Schema.String,
-  applicationEventVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-});
-const ReceiptRow = Schema.Struct({
-  commandId: Schema.String,
-  aggregateKind: Schema.Literals(["thread", "project"]),
-  aggregateId: Schema.String,
-  commandType: Schema.String,
-  acceptedAt: Schema.String,
-  resultSequence: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  status: Schema.Literals(["accepted", "rejected"]),
-});
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -46,43 +35,42 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const receiptRows = yield* sql`SELECT command_id AS "commandId",
-          aggregate_kind AS "aggregateKind", aggregate_id AS "aggregateId",
-          command_type AS "commandType", accepted_at AS "acceptedAt",
-          result_sequence AS "resultSequence", status
-          FROM orchestration_command_receipts WHERE command_id = ${commandId}`.pipe(
-            Effect.mapError(
-              () => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
-            ),
+          const rows = yield* readNativeProviderCommandMetadata(commandId).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
           );
-          const receipts = yield* Schema.decodeUnknownEffect(Schema.Array(ReceiptRow))(
-            receiptRows,
+          const snapshot = yield* Schema.decodeUnknownEffect(NativeProviderMetadataSnapshot)(
+            rows,
           ).pipe(
             Effect.mapError(
               () => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" }),
             ),
           );
-          if (receipts.length > 1)
+          if (snapshot.receipts.length > 1)
             return yield* new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" });
-          // Retain wrong-domain rows and the 257th overflow sentinel for consumer refusal.
-          const metadataRows = yield* sql`SELECT event_id AS "eventId", command_id AS "commandId",
-          aggregate_kind AS "aggregateKind", stream_id AS "aggregateId", sequence,
-          event_type AS "type", occurred_at AS "occurredAt",
-          application_event_version AS "applicationEventVersion"
-          FROM orchestration_events WHERE command_id = ${commandId}
-          ORDER BY sequence ASC LIMIT 257`.pipe(
-            Effect.mapError(
-              () => new NativeProviderEvidenceReadError({ reason: "reader_unavailable" }),
-            ),
-          );
-          const events = yield* Schema.decodeUnknownEffect(Schema.Array(MetadataRow))(
-            metadataRows,
-          ).pipe(
-            Effect.mapError(
-              () => new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" }),
-            ),
-          );
-          return { receipt: Option.fromUndefinedOr(receipts[0]), events };
+          const receipt = snapshot.receipts[0];
+          if (receipt === undefined) return { receipt: Option.none(), events: snapshot.events };
+          const proofRows = yield* sql<{
+            thread_id: string;
+            native_action: "settle" | "unsettle";
+            proof_json: string | null;
+          }>`
+            SELECT thread_id, native_action, proof_json FROM jones_workstreams_settlement_proofs
+            WHERE native_command_id = ${commandId}`;
+          const row = proofRows[0];
+          if (row === undefined || row.proof_json === null)
+            return { receipt: Option.some(receipt), events: snapshot.events };
+          const proof = Schema.decodeUnknownOption(SettlementProofJson)(row.proof_json);
+          if (
+            Option.isNone(proof) ||
+            !matchesSettlementProof(proof.value, commandId, row.thread_id, row.native_action) ||
+            !sameNativeProviderReceipt(proof.value.receipt, receipt) ||
+            snapshot.events.some(
+              (event) =>
+                !proof.value.events.some((stored) => sameNativeProviderEvent(event, stored)),
+            )
+          )
+            return yield* new NativeProviderEvidenceReadError({ reason: "invalid_snapshot" });
+          return { receipt: Option.some(receipt), events: proof.value.events };
         }),
       )
       .pipe(

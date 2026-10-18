@@ -233,7 +233,13 @@ it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations();
     yield* seedReferencedRows;
-    const jones = yield* Effect.forEach([...rebuiltTables, ...rebuiltChildren], readTable);
+    yield* sql`INSERT INTO jones_workstreams_settlement_proofs VALUES ('command', 'thread', 'settle', '{}')`;
+    const retainedTables = [
+      ...rebuiltTables,
+      ...rebuiltChildren,
+      "jones_workstreams_settlement_proofs",
+    ];
+    const jones = yield* Effect.forEach(retainedTables, readTable);
 
     assert.strictEqual(yield* pruneSettled, 1);
     yield* sql`DELETE FROM orchestration_events WHERE event_id = 'event'`;
@@ -244,10 +250,7 @@ it.effect("upstream pruning and deletes are not blocked by Jones evidence", () =
 
     // Jones rows keep the upstream IDs as plain values; readers treat a missing
     // upstream row as absent.
-    assert.deepStrictEqual(
-      yield* Effect.forEach([...rebuiltTables, ...rebuiltChildren], readTable),
-      jones,
-    );
+    assert.deepStrictEqual(yield* Effect.forEach(retainedTables, readTable), jones);
   }).pipe(Effect.provide(memory)),
 );
 
@@ -293,4 +296,37 @@ it.effect("migration 105 preserves released rows, rowids, triggers and Jones ref
     assert.strictEqual(yield* pruneSettled, 1);
     assert.deepStrictEqual(yield* runJonesMigrations(through105), []);
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "physical evidence upgrades after released migration 107 without rewriting its ledger",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 107));
+      const released = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
+      assert.strictEqual(
+        released.find((row) => row.migration_id === 107)?.name,
+        "WorkstreamsSettlementProofs",
+      );
+      const upstreamLedger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+        [108, "PhysicalProcessEvidence"],
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
+        released,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        upstreamLedger,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM jones_physical_process_evidence`, []);
+      assert.deepStrictEqual(
+        yield* sql`PRAGMA foreign_key_list('jones_physical_process_evidence')`,
+        [],
+      );
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    }).pipe(Effect.provide(memory)),
 );

@@ -94,6 +94,92 @@ describe("voice review server bridge", () => {
       voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: "[]" }),
     ).toBeNull();
   });
+  it("parses exact renewable DPoP enrollments and fails closed on malformed allowlists", () => {
+    const identity = { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" };
+    const env = {
+      T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
+      T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/fixture/token",
+      T3CODE_VOICE_REVIEW_SOURCE_ID: "microphone",
+      T3CODE_VOICE_REVIEW_ALLOWED_DPOP_IDENTITIES: JSON.stringify([identity]),
+    };
+    expect(voiceReviewConfigFromEnv(env)).toMatchObject({
+      allowed_session_ids: new Set(),
+      allowed_dpop_identities: [identity],
+    });
+    for (const invalid of [
+      [],
+      [identity, identity],
+      [{}],
+      ["cloud-connect"],
+      [{ ...identity, subject: "*" }],
+      [{ ...identity, proof_key_thumbprint: "" }],
+      [{ ...identity, proof_key_thumbprint: " key" }],
+      [{ ...identity, extra: true }],
+      [{ ...identity, subject: "cloud\u0000connect" }],
+      null,
+    ]) {
+      expect(
+        voiceReviewConfigFromEnv({
+          ...env,
+          T3CODE_VOICE_REVIEW_ALLOWED_DPOP_IDENTITIES: JSON.stringify(invalid),
+        }),
+      ).toBeNull();
+    }
+    expect(
+      voiceReviewConfigFromEnv({
+        ...env,
+        T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["legacy"]',
+      })?.allowed_session_ids.has("legacy"),
+    ).toBe(true);
+    for (const sessions of ['["*"]', '["same","same"]', "invalid"]) {
+      expect(
+        voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: sessions }),
+      ).toBeNull();
+    }
+  });
+  it("keeps an enrolled DPoP device authorized across renewal without trusting other devices", async () =>
+    withFixture(async (tokenFile) => {
+      const fetcher = vi.fn<typeof fetch>(async () => Response.json(draft));
+      const bridge = makeVoiceReviewBridge(
+        {
+          ...config(tokenFile),
+          allowed_session_ids: new Set(),
+          allowed_dpop_identities: [
+            { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" },
+          ],
+        },
+        fetcher,
+      );
+      const device: EnvironmentSessionPrincipalShape = {
+        ...principal,
+        method: "dpop-access-token",
+        subject: "cloud-connect",
+        proofKeyThumbprint: "fixture-key",
+      };
+      for (const session of ["before-renewal", "after-renewal"]) {
+        await expect(
+          bridge.get({ ...device, sessionId: AuthSessionId.make(session) }, "capture"),
+        ).resolves.toEqual(draft);
+      }
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      for (const denied of [
+        { ...device, proofKeyThumbprint: "other-key" },
+        { ...principal, method: "dpop-access-token" as const, subject: "cloud-connect" },
+        { ...device, subject: "another-subject" },
+        { ...device, method: "bearer-access-token" as const },
+        { ...device, scopes: new Set<never>() },
+      ]) {
+        await expect(bridge.get(denied, "capture")).rejects.toBeInstanceOf(
+          VoiceReviewForbiddenError,
+        );
+      }
+      await expect(
+        bridge.mutate({ ...device, scopes: new Set(["orchestration:read"]) }, "capture", "pause", {
+          expected_revision: 1,
+        }),
+      ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    }));
   it("checks session identity and read/operate scopes before credential access or requests", async () => {
     const fetcher = vi.fn<typeof fetch>();
     await expect(

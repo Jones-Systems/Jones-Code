@@ -1,4 +1,8 @@
 import {
+  WorkstreamsNativeOwnerRequest,
+  WorkstreamsNativeOwnerResponse,
+} from "./workstreamsNativeOwner.ts";
+import {
   ImportedHistoryStart,
   ImportedHistoryReview,
   ImportedHistoryOutcome,
@@ -54,7 +58,7 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
-import { WorkstreamsRegistrationContextResponse } from "./workstreamsRegistrationContext.ts";
+import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
   WorkstreamsNativeAttestationRequest,
@@ -343,7 +347,7 @@ export const makeJonesHttpGroups = ({
     .add(
       HttpApiEndpoint.get("registrationContext", "/api/workstreams/registration-context", {
         headers: OptionalBearerHeaders,
-        success: WorkstreamsRegistrationContextResponse,
+        success: WorkstreamsRegistrationContextAcceptedResponse,
         error: [
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
@@ -353,6 +357,18 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
+    .add(
+      HttpApiEndpoint.post("ownerOperations", "/api/workstreams/native/owner/v1/operations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeOwnerRequest,
+        success: WorkstreamsNativeOwnerResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.get("context", "/api/workstreams/native/v1/context", {
         headers: OptionalBearerHeaders,

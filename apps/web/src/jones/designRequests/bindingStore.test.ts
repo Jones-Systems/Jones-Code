@@ -1,3 +1,4 @@
+import { EnvironmentHttpConflictError } from "@t3tools/contracts";
 import { DESIGN_REQUEST_HELD_REASONS } from "@t3tools/contracts/jones/designRequests";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -86,6 +87,16 @@ describe("design request registry status", () => {
     expect(registryStatusFromError({ _tag: "ResponseError", response: { status: 404 } })).toBe(
       "unsupported",
     );
+    expect(
+      registryStatusFromError(
+        new EnvironmentHttpConflictError({ message: "workstreams_not_configured" }),
+      ),
+    ).toBe("unsupported");
+    expect(
+      registryStatusFromError(
+        new EnvironmentHttpConflictError({ message: "workstream_cursor_stale" }),
+      ),
+    ).toBe("error");
     expect(registryStatusFromError(new Error("network"))).toBe("error");
   });
 
