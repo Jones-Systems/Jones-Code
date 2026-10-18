@@ -1417,9 +1417,7 @@
     },
     {
       "id": "jones-runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
