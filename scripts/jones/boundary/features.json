@@ -858,6 +858,10 @@
         "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts"
       ],
       "scope": "Inactive Jones-owned ordinary-checkout persistence foundation: canonical target identity, sparse birth-bound admission/replay and executor-participant journal, CAS and conservative unknown fencing, migration 109 with no upstream foreign keys or payload changes. No runtime admission/execution hooks or provider retirement authority are installed by this foundation. Includes inactive accepted-intent transaction hooks and reciprocal native/deletion adapters. Production composition and physical execution remain separate; no positive executor authority is installed."
+    },
+    {
+      "id": "runtime-operation-permit",
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     }
   ]
 }
