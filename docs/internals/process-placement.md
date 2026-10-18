@@ -6,6 +6,13 @@ of the terminal payload environment; invalid required placement fails before
 node-pty spawns the shell. Unconfigured terminals retain their original command
 and lifecycle. This hook preserves terminal options and native process ownership.
 
+This is not end-to-end terminal placement: the terminal manager may supply an
+AgentScope command whose later systemd-run moves the shell out of workload.
+The scope also supplies memory limits, OOM reporting and restart ownership for
+agents; disabling it is not an accepted placement integration. Preserve those
+guarantees when defining the shared workload-parent/lifecycle contract before
+enabling the placement binding.
+
 The remaining placement modules are preparation for a server launch boundary.
 They are not connected to the Jones Code launcher, provider adapters, or
 telemetry. Setting a placement environment variable alone does not isolate the
