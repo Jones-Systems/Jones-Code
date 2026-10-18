@@ -1,0 +1,11 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "runtime-operation-permit",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.ts",
+    "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
