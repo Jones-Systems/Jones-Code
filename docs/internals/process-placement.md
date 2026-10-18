@@ -1,9 +1,15 @@
 # Process placement boundary
 
-The placement modules are preparation for a server launch boundary. They are
-not connected to the Jones Code launcher, provider adapters, terminals, or
-telemetry. Setting a placement environment variable alone does not isolate a
-Jones Code process. Integration must cover every launch route before an
+The native terminal adapter routes configured PTY launches through the workload
+placement helper. The binding comes from the server environment, independently
+of the terminal payload environment; invalid required placement fails before
+node-pty spawns the shell. Unconfigured terminals retain their original command
+and lifecycle. This hook preserves terminal options and native process ownership.
+
+The remaining placement modules are preparation for a server launch boundary.
+They are not connected to the Jones Code launcher, provider adapters, or
+telemetry. Setting a placement environment variable alone does not isolate the
+Jones Code server. Integration must cover every launch route before an
 installed server can advertise or require placement.
 
 Placement belongs to the environment that owns execution, regardless of the
@@ -32,7 +38,7 @@ not promise priority for every runtime thread.
 
 The Effect spawner wrapper prepares workload commands and permits explicitly
 marked control commands. It is not a complete process interception mechanism:
-SDK-owned children, PTYs, launcher replacement and rollback, and telemetry need
+SDK-owned children, launcher replacement and rollback, and telemetry need
 integration at their owning boundaries. Provider tools normally inherit their
 parent's cgroup; independently launched agent roots need their own wrapper.
 

@@ -1,3 +1,4 @@
+import * as ProcessPlacementPty from "./jones/processPlacement/processPlacementPty.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
 import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
@@ -248,7 +249,7 @@ const layerProviderEventLoggers = Layer.effect(
   }),
 );
 
-const layerPtyAdapter = NodePtyAdapter.layer;
+const layerPtyAdapter = ProcessPlacementPty.layer.pipe(Layer.provide(NodePtyAdapter.layer));
 
 const layerServerSettings = ServerSettings.layer.pipe(
   Layer.provide(ServerSecretStore.layer),

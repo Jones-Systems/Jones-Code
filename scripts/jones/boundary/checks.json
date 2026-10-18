@@ -286,10 +286,11 @@
         "apps/server/src/jones/processPlacement/processPlacement.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
-        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
+        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementPty.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
+        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts apps/server/src/jones/processPlacement/processPlacementPty.test.ts apps/server/src/terminal/NodePtyAdapter.test.ts"
       ]
     },
     {

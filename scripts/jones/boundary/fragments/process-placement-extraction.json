@@ -9,7 +9,9 @@
     "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
     "apps/server/src/jones/processPlacement/processPlacementSpawner.ts",
     "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-    "apps/server/src/jones/processPlacement/qualificationPayload.mjs"
+    "apps/server/src/jones/processPlacement/qualificationPayload.mjs",
+    "apps/server/src/jones/processPlacement/processPlacementPty.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacementPty.ts"
   ],
   "hookPaths": [],
   "tombstones": [
@@ -20,5 +22,10 @@
     "apps/server/src/process/processPlacementSpawner.test.ts",
     "apps/server/src/process/processPlacementSpawner.ts"
   ],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacementPty.ts"
+    }
+  ]
 }
