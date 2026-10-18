@@ -6,7 +6,13 @@ import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
 
 export const RELEASE_CUSTODY = "immutable-by-api" as const;
+/**
+ * The only file a release may carry as `host_binding`: the installer generates
+ * it from the owner's account binding, so it has no exact source blob.
+ */
+export const HOST_BINDING_PATH = "tools/decision-snapshot-sources.json" as const;
 const sha256 = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+const commit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const relative = Schema.String.check(
   Schema.isMaxLength(512),
   Schema.isPattern(/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/),
@@ -40,9 +46,19 @@ const ReleaseManifest = Schema.Struct({
   entrypoint: Schema.Literal("tools/decision-snapshot.py"),
   custody: Schema.Literal(RELEASE_CUSTODY),
   external_runtime: Schema.Struct({
-    python: Schema.Literal("/usr/bin/python3"),
+    python: Schema.String.check(
+      Schema.isMaxLength(4096),
+      Schema.makeFilter(
+        (value) =>
+          NodePath.posix.isAbsolute(value) &&
+          !value.includes("\0") &&
+          NodePath.posix.normalize(value) === value &&
+          !value.split("/").includes("..") &&
+          value !== "/",
+      ),
+    ),
     stdlib: Schema.Literal(true),
-    account_native_bindings: Schema.Literal("tools/decision-snapshot-sources.json"),
+    account_native_bindings: Schema.Literal(HOST_BINDING_PATH),
   }),
   files: Schema.Array(
     Schema.Struct({
@@ -53,8 +69,18 @@ const ReleaseManifest = Schema.Struct({
         Schema.Struct({
           kind: Schema.Literal("source"),
           repository: Schema.Literal("Jones-Systems/Codex-V3"),
-          commit: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+          commit,
           path: relative,
+        }),
+        // Generated content: the entry's sha256 and size bind the bytes, and
+        // `generator` names the exact source that produced them.
+        Schema.Struct({
+          kind: Schema.Literal("host_binding"),
+          generator: Schema.Struct({
+            repository: Schema.Literal("Jones-Systems/Codex-V3"),
+            commit,
+            path: relative,
+          }),
         }),
         Schema.Struct({
           kind: Schema.Literal("fixture"),
@@ -73,6 +99,7 @@ export interface CollectorBinding {
   readonly allowFixtureProvenance?: boolean;
 }
 export interface VerifiedRelease {
+  readonly python: string;
   readonly entrypoint: string;
   readonly fingerprint: string;
 }
@@ -126,7 +153,10 @@ export async function verifyRelease(binding: CollectorBinding): Promise<Verified
   if (
     manifest.release_id !== binding.releaseId ||
     (binding.allowFixtureProvenance !== true &&
-      manifest.files.some((file) => file.provenance.kind === "fixture"))
+      manifest.files.some((file) => file.provenance.kind === "fixture")) ||
+    manifest.files.some(
+      (file) => file.provenance.kind === "host_binding" && file.path !== HOST_BINDING_PATH,
+    )
   )
     throw new ReleaseMismatch();
   const files = new Map(manifest.files.map((item) => [item.path, item]));
@@ -165,7 +195,12 @@ export async function verifyRelease(binding: CollectorBinding): Promise<Verified
         continue;
       }
       const expected = files.get(path);
-      if (!expected || stat.size !== expected.size_bytes || stat.size > 4_194_304)
+      if (
+        !expected ||
+        stat.size !== expected.size_bytes ||
+        stat.size > 4_194_304 ||
+        (expected.provenance.kind === "host_binding" && (stat.mode & 0o111) !== 0)
+      )
         throw new ReleaseMismatch();
       total += stat.size;
       if (total > 33_554_432) throw new ReleaseMismatch();
@@ -182,6 +217,7 @@ export async function verifyRelease(binding: CollectorBinding): Promise<Verified
   if (seen.size !== files.size + 1 || [...files.keys()].some((file) => !seen.has(file)))
     throw new ReleaseMismatch();
   return {
+    python: manifest.external_runtime.python,
     entrypoint: NodePath.join(root, manifest.entrypoint),
     fingerprint: NodeCrypto.createHash("sha256").update(identities.join("\n")).digest("hex"),
   };

@@ -7,6 +7,7 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { jonesMigrationEntries } from "./JonesMigrations.ts";
 import { runJonesMigrations } from "./JonesMigrationGuard.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import Jones001 from "./Migrations/001_JonesWorktreeOwnershipLeases.ts";
@@ -438,4 +439,101 @@ it.effect(
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* readLedger, ledger);
     }).pipe(Effect.provide(memory)),
+);
+
+const legacySettlementAssociation = Schema.fromJsonString(
+  Schema.Struct({
+    identity: Schema.Struct({ native_id: Schema.String }),
+    native_action: Schema.Literals(["settle", "unsettle"]),
+  }),
+);
+
+it.effect("migration 107 backfills only complete attributable native settlement batches", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 107));
+    const at = "2026-01-01T00:00:00.000Z";
+    const cases = [
+      "settle",
+      "unsettle",
+      "rejected",
+      "pruned",
+      "missing-receipt",
+      "mismatched-tail",
+      "unstarted",
+    ] as const;
+    for (const [index, kind] of cases.entries()) {
+      const command = `native-${kind}`;
+      const action = kind === "unsettle" ? "unsettle" : "settle";
+      const association = yield* Schema.encodeEffect(legacySettlementAssociation)({
+        identity: { native_id: "thread" },
+        native_action: action,
+      });
+      yield* sql`INSERT INTO workstreams_native_attempts VALUES (
+        'owner', 'principal', ${kind}, ${association}, ${"a".repeat(64)}, ${"b".repeat(64)}, '{}', ${command}, ${at}, ${kind === "unstarted" ? null : at})`;
+      const start = index * 3 + 1;
+      if (kind !== "missing-receipt")
+        yield* sql`INSERT INTO orchestration_command_receipts
+          (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status, error)
+          VALUES (${command}, 'thread', 'thread', ${`thread.${action}`}, ${at}, ${start + 1}, ${kind === "rejected" ? "rejected" : "accepted"}, NULL)`;
+      if (kind !== "pruned" && kind !== "rejected") {
+        for (const [offset, type] of [
+          action === "settle" ? "thread.settled" : "thread.unsettled",
+          "thread.unpinned",
+        ].entries())
+          yield* sql`INSERT INTO orchestration_events
+            (sequence, event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+             command_id, actor_kind, payload_json, metadata_json, application_event_version)
+            VALUES (${start + offset}, ${`${command}-${offset}`}, 'thread', 'thread', ${start + offset}, ${type},
+              ${kind === "mismatched-tail" && offset === 1 ? "2026-01-02T00:00:00.000Z" : at},
+              ${command}, 'user', '{}', '{}', 2)`;
+      }
+    }
+    const attempts = yield* sql`SELECT * FROM workstreams_native_attempts ORDER BY command_id`;
+    const events = yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`;
+    const receipts = yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`;
+    const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      [107, "WorkstreamsSettlementProofs"],
+      [108, "PhysicalProcessEvidence"],
+    ]);
+    const proofs = yield* sql<{
+      native_command_id: string;
+      proof_json: string | null;
+    }>`SELECT native_command_id, proof_json FROM jones_workstreams_settlement_proofs`;
+    assert.strictEqual(proofs.length, cases.length);
+    for (const kind of cases)
+      assert.strictEqual(
+        proofs.find((row) => row.native_command_id === `native-${kind}`)!.proof_json !== null,
+        kind === "settle" || kind === "unsettle" || kind === "rejected",
+        kind,
+      );
+    assert.deepEqual(
+      yield* sql`SELECT * FROM workstreams_native_attempts ORDER BY command_id`,
+      attempts,
+    );
+    assert.deepEqual(yield* sql`SELECT * FROM orchestration_events ORDER BY sequence`, events);
+    assert.deepEqual(
+      yield* sql`SELECT * FROM orchestration_command_receipts ORDER BY command_id`,
+      receipts,
+    );
+    assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, ledger);
+    assert.deepEqual(
+      yield* sql`SELECT * FROM pragma_foreign_key_list('jones_workstreams_settlement_proofs')`,
+      [],
+    );
+    const plan = yield* sql<{
+      detail: string;
+    }>`EXPLAIN QUERY PLAN SELECT proof_json FROM jones_workstreams_settlement_proofs WHERE native_command_id = 'native-settle'`;
+    assert.match(plan.map(({ detail }) => detail).join("; "), /^SEARCH .* USING INDEX /);
+    for (const statement of [
+      sql`UPDATE jones_workstreams_settlement_proofs SET proof_json = '{}' WHERE native_command_id = 'native-settle'`,
+      sql`UPDATE jones_workstreams_settlement_proofs SET thread_id = 'other' WHERE native_command_id = 'native-pruned'`,
+      sql`DELETE FROM jones_workstreams_settlement_proofs`,
+      sql`INSERT OR REPLACE INTO jones_workstreams_settlement_proofs SELECT * FROM jones_workstreams_settlement_proofs WHERE native_command_id = 'native-settle'`,
+    ])
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(statement)));
+    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+  }).pipe(Effect.provide(memory)),
 );

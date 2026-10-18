@@ -302,15 +302,74 @@ describe("Jones local desktop update UI", () => {
     ]);
   });
 
-  it("blocks installation when durable fleet state cannot be read", async () => {
+  it("installs locally with a safe warning when durable fleet state cannot be read", async () => {
     const bridge = {
-      fleetUpdates: vi.fn().mockRejectedValue(new Error("journal unavailable")),
-      installUpdate: vi.fn(),
+      fleetUpdates: vi.fn().mockRejectedValue(new Error("secret /private/journal unavailable")),
+      installUpdate: vi.fn().mockResolvedValue(result()),
     };
-    await expect(installLocalDesktopUpdate(bridge, downloaded)).rejects.toThrow(
-      "journal unavailable",
-    );
-    expect(bridge.installUpdate).not.toHaveBeenCalled();
+    toast.add.mockClear();
+    await expect(installLocalDesktopUpdate(bridge, downloaded)).resolves.toEqual(result());
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("downloaded-1.1.0");
+    expect(toast.add).toHaveBeenCalledWith({
+      type: "warning",
+      title: "Enrolled updates could not be prepared",
+      description:
+        "Installing this Mac only. Retry enrolled environments from Updates after restart.",
+    });
+  });
+
+  it("installs locally when enrolled campaign preparation fails", async () => {
+    const state: DesktopUpdateState = {
+      ...downloaded,
+      jones: {
+        ...downloaded.jones!,
+        provenance: {
+          repository: "Jones-Systems/Jones-Code",
+          sourceSha: "a".repeat(40),
+          sourceTree: "b".repeat(40),
+          workflow: "artifact-desktop-mac.yml",
+          runId: 123,
+          runAttempt: 1,
+          artifactId: 456,
+          artifactDigest: "c".repeat(64),
+          platform: "darwin",
+          architecture: "arm64",
+        },
+      },
+    };
+    const bridge = {
+      fleetUpdates: vi.fn(
+        async (
+          request: Parameters<
+            NonNullable<import("@t3tools/contracts").DesktopBridge["fleetUpdates"]>
+          >[0],
+        ) => {
+          if (request.action === "prepare") throw new Error("secret /private/campaign");
+          return Schema.decodeUnknownSync(FleetDesktopState)({
+            schema: 1,
+            campaigns: [],
+            enrollments: [
+              {
+                enrollmentId: "11111111-1111-4111-8111-111111111111",
+                environmentId: "remote-host",
+                enabled: true,
+                continueRunningThreads: false,
+              },
+            ],
+          });
+        },
+      ),
+      installUpdate: vi.fn().mockResolvedValue(result(state)),
+    };
+    toast.add.mockClear();
+    await expect(installLocalDesktopUpdate(bridge, state)).resolves.toEqual(result(state));
+    expect(bridge.fleetUpdates.mock.calls.map(([request]) => request.action)).toEqual([
+      "read",
+      "prepare",
+    ]);
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("downloaded-1.1.0");
+    expect(toast.add).toHaveBeenCalledOnce();
+    expect(JSON.stringify(toast.add.mock.calls)).not.toMatch(/secret|private/);
   });
 
   it("installs the downloaded handle even when another version is available", async () => {

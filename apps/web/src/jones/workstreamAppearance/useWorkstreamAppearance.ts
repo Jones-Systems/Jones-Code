@@ -9,8 +9,10 @@ import {
 } from "@t3tools/client-runtime/state/workstreams";
 import * as Effect from "effect/Effect";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { canEditWorkstreams } from "../../components/workstreams/nativeWorkstreamActions";
 import { PrimaryEnvironmentHttpClient } from "../../environments/primary/httpClient";
 import { runPrimaryHttp } from "../../lib/runtime";
+import { WorkstreamActionError } from "../workstreams/workstreamActionSnapshot";
 
 export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
   const key = data
@@ -18,9 +20,11 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
       JSON.stringify(data.items.map((item) => item.workstreamId))
     : null;
   const current = useRef(key);
+  const latest = useRef(data);
   useLayoutEffect(() => {
     current.current = key;
-  }, [key]);
+    latest.current = data;
+  }, [key, data]);
   const [state, setState] = useState<{
     key: string | null;
     writable: boolean;
@@ -84,6 +88,8 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
     colors: state.key === key ? state.colors : new Map<string, WorkstreamAppearance>(),
     save: async (input: WorkstreamAppearanceWrite) => {
       const started = key;
+      // An open dialog keeps an earlier save; check the snapshot as it is now, before any request.
+      if (!canEditWorkstreams(latest.current)) throw new WorkstreamActionError("stale");
       if (!data || state.key !== key || !state.writable)
         throw new Error("Color editing is unavailable. Refresh before retrying.");
       const result = await runPrimaryHttp(

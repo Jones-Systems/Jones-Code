@@ -432,3 +432,55 @@ it.each([
       expect(await NodeFSP.readFile(NodePath.join(directory, "journal.json"), "utf8")).toBe(raw);
     }),
 );
+
+it("missing admission cannot issue a desktop owner capability", async () =>
+  fixture(async (root, input) => {
+    await NodeFSP.unlink(NodePath.join(root, "runtime", "jones-active-install.json"));
+    const result = run(
+      input,
+      `
+    if (module.holdJonesNativeWriterFence(input) !== undefined) throw new Error('legacy admission became proof');
+    try { module.holdJonesDesktopOwner({ binding: {}, assertCurrent() {} }); process.exitCode = 9; }
+    catch { /* An unissued object cannot acquire owner authority. */ }
+  `,
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(await NodeFSP.readdir(NodePath.join(root, "runtime"))).toEqual([]);
+  }));
+
+it("retained admission refuses a changed generation before issuing further proof", async () =>
+  fixture(async (_root, input) => {
+    const result = run(
+      input,
+      `
+    const fs = await import('node:fs');
+    const admission = module.holdJonesNativeWriterFence(input);
+    admission.assertCurrent();
+    const path = input.home + '/runtime/jones-active-install.json';
+    const manifest = JSON.parse(fs.readFileSync(path, 'utf8'));
+    fs.writeFileSync(path, JSON.stringify({ ...manifest, generation: 'changed' }));
+    try { admission.assertCurrent(); process.exitCode = 9; } catch {}
+  `,
+    );
+    expect(result.status, result.stderr).toBe(0);
+  }));
+
+it("one retained desktop owner excludes a competing admitted desktop and survives duplicate imports", async () =>
+  fixture(async (_root, input) => {
+    const result = run(
+      input,
+      `
+    const cp = await import('node:child_process');
+    const owner = module.holdJonesDesktopOwner(module.holdJonesNativeWriterFence(input));
+    const duplicate = await import(${JSON.stringify(moduleUrl + "?desktop-owner-duplicate")});
+    duplicate.holdJonesDesktopOwner(duplicate.holdJonesNativeWriterFence(input)).assertCurrent();
+    owner.assertCurrent();
+    const contender = cp.spawnSync(process.execPath, ['--input-type=module', '-e',
+      'const m=await import(' + JSON.stringify(${JSON.stringify(moduleUrl)}) + '); m.holdJonesDesktopOwner(m.holdJonesNativeWriterFence(' + JSON.stringify(input) + '));'
+    ], { encoding: 'utf8', timeout: 5000 });
+    if (contender.status === 0 || !contender.stderr.includes('locked')) throw new Error('competing desktop acquired owner exclusion');
+    owner.assertCurrent();
+  `,
+    );
+    expect(result.status, result.stderr).toBe(0);
+  }));

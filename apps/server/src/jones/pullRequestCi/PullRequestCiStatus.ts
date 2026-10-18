@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
-import type * as GitHubApi from "@t3tools/source-control-github/server/GitHubApi";
+import type * as GitHubRest from "@t3tools/source-control-github/server/GitHubRest";
 import type * as PullRequestProviderRegistry from "../../pullRequest/PullRequestProviderRegistry.ts";
 import type {
   PullRequestError,
@@ -23,7 +23,7 @@ interface CiStatusDependencies {
     PullRequestProviderRegistry.PullRequestProviderRegistry["Service"],
     "get"
   >;
-  readonly githubCi: Option.Option<GitHubApi.GitHubApi["Service"]>;
+  readonly githubCi: Option.Option<GitHubRest.GitHubRest["Service"]>;
   readonly rateLimits: SourceControlRateLimit.SourceControlRateLimit["Service"];
 }
 

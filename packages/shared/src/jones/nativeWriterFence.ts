@@ -237,6 +237,63 @@ function refuseForeignNativeState(home: string, databasePath: string, profile?: 
   }
 }
 
+export interface JonesNativeWriterAdmission {
+  readonly binding: Readonly<{
+    home: string;
+    databasePath: string;
+    profile: string;
+    environmentId: string;
+    version: string;
+    sourceSha: string;
+    sourceTree: string;
+    manifestSha256: string;
+  }>;
+  readonly assertCurrent: () => void;
+}
+
+const admittedWriters = new WeakSet<JonesNativeWriterAdmission>();
+const desktopOwners = (registry[Symbol.for("jones.desktop-owner-leases.v1")] ??= new Map());
+
+/** Retains one desktop owner independently of the shared application-writer leases. */
+export function holdJonesDesktopOwner(
+  admission: JonesNativeWriterAdmission,
+): JonesNativeWriterAdmission {
+  if (!admittedWriters.has(admission))
+    throw new Error("Desktop ownership requires retained native admission.");
+  admission.assertCurrent();
+  const path = NodePath.join(admission.binding.home, "runtime", "jones-desktop-owner.sqlite");
+  const scope = `desktop-owner:${admission.binding.home}`;
+  initializeLease(path, scope);
+  const identity = leaseIdentity(path, scope);
+  let held = desktopOwners.get(path);
+  if (held === undefined) {
+    const database = new (sqlite().DatabaseSync)(path);
+    try {
+      database.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+      held = { database, scope, ...identity };
+      desktopOwners.set(path, held);
+    } catch (cause) {
+      database.close();
+      throw cause;
+    }
+  }
+  const owner = held;
+  return Object.freeze({
+    binding: admission.binding,
+    assertCurrent: () => {
+      admission.assertCurrent();
+      const current = leaseIdentity(path, scope);
+      if (
+        !owner.database.isOpen ||
+        !owner.database.isTransaction ||
+        current.device !== owner.device ||
+        current.inode !== owner.inode
+      )
+        throw new Error("Desktop owner exclusion was lost.");
+    },
+  });
+}
+
 /** Refuses unresolved native replacement before the caller opens application state. */
 export function holdJonesNativeWriterFence(input: {
   readonly home: string;
@@ -245,7 +302,7 @@ export function holdJonesNativeWriterFence(input: {
   readonly descriptorPath?: string | undefined;
   readonly version: string;
   readonly buildMetadata: unknown;
-}): void {
+}): JonesNativeWriterAdmission | undefined {
   const manifestPath = NodePath.join(input.home, "runtime", "jones-active-install.json");
   if (!exists(manifestPath)) {
     if (input.descriptorPath !== undefined)
@@ -327,4 +384,40 @@ export function holdJonesNativeWriterFence(input: {
     input.version !== authorized.version
   )
     throw new Error("The native writer does not match the admitted source generation.");
+  // Trial admission still serves its existing startup gate, but cannot issue ordinary desktop ownership.
+  if (input.descriptorPath !== undefined || authorized !== active) return;
+  if (typeof active.environmentId !== "string" || active.environmentId.length === 0)
+    throw new Error("Native environment identity is unavailable.");
+  const binding = Object.freeze({
+    home,
+    databasePath,
+    profile,
+    environmentId: active.environmentId,
+    version: input.version,
+    sourceSha: String(source.sha),
+    sourceTree: String(source.tree),
+    manifestSha256: NodeCrypto.createHash("sha256").update(JSON.stringify(active)).digest("hex"),
+  });
+  const admission: JonesNativeWriterAdmission = Object.freeze({
+    binding,
+    assertCurrent: () => {
+      for (const lease of nativeWriterLeasePaths(home, profile)) {
+        const held = leases.get(lease.path);
+        const identity = leaseIdentity(lease.path, lease.scope);
+        if (
+          held === undefined ||
+          !held.database.isOpen ||
+          !held.database.isTransaction ||
+          held.device !== identity.device ||
+          held.inode !== identity.inode
+        )
+          throw new Error("Native writer admission lost its held lease.");
+      }
+      const current = holdJonesNativeWriterFence(input);
+      if (current === undefined || JSON.stringify(current.binding) !== JSON.stringify(binding))
+        throw new Error("Native writer admission changed.");
+    },
+  });
+  admittedWriters.add(admission);
+  return admission;
 }

@@ -32,7 +32,7 @@ import * as NodeProcess from "node:process";
 import * as NodeURL from "node:url";
 import { build } from "vite-plus/pack";
 // @ts-expect-error -- Existing owned native fixture helper has no declarations.
-import * as IdentityFixture from "../../../../scripts/jones/updates/legacy-identity-native-fixture.mjs";
+import * as IdentityFixture from "../../../../scripts/jones/updates/native-fixture-support.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
 import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
@@ -154,11 +154,6 @@ interface MakeInstanceInput {
   readonly pruneRuntimes?: (distro: string | null, runtimeId: string) => Effect.Effect<void>;
 }
 
-// Helper that constructs a primary backend instance using the factory
-// directly. The factory's deps (FileSystem, ChildProcessSpawner,
-// HttpClient, DesktopBackendOutputLogFactory) are provided per-test via
-// a scoped layer; tests yield the returned Effect inside `Effect.scoped`
-// to drive the instance's lifecycle.
 function makeTestInstance(input: MakeInstanceInput) {
   const stubLog: DesktopObservability.DesktopBackendOutputLogShape = {
     beginSession: () => Effect.void,
@@ -352,7 +347,7 @@ describe("DesktopBackendManager", () => {
   it.for(["early-failure", "cancel", "race-cold", "race-warm"] as const)(
     "retains actual cold custody after %s while captured pipes remain open",
     async (scenario, { signal }) => {
-      await IdentityFixture.withLegacyIdentityScratch(async (root: string) => {
+      await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
         const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
         const custodyPath = NodePath.resolve(
           NodePath.dirname(managerPath),
@@ -396,7 +391,7 @@ describe("DesktopBackendManager", () => {
             logLevel: "silent",
           });
           launched = true;
-          const result = await IdentityFixture.runLegacyIdentityFixtureCommand(
+          const result = await IdentityFixture.runNativeFixtureCommand(
             NodeProcess.execPath,
             [NodePath.join(root, "fixture.mjs"), scenario, root],
             root,
@@ -1012,9 +1007,6 @@ describe("DesktopBackendManager", () => {
             ),
           );
 
-          // The backend stays 503 through the first *two* readiness budgets
-          // and only becomes healthy (200) for the third round, i.e. it comes
-          // up well after the initial 50ms budget has expired.
           const layerHttp = layerHttpClient((request) =>
             Effect.gen(function* () {
               requestCount += 1;
@@ -1042,18 +1034,10 @@ describe("DesktopBackendManager", () => {
           assert.equal(readyCount, 0);
           assert.equal(readinessTimeoutCount, 0);
 
-          // The first 50ms readiness budget expires while the backend still
-          // answers 503. The child is alive and may yet become healthy, so the
-          // probe must start a fresh round instead of stopping permanently —
-          // the pre-fix behavior left the app stuck on "Connecting to WSL…"
-          // forever even though the backend kept running.
           yield* TestClock.adjust(Duration.millis(50));
           assert.equal(readinessTimeoutCount, 1);
           assert.equal(readyCount, 0);
 
-          // The second budget also expires (backend still 503), then the third
-          // round connects. The point is the probe persisted across budgets
-          // while the process was alive instead of giving up after the first.
           yield* TestClock.adjust(Duration.millis(100));
           assert.equal(readinessTimeoutCount, 2);
           assert.equal(readyCount, 1);
@@ -1549,15 +1533,12 @@ describe("DesktopBackendManager", () => {
         yield* instance.start;
         assert.deepEqual(failures, []);
 
-        // Five fatal attempts with exponential backoff (500ms, 1s, 2s, 4s) reach
-        // the cap, at which point the failure is surfaced exactly once.
         yield* TestClock.adjust(Duration.millis(500));
         yield* TestClock.adjust(Duration.seconds(1));
         yield* TestClock.adjust(Duration.seconds(2));
         yield* TestClock.adjust(Duration.seconds(4));
         assert.deepEqual(failures, ["Node.js not found"]);
 
-        // Past the cap the loop stops and nothing else is surfaced.
         yield* TestClock.adjust(Duration.seconds(8));
         yield* TestClock.adjust(Duration.seconds(30));
         assert.deepEqual(failures, ["Node.js not found"]);
@@ -1647,8 +1628,7 @@ describe("DesktopBackendManager", () => {
         });
 
         yield* instance.start;
-        // Well beyond the fatal cap's worth of time: a transient failure must
-        // keep retrying (self-heal) and never surface.
+
         yield* TestClock.adjust(Duration.minutes(2));
         assert.deepEqual(failures, []);
       }).pipe(Effect.provide(TestClock.layer())),
@@ -1798,10 +1778,6 @@ describe("DesktopBackendManager", () => {
   it.effect("stopAllPoolInstances bounds the quit finalizer when backends hang", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // Each backend's process-scope finalizer reports when it starts and
-        // when it finishes, keyed by instance name, so the test can prove
-        // both backends reached each milestone instead of inferring it from
-        // a shared flag or a clock advance.
         const teardownStarted = yield* Queue.unbounded<string>();
         const teardownFinished = yield* Queue.unbounded<string>();
         const allowTeardown = yield* Deferred.make<void>();
@@ -1843,9 +1819,6 @@ describe("DesktopBackendManager", () => {
           unregister: () => Effect.die(new Error("unregister not implemented")),
         });
 
-        // Mirror the quit path: register stopAllPoolInstances as a scope
-        // finalizer and let the scope close run it, rather than calling it
-        // as an ordinary interruptible effect.
         const quitFiber = yield* Effect.scoped(
           Effect.addFinalizer(() => DesktopApp.stopAllPoolInstances()),
         ).pipe(Effect.provide(layerMockPool), Effect.forkChild);
@@ -1853,14 +1826,10 @@ describe("DesktopBackendManager", () => {
         const started = yield* Queue.takeN(teardownStarted, 2);
         assert.deepEqual(started.toSorted(), ["instance1", "instance2"]);
 
-        // Both backends are now hung in teardown. Advancing past the 5s
-        // budget must let the quit finalizer return without them.
         yield* TestClock.adjust(Duration.seconds(5));
         yield* Fiber.join(quitFiber);
         assert.equal(yield* Queue.size(teardownFinished), 0);
 
-        // The timed-out closes keep running in the background and finish
-        // once the backends unblock.
         yield* Deferred.succeed(allowTeardown, undefined);
         const finished = yield* Queue.takeN(teardownFinished, 2);
         assert.deepEqual(finished.toSorted(), ["instance1", "instance2"]);
@@ -1868,3 +1837,214 @@ describe("DesktopBackendManager", () => {
     ),
   );
 });
+
+it.for(["ordinary", "trial", "live-enrollment"] as const)(
+  "joins the production Manager and bundled backend owner channel after %s admission",
+  async (scenario, { signal }) => {
+    await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
+      const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
+      const backendPath = NodePath.resolve(
+        NodePath.dirname(managerPath),
+        "../../../server/src/jones/workstreams/DesktopNativeOwner.ts",
+      );
+      const home = await NodeFSP.realpath(root);
+      const profile = NodePath.join(home, "profile");
+      const databasePath = NodePath.join(home, "userdata/statev2.sqlite");
+      await NodeFSP.mkdir(profile);
+      await NodeFSP.mkdir(NodePath.dirname(databasePath), { mode: 0o700 });
+      await NodeFSP.mkdir(NodePath.join(home, "runtime"));
+      await NodeFSP.writeFile(databasePath, scenario === "live-enrollment" ? "" : "opaque state", {
+        mode: 0o600,
+      });
+      const metadata = {
+        name: "t3code",
+        jonesSource: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        },
+      };
+      const active = {
+        protocol: 1,
+        owner: "desktop",
+        home,
+        databasePath,
+        profile,
+        environmentId: "fixture",
+        version: "fixture",
+        sourceSha: metadata.jonesSource.sha,
+        sourceTree: metadata.jonesSource.tree,
+      };
+      const manifest = NodePath.join(home, "runtime/jones-active-install.json");
+      const tx = NodePath.join(home, "runtime/jones-updates/transactions", "f".repeat(64));
+      const descriptorPath =
+        scenario === "trial" ? NodePath.join(tx, "trial-descriptor.json") : undefined;
+      await NodeFSP.writeFile(
+        manifest,
+        JSON.stringify(
+          scenario === "trial"
+            ? {
+                ...active,
+                version: "previous",
+                sourceSha: "c".repeat(40),
+                sourceTree: "d".repeat(40),
+              }
+            : active,
+        ),
+        { mode: 0o600 },
+      );
+      if (descriptorPath !== undefined) {
+        await NodeFSP.mkdir(tx, { recursive: true });
+        await NodeFSP.writeFile(
+          descriptorPath,
+          JSON.stringify({
+            ...active,
+            startupGateProtocol: 1,
+            transactionId: "f".repeat(64),
+            stagedHandle: "e".repeat(64),
+          }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(tx, "journal.json"),
+          JSON.stringify({
+            phase: "trial",
+            intent: {
+              protocol: 1,
+              transactionId: "f".repeat(64),
+              staged: { ...active, handle: "e".repeat(64) },
+            },
+          }),
+        );
+      }
+      const fixture = {
+        scenario,
+        home,
+        databasePath,
+        profile,
+        metadata,
+        active,
+        manifest,
+        tx,
+        descriptorPath,
+      };
+      await NodeFSP.writeFile(NodePath.join(root, "input.json"), JSON.stringify(fixture));
+      const parentHarness = [
+        "import * as OwnerFixtureFS from 'node:fs';",
+        "import * as OwnerFixtureAssert from 'node:assert/strict';",
+        "import * as OwnerFixtureServices from '@effect/platform-node/NodeServices';",
+        "import * as OwnerFixtureStartup from '../jones/updates/jonesNativeStartup.ts';",
+        "const fixture = JSON.parse(OwnerFixtureFS.readFileSync(process.argv[2] + '/input.json', 'utf8'));",
+        "OwnerFixtureStartup.holdJonesDesktopNativeWriterFence({ platform:'darwin', env:{ T3CODE_HOME:fixture.home, T3CODE_DESKTOP_USER_DATA_DIR:fixture.profile, T3CODE_JONES_TRIAL_DESCRIPTOR:fixture.descriptorPath }, homeDirectory:fixture.home, appDataDirectory:fixture.home, version:'fixture', metadata:fixture.metadata });",
+        "const ownerResolver = OwnerFixtureStartup.currentJonesDesktopOwner();",
+        "let output = ''; let committed = false;",
+        "const outcome = await Effect.runPromise(Effect.scoped(runBackendProcess({",
+        "executablePath:process.execPath,args:[fixture.home+'/backend.mjs',fixture.home],entryPath:fixture.home+'/backend.mjs',cwd:fixture.home,env:{},extendEnv:true,",
+        "bootstrap:{mode:'desktop',noBrowser:true,port:3773,t3Home:fixture.home,host:'127.0.0.1',desktopBootstrapToken:'fixture',tailscaleServeEnabled:false,tailscaleServePort:443,desktopNativeOwnerInputFd:8,desktopNativeOwnerOutputFd:9},",
+        "bootstrapDelivery:'fd3',httpBaseUrl:new URL('http://127.0.0.1:3773'),captureOutput:true,preflightFailure:Option.none(),jonesDesktopOwner:ownerResolver,desktopTelemetryStream:Stream.empty,",
+        "onOutput:(kind,bytes)=>Effect.sync(()=>{ output += new TextDecoder().decode(bytes); if(fixture.descriptorPath && output.includes('pending') && !committed){ committed=true; OwnerFixtureFS.writeFileSync(fixture.manifest,JSON.stringify(fixture.active)); const journal=JSON.parse(OwnerFixtureFS.readFileSync(fixture.tx+'/journal.json','utf8')); journal.phase='resumed'; OwnerFixtureFS.writeFileSync(fixture.tx+'/journal.json',JSON.stringify(journal)); OwnerFixtureFS.writeFileSync(fixture.home+'/commit-ready','ready'); } })",
+        "}).pipe(Effect.provide(OwnerFixtureServices.layer), Effect.provideService(HttpClient.HttpClient, HttpClient.make(()=>Effect.never)))));",
+        "OwnerFixtureFS.writeFileSync(fixture.home+'/settled.json',JSON.stringify({settled:true}));",
+        "OwnerFixtureAssert.equal(Option.getOrUndefined(outcome.code),0,output);",
+        "OwnerFixtureAssert.ok(output.includes('qualified'),output);",
+        "if(fixture.descriptorPath) OwnerFixtureAssert.ok(output.includes('pending'),output);",
+        "OwnerFixtureFS.writeFileSync(fixture.home+'/settled.json',JSON.stringify({settled:true}));",
+      ].join("\n");
+      const childHarness = [
+        "import * as LiveFixtureSqlite from 'node:sqlite';",
+        "import * as LiveFixtureProcess from 'node:child_process';",
+        "import * as LiveFixtureModule from 'node:module';",
+        "import * as LiveFixtureAssert from 'node:assert/strict';",
+        "import * as LiveFixtureSqlClient from '@t3tools/shared/nodeSqliteClient';",
+        "import { runDesktopNativeOwnerOperation as liveOwnerOperation } from './enrollment/desktopOwner.ts';",
+        "const fixture = JSON.parse(NodeFS.readFileSync(process.argv[2] + '/input.json','utf8'));",
+        "const owner = openDesktopNativeOwnerSession({ home:fixture.home,databasePath:fixture.databasePath,authorityDir:fixture.home+'/native-store-authority',version:'fixture',buildMetadata:fixture.metadata,descriptorPath:fixture.descriptorPath,inputFd:8,outputFd:9 });",
+        "try {",
+        "if(fixture.descriptorPath){ let refused=false; try{ await owner.refresh(); }catch{refused=true;} if(!refused||owner.available)throw new Error('Trial prematurely qualified'); process.stdout.write('pending\\n');",
+        "await new Promise((resolve,reject)=>{ const deadline=Date.now()+10000; const check=()=>{if(NodeFS.existsSync(fixture.home+'/commit-ready'))resolve();else if(Date.now()>deadline)reject(new Error('Commit not observed'));else NodeTimers.setTimeout(check,10);};check();}); }",
+        "await owner.refresh(); owner.assertCurrent(); if(owner.binding?.version!=='fixture')throw new Error('Wrong generation'); process.stdout.write('qualified\\n');",
+        "if(fixture.scenario==='live-enrollment'){",
+        "NodeFS.writeFileSync(fixture.home+'/userdata/environment-id','fixture',{mode:0o600});",
+        "const writer=new LiveFixtureSqlite.DatabaseSync(fixture.databasePath);writer.exec('PRAGMA journal_mode=DELETE; CREATE TABLE fixture_writes(value INTEGER);');",
+        "const reader=new LiveFixtureSqlite.DatabaseSync(fixture.databasePath,{readOnly:true});",
+        "const nativeFs=LiveFixtureModule.createRequire(import.meta.url)('node:fs');const originalOpen=nativeFs.openSync;let rawOpens=0;nativeFs.openSync=function(path,...args){if(path===fixture.databasePath)rawOpens++;return originalOpen.call(this,path,...args);};LiveFixtureModule.syncBuiltinESMExports();",
+        "let timer;let writes=0;const probe=()=>{const result=LiveFixtureProcess.spawnSync('python3',['-c',\"import sqlite3,sys\\nc=sqlite3.connect(sys.argv[1],timeout=0,isolation_level=None)\\ntry:\\n c.execute('BEGIN IMMEDIATE');c.execute('ROLLBACK');sys.exit(1)\\nexcept sqlite3.OperationalError as e:\\n sys.exit(0 if 'locked' in str(e) else 2)\\nfinally:c.close()\",fixture.databasePath],{encoding:'utf8',timeout:5000});LiveFixtureAssert.equal(result.status,0,'Competing writer entered; raw main-file opens='+rawOpens+' '+result.stderr);};",
+        "try{await Effect.runPromise(Effect.scoped(Effect.gen(function*(){",
+        "writer.exec('BEGIN IMMEDIATE; INSERT INTO fixture_writes VALUES(1)');probe();",
+        "timer=NodeTimers.setInterval(()=>{writer.prepare('INSERT INTO fixture_writes VALUES(?)').run(++writes);},5);",
+        "const currentOwner={binding:owner.binding,assertCurrent:owner.assertCurrent,refresh:Effect.tryPromise({try:owner.refresh,catch:()=>unavailable()})};const location={baseDir:fixture.home,authorityDir:fixture.home+'/native-store-authority',environmentId:'fixture'};",
+        "yield* liveOwnerOperation({operation:'authority-enroll'},currentOwner,location);probe();",
+        "yield* Effect.promise(()=>new Promise(resolve=>NodeTimers.setTimeout(resolve,25)));",
+        "const prepared=yield* Effect.result(liveOwnerOperation({operation:'provider-prepare',enrollmentId:'live',ownerId:'owner',principalId:'principal',registryOrigin:'https://registry.example',lifetimeDays:1},currentOwner,location));probe();LiveFixtureAssert.equal(prepared._tag,'Success','prepare failed; raw main-file opens='+rawOpens);",
+        "LiveFixtureAssert.equal(rawOpens,0,'Raw main-file inspection is forbidden in the running backend');LiveFixtureAssert.ok(writes>0);",
+        "clearInterval(timer);timer=undefined;writer.exec('COMMIT');LiveFixtureAssert.ok(reader.prepare('SELECT count(*) AS count FROM fixture_writes').get().count>1);",
+        "}).pipe(Effect.provide(LiveFixtureSqlClient.layer({filename:fixture.databasePath})))));",
+        "}finally{if(timer!==undefined)clearInterval(timer);nativeFs.openSync=originalOpen;LiveFixtureModule.syncBuiltinESMExports();try{writer.exec('ROLLBACK');}catch{}reader.close();writer.close();}}",
+        "}finally{owner.close();}",
+      ].join("\n");
+      const sources = new Map([
+        [managerPath, (await NodeFSP.readFile(managerPath, "utf8")) + "\n" + parentHarness],
+        [backendPath, (await NodeFSP.readFile(backendPath, "utf8")) + "\n" + childHarness],
+      ]);
+      await NodeFSP.writeFile(
+        NodePath.join(root, "settled.json"),
+        JSON.stringify({ settled: false }),
+      );
+      let launched = false;
+      try {
+        for (const [name, entry] of Object.entries({ fixture: managerPath, backend: backendPath }))
+          await build({
+            config: false,
+            cwd: root,
+            entry: { [name]: entry },
+            outDir: root,
+            clean: false,
+            format: "esm",
+            dts: false,
+            sourcemap: false,
+            tsconfig: false,
+            outExtensions: () => ({ js: ".mjs" }),
+            outputOptions: { codeSplitting: false },
+            deps: { alwaysBundle: (id) => !id.startsWith("node:"), onlyBundle: false },
+            plugins: [
+              {
+                name: "owned-desktop-owner-integration",
+                resolveId(id) {
+                  if (id === "electron") return "\0owner-fixture-electron.cjs";
+                },
+                load(id) {
+                  if (id === "\0owner-fixture-electron.cjs") return "module.exports = {};";
+                  if (
+                    id === NodePath.resolve(NodePath.dirname(backendPath), "../../../package.json")
+                  )
+                    return JSON.stringify({
+                      version: "fixture",
+                      jonesSource: metadata.jonesSource,
+                    });
+                  return sources.get(id);
+                },
+              },
+            ],
+            logLevel: "silent",
+          });
+        launched = true;
+        const result = await IdentityFixture.runNativeFixtureCommand(
+          NodeProcess.execPath,
+          [NodePath.join(root, "fixture.mjs"), root],
+          root,
+          { signal },
+        );
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(
+          JSON.parse(await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")).settled,
+          true,
+        );
+      } catch (cause) {
+        const settled = await NodeFSP.readFile(NodePath.join(root, "settled.json"), "utf8")
+          .then((raw) => JSON.parse(raw).settled)
+          .catch(() => false);
+        if (launched && !settled) Object.assign(cause as object, { preserveScratch: true });
+        throw cause;
+      }
+    });
+  },
+);

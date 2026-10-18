@@ -75,7 +75,7 @@ export async function runBoundCollector(
     throw new CollectorFailure("timeout");
   const output = await new Promise<string>((resolve, reject) => {
     const child = NodeChildProcess.spawn(
-      "/usr/bin/python3",
+      verified!.python,
       [
         "-I",
         "-S",

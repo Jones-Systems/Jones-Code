@@ -1,0 +1,20 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "startup-access-logging",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/startupAccessLogging.ts",
+    "apps/server/src/jones/startupAccessLogging.test.ts"
+  ],
+  "hookPaths": ["apps/server/src/startupAccess.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/startupAccess.ts",
+      "to": "apps/server/src/jones/startupAccessLogging.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/startupAccessLogging.ts"
+    }
+  ]
+}
