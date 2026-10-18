@@ -2,7 +2,6 @@ import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/model
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import {
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -31,7 +30,10 @@ export interface NativeThreadAssignmentMenu {
   readonly onAction: (action: ThreadActionMenuId) => void;
 }
 
-export function WorkstreamNativeSidebar(props: {
+export function WorkstreamNativeSidebar({
+  assignmentMenuRef,
+  ...props
+}: {
   readonly controller: WorkstreamListView;
   readonly grouping: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
   readonly summaryGrouping?: NativeWorkstreamThreadGrouping<EnvironmentThreadShell>;
@@ -51,10 +53,7 @@ export function WorkstreamNativeSidebar(props: {
 }) {
   const { controller, grouping } = props;
   const statusGrouping = props.summaryGrouping ?? grouping;
-  const threadStatusSummaries = useMemo(
-    () => summarizeWorkstreamThreadStatuses(statusGrouping),
-    [statusGrouping],
-  );
+  const threadStatusSummaries = summarizeWorkstreamThreadStatuses(statusGrouping);
   const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
@@ -70,21 +69,26 @@ export function WorkstreamNativeSidebar(props: {
   const request = useRef<AbortController | null>(null);
   const binding = controller.data ? workstreamBindingKey(controller.data.binding) : null;
   const bindingRef = useRef(binding);
+  const [stateBinding, setStateBinding] = useState(binding);
+  if (stateBinding !== binding) {
+    setStateBinding(binding);
+    setDragged(null);
+    setDropTarget(null);
+    setOffsetY(0);
+    setError(null);
+    setBusy(false);
+  }
   useLayoutEffect(() => {
     bindingRef.current = binding;
     sensorRef.current?.cancel();
     request.current?.abort();
-    setDragged(null);
-    setDropTarget(null);
-    setError(null);
-    setBusy(false);
     busyRef.current = false;
     return () => {
       bindingRef.current = null;
       sensorRef.current?.cancel();
       request.current?.abort();
     };
-  }, [binding]);
+  }, [binding, bindingRef, busyRef, request, sensorRef]);
   const canWrite = canEditWorkstreams(controller.data) && !controller.loading && !busy;
   const inventory = new Set(
     controller.placementInventory.identities.map((item) =>
@@ -174,26 +178,22 @@ export function WorkstreamNativeSidebar(props: {
         (item) => item.environmentId === thread.environmentId && item.id === thread.id,
       ),
     )?.workstream.workstreamId ?? null;
-  const threadsByKey = useMemo(
-    () =>
-      new Map(
-        grouping.ordered.map((thread) => [
-          nativeWorkstreamThreadKey(thread.environmentId, thread.id),
-          thread,
-        ]),
-      ),
-    [grouping],
+  const threadsByKey = new Map(
+    grouping.ordered.map((thread) => [
+      nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+      thread,
+    ]),
   );
-  const pointerActions = useRef({
-    threadsByKey,
-    canMove,
-    currentWorkstream,
-    assignmentChecked,
-    run,
-    move,
-    reorder: props.reorder,
-    canReorder: props.canReorder,
-  });
+  const pointerActions = useRef<{
+    threadsByKey: typeof threadsByKey;
+    canMove: typeof canMove;
+    currentWorkstream: typeof currentWorkstream;
+    assignmentChecked: typeof assignmentChecked;
+    run: typeof run;
+    move: typeof move;
+    reorder: typeof props.reorder;
+    canReorder: typeof props.canReorder;
+  } | null>(null);
   useLayoutEffect(() => {
     pointerActions.current = {
       threadsByKey,
@@ -230,6 +230,7 @@ export function WorkstreamNativeSidebar(props: {
       setDropTarget(null);
       if (!group || !rootRef.current?.contains(group)) return;
       const actions = pointerActions.current;
+      if (actions === null) return;
       if (
         !actions.canMove(thread) ||
         !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
@@ -292,6 +293,7 @@ export function WorkstreamNativeSidebar(props: {
         if (!target) return;
         const { destination, neighbor, after } = target;
         const actions = pointerActions.current;
+        if (actions === null) return;
         if (
           !actions.canMove(thread) ||
           !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
@@ -363,7 +365,6 @@ export function WorkstreamNativeSidebar(props: {
       },
     };
   };
-  const assignmentMenuRef = props.assignmentMenuRef;
   useLayoutEffect(() => {
     if (!assignmentMenuRef) return;
     assignmentMenuRef.current = assignmentMenu;

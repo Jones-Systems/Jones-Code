@@ -126,7 +126,10 @@ export function ProviderUpdatePrimaryNotification() {
     };
   }, []);
 
-  const updateProviders = collectProviderUpdateCandidates(providers);
+  const updateProviders =
+    primaryEnvironment?.connection.phase === "connected"
+      ? collectProviderUpdateCandidates(providers)
+      : [];
   const notificationKey = providerUpdateNotificationKey(updateProviders);
   const oneClickProviders = updateProviders.filter((provider) =>
     canOneClickUpdateProviderCandidate(provider, providers),

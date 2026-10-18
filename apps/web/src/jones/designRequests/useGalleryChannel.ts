@@ -10,7 +10,7 @@ import {
   parseGalleryOrigin,
   type DesignRequestChannelState,
 } from "@t3tools/client-runtime/jones/design-requests";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 export type GalleryChannelPhase =
   /** Opened directly or from the desktop app: only file/paste import is available. */
@@ -52,28 +52,26 @@ export function useGalleryChannel(
   onMessage: (message: DesignRequestGalleryMessage) => void,
   environment: () => GalleryChannelEnvironment = browserEnvironment,
 ): GalleryChannel {
-  const [phase, setPhase] = useState<GalleryChannelPhase>("waiting");
-  const [galleryOrigin, setGalleryOrigin] = useState<string | null>(null);
+  const [env] = useState(environment);
+  const galleryOrigin =
+    env.opener === null ? null : parseGalleryOrigin(new URLSearchParams(env.search).get("origin"));
   const [projectKey, setProjectKey] = useState<string | null>(null);
+  const phase: GalleryChannelPhase =
+    env.opener === null
+      ? "no-opener"
+      : galleryOrigin === null
+        ? "invalid-origin"
+        : projectKey === null
+          ? "waiting"
+          : "connected";
   const state = useRef<(DesignRequestChannelState & { opener: OpenerWindow }) | null>(null);
-  const handler = useRef(onMessage);
-  handler.current = onMessage;
+  const handleMessage = useEffectEvent(onMessage);
 
   useEffect(() => {
-    const env = environment();
-    if (env.opener === null) {
-      setPhase("no-opener");
-      return;
-    }
-    const origin = parseGalleryOrigin(new URLSearchParams(env.search).get("origin"));
-    if (origin === null) {
-      setPhase("invalid-origin");
-      return;
-    }
+    if (env.opener === null || galleryOrigin === null) return;
+    const origin = galleryOrigin;
     const nonceJ = designRequestNonce();
     state.current = { galleryOrigin: origin, opener: env.opener, nonceJ, nonceG: null };
-    setGalleryOrigin(origin);
-    setPhase("waiting");
     const listener = (event: Event) => {
       const current = state.current;
       if (current === null) return;
@@ -83,9 +81,8 @@ export function useGalleryChannel(
       if (message.type === "jones.design-request.hello") {
         state.current = { ...current, nonceG: message.nonceG };
         setProjectKey(message.projectKey);
-        setPhase("connected");
       }
-      handler.current(message);
+      handleMessage(message);
     };
     env.target.addEventListener("message", listener);
     env.opener.postMessage(designRequestReady(nonceJ), origin);
@@ -93,17 +90,17 @@ export function useGalleryChannel(
       env.target.removeEventListener("message", listener);
       state.current = null;
     };
-    // The handshake runs once per page load; a new gallery tab opens a new Jones window.
-  }, []);
+    // The captured environment binds this handshake to one page load and exact opener.
+  }, [env, galleryOrigin]);
 
-  const send = useCallback<GalleryChannel["send"]>((message) => {
+  const send: GalleryChannel["send"] = (message) => {
     const current = state.current;
     if (current === null || current.nonceG === null) return;
     current.opener.postMessage(
       { ...message, nonceJ: current.nonceJ, nonceG: current.nonceG },
       current.galleryOrigin,
     );
-  }, []);
+  };
 
   return { phase, galleryOrigin, projectKey, send };
 }

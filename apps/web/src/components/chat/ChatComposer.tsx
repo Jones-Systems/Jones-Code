@@ -6145,6 +6145,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         const change = getComposerReasoningStep({
           provider: selectedProvider,
           instanceId: selectedInstanceId,
+          defaultModelSelection: activeProjectDefaultModelSelection,
+          defaultDriverKind: configuredDefaultDriverKind,
           model: selectedModel,
           models: selectedProviderModels,
           modelOptions: composerModelOptions?.[selectedInstanceId],

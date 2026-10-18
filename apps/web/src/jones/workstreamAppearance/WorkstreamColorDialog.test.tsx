@@ -40,7 +40,7 @@ function click(tree: unknown, label: string) {
   if (element.props.disabled) throw new Error(`Disabled dialog control: ${label}`);
   const callback = element.props.onClick;
   if (typeof callback !== "function") throw new Error(`Missing click handler: ${label}`);
-  callback();
+  return callback();
 }
 function hex(tree: unknown, value: string) {
   const element = control(tree, "Hex color");
@@ -97,7 +97,7 @@ describe("Workstream border color dialog interactions", () => {
     expect(control(tree, "Border preview").props.style).toEqual({ borderLeftColor: "#A1B2C3" });
     expect(fixtureData.save).not.toHaveBeenCalled();
     expect(fixtureData.saved.border_color).toBe("#2563EB");
-    click(tree, "Save");
+    const saving = click(tree, "Save");
     const input = await started.promise;
     expect(input).toEqual({
       command_id: "appearance-command-0001",
@@ -112,7 +112,7 @@ describe("Workstream border color dialog interactions", () => {
       border_color: input.border_color,
       version: 5,
     });
-    await Promise.resolve();
+    await saving;
     expect(fixtureData.onClose).toHaveBeenCalledOnce();
   });
 
@@ -145,10 +145,10 @@ describe("Workstream border color dialog interactions", () => {
     let tree = render(fixtureData.props);
     hex(tree, "#123ABC");
     tree = render(fixtureData.props);
-    click(tree, "Save");
+    const saving = click(tree, "Save");
     const originalRequest = await started.promise;
     first.reject(new Error("Unconfirmed response"));
-    await Promise.resolve();
+    await saving;
     tree = render(fixtureData.props);
     expect(control(tree, "Hex color").props.disabled).toBe(true);
     expect(control(tree, "Red #DC2626").props.disabled).toBe(true);
@@ -160,7 +160,7 @@ describe("Workstream border color dialog interactions", () => {
       retryStarted.resolve(input);
       return retryResponse.promise;
     });
-    click(tree, "Retry save");
+    const retrying = click(tree, "Retry save");
     expect(await retryStarted.promise).toBe(originalRequest);
     expect(fixtureData.createCommandId).toHaveBeenCalledOnce();
     expect(fixtureData.save.mock.calls[1]?.[0]).toEqual(fixtureData.save.mock.calls[0]?.[0]);
@@ -169,7 +169,7 @@ describe("Workstream border color dialog interactions", () => {
       border_color: originalRequest.border_color,
       version: 5,
     });
-    await Promise.resolve();
+    await retrying;
     expect(fixtureData.onClose).toHaveBeenCalledOnce();
   });
 
@@ -180,8 +180,7 @@ describe("Workstream border color dialog interactions", () => {
     let tree = render(fixtureData.props);
     hex(tree, "#123ABC");
     tree = render(fixtureData.props);
-    click(tree, "Save");
-    for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
+    await click(tree, "Save");
     tree = render(fixtureData.props);
     const alert = visitElements(tree, (element) => element.props.role === "alert");
     expect(alert?.props.children).toBe(refusal.message);

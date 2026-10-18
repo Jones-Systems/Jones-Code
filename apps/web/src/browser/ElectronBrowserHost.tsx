@@ -9,6 +9,10 @@ import {
 import { useAtomValue } from "@effect/atom-react";
 import { type ComponentProps, useEffect, useEffectEvent, useState } from "react";
 
+import { Atom, AsyncResult } from "effect/reactivity";
+import { useAssignedCompanionSessions } from "../jones/previewCompanion/sessions";
+import { bindingsQuery } from "../jones/previewCompanion/state";
+import { mergeCompanionSessions } from "../jones/previewCompanion/inventory";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 
 import { isElectron } from "~/env";
@@ -29,25 +33,61 @@ import { previewRuntimeTabId } from "./previewRuntimeTabId";
 export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
-  const sessions = Object.entries(previewByThreadKey).flatMap(([threadKey, previewState]) => {
-    const threadRef = parseScopedThreadKey(threadKey);
-    return threadRef
-      ? Object.values(previewState.sessions)
-          .filter(
-            (snapshot) =>
-              snapshot.runtime !== "server" ||
-              rendersServerTabNatively(threadRef.environmentId, primaryEnvironmentId, snapshot),
-          )
-          .map((snapshot) => ({
-            threadRef,
-            snapshot,
-            runtimeTabId: previewRuntimeTabId(threadRef, previewState.serverEpoch, snapshot.tabId),
-            pictureInPicture:
-              previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
-            zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
-          }))
-      : [];
-  });
+  const assignedSessions = useAssignedCompanionSessions();
+  const bindingResults = useAtomValue(
+    Atom.make((get) => {
+      const results = new Map<string, ReturnType<typeof getBindingValue>>();
+      for (const key of Object.keys(previewByThreadKey)) {
+        const threadRef = parseScopedThreadKey(key);
+        if (threadRef)
+          results.set(
+            key,
+            getBindingValue(
+              get(
+                bindingsQuery({
+                  environmentId: threadRef.environmentId,
+                  input: { threadId: threadRef.threadId },
+                }),
+              ),
+            ),
+          );
+      }
+      return results;
+    }),
+  );
+  const ordinarySessions = Object.entries(previewByThreadKey).flatMap(
+    ([threadKey, previewState]) => {
+      const threadRef = parseScopedThreadKey(threadKey);
+      return threadRef
+        ? Object.values(previewState.sessions)
+            .filter(
+              (snapshot) =>
+                snapshot.runtime !== "server" ||
+                (bindingResults.get(threadKey)?.tabs.find((tab) => tab.tabId === snapshot.tabId)
+                  ?.hostId == null &&
+                  rendersServerTabNatively(
+                    threadRef.environmentId,
+                    primaryEnvironmentId,
+                    snapshot,
+                  )),
+            )
+            .map((snapshot) => ({
+              threadRef,
+              snapshot,
+              runtimeTabId: previewRuntimeTabId(
+                threadRef,
+                previewState.serverEpoch,
+                snapshot.tabId,
+              ),
+              pictureInPicture:
+                previewState.desktopByTabId[snapshot.tabId]?.pictureInPicture ?? false,
+              zoomFactor: previewState.desktopByTabId[snapshot.tabId]?.zoomFactor ?? 1,
+            }))
+        : [];
+    },
+  );
+
+  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions);
 
   useEffect(() => {
     const preview = window.desktopBridge?.preview;
@@ -111,31 +151,34 @@ export function ElectronBrowserHost() {
   if (!isElectron) return null;
   return (
     <div className="contents" data-electron-browser-host>
-      {sessions.map(({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor }) => {
-        const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
-        return (
-          <AuthorizedBrowserWebview
-            key={runtimeTabId}
-            threadRef={threadRef}
-            tabId={snapshot.tabId}
-            runtimeTabId={runtimeTabId}
-            initialUrl={url}
-            viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
-            pictureInPicture={pictureInPicture}
-            profileId={snapshot.profileId}
-            zoomFactor={zoomFactor}
-            serverDriven={snapshot.runtime === "server"}
-            {...(snapshot.runtime === "server"
-              ? {
-                  serverRendering: {
-                    colorScheme: snapshot.colorScheme ?? "system",
-                    zoomFactor: snapshot.zoomFactor ?? 1,
-                  },
-                }
-              : {})}
-          />
-        );
-      })}
+      {sessions.map(
+        ({ threadRef, snapshot, runtimeTabId, pictureInPicture, zoomFactor, companion }) => {
+          const url = snapshot.navStatus._tag === "Idle" ? null : snapshot.navStatus.url;
+          return (
+            <AuthorizedBrowserWebview
+              key={runtimeTabId}
+              threadRef={threadRef}
+              tabId={snapshot.tabId}
+              runtimeTabId={runtimeTabId}
+              initialUrl={url}
+              {...(companion === undefined ? {} : { companion })}
+              viewport={snapshot.viewport ?? FILL_PREVIEW_VIEWPORT}
+              pictureInPicture={pictureInPicture}
+              profileId={snapshot.profileId}
+              zoomFactor={zoomFactor}
+              serverDriven={snapshot.runtime === "server"}
+              {...(snapshot.runtime === "server"
+                ? {
+                    serverRendering: {
+                      colorScheme: snapshot.colorScheme ?? "system",
+                      zoomFactor: snapshot.zoomFactor ?? 1,
+                    },
+                  }
+                : {})}
+            />
+          );
+        },
+      )}
     </div>
   );
 }
@@ -161,4 +204,8 @@ function useTabProfileId(profileId: string | undefined): string | undefined {
     setFallback(defaultProfileId);
   }
   return profileId ?? fallback;
+}
+
+function getBindingValue(value: Atom.Type<ReturnType<typeof bindingsQuery>>) {
+  return AsyncResult.isSuccess(value) && value.value.status === "ready" ? value.value.value : null;
 }

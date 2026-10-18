@@ -139,6 +139,25 @@ function DeviceHostEditorForm({
             placeholder="user@host or SSH alias"
           />
         </label>
+        <label className="block space-y-1.5 text-sm">
+          <span>Direct desktop SSH target</span>
+          <Input
+            value={draft.directSshTarget ?? ""}
+            disabled={busy}
+            onChange={(event) => {
+              const directSshTarget = event.target.value;
+              setDraft((current) => {
+                const { directSshTarget: _, ...rest } = current;
+                return directSshTarget ? { ...rest, directSshTarget } : rest;
+              });
+            }}
+            placeholder="Laptop SSH alias, e.g. mini"
+          />
+          <p className="text-xs text-muted-foreground">
+            Optional. Resolved on your laptop for direct video and input. Leave blank to use the
+            environment connection.
+          </p>
+        </label>
         <details
           open={host.port !== undefined || host.identityFile !== undefined || undefined}
           className="text-sm"

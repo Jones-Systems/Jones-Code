@@ -23,7 +23,7 @@ import { jonesUpdates } from "~/jones/updates/jonesUpdates";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import { CircleArrowUpIcon } from "lucide-react";
-import { type ComponentProps, useMemo, useRef, useState } from "react";
+import { type ComponentProps, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
@@ -133,12 +133,8 @@ export function ServerUpdatesAction({
   const update = useServerUpdate();
   const pending = useRef(false);
   const [isPending, setIsPending] = useState(false);
-  const releaseTargets = useMemo(
-    () =>
-      Atom.make((get) =>
-        targets.filter((target) => get(jonesUpdates.value(target.environmentId)) === null),
-      ),
-    [targets],
+  const releaseTargets = Atom.make((get) =>
+    targets.filter((target) => get(jonesUpdates.value(target.environmentId)) === null),
   );
   const eligible = useAtomValue(releaseTargets).filter(
     (target) =>

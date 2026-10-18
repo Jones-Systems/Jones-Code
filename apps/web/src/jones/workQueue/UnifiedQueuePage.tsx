@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useBlocker } from "@tanstack/react-router";
 import { ChevronDownIcon } from "lucide-react";
 import type {
@@ -43,9 +43,9 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
     () => new Map(),
   );
   const [sourceRevision, setSourceRevision] = useState(0);
-  const reportSources = useCallback((environmentId: EnvironmentId, result: PromptSources) => {
+  const reportSources = (environmentId: EnvironmentId, result: PromptSources) => {
     setSources((current) => new Map(current).set(environmentId, result));
-  }, []);
+  };
   const [pane, setPane] = useState<PromptQueueView>(defaultView);
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const [dirtyEnvironments, setDirtyEnvironments] = useState<ReadonlySet<EnvironmentId>>(
@@ -76,7 +76,7 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
       !source.checking
     );
   });
-  const reportDirty = useCallback((environmentId: EnvironmentId, dirty: boolean) => {
+  const reportDirty = (environmentId: EnvironmentId, dirty: boolean) => {
     setDirtyEnvironments((current) => {
       if (current.has(environmentId) === dirty) return current;
       const next = new Set(current);
@@ -84,7 +84,7 @@ export function UnifiedQueuePage({ defaultView = "pending" }: { defaultView?: Pr
       else next.delete(environmentId);
       return next;
     });
-  }, []);
+  };
   const [pendingScope, setPendingScope] = useState<{ environmentId: EnvironmentId | null } | null>(
     null,
   );
@@ -345,10 +345,7 @@ function EnvironmentPrompts({
   const nativeEnvironmentId =
     environment.serverConfig?.environment.environmentId === environmentId ? environmentId : null;
   const classified = classifySentPrompts(snapshot, recent?.entries ?? [], nativeEnvironmentId);
-  const reportDirty = useCallback(
-    (dirty: boolean) => onDirtyChange(environmentId, dirty),
-    [environmentId, onDirtyChange],
-  );
+  const reportDirty = (dirty: boolean) => onDirtyChange(environmentId, dirty);
   useEffect(() => () => onDirtyChange(environmentId, false), [environmentId, onDirtyChange]);
   const unavailable = !environment.entry.enabled || environment.connection.phase !== "connected";
   return (

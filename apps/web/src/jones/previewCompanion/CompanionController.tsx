@@ -132,6 +132,6 @@ export function CompanionController() {
       )
         void bridge?.retry().catch(() => undefined);
     }
-  }, [catalog, environmentId, prepared, session, state?.config.enabled]);
+  }, [catalog, environmentId, prepared, session, state?.config.enabled, state?.status]);
   return null;
 }

@@ -21,6 +21,10 @@ import {
   shouldShowArm64IntelBuildWarning,
   shouldToastDesktopUpdateActionResult,
 } from "../desktopUpdate.logic";
+import {
+  downloadLocalDesktopUpdate,
+  installLocalDesktopUpdate,
+} from "../../jones/updates/localDesktopUpdate";
 import { showDesktopUpdateDownloadedToast } from "../desktopUpdate.toast";
 import { Alert, AlertDescription, AlertTitle } from "../ui/alert";
 import { Popover, PopoverCreateHandle, PopoverPopup, PopoverTrigger } from "../ui/popover";
@@ -47,6 +51,71 @@ type SidebarUpdatePopoverChangeDetails = Parameters<
   NonNullable<ComponentProps<typeof Popover>["onOpenChange"]>
 >[1];
 type SidebarUpdatePopoverHandle = ReturnType<typeof PopoverCreateHandle>;
+
+export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
+  type: "info" | "error";
+  title: string;
+  description?: string;
+} | null {
+  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") {
+    return null;
+  }
+  if (state.jones?.phase === "building") {
+    return {
+      type: "info",
+      title: "Update still being qualified",
+      description: state.jones.message ?? state.message ?? "The update is still being qualified.",
+    };
+  }
+  if (state.jones?.phase === "blocked") {
+    return {
+      type: "error",
+      title: "Update check blocked",
+      description: state.jones.message ?? state.message ?? "The update check is blocked.",
+    };
+  }
+  if (state.status === "error") {
+    return {
+      type: "error",
+      title: "Could not check for updates",
+      description: state.message ?? "Update check failed.",
+    };
+  }
+  if (state.status === "up-to-date") {
+    return { type: "info", title: "No new update available" };
+  }
+  return null;
+}
+
+export function checkForSidebarUpdate(
+  bridge: Pick<DesktopBridge, "checkForUpdate">,
+): Promise<void> {
+  return bridge
+    .checkForUpdate()
+    .then((result) => {
+      if (result.checked) {
+        const feedback = resolveSidebarUpdateCheckFeedback(result.state);
+        if (feedback) toastManager.add(stackedThreadToast(feedback));
+        return;
+      }
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not check for updates",
+          description: result.state.message ?? "Automatic updates are not available in this build.",
+        }),
+      );
+    })
+    .catch((error) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not check for updates",
+          description: error instanceof Error ? error.message : "Update check failed.",
+        }),
+      );
+    });
+}
 
 export function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
@@ -135,13 +204,14 @@ const toastUpdateError: ReportLocalUpdateError = (title, description) => {
 
 async function downloadLocalUpdate(
   bridge: DesktopBridge,
+  state: DesktopUpdateState | null,
   {
     notifyDownloaded,
     reportError = toastUpdateError,
   }: { readonly notifyDownloaded: boolean; readonly reportError?: ReportLocalUpdateError },
 ): Promise<boolean> {
   try {
-    const result = await bridge.downloadUpdate();
+    const result = await downloadLocalDesktopUpdate(bridge, state);
     if (result.completed && notifyDownloaded) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
     }
@@ -281,7 +351,7 @@ function SidebarUpdateControl() {
     setIsActionPending(true);
 
     if (action === "download") {
-      void downloadLocalUpdate(bridge, { notifyDownloaded: true }).finally(() =>
+      void downloadLocalUpdate(bridge, state, { notifyDownloaded: true }).finally(() =>
         setIsActionPending(false),
       );
       return;
@@ -308,7 +378,29 @@ function SidebarUpdateControl() {
         setIsActionPending(false);
         return;
       }
-      void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
+      void installLocalDesktopUpdate(bridge, state)
+        .then((result) => {
+          if (!shouldToastDesktopUpdateActionResult(result)) return;
+          const actionError = getDesktopUpdateActionError(result);
+          if (!actionError) return;
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: actionError,
+            }),
+          );
+        })
+        .catch((error) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not install update",
+              description: error instanceof Error ? error.message : "An unexpected error occurred.",
+            }),
+          );
+        })
+        .finally(() => setIsActionPending(false));
       return;
     }
 
@@ -316,29 +408,7 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    void bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (result.checked) return;
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description:
-              result.state.message ?? "Automatic updates are not available in this build.",
-          }),
-        );
-      })
-      .catch((error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
-          }),
-        );
-      })
-      .finally(() => setIsActionPending(false));
+    void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
   };
 
   const runEverything = async () => {
@@ -350,7 +420,7 @@ function SidebarUpdateControl() {
         ...(bridge && action === "download"
           ? {
               downloadLocal: (reportError) =>
-                downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
+                downloadLocalUpdate(bridge, state, { notifyDownloaded: false, reportError }),
             }
           : {}),
         ...(bridge && action !== "none"

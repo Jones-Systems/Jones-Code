@@ -123,6 +123,17 @@ describe("fleet enrollment settings", () => {
     });
     expect(h.host.mock.calls.some(([, request]) => request.action === "activate")).toBe(false);
   });
+  it("does not save an unconfirmed host enrollment and releases the busy state", async () => {
+    await mount();
+    await act(async () => {
+      button("Turn on").props.onClick();
+    });
+    expect(h.host.mock.calls.some(([, request]) => request.action === "enroll")).toBe(true);
+    expect(h.bridge).not.toHaveBeenCalled();
+    expect(JSON.stringify(tree!.toJSON())).toContain("Enrollment wasn’t confirmed and saved");
+    expect(button("Turn on").props.disabled).toBe(false);
+  });
+
   it("stops native automatic dispatch before attempting to disable an offline host", async () => {
     const enrollment = {
       environmentId,

@@ -84,6 +84,9 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
   } = useThreadActions();
+  const stopThreadSession = useOrchestrationCommand(threadEnvironment.stopSession, {
+    reportFailure: false,
+  });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -206,6 +209,14 @@ export function useThreadActionMenu(input: {
           }
           return;
         }
+        case "stop-thread":
+          await reportFailure("Failed to stop thread", () =>
+            stopThreadSession({
+              environmentId: threadRef.environmentId,
+              input: { threadId: threadRef.threadId },
+            }),
+          );
+          return;
         case "settle":
           await reportFailure("Failed to settle thread", () => settleThread(threadRef));
           return;

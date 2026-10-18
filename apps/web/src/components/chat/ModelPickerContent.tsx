@@ -62,6 +62,7 @@ import {
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { providerModelKey, sortProviderModelItems } from "../../modelOrdering";
+import { matchesProviderModelLock } from "../../jones/composer/ProviderInstanceShortcuts";
 
 type ModelPickerItem = {
   slug: string;
@@ -410,24 +411,8 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
       }),
     ) &&
     !isProviderInstancePickerReady(activeEntry);
-  const activeInstanceNeedsSetup =
-    onOpenProviderSetup !== undefined &&
-    activeEntry !== undefined &&
-    shouldOfferModelPickerSetup(
-      activeEntry,
-      modelOptionsByInstance.get(props.activeInstanceId) ?? [],
-    );
   const [selectedInstanceId, setSelectedInstanceId] = useState<ProviderInstanceId | "favorites">(
-    () => {
-      if (
-        props.lockedProvider !== null ||
-        activeInstanceHasSelectableUnavailableModel ||
-        activeInstanceNeedsSetup
-      ) {
-        return props.activeInstanceId;
-      }
-      return favorites.length > 0 ? "favorites" : props.activeInstanceId;
-    },
+    "favorites",
   );
   const [expandedLegacyInstances, setExpandedLegacyInstances] = useState(
     () =>
@@ -521,13 +506,14 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
 
   const entryByInstanceId = new Map(instanceEntries.map((entry) => [entry.instanceId, entry]));
   const matchesLockedProvider = (
-    entry: Pick<ProviderInstanceEntry, "driverKind" | "continuationGroupKey">,
-  ): boolean => {
-    if (lockedProvider === null) return true;
-    if (entry.driverKind !== lockedProvider) return false;
-    if (!lockedContinuationGroupKey) return true;
-    return entry.continuationGroupKey === lockedContinuationGroupKey;
-  };
+    entry: Pick<ProviderInstanceEntry, "instanceId" | "driverKind" | "continuationGroupKey">,
+  ): boolean =>
+    matchesProviderModelLock(
+      entry,
+      lockedProvider,
+      lockedContinuationGroupKey,
+      props.activeInstanceId,
+    );
 
   const selectableUnavailableInstanceIds = (() => {
     const instanceIds = new Set<ProviderInstanceId>();

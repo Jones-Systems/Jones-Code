@@ -87,14 +87,22 @@ type AccountingReadState =
 
 export function useSavedTokenAccounting(target: AccountingReadTarget | null, read: AccountingRead) {
   const key = target === null ? null : `${target.environmentId}:${target.generation}`;
-  const [state, setState] = useState<AccountingReadState>({ phase: "idle" });
+  const [observation, setObservation] = useState<{
+    key: string | null;
+    state: AccountingReadState;
+  }>({
+    key,
+    state: { phase: "idle" },
+  });
+  if (observation.key !== key) setObservation({ key, state: { phase: "idle" } });
+  const state = observation.key === key ? observation.state : { phase: "idle" as const };
+  const setState = (next: AccountingReadState) => setObservation({ key, state: next });
   const lifetime = useRef({ key: null as string | null, attempt: 0, reading: false });
 
   useLayoutEffect(() => {
     lifetime.current.key = key;
     lifetime.current.attempt += 1;
     lifetime.current.reading = false;
-    setState({ phase: "idle" });
     return () => {
       // A result belongs to one connection generation and one mounted panel.
       lifetime.current.key = null;
@@ -109,19 +117,21 @@ export function useSavedTokenAccounting(target: AccountingReadTarget | null, rea
     lifetime.current.reading = true;
     setState({ phase: "reading" });
     const current = () => lifetime.current.key === key && lifetime.current.attempt === attempt;
-    try {
-      const result = await read({ environmentId: target.environmentId, input: {} });
-      if (!current()) return;
-      setState(
-        result._tag === "Success"
-          ? { phase: "observed", result: result.value }
-          : { phase: "error" },
-      );
-    } catch {
-      if (current()) setState({ phase: "error" });
-    } finally {
+    await (async () => {
+      try {
+        const result = await read({ environmentId: target.environmentId, input: {} });
+        if (!current()) return;
+        setState(
+          result._tag === "Success"
+            ? { phase: "observed", result: result.value }
+            : { phase: "error" },
+        );
+      } catch {
+        if (current()) setState({ phase: "error" });
+      }
+    })().finally(() => {
       if (current()) lifetime.current.reading = false;
-    }
+    });
   }
 
   return { state, load };

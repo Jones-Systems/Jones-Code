@@ -40,7 +40,7 @@ export function WorkstreamColorDialog(props: {
     setBusy(true);
     setError(null);
     const pending = retry;
-    try {
+    await (async () => {
       const request = retry ?? {
         command_id: await props.createCommandId(),
         workstream_id: saved.workstream_id,
@@ -51,19 +51,21 @@ export function WorkstreamColorDialog(props: {
       setRetry(request);
       await props.save(request);
       props.onClose();
-    } catch (cause) {
-      if (cause instanceof WorkstreamActionError) {
-        // Refused before any request: nothing is uncertain, so no new retry is frozen.
-        setRetry(pending);
-        setError(cause.message);
-      } else
-        setError(
-          "Could not confirm the saved color. Retry the same save or refresh Workstreams to check the result.",
-        );
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    })()
+      .catch((cause) => {
+        if (cause instanceof WorkstreamActionError) {
+          // Refused before any request: nothing is uncertain, so no new retry is frozen.
+          setRetry(pending);
+          setError(cause.message);
+        } else
+          setError(
+            "Could not confirm the saved color. Retry the same save or refresh Workstreams to check the result.",
+          );
+      })
+      .finally(() => {
+        busyRef.current = false;
+        setBusy(false);
+      });
   };
   return (
     <Dialog
@@ -151,7 +153,7 @@ export function WorkstreamColorDialog(props: {
           <Button variant="outline" disabled={busy} onClick={props.onClose}>
             Cancel
           </Button>
-          <Button disabled={busy || (!automatic && !color)} onClick={() => void save()}>
+          <Button disabled={busy || (!automatic && !color)} onClick={save}>
             {busy ? "Saving…" : retry ? "Retry save" : "Save"}
           </Button>
         </DialogFooter>

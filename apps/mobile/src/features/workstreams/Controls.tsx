@@ -16,6 +16,42 @@ import type { MobileWorkstreams } from "./types";
 import type { MobileWorkstreamSnapshot } from "./projection";
 import { canEditWorkstreams, mobileMembershipBlock, planNativeMembership } from "./actions";
 
+function WorkstreamAction({
+  label,
+  run,
+  disabled = false,
+  busy,
+  onPendingChange,
+  onMessage,
+}: {
+  readonly label: string;
+  readonly run: () => Promise<unknown>;
+  readonly disabled?: boolean;
+  readonly busy: boolean;
+  readonly onPendingChange: (pending: boolean) => void;
+  readonly onMessage: (message: string | null) => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled || busy}
+      onPress={() => {
+        onPendingChange(true);
+        onMessage(null);
+        void run()
+          .catch(() =>
+            onMessage("Could not complete this change. Refresh Workstreams before retrying."),
+          )
+          .finally(() => onPendingChange(false));
+      }}
+      style={{ paddingVertical: 12, opacity: disabled || busy ? 0.45 : 1 }}
+    >
+      <Text style={{ color: "#2563eb" }}>{label}</Text>
+    </Pressable>
+  );
+}
+
 export function MobileWorkstreamControls({
   api,
   selection,
@@ -67,25 +103,7 @@ export function MobileWorkstreamControls({
           ? null
           : "This thread is outside the verified placement inventory."))
       : "Unavailable";
-  const action = (label: string, run: () => Promise<unknown>, disabled = false) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={disabled || busy}
-      onPress={() => {
-        setBusy(true);
-        setMessage(null);
-        void run()
-          .catch(() =>
-            setMessage("Could not complete this change. Refresh Workstreams before retrying."),
-          )
-          .finally(() => setBusy(false));
-      }}
-      style={{ paddingVertical: 12, opacity: disabled || busy ? 0.45 : 1 }}
-    >
-      <Text style={{ color: "#2563eb" }}>{label}</Text>
-    </Pressable>
-  );
+  const actionProps = { busy, onPendingChange: setBusy, onMessage: setMessage };
   const update = (
     bound: MobileWorkstreamSnapshot,
     item: T3WorkstreamMetadata,
@@ -268,9 +286,10 @@ export function MobileWorkstreamControls({
                 onChangeText={setName}
                 style={{ borderWidth: 1, borderColor: "#9ca3af", padding: 12, color: "#111827" }}
               />
-              {action(
-                group ? "Rename Workstream" : "Create Workstream",
-                () =>
+              <WorkstreamAction
+                {...actionProps}
+                label={group ? "Rename Workstream" : "Create Workstream"}
+                run={() =>
                   group
                     ? update(snapshot, group.workstream, { name: name.trim() })
                     : api.submit(snapshot, {
@@ -279,9 +298,10 @@ export function MobileWorkstreamControls({
                         lifecycle: "active",
                         progress: { state: "unknown" },
                         sort_order: snapshot.data.items.length,
-                      }),
-                !editable || !name.trim(),
-              )}
+                      })
+                }
+                disabled={!editable || !name.trim()}
+              />
             </>
           ) : null}
           {snapshot &&
@@ -320,17 +340,20 @@ export function MobileWorkstreamControls({
                 {group.workstream.lifecycle} · {group.workstream.progress.state} ·{" "}
                 {group.workstream.delivery}
               </Text>
-              {action("Membership history and completion evidence", () =>
-                showHistory(snapshot, group.workstream),
-              )}
+              <WorkstreamAction
+                {...actionProps}
+                label={"Membership history and completion evidence"}
+                run={() => showHistory(snapshot, group.workstream)}
+              />
               {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
                 (lifecycle: WorkstreamLifecycle) => (
                   <View key={lifecycle}>
-                    {action(
-                      `Mark ${lifecycle}`,
-                      () => update(snapshot, group.workstream, { lifecycle }),
-                      !editable || group.workstream.lifecycle === lifecycle,
-                    )}
+                    <WorkstreamAction
+                      {...actionProps}
+                      label={`Mark ${lifecycle}`}
+                      run={() => update(snapshot, group.workstream, { lifecycle })}
+                      disabled={!editable || group.workstream.lifecycle === lifecycle}
+                    />
                   </View>
                 ),
               )}
@@ -338,26 +361,43 @@ export function MobileWorkstreamControls({
                 Completed records an owner declaration. Membership changes do not settle or stop
                 native threads.
               </Text>
-              {action("Move group up", () => api.reorderGroup(group, -1), !editable)}
-              {action("Move group down", () => api.reorderGroup(group, 1), !editable)}
+              <WorkstreamAction
+                {...actionProps}
+                label={"Move group up"}
+                run={() => api.reorderGroup(group, -1)}
+                disabled={!editable}
+              />
+              <WorkstreamAction
+                {...actionProps}
+                label={"Move group down"}
+                run={() => api.reorderGroup(group, 1)}
+                disabled={!editable}
+              />
             </>
           ) : null}
           {snapshot && selection?.thread ? (
             <>
-              {action("Move to Unassigned", () => membership(null), membershipBlock !== null)}
+              <WorkstreamAction
+                {...actionProps}
+                label={"Move to Unassigned"}
+                run={() => membership(null)}
+                disabled={membershipBlock !== null}
+              />
               {snapshot.data.items.map((item) => (
                 <View key={item.workstreamId}>
                   <Text style={{ fontWeight: "600" }}>{item.name}</Text>
-                  {action(
-                    `Assign to ${item.name}`,
-                    () => membership(item.workstreamId),
-                    membershipBlock !== null,
-                  )}
-                  {action(
-                    `Link secondary: ${item.name}`,
-                    () => membership(item.workstreamId, true),
-                    membershipBlock !== null,
-                  )}
+                  <WorkstreamAction
+                    {...actionProps}
+                    label={`Assign to ${item.name}`}
+                    run={() => membership(item.workstreamId)}
+                    disabled={membershipBlock !== null}
+                  />
+                  <WorkstreamAction
+                    {...actionProps}
+                    label={`Link secondary: ${item.name}`}
+                    run={() => membership(item.workstreamId, true)}
+                    disabled={membershipBlock !== null}
+                  />
                   {snapshot.placements?.items
                     .filter(
                       (entry) =>
@@ -368,21 +408,29 @@ export function MobileWorkstreamControls({
                     )
                     .map((entry) => (
                       <View key={entry.membership_id}>
-                        {action(
-                          `Unlink secondary: ${item.name}`,
-                          () =>
+                        <WorkstreamAction
+                          {...actionProps}
+                          label={`Unlink secondary: ${item.name}`}
+                          run={() =>
                             api.submit(snapshot, {
                               operation: "remove_membership",
                               workstream_id: item.workstreamId,
                               expected_version: item.version,
                               membership_id: entry.membership_id,
-                            }),
-                          !editable ||
-                            (threadKey !== null && api.conflictingThreadKeys.has(threadKey)),
-                        )}
+                            })
+                          }
+                          disabled={
+                            !editable ||
+                            (threadKey !== null && api.conflictingThreadKeys.has(threadKey))
+                          }
+                        />
                       </View>
                     ))}
-                  {action(`History: ${item.name}`, () => showHistory(snapshot, item))}
+                  <WorkstreamAction
+                    {...actionProps}
+                    label={`History: ${item.name}`}
+                    run={() => showHistory(snapshot, item)}
+                  />
                 </View>
               ))}
             </>

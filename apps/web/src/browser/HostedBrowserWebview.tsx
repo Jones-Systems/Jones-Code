@@ -1,5 +1,6 @@
 "use client";
 
+import { registerCompanionGuest } from "../jones/previewCompanion/guest";
 import type {
   DesktopPreviewColorScheme,
   PreviewViewportSetting,
@@ -13,7 +14,11 @@ import { usePreviewBridge } from "~/components/preview/usePreviewBridge";
 import { useClientSettingsHydrated } from "~/hooks/useSettings";
 import { cn, isMacPlatform } from "~/lib/utils";
 
-import { resolveBrowserSurfacePanelRect, useBrowserSurfaceStore } from "./browserSurfaceStore";
+import {
+  acquireBrowserSurfaceActivity,
+  resolveBrowserSurfacePanelRect,
+  useBrowserSurfaceStore,
+} from "./browserSurfaceStore";
 import { useActiveBrowserRecordingTabIds } from "./browserRecording";
 import {
   browserViewportSettingKey,
@@ -61,6 +66,7 @@ export function HostedBrowserWebview(props: {
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
   readonly serverDriven?: boolean;
+  readonly companion?: boolean;
   readonly serverRendering?: {
     readonly colorScheme: DesktopPreviewColorScheme;
     readonly zoomFactor: number;
@@ -76,11 +82,12 @@ export function HostedBrowserWebview(props: {
     zoomFactor,
     profileId,
     serverDriven = false,
+    companion = false,
     serverRendering,
   } = props;
   const clientSettingsHydrated = useClientSettingsHydrated();
   const config = usePreviewWebviewConfig(threadRef.environmentId, profileId);
-  const [initialSrc] = useState(() => initialUrl ?? "about:blank");
+  const [initialSrc] = useState(() => (companion ? "about:blank" : (initialUrl ?? "about:blank")));
   const tabLeaseRef = useRef<AcquiredDesktopTab | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<ElectronWebview | null>(null);
@@ -135,11 +142,18 @@ export function HostedBrowserWebview(props: {
   }, [runtimeTabId, serverZoomFactor]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
+  useEffect(
+    () => (companion ? acquireBrowserSurfaceActivity(runtimeTabId) : undefined),
+    [companion, runtimeTabId],
+  );
+
   const [recoverySrc, setRecoverySrc] = useState(initialSrc);
   const remountCrashedWebview = useEffectEvent(() => {
-    setRecoverySrc(initialUrl ?? initialSrc);
+    setRecoverySrc(companion ? "about:blank" : (initialUrl ?? initialSrc));
     setWebviewGeneration((generation) => generation + 1);
   });
+
+  const readInitialUrl = useEffectEvent(() => initialUrl);
 
   const setWebviewRef = (node: HTMLElement | null) => {
     webviewRef.current = node as ElectronWebview | null;
@@ -150,22 +164,46 @@ export function HostedBrowserWebview(props: {
     const bridge = previewBridge;
     if (!clientSettingsHydrated || !webview || !config || !bridge) return;
     let disposed = false;
+    let registered = false;
+    let registering = false;
     let recoveryTimeout: ReturnType<typeof setTimeout> | null = null;
     const register = () => {
       const lease = tabLeaseRef.current;
-      if (!lease) return;
+      if (!lease || (companion && registered) || registering) return;
+      registering = true;
       void (async () => {
-        try {
-          // The main-process tab and the DOM webview are created by separate
-          // effects. Wait for the former so registration cannot race and fail
-          // with PreviewTabNotFoundError on a fast about:blank attachment.
-          await lease.ready;
-          if (disposed || webviewRef.current !== webview) return;
-          const webContentsId = webview.getWebContentsId();
-          if (Number.isInteger(webContentsId) && webContentsId > 0) {
-            await bridge.registerWebview(runtimeTabId, webContentsId);
+        return await (async () => {
+          try {
+            // The main-process tab and the DOM webview are created by separate
+            // effects. Wait for the former so registration cannot race and fail
+            // with PreviewTabNotFoundError on a fast about:blank attachment.
+            const isCurrent = () => !disposed && webviewRef.current === webview;
+            const registerWebview = async () => {
+              const webContentsId = webview.getWebContentsId();
+              if (!Number.isInteger(webContentsId) || webContentsId <= 0)
+                throw new Error("Guest is not attached.");
+              await bridge.registerWebview(runtimeTabId, webContentsId);
+            };
+            if (companion) {
+              registered = await registerCompanionGuest({
+                ready: lease.ready,
+                isCurrent,
+                register: registerWebview,
+                url: () => readInitialUrl(),
+                navigate: (url) => {
+                  webview.src = url;
+                },
+              });
+            } else {
+              await lease.ready;
+              if (isCurrent()) await registerWebview();
+            }
+          } catch {
+            // did-attach/dom-ready will retry if the guest was not ready yet.
           }
-        } catch {}
+        })().finally(() => {
+          registering = false;
+        });
       })();
     };
     const recoverGuest = () => {
@@ -201,6 +239,7 @@ export function HostedBrowserWebview(props: {
     };
   }, [
     clientSettingsHydrated,
+    companion,
     config,
     runtimeTabId,
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- A crash recovery remounts the webview under a new key, so the listeners attach to the new element.

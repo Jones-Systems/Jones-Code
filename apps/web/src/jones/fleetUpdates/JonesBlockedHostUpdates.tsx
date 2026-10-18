@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import type { JonesUpdateBridgeInput } from "@t3tools/client-runtime/jones/fleet-updates";
@@ -25,14 +25,12 @@ export function JonesBlockedHostUpdates({
 }) {
   const execute = useAtomCommand(command, { reportFailure: false });
   const [state, setState] = useState<JonesUpdateState | null>(null);
-  const [pending, setPending] = useState(false);
+  const [pending, setPending] = useState(true);
   const [message, setMessage] = useState<string>();
   const [unknownInstall, setUnknownInstall] = useState(false);
   const [currency, setCurrency] = useState<JonesSourceCurrency>("unknown");
-  const run = useCallback(
-    async (request: JonesUpdateBridgeInput) => {
-      setPending(true);
-      const result = await execute({ environmentId, request });
+  const run = (request: JonesUpdateBridgeInput) =>
+    execute({ environmentId, request }).then((result) => {
       setPending(false);
       if (result._tag === "Failure") {
         if (request.action === "install") setUnknownInstall(true);
@@ -50,9 +48,12 @@ export function JonesBlockedHostUpdates({
           ? "This host does not provide qualified Jones updates. It needs host-side setup."
           : result.value.state.message,
       );
-    },
-    [environmentId, execute],
-  );
+    });
+
+  const requestUpdate = (request: JonesUpdateBridgeInput) => {
+    setPending(true);
+    return run(request);
+  };
 
   useEffect(() => {
     void run({ action: "state" });
@@ -80,7 +81,7 @@ export function JonesBlockedHostUpdates({
           size="xs"
           variant="outline"
           disabled={pending}
-          onClick={() => void run({ action: "state" })}
+          onClick={() => void requestUpdate({ action: "state" })}
         >
           Refresh status
         </Button>
@@ -89,7 +90,7 @@ export function JonesBlockedHostUpdates({
             size="xs"
             variant="outline"
             disabled={busy || unknownInstall}
-            onClick={() => void run({ action: "check" })}
+            onClick={() => void requestUpdate({ action: "check" })}
           >
             Check for builds
           </Button>
@@ -100,7 +101,7 @@ export function JonesBlockedHostUpdates({
             disabled={busy || unknownInstall}
             onClick={() => {
               if (state.provenance)
-                void run({
+                void requestUpdate({
                   action: "download",
                   input: {
                     artifactId: state.provenance.artifactId,
@@ -118,7 +119,7 @@ export function JonesBlockedHostUpdates({
             disabled={busy || unknownInstall}
             onClick={() => {
               if (state.stagedHandle && state.currentVersion)
-                void run({
+                void requestUpdate({
                   action: "install",
                   input: {
                     stagedHandle: state.stagedHandle,

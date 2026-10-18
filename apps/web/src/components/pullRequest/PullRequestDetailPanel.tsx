@@ -2759,7 +2759,7 @@ export function PullRequestDetailPanel({
         detailFailure={detailQuery.failure}
         activityFailure={activityQuery.failure}
         hasDetail={detail !== null}
-        observedAt={resolvedCoreDetail?.observedAt}
+        observedAt={coreDetail?.observedAt}
       />
 
       <div

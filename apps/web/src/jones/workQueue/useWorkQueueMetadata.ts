@@ -7,7 +7,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import { useCallback } from "react";
+
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { useAtomCommand } from "../../state/use-atom-command";
 
@@ -39,12 +39,9 @@ const query = createEnvironmentCommand(connectionAtomRuntime, {
 
 export function useWorkQueueMetadata(environmentId: EnvironmentId) {
   const run = useAtomCommand(query, { reportFailure: false, reportDefect: false });
-  return useCallback(
-    async (signal: AbortSignal) => {
-      const result = await run({ environmentId, input: signal });
-      if (result._tag === "Failure") throw Cause.squash(result.cause);
-      return result.value;
-    },
-    [environmentId, run],
-  );
+  return async (signal: AbortSignal) => {
+    const result = await run({ environmentId, input: signal });
+    if (result._tag === "Failure") throw Cause.squash(result.cause);
+    return result.value;
+  };
 }

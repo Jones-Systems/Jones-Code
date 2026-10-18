@@ -216,6 +216,8 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
 export function getComposerReasoningStep(input: {
   provider: ProviderDriverKind;
   instanceId: ProviderInstanceId;
+  defaultModelSelection?: ModelSelection | null | undefined;
+  defaultDriverKind?: ProviderDriverKind | undefined;
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
@@ -230,19 +232,15 @@ export function getComposerReasoningStep(input: {
   modelOptions?: ReadonlyArray<ProviderOptionSelection>;
 } | null {
   const { prompt, cursor } = input;
-  const { selections } = resolveComposerOptionSelections(
-    input.models,
-    input.model,
-    input.provider,
-    input.modelOptions,
-    input.planModeEnabled,
-  );
+  const { modelOptions: selections, displayCapabilities } =
+    getComposerEffectiveTraitsOptions(input);
   const step = getReasoningTraitStep({
     provider: input.provider,
     instanceId: input.instanceId,
     model: input.model,
     models: input.models,
     modelOptions: selections,
+    displayCapabilities,
     reportedModelSelection: input.reportedModelSelection,
     prompt,
     planModeEnabled: input.planModeEnabled,

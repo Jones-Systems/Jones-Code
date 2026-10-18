@@ -4,7 +4,6 @@ import {
   type ConnectedEnvironmentTrust,
 } from "@t3tools/client-runtime/state/workstreams";
 import type { TrustedT3PlacementEnvironment } from "@t3tools/contracts";
-import { useMemo } from "react";
 
 import { environmentCatalog } from "../../connection/catalog";
 import { environmentSession } from "../../state/session";
@@ -20,8 +19,5 @@ export function useConnectedWorkstreamTrust(
   placementTrustedEnvironments: readonly TrustedT3PlacementEnvironment[] | undefined,
 ): ConnectedEnvironmentTrust {
   const environments = useAtomValue(connectedEnvironmentConfigsAtom);
-  return useMemo(
-    () => buildConnectedEnvironmentTrust({ environments, placementTrustedEnvironments }),
-    [environments, placementTrustedEnvironments],
-  );
+  return buildConnectedEnvironmentTrust({ environments, placementTrustedEnvironments });
 }

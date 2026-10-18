@@ -15,11 +15,23 @@ const accessStore = {
     return () => accessStore.listeners.delete(listener);
   },
 };
-vi.mock(import("~/state/device"), async (original) => ({
+vi.mock(import("~/jones/device/useDeviceStreamRoute"), async (original) => ({
   ...(await original()),
-  useDeviceHubAccess: () => useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
-  refreshDeviceHubAccess: () => accessStore.refresh(),
+  useDeviceStreamRoute: (() => ({
+    route: {
+      access: useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
+      kind: "proxy",
+      phase: "connected",
+      generation: "test",
+    },
+    proxy: accessStore.value,
+    report: reportRoute,
+    unauthorized: refreshRoute,
+    retryAccess: refreshRoute,
+  })) as never,
 }));
+const reportRoute = () => {};
+const refreshRoute = () => accessStore.refresh();
 let viewerMounts = 0;
 let viewerUnmounts = 0;
 // The 3D phone frame needs WebGL; the test only cares whether it stays mounted.
@@ -224,7 +236,7 @@ it("removes MJPEG requests while hidden and reconnects when shown", async () => 
   expect(images.at(-1)!.src).toContain("stream.mjpeg");
 });
 
-it("offers Reconnect after the shared timeout and receives a frame after retry with unchanged access", async () => {
+it("offers Reconnect after the shared timeout and receives a frame after refreshing access for retry", async () => {
   const { images } = await setup();
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
@@ -235,7 +247,7 @@ it("offers Reconnect after the shared timeout and receives a frame after retry w
   expect(alert()).toBeNull();
   expect(images[1]!.src).toContain("stream.mjpeg");
   await publishFrame(images[1]!);
-  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect(container.querySelector('[role="status"]')?.textContent).toContain("Server connection");
   expect(container.querySelectorAll("button")).toHaveLength(0);
   expect(vi.getTimerCount()).toBe(0);
 });

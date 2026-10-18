@@ -27,15 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, Pressable, Text } from "react-native";
-import {
-  createElement,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentCatalog } from "../../connection/catalog";
 import { runtime } from "../../lib/runtime";
@@ -320,7 +312,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
           readonly [EnvironmentId, MobileWorkstreamLoadOutcome<MobileWorkstreamSnapshot>]
         > => {
           const environmentId = connection.prepared.environmentId;
-          try {
+          return await (async () => {
             const previous = loadedRef.current.get(environmentId);
             const { data, index } = await loadMobileWorkstreamRegistry(
               registryFetchers(connection.prepared),
@@ -399,9 +391,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 },
               },
             ] as const;
-          } catch (cause) {
+          })().catch((cause: unknown) => {
             return [environmentId, { kind: "failed", cause }] as const;
-          }
+          });
         },
       ),
     ).then((outcomes) => {
@@ -538,7 +530,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
         controllers.current.delete(controller);
       });
   };
-  const pages = async <Item>(
+  const pages = async <Item,>(
     snapshot: MobileWorkstreamSnapshot,
     url: (urls: WorkstreamUrls, cursor?: string) => string,
     run: (
@@ -740,16 +732,22 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     ...api,
     openThread: (thread: WorkstreamThreadLike) => setSelection({ thread }),
     openGroup: (groupKey: string) => setSelection({ groupKey }),
-    controls: createElement(
-      Pressable,
-      { accessibilityRole: "button", onPress: () => setSelection({}), style: { padding: 12 } },
-      createElement(Text, null, "Workstreams"),
+    controls: (
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => setSelection({})}
+        style={{ padding: 12 }}
+      >
+        <Text>Workstreams</Text>
+      </Pressable>
     ),
-    sheet: createElement(MobileWorkstreamControls, {
-      api,
-      selection,
-      onSelect: setSelection,
-      onClose: () => setSelection(null),
-    }),
+    sheet: (
+      <MobileWorkstreamControls
+        api={api}
+        selection={selection}
+        onSelect={setSelection}
+        onClose={() => setSelection(null)}
+      />
+    ),
   };
 }

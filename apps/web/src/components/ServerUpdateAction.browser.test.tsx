@@ -14,6 +14,32 @@ const testState = vi.hoisted(() => ({
   clipboard: vi.fn(),
   continueThreadsAfterServerUpdate: false,
   sessionAtom: null as unknown,
+  jonesEnvironmentIds: new Set<string>(),
+}));
+
+vi.mock(import("~/jones/updates/jonesUpdates"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    jonesUpdates: {
+      ...actual.jonesUpdates,
+      value: ((environmentId: string) =>
+        Atom.make(
+          testState.jonesEnvironmentIds.has(environmentId)
+            ? {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                capability: { check: false, download: false, install: false },
+              }
+            : null,
+        )) as never,
+    },
+  };
+});
+vi.mock(import("@tanstack/react-router"), async (original) => ({
+  ...(await original()),
+  useNavigate: (() => vi.fn()) as never,
 }));
 
 vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
@@ -132,6 +158,7 @@ async function renderAction(
 }
 
 beforeEach(() => {
+  testState.jonesEnvironmentIds.clear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   testState.updateServer.mockReset();
   testState.toast.mockReset();
@@ -398,6 +425,16 @@ describe("ServerUpdatesAction", () => {
     expect(testState.toast.mock.calls.map(([toast]) => toast.title)).toEqual([
       "Laptop updated",
       "Office updated",
+    ]);
+  });
+
+  it("keeps a Jones host out of bulk release updates even when it reports no update capabilities", async () => {
+    testState.jonesEnvironmentIds.add("batch-a");
+    testState.updateServer.mockResolvedValue(success());
+    await mount();
+    await click("Update all");
+    expect(testState.updateServer.mock.calls.map(([target]) => target)).toEqual([
+      { environmentId: "batch-b", input: { targetVersion: "0.0.31" } },
     ]);
   });
 

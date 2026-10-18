@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   ProjectId,
+  PullRequestOperationError,
   SourceControlProviderKind,
   ThreadId,
   type PullRequestDetailView,
@@ -15,10 +16,11 @@ import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 
 import "~/index.css";
 
-const { newThread, prepareThread, refresh } = vi.hoisted(() => ({
+const { newThread, prepareThread, refresh, invalidate } = vi.hoisted(() => ({
   newThread: vi.fn(),
   prepareThread: vi.fn(),
   refresh: vi.fn(),
+  invalidate: vi.fn(),
 }));
 
 vi.mock(import("~/state/session"), async (original) => ({
@@ -44,7 +46,7 @@ vi.mock(import("~/lib/sourceControlActions"), async (original) => ({
 }));
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
-  useAtomCommand: (() => vi.fn()) as never,
+  useAtomCommand: (() => invalidate) as never,
 }));
 vi.mock(import("~/state/pullRequests"), async (original) => {
   const actual = await original();
@@ -68,11 +70,11 @@ vi.mock(import("~/state/query"), async (original) => ({
   ...(await original()),
   useEnvironmentQuery: ((query: unknown) => ({
     data: query === "detail" ? detail : null,
-    dataUpdatedAt: 0,
-    failure: null,
+    dataUpdatedAt: query === "detail" ? 1 : 0,
+    failure: query === "detail" ? detailError : null,
     isPending: false,
     isSuccess: true,
-    error: null,
+    error: query === "detail" ? (detailError?.message ?? null) : null,
     refresh,
   })) as never,
 }));
@@ -80,6 +82,7 @@ vi.mock(import("~/state/usePullRequestStack"), async (original) => ({
   ...(await original()),
   usePullRequestStack: (() => ({
     data: null,
+    isFresh: true,
     isSuccess: true,
     isPending: false,
     error: null,
@@ -149,7 +152,10 @@ vi.mock(import("./PullRequestCodeTab"), async (original) => ({
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 import { pullRequestPanelContext } from "./pullRequestDetail.logic";
 
+let detailError: PullRequestOperationError | null = null;
+
 const detail: PullRequestDetailView = {
+  observedAt: Date.parse("2026-09-01T12:00:00Z"),
   provider: SourceControlProviderKind.make("github"),
   projectId: ProjectId.make("project"),
   projectTitle: "Project",
@@ -239,6 +245,9 @@ function render(props: Partial<ComponentProps<typeof PullRequestDetailPanel>> = 
 }
 
 beforeEach(() => {
+  detailError = null;
+  refresh.mockReset();
+  invalidate.mockReset().mockResolvedValue(undefined);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   useComposerDraftStore.setState({ draftsByThreadKey: {} });
   newThread
@@ -385,4 +394,53 @@ it("folds the title only for the active tab's own scroller", async () => {
   await vi.waitFor(() => expect(titleFold()).toBe(false));
   await tab("Code").click();
   await vi.waitFor(() => expect(titleFold()).toBe(true));
+});
+
+describe("held pull request during a provider pause", () => {
+  async function renderPaused(reason?: "rate-limited") {
+    detailError = new PullRequestOperationError({
+      operation: "detail",
+      detail: "Provider reads are paused.",
+      ...(reason ? { reason, retryAt: Date.parse("2026-09-01T13:00:00Z") } : {}),
+    });
+    await render();
+  }
+
+  it("shows a typed pause beside held detail with its original observation time", async () => {
+    await renderPaused("rate-limited");
+    const status = document.querySelector('[role="status"]');
+    expect(status?.textContent).toContain("paused");
+    expect([...status!.querySelectorAll("time")].map((time) => time.dateTime)).toEqual([
+      "2026-09-01T13:00:00.000Z",
+      "2026-09-01T12:00:00.000Z",
+    ]);
+    expect(
+      [...document.querySelectorAll("h1")].some((node) => node.textContent?.includes(detail.title)),
+    ).toBe(true);
+  });
+
+  it("does not infer a typed pause from a legacy error message", async () => {
+    await renderPaused();
+    expect(document.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("keeps manual refresh immediate and invalidates before refreshing", async () => {
+    await renderPaused("rate-limited");
+    refresh.mockClear();
+    await page.getByRole("button", { name: "More pull request actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Refresh", exact: true }).click();
+    expect(invalidate).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalled();
+    expect(invalidate.mock.invocationCallOrder[0]).toBeLessThan(
+      refresh.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps title editing available during a read pause", async () => {
+    await renderPaused("rate-limited");
+    await page.getByRole("button", { name: "Edit title", exact: true }).click();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Pull request title"]');
+    expect(input?.value).toBe(detail.title);
+    expect(input?.disabled).toBe(false);
+  });
 });

@@ -1,3 +1,11 @@
+import {
+  useThreadStatusFilter,
+  useThreadStatusSelection,
+} from "../jones/threadStatusFilter/useThreadStatusFilter";
+import type { ThreadStatusFilter } from "../jones/threadStatusFilter/model";
+import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
+import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
+import { installLocalDesktopUpdate } from "../jones/updates/localDesktopUpdate";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { Spinner } from "~/components/ui/spinner";
@@ -186,6 +194,7 @@ import {
   buildMultiSelectThreadContextMenuItems,
   deleteSelectedThreadEntries,
   getSidebarThreadIdsToPrewarm,
+  filterSidebarV2VisibleThreads,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
@@ -1070,6 +1079,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
 });
 
 interface SidebarProjectItemProps {
+  statusFilter: ThreadStatusFilter;
   project: SidebarProjectSnapshot;
   isThreadListExpanded: boolean;
   activeRouteThreadKey: string | null;
@@ -1108,11 +1118,21 @@ function resolveProjectThreadStatus(
 // Thread derivations for one project row. Built in their own hooks so they reach
 // SidebarProjectItem frozen: inline, its later calls made the compiler fuse the
 // ordered keys with the route-dependent panel, handing every row a new array.
-function useProjectThreads(project: SidebarProjectSnapshot) {
+function useProjectThreads(project: SidebarProjectSnapshot, statusFilter: ThreadStatusFilter) {
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
   );
   const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const { excludedEnvironmentIds } = useSidebarEnvironmentFilter();
+  const scopedThreads = filterSidebarV2VisibleThreads(
+    filterSidebarEnvironmentThreads(sidebarThreads, excludedEnvironmentIds),
+    null,
+  );
+  const { threads: projectThreads } = useThreadStatusSelection(
+    scopedThreads,
+    statusFilter,
+    "legacy",
+  );
   const threadLastVisitedAts = useUiStateStore(
     useShallow((state) =>
       sidebarThreads.map(
@@ -1156,10 +1176,7 @@ function useProjectThreads(project: SidebarProjectSnapshot) {
       resolveThreadLastVisitedAt(thread.lastVisitedAt, threadLastVisitedAts[index] ?? undefined),
     ]),
   );
-  const visibleProjectThreads = sortThreads(
-    sidebarThreads.filter((thread) => thread.archivedAt === null),
-    threadSortOrder,
-  );
+  const visibleProjectThreads = sortThreads(projectThreads, threadSortOrder);
   const projectStatus = resolveProjectStatusIndicator(
     visibleProjectThreads.map((thread) =>
       resolveProjectThreadStatus(thread, lastVisitedAtByThreadKey),
@@ -1338,7 +1355,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     visibleProjectThreads,
     orderedProjectThreadKeys,
     lastVisitedAtByThreadKey,
-  } = useProjectThreads(project);
+  } = useProjectThreads(project, props.statusFilter);
   // The "Delete anyway" toast action runs after the toast delay, so it must see
   // the thread list as of the click, not as of the first prompt.
   const readSidebarThreadByKey = useStableCallback(() => sidebarThreadByKey);
@@ -2760,6 +2777,7 @@ function SortableProjectItem({
 }
 
 interface SidebarProjectsContentProps {
+  statusFilter: ThreadStatusFilter;
   showArm64IntelBuildWarning: boolean;
   arm64IntelBuildWarningDescription: string | null;
   desktopUpdateButtonAction: "download" | "install" | "none";
@@ -2942,6 +2960,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
                   <SortableProjectItem key={project.projectKey} projectId={project.projectKey}>
                     {(dragHandleProps) => (
                       <SidebarProjectItem
+                        statusFilter={props.statusFilter}
                         project={project}
                         isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
                         activeRouteThreadKey={
@@ -2975,6 +2994,7 @@ const SidebarProjectsContent = memo(function SidebarProjectsContent(
           <SidebarMenu ref={attachProjectListAutoAnimateRef}>
             {sortedProjects.map((project) => (
               <SidebarProjectListRow
+                statusFilter={props.statusFilter}
                 key={project.projectKey}
                 project={project}
                 isThreadListExpanded={expandedThreadListsByProject.has(project.projectKey)}
@@ -3087,6 +3107,7 @@ function useLegacySidebarProjects() {
 // Kept apart from useLegacySidebarProjects so a thread change re-sorts the
 // projects without rebuilding their snapshots, which every project row keys on.
 function useSortedLegacySidebarProjects(input: {
+  sidebarThreads: readonly SidebarThreadSummary[];
   sidebarProjects: readonly SidebarProjectSnapshot[];
   physicalToLogicalKey: ReadonlyMap<string, string>;
   projectPhysicalKeyByScopedRef: ReadonlyMap<string, string>;
@@ -3098,7 +3119,7 @@ function useSortedLegacySidebarProjects(input: {
     projectPhysicalKeyByScopedRef,
     sidebarProjectSortOrder,
   } = input;
-  const sidebarThreads = useThreadShells();
+  const { sidebarThreads } = input;
   const sidebarProjectByKey = new Map(
     sidebarProjects.map((project) => [project.projectKey, project] as const),
   );
@@ -3133,6 +3154,7 @@ function useSortedLegacySidebarProjects(input: {
 }
 
 function useLegacySidebarThreads(input: {
+  sidebarThreads: readonly SidebarThreadSummary[];
   sortedProjects: readonly SidebarProjectSnapshot[];
   physicalToLogicalKey: ReadonlyMap<string, string>;
   projectPhysicalKeyByScopedRef: ReadonlyMap<string, string>;
@@ -3150,7 +3172,7 @@ function useLegacySidebarThreads(input: {
     sidebarThreadPreviewCount,
     expandedThreadListsByProject,
   } = input;
-  const sidebarThreads = useThreadShells();
+  const { sidebarThreads } = input;
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const sidebarThreadByKey = new Map(
     sidebarThreads.map(
@@ -3241,6 +3263,18 @@ function useLegacySidebarThreads(input: {
 }
 
 export default function LegacySidebar() {
+  const allSidebarThreads = useThreadShells();
+  const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
+  const visibleThreads = filterSidebarV2VisibleThreads(
+    filterSidebarEnvironmentThreads(allSidebarThreads, excludedEnvironmentIds),
+    null,
+  );
+  const {
+    statusFilter,
+    cycleStatusFilter,
+    counts: statusCounts,
+    threads: sidebarThreads,
+  } = useThreadStatusFilter(visibleThreads, "legacy");
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
   const navigate = useNavigate();
   const sidebarThreadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
@@ -3272,6 +3306,14 @@ export default function LegacySidebar() {
   const desktopUpdateState = useDesktopUpdateState();
   const [desktopUpdateActionPending, setDesktopUpdateActionPending] = useState(false);
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
+  const selectionFilterKey = JSON.stringify([statusFilter, excludedEnvironmentKey]);
+  const previousSelectionFilter = useRef<string | null>(null);
+  useEffect(() => {
+    if (previousSelectionFilter.current !== selectionFilterKey) {
+      previousSelectionFilter.current = selectionFilterKey;
+      clearSelection();
+    }
+  }, [selectionFilterKey, clearSelection]);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const platform = navigator.platform;
   const shortcutModifiers = useShortcutModifierState();
@@ -3284,6 +3326,7 @@ export default function LegacySidebar() {
     sidebarProjects,
   } = useLegacySidebarProjects();
   const { sortedProjects, sortedProjectKeys } = useSortedLegacySidebarProjects({
+    sidebarThreads: visibleThreads,
     sidebarProjects,
     physicalToLogicalKey,
     projectPhysicalKeyByScopedRef,
@@ -3297,6 +3340,7 @@ export default function LegacySidebar() {
     threadJumpThreadKeys,
     prewarmedSidebarThreadRefs,
   } = useLegacySidebarThreads({
+    sidebarThreads,
     sortedProjects,
     physicalToLogicalKey,
     projectPhysicalKeyByScopedRef,
@@ -3567,8 +3611,7 @@ export default function LegacySidebar() {
         setDesktopUpdateActionPending(false);
         return;
       }
-      void bridge
-        .installUpdate()
+      void installLocalDesktopUpdate(bridge, desktopUpdateState)
         .then((result) => {
           if (!shouldToastDesktopUpdateActionResult(result)) return;
           const actionError = getDesktopUpdateActionError(result);
@@ -3617,9 +3660,15 @@ export default function LegacySidebar() {
       {prewarmedSidebarThreadRefs.map((threadRef) => (
         <SidebarThreadDetailPrewarmer key={scopedThreadKey(threadRef)} threadRef={threadRef} />
       ))}
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader
+        isElectron={isElectron}
+        statusCounts={statusCounts}
+        statusFilter={statusFilter}
+        onCycleStatusFilter={cycleStatusFilter}
+      />
 
       <SidebarProjectsContent
+        statusFilter={statusFilter}
         showArm64IntelBuildWarning={showArm64IntelBuildWarning}
         arm64IntelBuildWarningDescription={arm64IntelBuildWarningDescription}
         desktopUpdateButtonAction={desktopUpdateButtonAction}

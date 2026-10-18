@@ -22,7 +22,15 @@ import {
   matchesKeybindingShortcut,
   normalizeEventKey,
 } from "@t3tools/shared/keybindings";
-import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useOpenLink } from "~/browser/useOpenLink";
 import { ExpandedImageDialog } from "~/components/chat/ExpandedImageDialog";
@@ -34,7 +42,7 @@ import { readLocalApi } from "~/localApi";
 import { cn } from "~/lib/utils";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 
-const PDF_VIEWER_FRAGMENT = "#toolbar=0&view=FitH";
+const PdfPreview = lazy(() => import("./PdfPreview"));
 
 /**
  * The page reports the keys, and a page script can report any key it likes,
@@ -65,25 +73,27 @@ export const isPdfPreviewFile = (path: string): boolean =>
 
 /**
  * HTML runs in a sandboxed frame with an opaque origin, so a page cannot reach
- * the app's session or storage. The built-in PDF viewer needs an unsandboxed
- * frame; a PDF runs no scripts.
+ * the app's session or storage. PDFs use the app PDF viewer with retry support.
  */
 export function BrowserDocumentFrame(props: {
   readonly src: string;
   readonly title: string;
   readonly pdf: boolean;
   readonly htmlRender?: boolean;
+  readonly onRetry?: () => void | Promise<void>;
   readonly threadRef?: ScopedThreadRef | undefined;
 }) {
   const className = "min-h-0 flex-1 border-0 bg-white";
   return props.pdf ? (
-    // oxlint-disable-next-line react/iframe-missing-sandbox -- the built-in PDF viewer needs an unsandboxed frame.
-    <iframe
-      key={props.src}
-      src={`${props.src}${PDF_VIEWER_FRAGMENT}`}
-      title={props.title}
-      className={className}
-    />
+    <Suspense
+      fallback={
+        <div role="status" className="flex min-h-0 flex-1 items-center justify-center">
+          Loading PDF…
+        </div>
+      }
+    >
+      <PdfPreview key={props.src} src={props.src} title={props.title} onRetry={props.onRetry} />
+    </Suspense>
   ) : props.htmlRender ? (
     <HtmlRenderDocument
       key={props.src}
@@ -98,7 +108,7 @@ export function BrowserDocumentFrame(props: {
       src={props.src}
       title={props.title}
       className={className}
-      sandbox="allow-scripts allow-forms allow-popups allow-downloads"
+      sandbox="allow-scripts allow-forms allow-popups allow-downloads allow-modals"
     />
   );
 }

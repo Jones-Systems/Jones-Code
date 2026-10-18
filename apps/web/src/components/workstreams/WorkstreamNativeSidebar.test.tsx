@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, useState, useCallback, useRef } from "react";
+import { act, useState, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
@@ -699,7 +699,7 @@ describe("native Workstream sidebar interactions", () => {
 function CreationHeader({ controller }: { readonly controller: WorkstreamListView }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
-  const close = useCallback(() => setOpen(false), []);
+  const close = () => setOpen(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
   return (
     <SidebarProvider>

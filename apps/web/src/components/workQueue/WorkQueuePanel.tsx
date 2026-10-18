@@ -1,5 +1,6 @@
+import { useStableCallback } from "../../hooks/useStableCallback";
 import { PauseIcon, PlayIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Textarea } from "../ui/textarea";
@@ -47,73 +48,79 @@ export function WorkQueuePanel({
   const [switchTo, setSwitchTo] = useState<WorkQueueItem | null>(null);
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [unknown, setUnknown] = useState(false);
   const generation = useRef(0);
   const saveInFlight = useRef(false);
   const readRequest = useRef(0);
   const mutation = useRef(0);
-  const editorRef = useRef(editor);
-  editorRef.current = editor;
+  const readEditor = useStableCallback(() => editor);
   const dirty = !!editor && editor.draft !== (editor.base.text ?? "");
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     const scope = generation.current;
     const request = ++readRequest.current;
     const version = mutation.current;
-    setLoading(true);
-    try {
-      const next = await source.load();
-      if (
-        scope !== generation.current ||
-        request !== readRequest.current ||
-        version !== mutation.current
-      )
-        return;
-      setItems(next);
-      setUnknown(false);
-      const existing = editorRef.current;
-      const current = next.find((item) => item.id === existing?.base.id);
-      if (!existing) {
-        if (next[0]) setEditor({ base: next[0], draft: next[0].text ?? "" });
-      } else if (!current) {
-        setMessage("This submission is unavailable. Your draft is preserved.");
-        setUnknown(true);
-      } else if (existing.draft !== (existing.base.text ?? "")) {
-        if (current.snapshotToken !== existing.base.snapshotToken) {
-          setEditor({ ...existing, current });
-          setMessage("The submission changed. Compare the current text with your preserved draft.");
+    return await (async () => {
+      try {
+        const next = await source.load();
+        if (
+          scope !== generation.current ||
+          request !== readRequest.current ||
+          version !== mutation.current
+        )
+          return;
+        setItems(next);
+        setUnknown(false);
+        const existing = readEditor();
+        const current = next.find((item) => item.id === existing?.base.id);
+        if (!existing) {
+          if (next[0]) setEditor({ base: next[0], draft: next[0].text ?? "" });
+        } else if (!current) {
+          setMessage("This submission is unavailable. Your draft is preserved.");
+          setUnknown(true);
+        } else if (existing.draft !== (existing.base.text ?? "")) {
+          if (current.snapshotToken !== existing.base.snapshotToken) {
+            setEditor({ ...existing, current });
+            setMessage(
+              "The submission changed. Compare the current text with your preserved draft.",
+            );
+          } else {
+            setMessage("Readback complete. Your draft is preserved.");
+          }
         } else {
-          setMessage("Readback complete. Your draft is preserved.");
+          setEditor({ base: current, draft: current.text ?? "" });
         }
-      } else {
-        setEditor({ base: current, draft: current.text ?? "" });
+      } catch {
+        if (
+          scope === generation.current &&
+          request === readRequest.current &&
+          version === mutation.current
+        )
+          setMessage("Could not load sample submissions. Your draft is preserved.");
       }
-    } catch {
-      if (
-        scope === generation.current &&
-        request === readRequest.current &&
-        version === mutation.current
-      )
-        setMessage("Could not load sample submissions. Your draft is preserved.");
-    } finally {
+    })().finally(() => {
       if (scope === generation.current && request === readRequest.current) setLoading(false);
-    }
-  }, [source]);
+    });
+  };
 
-  useEffect(() => {
-    generation.current++;
-    mutation.current++;
-    editorRef.current = null;
+  const [previousSource, setPreviousSource] = useState(source);
+  if (previousSource !== source) {
+    setPreviousSource(source);
     setEditor(null);
     setItems([]);
     setSwitchTo(null);
     setMessage("");
     setUnknown(false);
     setSaving(false);
+    setLoading(true);
+  }
+  useEffect(() => {
+    generation.current++;
+    mutation.current++;
     saveInFlight.current = false;
     void refresh();
     return () => {
@@ -170,7 +177,8 @@ export function WorkQueuePanel({
     updateItem(next);
     open(next);
   }
-  function togglePause(item: WorkQueueItem, paused = item.pause !== "manual") {
+  function togglePause(item: WorkQueueItem, requestedPause?: boolean) {
+    const paused = requestedPause ?? item.pause !== "manual";
     if (
       saving ||
       (!paused && (unknown || (item.id === editor?.base.id && (dirty || editor.current))))
@@ -245,53 +253,55 @@ export function WorkQueuePanel({
     saveInFlight.current = true;
     setSaving(true);
     setMessage("");
-    try {
-      const result = await source.save({
-        id: submitted.base.id,
-        baseToken: submitted.base.snapshotToken,
-        text: submitted.draft,
-      });
-      if (scope !== generation.current || version !== mutation.current) return;
-      if (result.kind === "saved") {
-        if (result.item.id !== submitted.base.id || result.item.text !== submitted.draft) {
+    return await (async () => {
+      try {
+        const result = await source.save({
+          id: submitted.base.id,
+          baseToken: submitted.base.snapshotToken,
+          text: submitted.draft,
+        });
+        if (scope !== generation.current || version !== mutation.current) return;
+        if (result.kind === "saved") {
+          if (result.item.id !== submitted.base.id || result.item.text !== submitted.draft) {
+            setUnknown(true);
+            setMessage(
+              "Save acknowledgment did not match your draft. Read back before saving again.",
+            );
+            return;
+          }
+          setItems((previous) =>
+            previous.map((item) => (item.id === result.item.id ? result.item : item)),
+          );
+          setEditor({ base: result.item, draft: result.item.text ?? "" });
+          setMessage("Mock edit saved in this preview.");
+        } else if (result.kind === "conflict" || result.kind === "held") {
+          setItems((previous) =>
+            previous.map((item) => (item.id === result.current.id ? result.current : item)),
+          );
+          setEditor({ ...submitted, current: result.current });
+          setMessage(
+            result.kind === "held"
+              ? result.reason
+              : "The submission changed. Compare the current text with your preserved draft.",
+          );
+        } else {
+          setUnknown(result.effect === "unknown");
+          setMessage(result.message);
+        }
+      } catch {
+        if (scope === generation.current && version === mutation.current) {
           setUnknown(true);
           setMessage(
-            "Save acknowledgment did not match your draft. Read back before saving again.",
+            "Save effect is unknown. Your draft is preserved. Read back before saving again.",
           );
-          return;
         }
-        setItems((previous) =>
-          previous.map((item) => (item.id === result.item.id ? result.item : item)),
-        );
-        setEditor({ base: result.item, draft: result.item.text ?? "" });
-        setMessage("Mock edit saved in this preview.");
-      } else if (result.kind === "conflict" || result.kind === "held") {
-        setItems((previous) =>
-          previous.map((item) => (item.id === result.current.id ? result.current : item)),
-        );
-        setEditor({ ...submitted, current: result.current });
-        setMessage(
-          result.kind === "held"
-            ? result.reason
-            : "The submission changed. Compare the current text with your preserved draft.",
-        );
-      } else {
-        setUnknown(result.effect === "unknown");
-        setMessage(result.message);
       }
-    } catch {
-      if (scope === generation.current && version === mutation.current) {
-        setUnknown(true);
-        setMessage(
-          "Save effect is unknown. Your draft is preserved. Read back before saving again.",
-        );
-      }
-    } finally {
+    })().finally(() => {
       if (scope === generation.current && version === mutation.current) {
         saveInFlight.current = false;
         setSaving(false);
       }
-    }
+    });
   }
   const recent = items.filter(
     (item) => item.statusLabel === "Delivered" || item.statusLabel === "Submitted (mock)",
@@ -323,7 +333,14 @@ export function WorkQueuePanel({
             Review submitted text, its target, and whether it can still be edited.
           </p>
         </div>
-        <Button variant="outline" disabled={saving || loading} onClick={() => void refresh()}>
+        <Button
+          variant="outline"
+          disabled={saving || loading}
+          onClick={() => {
+            setLoading(true);
+            void refresh();
+          }}
+        >
           {loading ? "Loading…" : unknown ? "Read back sample data" : "Refresh sample data"}
         </Button>
       </div>

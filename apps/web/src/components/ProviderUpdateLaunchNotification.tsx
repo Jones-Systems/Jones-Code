@@ -9,7 +9,7 @@ import { useDismissedProviderUpdateNotificationKeys } from "../providerUpdateDis
 import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateEnvironmentRows";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
 import {
-  collectProviderUpdateCandidates,
+  collectProviderUpdatePresentationCandidates,
   environmentGroupsWithUpdates,
   getProviderUpdateInitialToastView,
   localEnvironmentUpdateNotificationKey,
@@ -68,7 +68,7 @@ function ProviderUpdateEnvironmentsNotification() {
 
   const updateGroups = environmentGroupsWithUpdates(groups);
   const notificationKey = localEnvironmentUpdateNotificationKey(groups);
-  const candidateUnion = collectProviderUpdateCandidates(
+  const candidateUnion = collectProviderUpdatePresentationCandidates(
     updateGroups.flatMap((group) => group.candidates),
   );
 

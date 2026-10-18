@@ -18,7 +18,6 @@ import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.environments";
 import {
-  collectProviderUpdateOutcomeSnapshots,
   firstRejectedProviderUpdateMessage,
   getProviderUpdateProgressToastView,
   getProviderUpdateSidebarPillView,
@@ -296,7 +295,11 @@ export function ProviderUpdateEnvironmentRows({
         return;
       }
       const view = getProviderUpdateProgressToastView({
-        providers: collectProviderUpdateOutcomeSnapshots(results),
+        providers: results.flatMap((result) =>
+          result.status === "fulfilled" && result.value.provider !== null
+            ? [result.value.provider]
+            : [],
+        ),
         providerCount,
       });
       // A stored view never re-polls, so persisting it would pin the row's

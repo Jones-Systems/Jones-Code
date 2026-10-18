@@ -12,7 +12,7 @@ import {
   type DesignRequestResolvedRoute,
   type PacketV1,
 } from "@t3tools/client-runtime/jones/design-requests";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { WorkspacePageContainer } from "../../components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "../../components/WorkspacePageHeader";
@@ -112,94 +112,92 @@ export function DesignRequestsPage() {
   const route: DesignRequestResolvedRoute =
     pairing !== null && !pairable ? { state: "held", reason: "origin-not-allowed" } : router.route;
 
-  const record = useCallback((source: LogEntry["source"], outcome: DesignRequestOutcome) => {
+  const record = (source: LogEntry["source"], outcome: DesignRequestOutcome) => {
     setLog((entries) => [{ at: Date.now(), source, outcome }, ...entries].slice(0, 50));
-  }, []);
-
-  // Tell the gallery the current destination whenever it changes, so its Send button names it.
-  const routeMessage = useMemo(
-    () =>
-      route.state === "routable"
-        ? {
-            type: "jones.design-request.route" as const,
-            protocol: DESIGN_REQUEST_PROTOCOL,
-            state: "routable" as const,
-            routeToken: route.routeToken,
-            workstream: route.workstream,
-            thread: { id: route.thread.id, title: route.thread.title },
-          }
-        : {
-            type: "jones.design-request.route" as const,
-            protocol: DESIGN_REQUEST_PROTOCOL,
-            state: "held" as const,
-            reason: route.reason,
-            ...(route.workstream ? { workstream: route.workstream } : {}),
-          },
-    [route],
-  );
-  const routeKey = JSON.stringify(routeMessage);
-  useEffect(() => {
-    if (channel.phase === "connected") channel.send(routeMessage);
-    // routeKey captures every field of routeMessage.
-  }, [channel.phase, routeKey]);
-
-  // Reassigned every render so a gallery message always sees the current binding and route.
-  handleMessage.current = (message) => {
-    if (message.type === "jones.design-request.hello") return;
-    const reply = (outcome: DesignRequestOutcome) => {
-      record("gallery", outcome);
-      // A receipt must echo the bound packet ID and full digest; without one it is not sent and
-      // the gallery's pending send times out as unknown.
-      const { digest, ...rest } = outcome;
-      if (digest === undefined) return;
-      channel.send({
-        type: "jones.design-request.receipt",
-        protocol: DESIGN_REQUEST_PROTOCOL,
-        requestNonce: message.requestNonce,
-        ...rest,
-        digest,
-      });
-    };
-    if (message.type === "jones.design-request.reconcile") {
-      void router.gateway
-        .reconcile({
-          threadId: message.threadId,
-          commandId: message.commandId,
-          messageId: message.messageId,
-          packetId: message.packetId,
-          digest: message.digest,
-          workstreamId: binding?.workstreamId ?? null,
-        })
-        .then(reply);
-      return;
-    }
-    if (binding === null || message.projectKey !== channel.projectKey) {
-      reply({
-        status: "held",
-        ...designRequestPacketIdentity(message.packet),
-        reason: pairable ? "no-binding" : "origin-not-allowed",
-      });
-      return;
-    }
-    void router.gateway
-      .submit({
-        binding,
-        projectKey: message.projectKey,
-        packet: message.packet,
-        attachmentData: message.attachmentData,
-        expectedRouteToken: message.expectedRouteToken,
-        attempt: message.attempt,
-      })
-      .then(reply, () =>
-        reply({
-          status: "unknown",
-          ...designRequestPacketIdentity(message.packet),
-          reason: "gateway-error",
-        }),
-      );
   };
 
-  const importText = useCallback((text: string) => {
+  // Tell the gallery the current destination whenever it changes, so its Send button names it.
+  const routeMessage =
+    route.state === "routable"
+      ? {
+          type: "jones.design-request.route" as const,
+          protocol: DESIGN_REQUEST_PROTOCOL,
+          state: "routable" as const,
+          routeToken: route.routeToken,
+          workstream: route.workstream,
+          thread: { id: route.thread.id, title: route.thread.title },
+        }
+      : {
+          type: "jones.design-request.route" as const,
+          protocol: DESIGN_REQUEST_PROTOCOL,
+          state: "held" as const,
+          reason: route.reason,
+          ...(route.workstream ? { workstream: route.workstream } : {}),
+        };
+  const { phase: channelPhase, send: sendToGallery } = channel;
+  useEffect(() => {
+    if (channelPhase === "connected") sendToGallery(routeMessage);
+  }, [channelPhase, sendToGallery, routeMessage]);
+
+  // Publish the committed binding and route before the browser can deliver gallery messages.
+  useLayoutEffect(() => {
+    handleMessage.current = (message) => {
+      if (message.type === "jones.design-request.hello") return;
+      const reply = (outcome: DesignRequestOutcome) => {
+        record("gallery", outcome);
+        // A receipt must echo the bound packet ID and full digest; without one it is not sent and
+        // the gallery's pending send times out as unknown.
+        const { digest, ...rest } = outcome;
+        if (digest === undefined) return;
+        channel.send({
+          type: "jones.design-request.receipt",
+          protocol: DESIGN_REQUEST_PROTOCOL,
+          requestNonce: message.requestNonce,
+          ...rest,
+          digest,
+        });
+      };
+      if (message.type === "jones.design-request.reconcile") {
+        void router.gateway
+          .reconcile({
+            threadId: message.threadId,
+            commandId: message.commandId,
+            messageId: message.messageId,
+            packetId: message.packetId,
+            digest: message.digest,
+            workstreamId: binding?.workstreamId ?? null,
+          })
+          .then(reply);
+        return;
+      }
+      if (binding === null || message.projectKey !== channel.projectKey) {
+        reply({
+          status: "held",
+          ...designRequestPacketIdentity(message.packet),
+          reason: pairable ? "no-binding" : "origin-not-allowed",
+        });
+        return;
+      }
+      void router.gateway
+        .submit({
+          binding,
+          projectKey: message.projectKey,
+          packet: message.packet,
+          attachmentData: message.attachmentData,
+          expectedRouteToken: message.expectedRouteToken,
+          attempt: message.attempt,
+        })
+        .then(reply, () =>
+          reply({
+            status: "unknown",
+            ...designRequestPacketIdentity(message.packet),
+            reason: "gateway-error",
+          }),
+        );
+    };
+  });
+
+  const importText = (text: string) => {
     try {
       const parsed = parsePacketV1Text(text);
       setImported({ ...parsed, origin: originOf(parsed.packet.collection.key) });
@@ -208,29 +206,25 @@ export function DesignRequestsPage() {
       setImported(null);
       setImportError(cause instanceof PacketV1Error ? cause.reason : "packet-invalid");
     }
-  }, []);
+  };
 
-  const queueImported = useCallback(async () => {
+  const queueImported = async () => {
     if (imported === null || binding === null || route.state !== "routable" || busy) return;
     setBusy(true);
-    try {
-      record(
-        "import",
-        await router.gateway.submit({
-          binding,
-          projectKey: binding.projectKey,
-          packet: imported.packet,
-          attachmentData: imported.attachmentData,
-          expectedRouteToken: route.routeToken,
-          // A file import has no gallery outbox, so it always uses attempt 1: an accepted attempt
-          // replays and a rejected one stays rejected rather than advancing silently.
-          attempt: 1,
-        }),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [binding, busy, imported, record, route, router.gateway]);
+    await router.gateway
+      .submit({
+        binding,
+        projectKey: binding.projectKey,
+        packet: imported.packet,
+        attachmentData: imported.attachmentData,
+        expectedRouteToken: route.routeToken,
+        // A file import has no gallery outbox, so it always uses attempt 1: an accepted attempt
+        // replays and a rejected one stays rejected rather than advancing silently.
+        attempt: 1,
+      })
+      .then((outcome) => record("import", outcome))
+      .finally(() => setBusy(false));
+  };
 
   const pair = () => {
     if (pairing === null || !pairable || selectedWorkstream === "") return;

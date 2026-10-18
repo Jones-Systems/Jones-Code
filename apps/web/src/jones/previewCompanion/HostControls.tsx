@@ -65,7 +65,7 @@ export function BrowserHostSelect({
               ? { _tag: "server" }
               : { _tag: "companion", hostId: value };
         setPending(true);
-        try {
+        await (async () => {
           const outcome = threadRef
             ? await runAtomCommand(appAtomRegistry, setThreadCommand, {
                 environmentId,
@@ -82,9 +82,9 @@ export function BrowserHostSelect({
             appAtomRegistry.refresh(
               bindingsQuery({ environmentId, input: { threadId: threadRef.threadId } }),
             );
-        } finally {
+        })().finally(() => {
           setPending(false);
-        }
+        });
       }}
     />
   );
