@@ -1350,6 +1350,28 @@
         "vp test run packages/shared/src/jones/desktopNativeOwner.test.ts apps/desktop/src/jones/workstreams/DesktopNativeOwner.test.ts apps/server/src/jones/workstreams/DesktopNativeOwner.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/server/src/environment/NativeStoreAuthority.test.ts apps/desktop/src/backend/DesktopBackendManager.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/desktop/scripts/main-process-bundle.test.mjs packages/contracts/src/jones/workstreamsNativeOwner.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/workstreams/enrollment/desktopOwner.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts apps/server/src/entrypoint.test.ts",
         "vp run --filter @t3tools/desktop --filter t3 --filter @t3tools/shared --filter @t3tools/contracts typecheck"
       ]
+    },
+    {
+      "id": "jones-pr-read-efficiency",
+      "tests": [
+        "packages/contracts/src/pullRequestRateLimit.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts",
+        "packages/client-runtime/src/state/pullRequests.test.ts",
+        "apps/web/src/hooks/useLiveRefresh.test.ts",
+        "apps/web/src/state/query.test.ts",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
+        "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
+        "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts",
+        "packages/source-control-github/src/server/GitHubRest.test.ts",
+        "packages/source-control-github/src/server/GitHubQuota.test.ts",
+        "packages/source-control-core/src/server/SourceControlRateLimit.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/pullRequestRateLimit.test.ts apps/server/src/pullRequest/PullRequestService.test.ts apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts packages/client-runtime/src/state/pullRequests.test.ts apps/web/src/hooks/useLiveRefresh.test.ts apps/web/src/state/query.test.ts apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts packages/source-control-github/src/server/GitHubRest.test.ts packages/source-control-github/src/server/GitHubQuota.test.ts packages/source-control-core/src/server/SourceControlRateLimit.test.ts --maxWorkers=1",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

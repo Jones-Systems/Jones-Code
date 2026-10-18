@@ -479,28 +479,59 @@ describe("GitHubSourceControlProvider change request lookups by head", () => {
     }).pipe(Effect.provide(layer));
   });
 
-  it.effect("matches an owner:branch selector on the head owner", () => {
-    const { layer } = harness({
+  it.effect("routes an owner:branch selector through REST without GraphQL", () => {
+    const calls: GitHubRest.GitHubRestInput[] = [];
+    const { layer, graphqlCalls } = harness({
       remotes,
-      graphql: (lookup) => ({
-        pullRequests: {
-          nodes:
-            lookup.head === "main"
-              ? [node(9, "main", "someone"), node(8, "main", "me"), node(7, "main", "me")]
-              : [],
+      api: {
+        credential: () =>
+          Effect.succeed({ token: Redacted.make("synthetic"), fingerprint: "synthetic" }),
+        rest: (input) => {
+          calls.push(input);
+          return Effect.succeed(
+            restResponse(
+              [8, 7].map((number) => ({
+                number,
+                title: `PR ${number}`,
+                html_url: `https://github.com/acme/web/pull/${number}`,
+                state: "open",
+                draft: false,
+                closed_at: null,
+                merged_at: null,
+                updated_at: "2026-01-02T00:00:00Z",
+                base: { ref: "main", repo: { full_name: "acme/web", owner: { login: "acme" } } },
+                head: {
+                  ref: "main",
+                  sha: "abc123",
+                  repo: { full_name: "me/web", owner: { login: "me" } },
+                  user: { login: "me" },
+                },
+              })),
+            ),
+          );
         },
-      }),
+      },
     });
     return Effect.gen(function* () {
       const gh = yield* GitHubSourceControlProvider.make;
-      const open = yield* gh
-        .listChangeRequests({ cwd: "/repo", headSelector: "me:main", state: "open", limit: 1 })
-        .pipe(Effect.forkChild);
-      yield* TestClock.adjust("50 millis");
+      const rows = yield* gh.listChangeRequests({
+        cwd: "/repo",
+        headSelector: "me:main",
+        state: "open",
+        limit: 1,
+      });
       assert.deepStrictEqual(
-        (yield* Fiber.join(open)).map((pr) => pr.number),
+        rows.map((pr) => pr.number),
         [8],
       );
+      assert.strictEqual(rows[0]?.headSha, "abc123");
+      assert.strictEqual(calls.length, 1);
+      assert.strictEqual(calls[0]?.allowReserve, false);
+      assert.strictEqual(
+        new URL(`https://api.github.com/${calls[0]?.path}`).searchParams.get("head"),
+        "me:main",
+      );
+      assert.deepStrictEqual(graphqlCalls, []);
     }).pipe(Effect.provide(layer));
   });
 
