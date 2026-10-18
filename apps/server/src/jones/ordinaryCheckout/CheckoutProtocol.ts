@@ -116,7 +116,7 @@ export const Evidence = Schema.Struct({
   version: Schema.Literal(1),
   issuerId: id,
   reference: id,
-  outcome: Schema.Literals(["active", "quiescent", "not_invoked", "unknown"]),
+  outcome: Schema.Literals(["authorized", "active", "quiescent", "not_invoked", "unknown"]),
   coverage: Schema.Literals(["complete", "partial", "unknown"]),
   observedAt: Utc,
   transition: Schema.optionalKey(
