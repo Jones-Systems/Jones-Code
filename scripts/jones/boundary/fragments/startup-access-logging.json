@@ -9,6 +9,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/serverLogger.test.ts",
+      "to": "apps/server/src/jones/startupAccessLogging.ts"
+    },
+    {
       "from": "apps/server/src/startupAccess.ts",
       "to": "apps/server/src/jones/startupAccessLogging.ts"
     },

@@ -39,21 +39,33 @@ export function WorkstreamAddPrDialog(props: {
   const binding = props.controller.data
     ? workstreamBindingKey({ ...props.controller.data.binding, registryVersion: 0 })
     : null;
-  useEffect(() => {
-    session.current += 1;
-    request.current?.abort();
+  const [sessionIdentity, setSessionIdentity] = useState({
+    open: props.open,
+    workstreamId: props.workstreamId,
+    binding,
+  });
+  if (
+    sessionIdentity.open !== props.open ||
+    sessionIdentity.workstreamId !== props.workstreamId ||
+    sessionIdentity.binding !== binding
+  ) {
+    setSessionIdentity({ open: props.open, workstreamId: props.workstreamId, binding });
     setUrl("");
     setPrepared(false);
     setNeedsReconciliation(false);
     setError(null);
     setPending(null);
+  }
+  useEffect(() => {
+    session.current += 1;
+    request.current?.abort();
     busy.current = false;
-    if (props.open) input.current?.focus();
+    if (sessionIdentity.open) input.current?.focus();
     return () => {
       session.current += 1;
       request.current?.abort();
     };
-  }, [props.open, props.workstreamId, binding]);
+  }, [sessionIdentity]);
   let valid = false;
   try {
     parseWorkstreamPrUrl(url);

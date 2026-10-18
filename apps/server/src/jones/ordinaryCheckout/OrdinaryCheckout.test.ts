@@ -998,3 +998,614 @@ it.effect(
       }),
     ),
 );
+
+// Exact synthetic issuer receipts bind every proof to its participant and outcome.
+const proof = (bound: Binding, outcome: Evidence["outcome"]): Evidence => ({
+  ...evidence(outcome),
+  issuerId: bound.issuerId,
+  reference: `${associationId(bound)}:${outcome}`,
+});
+const exactExecutor = (bindings: readonly Binding[]) =>
+  CheckoutExecutorAuthority.of({
+    assertCurrent: (bound) =>
+      bindings.some((b) => canonical(b) === canonical(bound))
+        ? Effect.void
+        : Effect.fail(new CheckoutError({ reason: "stale" })),
+    reconcile: (bound, observed) =>
+      bindings.some((b) => canonical(b) === canonical(bound)) &&
+      canonical(observed) === canonical(proof(bound, observed.outcome))
+        ? Effect.void
+        : Effect.fail(new CheckoutError({ reason: "identity" })),
+  });
+const withConnections = <A, E, R>(
+  body: (
+    left: OrdinaryCheckout["Service"],
+    right: OrdinaryCheckout["Service"],
+  ) => Effect.Effect<A, E, R>,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({
+        directory: scratch!,
+        prefix: "named-repairs-",
+      });
+      const connection = () =>
+        Repository.layer.pipe(
+          Layer.provideMerge(
+            NodeSqliteClient.layer({
+              filename: path.join(directory, "fixture.sqlite"),
+              readerWorker: false,
+              checkpointWorker: false,
+            }),
+          ),
+          Layer.provideMerge(NodePath.layer),
+        );
+      const left = yield* Layer.build(connection());
+      yield* seed.pipe(Effect.provide(left));
+      const right = yield* Layer.build(connection());
+      const leftCheckout = yield* OrdinaryCheckout.pipe(Effect.provide(left));
+      const rightCheckout = yield* OrdinaryCheckout.pipe(Effect.provide(right));
+      return yield* body(leftCheckout, rightCheckout).pipe(Effect.provide(left));
+    }),
+  ).pipe(
+    Effect.provideService(CheckoutAcceptanceAuthority, acceptance),
+    Effect.provideService(CheckoutExecutorAuthority, executor),
+    Effect.provide(NodeServices.layer),
+  );
+const targetAt = (input: Accept, key: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.worktreePath',${key}) WHERE thread_id=${input.subjectThreadId}`;
+    return { ...input, target: { ...input.target, worktreePath: key, cwd: key, checkoutKey: key } };
+  });
+for (const child of ["/repo/😀/checkout", "/repo/\uffff/checkout", "/repo/\u{10ffff}/checkout"]) {
+  for (const descendantFirst of [true, false]) {
+    it.effect.skipIf(!scratch)(
+      `DCA-COR-001 excludes ${child} descendantFirst=${descendantFirst}`,
+      () =>
+        withConnections((left, right) =>
+          Effect.gen(function* () {
+            const second = yield* nextCommand(true);
+            const firstInput = yield* targetAt(acceptedInput, descendantFirst ? child : "/repo");
+            const secondInput = yield* targetAt(second, descendantFirst ? "/repo" : child);
+            yield* left.accept(firstInput);
+            const failure = yield* right.accept(secondInput).pipe(Effect.flip);
+            assert.strictEqual(failure.reason, "conflict");
+            assert.deepEqual(
+              (yield* right.readConflict(secondInput.target.checkoutKey)).map((c) => c.checkoutKey),
+              [firstInput.target.checkoutKey],
+            );
+            assert.strictEqual(yield* right.readOwner(secondInput.target.checkoutKey), null);
+          }),
+        ),
+    );
+  }
+}
+for (const [firstKey, secondKey, conflict] of [
+  ["/😀", "/", true],
+  ["/", "/\uffff", true],
+  ["/repo", "/repository", false],
+  ["/Repo", "/repo", false],
+] as const) {
+  it.effect.skipIf(!scratch)(
+    `DCA-COR-001 preserves path boundary ${firstKey} -> ${secondKey}`,
+    () =>
+      withConnections((left, right) =>
+        Effect.gen(function* () {
+          const second = yield* nextCommand(true);
+          yield* left.accept(yield* targetAt(acceptedInput, firstKey));
+          const secondInput = yield* targetAt(second, secondKey);
+          if (conflict)
+            assert.strictEqual(
+              (yield* right.accept(secondInput).pipe(Effect.flip)).reason,
+              "conflict",
+            );
+          else assert.strictEqual((yield* right.accept(secondInput)).checkout_key, secondKey);
+        }),
+      ),
+  );
+}
+it.effect.skipIf(!scratch)(
+  "DCA-COR-002 retires an exact uninvoked joined producer and preserves started history",
+  () =>
+    withConnections((left, right) =>
+      Effect.gen(function* () {
+        const background: Binding = {
+          ...binding,
+          issuerId: "background-issuer",
+          executor: "background",
+          source: { kind: "prepared_run", producerId: "uninvoked-background" },
+        };
+        yield* left.accept(acceptedInput);
+        const use = yield* left.reserve({
+          admissionId: "admission",
+          source,
+          now,
+          binding,
+          evidence: proof(binding, "active"),
+        });
+        const active = yield* left.start({
+          binding,
+          evidence: proof(binding, "active"),
+          expectedRevision: use.revision,
+          target,
+        });
+        const joined = yield* right.join({
+          binding: background,
+          evidence: proof(background, "active"),
+          expectedRevision: active.revision,
+          target,
+        });
+        const before = yield* right.events(use.operation_id);
+        for (const invalid of [
+          { ...proof(background, "not_invoked"), issuerId: binding.issuerId },
+          { ...proof(background, "not_invoked"), reference: "invented" },
+          { ...proof(background, "not_invoked"), coverage: "partial" as const },
+        ]) {
+          assert.strictEqual(
+            (yield* right
+              .reconcileEvidence({
+                binding: background,
+                evidence: invalid,
+                expectedRevision: joined.revision,
+              })
+              .pipe(Effect.flip)).reason,
+            "identity",
+          );
+          assert.deepEqual(yield* left.events(use.operation_id), before);
+        }
+        assert.strictEqual(
+          (yield* left
+            .reconcileEvidence({
+              binding,
+              evidence: proof(binding, "not_invoked"),
+              expectedRevision: joined.revision,
+            })
+            .pipe(Effect.flip)).reason,
+          "unknown",
+        );
+        const cancelled = yield* right.reconcileEvidence({
+          binding: background,
+          evidence: proof(background, "not_invoked"),
+          expectedRevision: joined.revision,
+        });
+        assert.strictEqual(cancelled.state, "draining");
+        assert.strictEqual(cancelled.started_at, active.started_at);
+        assert.strictEqual(
+          (yield* left
+            .complete({
+              operationId: use.operation_id,
+              expectedRevision: cancelled.revision,
+              now,
+              target,
+            })
+            .pipe(Effect.flip)).reason,
+          "unknown",
+        );
+        const retired = yield* left.reconcileEvidence({
+          binding,
+          evidence: proof(binding, "quiescent"),
+          expectedRevision: cancelled.revision,
+        });
+        const complete = yield* right.complete({
+          operationId: use.operation_id,
+          expectedRevision: retired.revision,
+          now,
+          target,
+        });
+        assert.strictEqual(complete.state, "completed");
+        assert.strictEqual(complete.started_at, now);
+        const journal = yield* left.events(use.operation_id);
+        assert.deepEqual(
+          journal.map((e) => e.event_kind),
+          ["bind", "activate", "join", "retire", "retire"],
+        );
+        assert.strictEqual(journal[3]!.binding_json, canonical(background));
+        assert.strictEqual(journal[3]!.evidence_json, canonical(proof(background, "not_invoked")));
+      }).pipe(
+        Effect.provideService(
+          CheckoutExecutorAuthority,
+          exactExecutor([
+            binding,
+            {
+              ...binding,
+              issuerId: "background-issuer",
+              executor: "background",
+              source: { kind: "prepared_run", producerId: "uninvoked-background" },
+            },
+          ]),
+        ),
+      ),
+    ),
+);
+for (const kind of ["outbox", "prepared_launch"] as const) {
+  it.effect.skipIf(!scratch)(
+    `DCA-COR-003 cancels ${kind} and every pending initial link without invocation`,
+    () =>
+      withConnections((left, right) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,created_at,updated_at)
+        VALUES('second-effect','command','thread','terminal.cleanup',${canonical(request)},'pending',0,${now},${now},${now})`;
+          const rootSource: Source =
+            kind === "outbox" ? source : { kind, producerId: "prepared-producer" };
+          const root: Binding = {
+            ...binding,
+            source: rootSource,
+            executor: kind === "outbox" ? "outbox" : "prepared",
+            operationId: operationId("admission", rootSource),
+          };
+          const pending: Binding = {
+            ...binding,
+            operationId: root.operationId,
+            issuerId: "pending-issuer",
+            source: { ...source, effectId: "second-effect", attempt: 0 },
+          };
+          const first: Binding = { ...binding, operationId: root.operationId };
+          const competingSource: Source = {
+            kind: "prepared_run",
+            producerId: "competing-producer",
+          };
+          const competing: Binding = {
+            ...binding,
+            executor: "prepared",
+            source: competingSource,
+            operationId: operationId("admission", competingSource),
+          };
+          const run = Effect.gen(function* () {
+            yield* left.accept({
+              ...acceptedInput,
+              effects: [
+                ...acceptedInput.effects,
+                { effectId: "second-effect", request, role: "checkpoint" },
+              ],
+            });
+            const use = yield* left.reserve({
+              admissionId: "admission",
+              source: rootSource,
+              now,
+              binding: root,
+              evidence: proof(root, "active"),
+            });
+            const retired = yield* left.reconcileEvidence({
+              binding: root,
+              evidence: proof(root, "not_invoked"),
+              expectedRevision: use.revision,
+            });
+            assert.strictEqual(
+              (yield* right
+                .complete({
+                  operationId: root.operationId,
+                  expectedRevision: retired.revision,
+                  now,
+                  target,
+                })
+                .pipe(Effect.flip)).reason,
+              "unknown",
+            );
+            const before = yield* left.events(root.operationId);
+            assert.strictEqual(
+              (yield* right
+                .join({
+                  binding: pending,
+                  evidence: proof(pending, "active"),
+                  expectedRevision: retired.revision,
+                  target,
+                })
+                .pipe(Effect.flip)).reason,
+              "stale",
+            );
+            assert.strictEqual(
+              (yield* right
+                .reserve({
+                  admissionId: "admission",
+                  source: competingSource,
+                  now,
+                  binding: competing,
+                  evidence: proof(competing, "active"),
+                })
+                .pipe(Effect.flip)).reason,
+              "conflict",
+            );
+            for (const invalid of [
+              { ...proof(pending, "not_invoked"), reference: "invented" },
+              { ...proof(pending, "not_invoked"), issuerId: root.issuerId },
+              { ...proof(pending, "not_invoked"), coverage: "partial" as const },
+              proof(pending, "quiescent"),
+              proof(pending, "active"),
+            ]) {
+              const failure = yield* right
+                .reconcileEvidence({
+                  binding: pending,
+                  evidence: invalid,
+                  expectedRevision: retired.revision,
+                })
+                .pipe(Effect.flip);
+              assert.strictEqual(failure.reason, "identity");
+              assert.deepEqual(yield* left.events(root.operationId), before);
+            }
+            const cancelled = yield* right.reconcileEvidence({
+              binding: pending,
+              evidence: proof(pending, "not_invoked"),
+              expectedRevision: retired.revision,
+            });
+            assert.strictEqual(cancelled.state, "reserved");
+            assert.strictEqual(cancelled.started_at, null);
+            for (const bound of [root, pending]) {
+              assert.strictEqual(
+                (yield* left
+                  .start({
+                    binding: bound,
+                    evidence: proof(bound, "active"),
+                    expectedRevision: cancelled.revision,
+                    target,
+                  })
+                  .pipe(Effect.flip)).reason,
+                "stale",
+              );
+            }
+            let final = cancelled;
+            if (kind === "prepared_launch") {
+              assert.strictEqual(
+                (yield* left
+                  .complete({
+                    operationId: root.operationId,
+                    expectedRevision: cancelled.revision,
+                    now,
+                    target,
+                  })
+                  .pipe(Effect.flip)).reason,
+                "unknown",
+              );
+              final = yield* left.reconcileEvidence({
+                binding: first,
+                evidence: proof(first, "not_invoked"),
+                expectedRevision: cancelled.revision,
+              });
+            }
+            assert.strictEqual(
+              (yield* left
+                .complete({
+                  operationId: root.operationId,
+                  expectedRevision: retired.revision,
+                  now,
+                  target,
+                })
+                .pipe(Effect.flip)).reason,
+              "stale",
+            );
+            const complete = yield* right.complete({
+              operationId: root.operationId,
+              expectedRevision: final.revision,
+              now,
+              target,
+            });
+            assert.strictEqual(complete.state, "no_effect");
+            assert.strictEqual(complete.started_at, null);
+            assert.deepEqual(yield* left.listUnsettled(null, 10), []);
+            const journal = yield* left.events(root.operationId);
+            assert.deepEqual(
+              journal.map((e) => e.event_kind),
+              kind === "outbox"
+                ? ["bind", "retire", "retire"]
+                : ["bind", "retire", "retire", "retire"],
+            );
+            assert.strictEqual(journal[2]!.binding_json, canonical(pending));
+            assert.strictEqual(journal[2]!.evidence_json, canonical(proof(pending, "not_invoked")));
+            assert.deepEqual(
+              yield* sql`SELECT status,attempt_count,lease_owner FROM orchestration_v2_effect_outbox WHERE effect_id='second-effect'`,
+              [{ status: "pending", attempt_count: 0, lease_owner: null }],
+            );
+            const next = yield* nextCommand();
+            const owner = (yield* left.readOwner("/repo"))!;
+            assert.strictEqual(
+              (yield* right.accept({
+                ...next,
+                expectedOwner: { epoch: owner.owner_epoch, revision: owner.revision },
+              })).admission_id,
+              next.admissionId,
+            );
+          });
+          yield* run.pipe(
+            Effect.provideService(
+              CheckoutExecutorAuthority,
+              exactExecutor([root, pending, first, competing]),
+            ),
+          );
+        }),
+      ),
+  );
+}
+
+it.effect.each(["missing", "digest", "thread", "unlinked"] as const)(
+  "DCA-COR-003 refuses a %s outbox link even with issuer-accepted cancellation proof",
+  (mismatch) =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, sql, use } = yield* reserved;
+        yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,created_at,updated_at)
+      VALUES('pending','derived','thread','terminal.cleanup',${canonical(request)},'pending',0,${now},${now},${now})`;
+        yield* sql`INSERT INTO orchestration_events(sequence,event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,command_id,actor_kind,payload_json,metadata_json,application_event_version)
+      VALUES(3,'derived-event','thread','thread',3,'thread.test',${now},'derived','system','{}','{}',2)`;
+        const linked =
+          mismatch === "unlinked"
+            ? use
+            : yield* checkout.linkDerived({
+                operationId: use.operation_id,
+                expectedRevision: use.revision,
+                admissionId: "admission",
+                basisEventId: "derived-event",
+                basisSequence: 3,
+                now,
+                link: { effectId: "pending", request, role: "checkpoint" },
+              });
+        if (mismatch === "missing")
+          yield* sql`DELETE FROM orchestration_v2_effect_outbox WHERE effect_id='pending'`;
+        if (mismatch === "digest")
+          yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json='{"type":"changed"}' WHERE effect_id='pending'`;
+        if (mismatch === "thread")
+          yield* sql`UPDATE orchestration_v2_effect_outbox SET thread_id='foreign' WHERE effect_id='pending'`;
+        const pending: Binding = {
+          ...binding,
+          source: { ...source, effectId: "pending", attempt: 0 },
+        };
+        const before = yield* checkout.events(use.operation_id);
+        const failure = yield* checkout
+          .reconcileEvidence({
+            binding: pending,
+            evidence: proof(pending, "not_invoked"),
+            expectedRevision: linked.revision,
+          })
+          .pipe(
+            Effect.provideService(CheckoutExecutorAuthority, exactExecutor([pending])),
+            Effect.flip,
+          );
+        assert.strictEqual(failure.reason, "identity");
+        assert.deepEqual(yield* checkout.events(use.operation_id), before);
+        assert.deepEqual(yield* checkout.listUnsettled(null, 10), [linked]);
+      }),
+    ),
+);
+it.effect.skipIf(!scratch)(
+  "DCA-COR-003 final coverage observes a late link from the other SQLite connection",
+  () =>
+    withConnections((left, right) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* left.accept(acceptedInput);
+        const use = yield* left.reserve({
+          admissionId: "admission",
+          source,
+          now,
+          binding,
+          evidence: evidence("active"),
+        });
+        const retired = yield* left.reconcileEvidence({
+          binding,
+          evidence: evidence("not_invoked"),
+          expectedRevision: use.revision,
+        });
+        yield* sql`INSERT INTO orchestration_events(sequence,event_id,aggregate_kind,stream_id,stream_version,event_type,occurred_at,command_id,actor_kind,payload_json,metadata_json,application_event_version)
+      VALUES(3,'derived-event','thread','thread',3,'thread.test',${now},'derived','system','{}','{}',2)`;
+        yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,created_at,updated_at)
+      VALUES('pending','derived','thread','terminal.cleanup',${canonical(request)},'pending',0,${now},${now},${now})`;
+        const linked = yield* right.linkDerived({
+          operationId: use.operation_id,
+          expectedRevision: retired.revision,
+          admissionId: "admission",
+          basisEventId: "derived-event",
+          basisSequence: 3,
+          now,
+          link: { effectId: "pending", request, role: "checkpoint" },
+        });
+        for (const [revision, reason] of [
+          [retired.revision, "stale"],
+          [linked.revision, "unknown"],
+        ] as const) {
+          assert.strictEqual(
+            (yield* left
+              .complete({ operationId: use.operation_id, expectedRevision: revision, now, target })
+              .pipe(Effect.flip)).reason,
+            reason,
+          );
+          assert.deepEqual(yield* right.listUnsettled(null, 10), [linked]);
+        }
+        const pending: Binding = {
+          ...binding,
+          source: { ...source, effectId: "pending", attempt: 0 },
+        };
+        const cancelled = yield* left
+          .reconcileEvidence({
+            binding: pending,
+            evidence: proof(pending, "not_invoked"),
+            expectedRevision: linked.revision,
+          })
+          .pipe(Effect.provideService(CheckoutExecutorAuthority, exactExecutor([pending])));
+        const complete = yield* right.complete({
+          operationId: use.operation_id,
+          expectedRevision: cancelled.revision,
+          now,
+          target,
+        });
+        assert.strictEqual(complete.state, "no_effect");
+        assert.strictEqual(complete.started_at, null);
+        assert.deepEqual(
+          (yield* right.events(use.operation_id)).map((event) => event.event_kind),
+          ["bind", "retire", "retire"],
+        );
+      }),
+    ),
+);
+it.effect(
+  "DCA-COR-002 partial joined cancellation and restart retain uncertainty and activation history",
+  () =>
+    provide(
+      Effect.gen(function* () {
+        const { checkout, use } = yield* started;
+        const background: Binding = { ...binding, executor: "background" };
+        const joined = yield* checkout.join({
+          binding: background,
+          evidence: evidence("active"),
+          expectedRevision: use.revision,
+          target,
+        });
+        const partial = yield* checkout.reconcileEvidence({
+          binding: background,
+          evidence: { ...evidence("not_invoked"), coverage: "partial" },
+          expectedRevision: joined.revision,
+        });
+        assert.strictEqual(partial.state, "unknown");
+        assert.strictEqual(
+          (yield* checkout.events(use.operation_id)).at(-1)!.event_kind,
+          "unknown",
+        );
+        assert.strictEqual(
+          (yield* checkout
+            .complete({
+              operationId: use.operation_id,
+              expectedRevision: partial.revision,
+              now,
+              target,
+            })
+            .pipe(Effect.flip)).reason,
+          "unknown",
+        );
+        const restart = yield* checkout.markRestartUnknown({
+          operationId: use.operation_id,
+          expectedRevision: partial.revision,
+          now,
+        });
+        assert.strictEqual(
+          (yield* checkout
+            .reconcileEvidence({
+              binding,
+              evidence: evidence("not_invoked"),
+              expectedRevision: restart.revision,
+            })
+            .pipe(Effect.flip)).reason,
+          "unknown",
+        );
+        const cancelled = yield* checkout.reconcileEvidence({
+          binding: background,
+          evidence: evidence("not_invoked"),
+          expectedRevision: restart.revision,
+        });
+        assert.strictEqual(cancelled.state, "unknown");
+        const retired = yield* checkout.reconcileEvidence({
+          binding,
+          evidence: evidence("quiescent"),
+          expectedRevision: cancelled.revision,
+        });
+        const complete = yield* checkout.complete({
+          operationId: use.operation_id,
+          expectedRevision: retired.revision,
+          now,
+          target,
+        });
+        assert.strictEqual(complete.state, "completed");
+        assert.strictEqual(complete.started_at, now);
+      }),
+    ),
+);

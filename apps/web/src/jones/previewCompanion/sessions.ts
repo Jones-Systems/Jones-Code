@@ -3,7 +3,7 @@ import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/e
 import type { PreviewListResult, ScopedThreadRef } from "@t3tools/contracts";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { useAtomValue } from "@effect/atom-react";
-import { useMemo } from "react";
+
 import { previewEnvironment } from "../../state/preview";
 import { previewRuntimeTabId } from "../../browser/previewRuntimeTabId";
 import { bindingsQuery, companionStateAtom } from "./state.ts";
@@ -72,53 +72,47 @@ const threadSessions = Atom.family((key: string) =>
 
 export function useAssignedCompanionSessions(): ReadonlyArray<CompanionMountedSession> {
   return useAtomValue(
-    useMemo(
-      () =>
-        Atom.make((get) => {
-          const state = get(companionStateAtom);
-          const environmentId = state?.config.environmentId;
+    Atom.make((get) => {
+      const state = get(companionStateAtom);
+      const environmentId = state?.config.environmentId;
+      if (
+        !state ||
+        !environmentId ||
+        !state.config.enabled ||
+        state.status !== "online" ||
+        state.connectionGeneration === null
+      )
+        return [];
+      const sessions: CompanionMountedSession[] = [];
+      for (const threadId of new Set(state.assignments.map((key) => key.threadId))) {
+        const threadRef: ScopedThreadRef = { environmentId, threadId };
+        const list = get(
+          threadSessions(JSON.stringify([scopedThreadKey(threadRef), state.connectionGeneration])),
+        );
+        const binding = get(bindingsQuery({ environmentId, input: { threadId } }));
+        if (!list || !AsyncResult.isSuccess(binding)) continue;
+        for (const snapshot of list.sessions) {
           if (
-            !state ||
-            !environmentId ||
-            !state.config.enabled ||
-            state.status !== "online" ||
-            state.connectionGeneration === null
+            !nativeCompanionRendering({
+              environmentId,
+              primaryEnvironmentId: null,
+              snapshot,
+              binding: binding.value,
+              companion: state,
+            })
           )
-            return [];
-          const sessions: CompanionMountedSession[] = [];
-          for (const threadId of new Set(state.assignments.map((key) => key.threadId))) {
-            const threadRef: ScopedThreadRef = { environmentId, threadId };
-            const list = get(
-              threadSessions(
-                JSON.stringify([scopedThreadKey(threadRef), state.connectionGeneration]),
-              ),
-            );
-            const binding = get(bindingsQuery({ environmentId, input: { threadId } }));
-            if (!list || !AsyncResult.isSuccess(binding)) continue;
-            for (const snapshot of list.sessions) {
-              if (
-                !nativeCompanionRendering({
-                  environmentId,
-                  primaryEnvironmentId: null,
-                  snapshot,
-                  binding: binding.value,
-                  companion: state,
-                })
-              )
-                continue;
-              sessions.push({
-                threadRef,
-                snapshot,
-                runtimeTabId: previewRuntimeTabId(threadRef, list.serverEpoch, snapshot.tabId),
-                pictureInPicture: false,
-                zoomFactor: snapshot.zoomFactor ?? 1,
-                companion: true,
-              });
-            }
-          }
-          return sessions;
-        }),
-      [],
-    ),
+            continue;
+          sessions.push({
+            threadRef,
+            snapshot,
+            runtimeTabId: previewRuntimeTabId(threadRef, list.serverEpoch, snapshot.tabId),
+            pictureInPicture: false,
+            zoomFactor: snapshot.zoomFactor ?? 1,
+            companion: true,
+          });
+        }
+      }
+      return sessions;
+    }),
   );
 }

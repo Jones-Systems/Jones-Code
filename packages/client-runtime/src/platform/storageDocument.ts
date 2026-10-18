@@ -319,6 +319,7 @@ export function registerConnectionInCatalog(
     case "RelayConnectionRegistration":
       return next;
     case "BearerConnectionRegistration":
+    case "SshConnectionRegistration":
       return {
         ...putConnectionProfileInCatalog(next, registration.profile),
         credentials: replaceCatalogValue(next.credentials, (value) => value.connectionId, {
@@ -326,8 +327,6 @@ export function registerConnectionInCatalog(
           credential: registration.credential,
         }),
       };
-    case "SshConnectionRegistration":
-      return putConnectionProfileInCatalog(next, registration.profile);
   }
 }
 

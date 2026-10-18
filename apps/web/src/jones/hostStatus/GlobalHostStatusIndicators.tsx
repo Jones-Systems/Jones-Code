@@ -20,12 +20,10 @@ export function GlobalHostStatusIndicators() {
   const [selection, setSelection] = useState(() => retainedEnvironmentId);
   const environmentId = selection !== null && environmentIds.includes(selection) ? selection : null;
 
+  if (selection !== null && environmentId === null) setSelection(null);
   useEffect(() => {
-    if (selection !== null && environmentId === null) {
-      retainedEnvironmentId = null;
-      setSelection(null);
-    }
-  }, [environmentId, selection]);
+    if (environmentId === null) retainedEnvironmentId = null;
+  }, [environmentId]);
 
   useEffect(() => {
     if (environmentId !== null) return;

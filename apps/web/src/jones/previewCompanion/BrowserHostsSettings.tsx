@@ -25,7 +25,7 @@ export function BrowserHostsSettings() {
     const bridge = window.desktopBridge?.previewCompanion;
     if (!bridge || !state) return;
     setPending(true);
-    try {
+    await (async () => {
       await bridge.configure({
         enabled: state.config.enabled,
         environmentId: state.config.environmentId,
@@ -33,11 +33,13 @@ export function BrowserHostsSettings() {
         browserOnly: state.config.browserOnly,
         ...change,
       });
-    } catch {
-      toastManager.add({ type: "error", title: "Could not update browser host" });
-    } finally {
-      setPending(false);
-    }
+    })()
+      .catch(() => {
+        toastManager.add({ type: "error", title: "Could not update browser host" });
+      })
+      .finally(() => {
+        setPending(false);
+      });
   };
   return (
     <div className="space-y-3 border-b py-4" data-browser-host-settings>

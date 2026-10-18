@@ -43,7 +43,7 @@ export function ProviderOrderControls({
     if (next === providerInstances) return;
     pending.current = true;
     setIsSaving(true);
-    try {
+    await (async () => {
       const result = await persist({
         environmentId,
         input: { patch: { providerInstances: next } },
@@ -56,10 +56,10 @@ export function ProviderOrderControls({
           description: error instanceof Error ? error.message : "The settings update failed.",
         });
       }
-    } finally {
+    })().finally(() => {
       pending.current = false;
       setIsSaving(false);
-    }
+    });
   };
 
   return (

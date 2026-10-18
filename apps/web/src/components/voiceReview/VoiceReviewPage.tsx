@@ -7,7 +7,7 @@ import type {
   ThreadRegistryWorkstreams,
 } from "@t3tools/contracts";
 import { PauseIcon, PlayIcon } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
@@ -48,14 +48,11 @@ export function EnvironmentVoiceReview({
   const viewId = useId();
   const tabs = useRef<Array<HTMLButtonElement | null>>([]);
   const dirtyRows = useRef(new Set<string>());
-  const reportDirty = useCallback(
-    (id: string, dirty: boolean) => {
-      if (dirty) dirtyRows.current.add(id);
-      else dirtyRows.current.delete(id);
-      onDirtyChange?.(dirtyRows.current.size > 0);
-    },
-    [onDirtyChange],
-  );
+  const reportDirty = (id: string, dirty: boolean) => {
+    if (dirty) dirtyRows.current.add(id);
+    else dirtyRows.current.delete(id);
+    onDirtyChange?.(dirtyRows.current.size > 0);
+  };
   const { fetchList, transport, review } = useVoiceReview(environmentId);
   const [tab, setTab] = useState<"review" | "routing">("review");
   const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
@@ -66,7 +63,7 @@ export function EnvironmentVoiceReview({
   const [workstreams, setWorkstreams] = useState<ThreadRegistryWorkstreams | null>(null);
   const [metadataError, setMetadataError] = useState(false);
   const metadataRequest = useRef(0);
-  const refreshMetadata = useCallback(async () => {
+  const refreshMetadata = async () => {
     const request = ++metadataRequest.current;
     const results = await Promise.allSettled([
       review.recent(),
@@ -83,7 +80,7 @@ export function EnvironmentVoiceReview({
     const failed = results.some((result) => result.status === "rejected");
     setMetadataError(failed);
     if (failed) throw new Error("Metadata unavailable");
-  }, [review]);
+  };
   useEffect(() => {
     const refresh = () => {
       if (document.visibilityState === "visible") void refreshMetadata().catch(() => undefined);
@@ -107,17 +104,19 @@ export function EnvironmentVoiceReview({
     const refresh = async () => {
       if (document.visibilityState !== "visible" || refreshing.current) return;
       refreshing.current = true;
-      try {
-        const pending = await fetchList("pending");
-        if (!active) return;
-        setDrafts(pending.drafts);
-        setError(null);
-      } catch (cause) {
-        if (active) setError(voiceReviewError(cause));
-      } finally {
+      return await (async () => {
+        try {
+          const pending = await fetchList("pending");
+          if (!active) return;
+          setDrafts(pending.drafts);
+          setError(null);
+        } catch (cause) {
+          if (active) setError(voiceReviewError(cause));
+        }
+      })().finally(() => {
         refreshing.current = false;
         if (active) setLoading(false);
-      }
+      });
     };
     const onVisibility = () => {
       if (document.visibilityState === "visible") void refresh();
@@ -288,12 +287,9 @@ function VoiceReviewRow({
   useEffect(() => {
     actions.receive(draft);
   }, [actions, draft]);
-  const act = useCallback(
-    (action: Parameters<VoiceReviewActions["act"]>[0], send = false) => {
-      void actions.act(action, send);
-    },
-    [actions],
-  );
+  const act = (action: Parameters<VoiceReviewActions["act"]>[0], send = false) => {
+    void actions.act(action, send);
+  };
   const current = actions.draft;
   const terminal = ["released", "deleted", "expired"].includes(current.state);
   const editing = actions.editHandle !== null && current.state === "editing";

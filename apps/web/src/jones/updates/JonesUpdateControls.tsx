@@ -62,11 +62,11 @@ export function JonesUpdateControls({
   const run = async (input: JonesBuildRequest) => {
     setPending(true);
     setActionError(null);
-    try {
+    await (async () => {
       setActionError(jonesUpdateActionError(await action({ environmentId, input })));
-    } finally {
+    })().finally(() => {
       setPending(false);
-    }
+    });
   };
   const comparison = compareWithLaptop
     ? compareJonesSource(

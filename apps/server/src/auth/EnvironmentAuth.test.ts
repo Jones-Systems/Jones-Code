@@ -362,7 +362,9 @@ it.layer(NodeServices.layer)("EnvironmentAuth.layer", (it) => {
   it.effect("preserves pairing grants after rejecting scopes they do not grant", () =>
     Effect.gen(function* () {
       const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
-      const pairingCredential = yield* serverAuth.issuePairingCredential();
+      const pairingCredential = yield* serverAuth.issuePairingCredential({
+        scopes: ["orchestration:read", "orchestration:operate"],
+      });
 
       const error = yield* serverAuth
         .exchangeBootstrapCredentialForAccessToken(

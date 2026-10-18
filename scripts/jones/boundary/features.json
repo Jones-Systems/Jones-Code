@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "0afd1af3a4f10c3370c3dca2ce05cbad2aff080e",
+  "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
       "id": "sqlite-checkpoint-lifecycle",
@@ -11,6 +11,14 @@
         "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
       ],
       "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. A small generic shared repair avoids duplicating the client; real-worker regressions remain in its existing mock harness. Preserves WAL setup order, checkpoint thresholds, fallback warnings and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+    },
+    {
+      "id": "usage",
+      "tests": [
+        "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+      ],
+      "scope": "Jones usage range, refresh, and provider-detail integration retains cached content and selected dates beside upstream browser navigation coverage."
     },
     {
       "id": "physical-process-evidence",
@@ -37,7 +45,7 @@
         "apps/web/src/components/workstreams/nativeThreadGrouping.test.ts",
         "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/components/threadActionMenu.logic.test.ts",
-        "apps/web/src/components/Sidebar.pointer.test.ts",
+        "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
         "packages/client-runtime/src/state/workstreams/placements.test.ts",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
@@ -69,17 +77,23 @@
     },
     {
       "id": "provider-order",
-      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
+      "tests": [
+        "apps/web/src/jones/settings/providerOrder.test.ts"
+      ],
       "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
     },
     {
       "id": "provider-restart-identity",
-      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
+      ],
       "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
     },
     {
       "id": "environment-sidebar-filters",
-      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "tests": [
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
       "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
     },
     {
@@ -125,12 +139,16 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "tests": [
+        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
+      ],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": ["scripts/jones/check-boundary.test.ts"]
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ]
     },
     {
       "id": "provider-settlement",
@@ -284,7 +302,9 @@
     },
     {
       "id": "mcp-pin-placement",
-      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
+      "tests": [
+        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"
+      ],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
     },
     {
@@ -319,7 +339,7 @@
         "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
         "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
         "apps/server/src/jones/device/directDeviceGateway.test.ts",
-        "apps/web/src/components/device/DeviceStreamView.test.tsx",
+        "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
         "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
         "apps/web/src/jones/device/device.test.tsx",
         "packages/client-runtime/src/device/stream.test.ts",
@@ -455,7 +475,7 @@
         "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
         "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
         "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
-        "apps/web/src/components/chat/QueuedRunsControl.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "apps/web/src/composerDraftStore.test.ts",
         "apps/web/src/components/ChatView.logic.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
@@ -545,10 +565,10 @@
         "apps/server/src/jones/previewCompanion/outcome.test.ts",
         "apps/server/src/jones/previewCompanion/stream.test.ts",
         "apps/server/src/jones/previewCompanion/streamCloseReason.test.ts",
-        "apps/web/src/browser/HostedBrowserWebview.test.tsx",
-        "apps/web/src/components/preview/PreviewView.test.tsx",
+        "apps/web/src/browser/HostedBrowserWebview.browser.test.tsx",
+        "apps/web/src/components/preview/PreviewView.browser.test.tsx",
         "apps/web/src/components/settings/IntegrationsSettings.logic.test.ts",
-        "apps/web/src/components/settings/IntegrationsSettings.test.tsx",
+        "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
         "apps/web/src/jones/previewCompanion/controller.test.ts",
         "apps/web/src/jones/previewCompanion/guest.test.ts",
         "apps/web/src/jones/previewCompanion/inventory.test.ts",
@@ -825,7 +845,7 @@
         "packages/client-runtime/src/state/pullRequests.test.ts",
         "apps/web/src/hooks/useLiveRefresh.test.ts",
         "apps/web/src/state/query.test.ts",
-        "apps/web/src/components/pullRequest/PullRequestDetailPanel.test.tsx",
+        "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx",
         "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
         "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
         "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts"
