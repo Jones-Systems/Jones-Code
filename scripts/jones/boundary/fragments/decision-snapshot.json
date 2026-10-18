@@ -19,7 +19,8 @@
   "hookPaths": [
     "apps/server/src/mcp/McpInvocationContext.ts",
     "apps/server/src/mcp/McpInvocationContext.test.ts",
-    "apps/server/src/mcp/McpSessionRegistry.test.ts"
+    "apps/server/src/mcp/McpSessionRegistry.test.ts",
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -58,6 +59,10 @@
     {
       "from": "apps/web/src/components/settings/IntegrationsSettings.tsx",
       "to": "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+      "to": "apps/server/src/workstreams/WorkstreamGateway.ts"
     }
   ]
 }
