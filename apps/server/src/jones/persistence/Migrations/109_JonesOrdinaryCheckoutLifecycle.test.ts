@@ -20,14 +20,13 @@ const seedOwner = Effect.gen(function* () {
 it.effect("109 creates empty sparse storage through only the Jones ledger", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const through109 = jonesMigrationEntries.filter(([id]) => id <= 109);
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
     yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id < 109));
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     const objects =
       yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`;
-    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-      [109, "OrdinaryCheckoutLifecycle"],
-    ]);
+    assert.deepEqual(yield* runJonesMigrations(through109), [[109, "OrdinaryCheckoutLifecycle"]]);
     assert.deepEqual(
       yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
       upstream,
@@ -46,7 +45,7 @@ it.effect("109 creates empty sparse storage through only the Jones ledger", () =
       after.filter((object) => !object.name.startsWith("jones_ordinary_checkout_")),
       objects,
     );
-    assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    assert.deepEqual(yield* runJonesMigrations(through109), []);
   }).pipe(Effect.provide(memory)),
 );
 it.effect("recognized foreign 009/011 history stays byte-preserved and unadopted", () =>
