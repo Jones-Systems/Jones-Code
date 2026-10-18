@@ -473,6 +473,7 @@ const CHECKPOINT_FRAMES = 1000;
 // every frame is checkpointed, so this keeps the file from growing forever.
 const WRITER_BACKSTOP_FRAMES = 10 * CHECKPOINT_FRAMES;
 const CHECKPOINT_IDLE_MS = 100;
+const CHECKPOINT_BUSY_TIMEOUT_MS = 1000;
 
 // SQLite before 3.51 reads NOOP as PASSIVE and would checkpoint on every
 // request, so the worker refuses to start there and the writer keeps
@@ -481,6 +482,8 @@ const checkpointWorkerSource = `
 const { parentPort, workerData } = require("node:worker_threads");
 const { DatabaseSync } = require("node:sqlite");
 const db = new DatabaseSync(workerData.filename);
+// Bound startup contention before the first lock-taking prepare.
+db.exec("PRAGMA busy_timeout = " + workerData.busyTimeoutMs + ";");
 const version = db.prepare("SELECT sqlite_version() AS version").get().version;
 const [major, minor] = version.split(".").map(Number);
 if (major < 3 || (major === 3 && minor < 51)) throw new Error("SQLite " + version + " has no NOOP checkpoint");
@@ -518,7 +521,12 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
   try {
     worker = new NodeWorkerThreads.Worker(checkpointWorkerSource, {
       eval: true,
-      workerData: { filename, frames: CHECKPOINT_FRAMES, idleMs: CHECKPOINT_IDLE_MS },
+      workerData: {
+        filename,
+        frames: CHECKPOINT_FRAMES,
+        idleMs: CHECKPOINT_IDLE_MS,
+        busyTimeoutMs: CHECKPOINT_BUSY_TIMEOUT_MS,
+      },
     });
   } catch (cause) {
     yield* warn(String(cause));
