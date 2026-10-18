@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "packages/shared/src/nodeSqliteClient.ts": "accepted-shared",
+    "packages/shared/src/nodeSqliteClient.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/sqlite-checkpoint-lifecycle.json": "jones-owned",
     "apps/web/src/state/device.ts": "accepted-shared",
     "apps/server/src/cli/auth.ts": "accepted-shared",
     "apps/server/src/auth/PairingGrantStore.ts": "accepted-shared",

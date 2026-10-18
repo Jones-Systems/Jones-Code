@@ -4,6 +4,15 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "sqlite-checkpoint-lifecycle",
+      "tests": [
+        "packages/shared/src/nodeSqliteClient.test.ts",
+        "apps/server/src/persistence/Sqlite.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+      ],
+      "scope": "Bounded startup lock contention in the private upstream SQLite checkpoint worker and fail-fast test barriers on worker errors, exits and interruption. A small generic shared repair avoids duplicating the client; real-worker regressions remain in its existing mock harness. Preserves WAL setup order, checkpoint thresholds, fallback warnings and shutdown ownership. No schema, wire, migration or runtime activation changes; historical CI timeout causality remains unproved."
+    },
+    {
       "id": "usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
