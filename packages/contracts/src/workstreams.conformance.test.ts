@@ -3,12 +3,16 @@ import * as Schema from "effect/Schema";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Synchronous conformance fixture hashing preserves canonical wire bytes.
 import * as NodeCrypto from "node:crypto";
 
+import countsRaw from "./workstreams-fixtures/registry-counts.conformance.json.fixture?raw";
 import conformanceRaw from "./workstreams-fixtures/conformance.json.fixture?raw";
 import negativesRaw from "./workstreams-fixtures/negative-cases.json.fixture?raw";
 import semanticRaw from "./workstreams-fixtures/semantic-cases.json.fixture?raw";
 import {
   Workstream,
   WorkstreamCapabilities,
+  WorkstreamCountsCapabilities,
+  WorkstreamRegistryCounts,
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
   WorkstreamCommand,
   WorkstreamDelivery,
   WorkstreamFreshness,
@@ -345,5 +349,71 @@ describe("frozen accepted Workstream v1 fixtures", () => {
     const history = fixtureFor("HistoryPage") as Record<string, any>;
     history.items = Array.from({ length: 101 }, () => fixtureFor("AuditEvent"));
     expect(() => Schema.decodeUnknownSync(WorkstreamHistoryPage)(history, options)).toThrow();
+  });
+});
+
+describe("independently negotiated registry counts", () => {
+  const fixture = JSON.parse(countsRaw) as {
+    manifest_sha256: string;
+    conformance: FixtureCorpus & { source: { commit: string; sha256: string } };
+    negative: FixtureCorpus & { source: { commit: string; sha256: string } };
+  };
+  it("pins the provider revision and exact source corpus hashes", () => {
+    expect(fixture.manifest_sha256).toBe(WORKSTREAM_COUNTS_MANIFEST_SHA256);
+    expect(fixture.conformance.source).toMatchObject({
+      commit: "675e21251773325ec4d20b5de743cc183086278a",
+      sha256: "b28c57077fde370ac34e879c2a17f4c72af68cff7893d3aa41c6b6c79503853c",
+    });
+    expect(fixture.negative.source).toMatchObject({
+      commit: "675e21251773325ec4d20b5de743cc183086278a",
+      sha256: "b9272fc85eef9d87fa4a941f60a8f623860138a03f9066e52006f888ecee2945",
+    });
+  });
+  it.each(fixture.conformance.cases)("accepts provider example: $name", (entry) => {
+    const decoded = entry.schema.endsWith("/RegistryCounts")
+      ? Schema.decodeUnknownSync(WorkstreamRegistryCounts)(entry.value, options)
+      : Schema.decodeUnknownSync(WorkstreamCountsCapabilities)(entry.value, options);
+    expect(decoded).toEqual(entry.value);
+    if (entry.schema.endsWith("/Capabilities"))
+      expect(() =>
+        Schema.decodeUnknownSync(WorkstreamCapabilities)(entry.value, options),
+      ).toThrow();
+  });
+  it.each(fixture.negative.cases)("rejects provider example: $name", (entry) => {
+    expect(() =>
+      Schema.decodeUnknownSync(WorkstreamRegistryCounts)(entry.value, options),
+    ).toThrow();
+  });
+  const counts = fixture.conformance.cases.find((entry) =>
+    entry.schema.endsWith("/RegistryCounts"),
+  )!.value as Record<string, unknown>;
+  it.each([
+    { active: 10 },
+    { unknown_lifecycle: 10 },
+    { active: 8, unknown_lifecycle: 2 },
+    { total: Number.MAX_SAFE_INTEGER + 1 },
+    { active: 1.5 },
+    { active: -1 },
+    { observed_at: "2026-02-30T00:00:00Z" },
+    { authority_effect: "write" },
+    { context: { owner_id: "owner.synthetic", server_generation: 0, registry_version: 7 } },
+  ])("rejects invalid counts %j", (invalid) => {
+    expect(() =>
+      Schema.decodeUnknownSync(WorkstreamRegistryCounts)({ ...counts, ...invalid }, options),
+    ).toThrow();
+  });
+  it("accepts an empty registry and safe-integer boundary", () => {
+    for (const total of [0, Number.MAX_SAFE_INTEGER])
+      expect(
+        Schema.decodeUnknownSync(WorkstreamRegistryCounts)(
+          {
+            ...counts,
+            total,
+            active: total,
+            unknown_lifecycle: 0,
+          },
+          options,
+        ).total,
+      ).toBe(total);
   });
 });

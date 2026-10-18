@@ -2,7 +2,13 @@
 import * as NodeCrypto from "node:crypto";
 
 import { expect, it } from "@effect/vitest";
-import { WorkstreamDetail, WorkstreamReferenceDetail } from "@t3tools/contracts";
+import {
+  WorkstreamDetail,
+  WorkstreamReferenceDetail,
+  WORKSTREAM_COUNTS_MANIFEST_SHA256,
+  type WorkstreamCountsCapabilities,
+  type WorkstreamRegistryCounts,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -404,5 +410,296 @@ it.effect("reconciles pending and unresolved commands only through the exact GET
     expect((yield* gateway.pollCommand(command.command_id)).state).toBe("committed");
     expect(submissions).toBe(1);
     expect(polls).toBe(2);
+  }),
+);
+
+const countsCapability = {
+  version: 1,
+  path: "/workstreams/v1/counts",
+  active_definition: "latest_owner_lifecycle_declaration_active",
+} as const;
+const registryCounts: WorkstreamRegistryCounts = {
+  context: { owner_id: binding.ownerId, server_generation: 7, registry_version: 11 },
+  principal_id: binding.principalId,
+  authority_effect: "none",
+  observed_at: "2026-10-18T00:00:00Z",
+  total: 9,
+  active: 3,
+  unknown_lifecycle: 1,
+};
+const countsTransport = (): WorkstreamTransport => {
+  const fixture = makeSyntheticWorkstreamTransport();
+  return {
+    ...fixture,
+    getCountsCapabilities: () =>
+      fixture
+        .getCapabilities({
+          contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
+          contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+        })
+        .pipe(
+          Effect.map((capabilities) => ({
+            ...capabilities,
+            manifest_sha256: WORKSTREAM_COUNTS_MANIFEST_SHA256,
+            registry_counts: countsCapability,
+          })),
+        ),
+    getRegistryCounts: () => Effect.succeed(registryCounts),
+  };
+};
+
+it.effect("returns exact counts only after revalidating the session, without paging", () =>
+  Effect.gen(function* () {
+    const transport = countsTransport();
+    const calls: string[] = [];
+    const gateway = yield* make(
+      {
+        ...transport,
+        getCapabilities: (input) =>
+          Effect.suspend(() => {
+            calls.push("session");
+            return transport.getCapabilities(input);
+          }),
+        getCountsCapabilities: () =>
+          Effect.suspend(() => {
+            calls.push("negotiate");
+            return transport.getCountsCapabilities!();
+          }),
+        getRegistryCounts: () =>
+          Effect.sync(() => {
+            calls.push("counts");
+            return registryCounts;
+          }),
+        listWorkstreams: () => Effect.die("counts must never page"),
+      },
+      { binding },
+    );
+    expect(yield* gateway.readRegistryCounts()).toEqual({
+      counts: registryCounts,
+      binding: yield* gateway.readSession(),
+    });
+    expect(calls).toEqual(["session", "negotiate", "counts", "session", "session"]);
+  }),
+);
+
+it.effect.each([
+  undefined,
+  { ...countsCapability, version: 2 },
+  { ...countsCapability, path: "/unsupported" },
+  { ...countsCapability, active_definition: "running_executors" },
+])("rejects unsupported counts capability %j", (capability) =>
+  Effect.gen(function* () {
+    const transport = countsTransport();
+    let countReads = 0;
+    const gateway = yield* make(
+      {
+        ...transport,
+        getCountsCapabilities: () =>
+          transport.getCountsCapabilities!().pipe(
+            Effect.map((caps) => {
+              const { registry_counts: _capability, ...legacy } = caps;
+              return (
+                capability === undefined ? legacy : { ...legacy, registry_counts: capability }
+              ) as WorkstreamCountsCapabilities;
+            }),
+          ),
+        getRegistryCounts: () =>
+          Effect.sync(() => {
+            countReads++;
+            return registryCounts;
+          }),
+        listWorkstreams: () => Effect.die("no pagination fallback"),
+      },
+      { binding },
+    );
+    expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe(
+      "contract-mismatch",
+    );
+    expect(countReads).toBe(0);
+  }),
+);
+
+it.effect("rejects absent ports, legacy manifests and denied counts permissions", () =>
+  Effect.gen(function* () {
+    const legacy = yield* make(makeSyntheticWorkstreamTransport(), { binding });
+    expect((yield* legacy.readRegistryCounts().pipe(Effect.flip)).reason).toBe("contract-mismatch");
+    for (const overrides of [
+      { manifest_sha256: WORKSTREAM_CONTRACT_MANIFEST_SHA256 },
+      { permissions: [] },
+    ]) {
+      const transport = countsTransport();
+      const gateway = yield* make(
+        {
+          ...transport,
+          getCountsCapabilities: () =>
+            transport.getCountsCapabilities!().pipe(
+              Effect.map((caps) => ({ ...caps, ...overrides })),
+            ),
+          getRegistryCounts: () => Effect.die("unnegotiated counts"),
+        },
+        { binding },
+      );
+      expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe(
+        "permissions" in overrides ? "permission-denied" : "contract-mismatch",
+      );
+    }
+  }),
+);
+
+it.effect.each(["owner_id", "server_generation", "registry_version", "principal_id"] as const)(
+  "rejects a counts response with changed %s",
+  (field) =>
+    Effect.gen(function* () {
+      const changed =
+        field === "principal_id"
+          ? { ...registryCounts, principal_id: "another-principal" }
+          : {
+              ...registryCounts,
+              context: {
+                ...registryCounts.context,
+                [field]: field === "owner_id" ? "another-owner" : 99,
+              },
+            };
+      const gateway = yield* make(
+        { ...countsTransport(), getRegistryCounts: () => Effect.succeed(changed) },
+        { binding },
+      );
+      expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe("stale");
+    }),
+);
+it.effect.each([
+  "registryId",
+  "ownerId",
+  "principalId",
+  "authorizationRevision",
+  "serverGeneration",
+  "registryVersion",
+] as const)("rejects post-read %s drift", (field) =>
+  Effect.gen(function* () {
+    const transport = countsTransport();
+    const mutableBinding: {
+      registryId: string;
+      ownerId: string;
+      principalId: string;
+      authorizationRevision: number;
+    } = { ...binding };
+    let read = false;
+    const gateway = yield* make(
+      {
+        ...transport,
+        getCapabilities: (input) =>
+          transport.getCapabilities(input).pipe(
+            Effect.map((caps) => ({
+              ...caps,
+              context: {
+                ...caps.context,
+                ...(read && field === "serverGeneration" ? { server_generation: 8 } : {}),
+                ...(read && field === "registryVersion" ? { registry_version: 12 } : {}),
+              },
+            })),
+          ),
+        getRegistryCounts: () =>
+          Effect.sync(() => {
+            read = true;
+            if (field === "authorizationRevision") mutableBinding.authorizationRevision++;
+            if (field === "registryId") mutableBinding.registryId = "changed-registry";
+            if (field === "ownerId") mutableBinding.ownerId = "changed-owner";
+            if (field === "principalId") mutableBinding.principalId = "changed-principal";
+            return registryCounts;
+          }),
+      },
+      { binding: mutableBinding },
+    );
+    expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe(
+      field === "ownerId" ? "permission-denied" : "stale",
+    );
+  }),
+);
+
+it.effect("rejects excess fields, impossible totals and failed revalidation", () =>
+  Effect.gen(function* () {
+    for (const counts of [
+      { ...registryCounts, total: 3 },
+      { ...registryCounts, content: "forbidden" },
+    ]) {
+      const gateway = yield* make(
+        { ...countsTransport(), getRegistryCounts: () => Effect.succeed(counts) },
+        { binding },
+      );
+      expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe(
+        "invalid-response",
+      );
+    }
+    const transport = countsTransport();
+    let read = false;
+    const gateway = yield* make(
+      {
+        ...transport,
+        getCapabilities: (input) =>
+          read
+            ? Effect.fail(
+                new WorkstreamTransportError({
+                  operation: "capabilities",
+                  effect: "no-effect",
+                  detail: "offline",
+                }),
+              )
+            : transport.getCapabilities(input),
+        getRegistryCounts: () =>
+          Effect.sync(() => {
+            read = true;
+            return registryCounts;
+          }),
+      },
+      { binding },
+    );
+    expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe("offline");
+  }),
+);
+
+it.effect.each(["owner_id", "server_generation", "registry_version"] as const)(
+  "rejects negotiation context drift in %s before reading counts",
+  (field) =>
+    Effect.gen(function* () {
+      const transport = countsTransport();
+      const gateway = yield* make(
+        {
+          ...transport,
+          getCountsCapabilities: () =>
+            transport.getCountsCapabilities!().pipe(
+              Effect.map((caps) => ({
+                ...caps,
+                context: { ...caps.context, [field]: field === "owner_id" ? "other-owner" : 99 },
+              })),
+            ),
+          getRegistryCounts: () => Effect.die("changed context must not read counts"),
+        },
+        { binding },
+      );
+      expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe("stale");
+    }),
+);
+
+it.effect("rejects an authorization revision change during initial authorization", () =>
+  Effect.gen(function* () {
+    const transport = countsTransport();
+    const mutableBinding = {
+      ...binding,
+      authorizationRevision: Number(binding.authorizationRevision),
+    };
+    const gateway = yield* make(
+      {
+        ...transport,
+        getCapabilities: (input) =>
+          transport.getCapabilities(input).pipe(
+            Effect.map((caps) => {
+              mutableBinding.authorizationRevision++;
+              return caps;
+            }),
+          ),
+      },
+      { binding: mutableBinding },
+    );
+    expect((yield* gateway.readRegistryCounts().pipe(Effect.flip)).reason).toBe("stale");
   }),
 );
