@@ -30,9 +30,8 @@ export function VoiceReviewDeviceSetup({ environmentId }: { environmentId: Envir
       setMessage(
         "Device setup details could not be loaded. Check your connection and access with the server owner.",
       );
-    } finally {
-      setLoading(false);
     }
+    setLoading(false);
   };
   const copy = async () => {
     if (entry === null) return;

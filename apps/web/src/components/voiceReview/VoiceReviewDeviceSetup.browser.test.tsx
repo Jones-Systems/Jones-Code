@@ -174,3 +174,43 @@ it.each(["disabled", "disconnected"])(
     expect(fixture.identity).not.toHaveBeenCalled();
   },
 );
+
+it.each(["fulfilled", "rejected"])(
+  "clears loading after a %s identity read without retrying",
+  async (outcome) => {
+    let resolve: (value: VoiceReviewSelfIdentity) => void = () => {
+      throw new Error("read not started");
+    };
+    let reject: (reason: Error) => void = () => {
+      throw new Error("read not started");
+    };
+    fixture.identity.mockImplementation(
+      () =>
+        new Promise((onResolve, onReject) => {
+          resolve = onResolve;
+          reject = onReject;
+        }),
+    );
+    await render();
+    await click("Set up this device");
+    const button = [...container.querySelectorAll("button")].find(
+      (item) => item.textContent === "Hide device setup",
+    )!;
+    expect(button.disabled).toBe(true);
+    expect(container.textContent).toContain("Loading device details…");
+    await act(async () => {
+      if (outcome === "fulfilled") resolve(identity);
+      else reject(new Error("unavailable"));
+    });
+    expect(button.disabled).toBe(false);
+    expect(container.textContent).not.toContain("Loading device details…");
+    expect(container.textContent).toContain(
+      outcome === "fulfilled"
+        ? "This device is not enrolled"
+        : "Device setup details could not be loaded.",
+    );
+    expect(fixture.identity).toHaveBeenCalledOnce();
+    await click("Hide device setup");
+    expect(container.textContent).not.toContain("own-device-key");
+  },
+);
