@@ -1111,7 +1111,11 @@
     "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx": "jones-tests-in-upstream",
     "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/ordinaryCheckout/CheckoutPermitAdapter.ts": "jones-owned",
-    "packages/provider-core/src/server/failure.ts": "hook"
+    "packages/provider-core/src/server/failure.ts": "hook",
+    "packages/contracts/src/jones/providerConversationReselection.ts": "jones-owned",
+    "apps/server/src/jones/runtime/ProviderConversationReselection.ts": "jones-owned",
+    "apps/server/src/jones/runtime/ProviderConversationReselection.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

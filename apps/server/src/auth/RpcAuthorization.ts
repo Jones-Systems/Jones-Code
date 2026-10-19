@@ -40,6 +40,8 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 export const RPC_REQUIRED_SCOPES = {
   ...CLIENT_GUARDED_RPC_SCOPES,
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: AuthOrchestrationOperateScope,

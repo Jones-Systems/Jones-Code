@@ -1,4 +1,5 @@
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
+import * as ProviderConversationReselection from "./jones/runtime/ProviderConversationReselection.ts";
 import {
   makeNativeStoreAuthorityConfigReader,
   type NativeStoreAuthorityConfigReader,
@@ -8,6 +9,7 @@ import {
   NativeCreationRejectionCode,
   EnvironmentAuthenticatedPrincipal,
   CurrentRuntimeStopRequestError,
+  ProviderConversationReselectionError,
 } from "@t3tools/contracts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { QueueDispatchCommand } from "@t3tools/contracts";
@@ -273,6 +275,7 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
+const isProviderConversationReselectionError = Schema.is(ProviderConversationReselectionError);
 
 const resolveDiscoveryForConfig = <A, E, R>(
   discovery: Effect.Effect<A, E, R>,
@@ -1188,6 +1191,17 @@ const layerWsRpc = (
   ServerWsRpcGroup.toLayer(
     Effect.gen(function* () {
       const currentSessionId = currentSession.sessionId;
+      const providerConversationReselection = yield* Effect.serviceOption(
+        ProviderConversationReselection.ProviderConversationReselection,
+      );
+      const withProviderConversationReselection = <A, E, R>(
+        action: (
+          owner: ProviderConversationReselection.ProviderConversationReselection["Service"],
+        ) => Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E | ProviderConversationReselectionError, R> =>
+        Option.isNone(providerConversationReselection)
+          ? Effect.fail(new ProviderConversationReselectionError({ reason: "service_unavailable" }))
+          : action(providerConversationReselection.value);
       const currentRuntimeStop = yield* Effect.serviceOption(RuntimeStop.CurrentRuntimeStop);
       const withCurrentRuntimeStop = <A, E, R>(
         action: (owner: RuntimeStop.CurrentRuntimeStop["Service"]) => Effect.Effect<A, E, R>,
@@ -1828,6 +1842,34 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: (input) =>
+          startup
+            .enqueueCommand(
+              withProviderConversationReselection((owner) =>
+                owner.preview(input, runtimeStopPrincipal),
+              ),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                isProviderConversationReselectionError(error)
+                  ? error
+                  : new ProviderConversationReselectionError({ reason: "startup_unavailable" }),
+              ),
+            ),
+        [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: (input) =>
+          startup
+            .enqueueCommand(
+              withProviderConversationReselection((owner) =>
+                owner.reselect(input, runtimeStopPrincipal),
+              ),
+            )
+            .pipe(
+              Effect.mapError((error) =>
+                isProviderConversationReselectionError(error)
+                  ? error
+                  : new ProviderConversationReselectionError({ reason: "startup_unavailable" }),
+              ),
+            ),
         [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: (input) =>
           startup
             .enqueueCommand(

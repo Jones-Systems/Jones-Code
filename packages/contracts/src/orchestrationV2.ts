@@ -3179,6 +3179,8 @@ export type OrchestrationV2ServerCommand =
 export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   stopCurrentThreadRuntime: "orchestration.stopCurrentThreadRuntime",
+  previewProviderConversationReselection: "orchestration.previewProviderConversationReselection",
+  reselectProviderConversation: "orchestration.reselectProviderConversation",
   readCurrentRuntimeStopTarget: "orchestration.readCurrentRuntimeStopTarget",
   observeCurrentThreadRuntimeStop: "orchestration.observeCurrentThreadRuntimeStop",
   dispatchNativeBootstrap: "orchestration.dispatchNativeBootstrap",

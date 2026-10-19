@@ -17,6 +17,8 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverCheckOtlpEndpoint]: AuthSettingsWriteScope,
   [WS_METHODS.serverReadTokenAccounting]: AuthDiagnosticsReadScope,
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: AuthOrchestrationOperateScope,
+  [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: AuthOrchestrationReadScope,
+  [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: AuthOrchestrationOperateScope,
   [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: AuthOrchestrationReadScope,
   [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: AuthOrchestrationReadScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,

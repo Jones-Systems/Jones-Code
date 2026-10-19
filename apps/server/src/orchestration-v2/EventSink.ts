@@ -1,3 +1,4 @@
+import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import {
   makeDeletionAdmission,
@@ -327,6 +328,7 @@ export interface EventSinkV2Shape {
   readonly commitCommand: (input: {
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
       readonly claimId: string;
@@ -1075,6 +1077,8 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (input.providerConversationReselection)
+              yield* input.providerConversationReselection.revalidate(input, existing);
             if (Option.isSome(checkoutIntent) && ordinaryCommand !== undefined)
               yield* checkoutIntent.value.replay(ordinaryCommand, input.threadId);
             if (imported !== undefined) {
@@ -1114,6 +1118,9 @@ const layerBase: Layer.Layer<
             }
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
+
+          if (input.providerConversationReselection)
+            yield* input.providerConversationReselection.revalidate(input);
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
