@@ -6,6 +6,7 @@ import {
   useQuestionAttachmentPreparation,
 } from "../../questionAttachments";
 import { getUploadedAttachments, useAttachmentUploadStore } from "../../lib/attachmentUploadQueue";
+import { prepareImageForAttachment } from "../../lib/imageCompression";
 import {
   encodeComposerContextFragment,
   COMPOSER_CONTEXT_CLIPBOARD_MIME,
@@ -39,6 +40,11 @@ vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
   default: (({ text }: { text: string }) => <p>{text}</p>) as never,
 }));
+
+vi.mock(import("../../lib/imageCompression"), async (importOriginal) => {
+  const original = await importOriginal();
+  return { ...original, prepareImageForAttachment: vi.fn(original.prepareImageForAttachment) };
+});
 
 const threadRef = {
   environmentId: EnvironmentId.make("question-test"),
@@ -459,6 +465,45 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
   expect(output("answer")).toBe('{"approach":"Read this file"}');
   expect(output("attachments")).toContain("uploaded-answer");
   expect(output("messages")).toBe("[]");
+});
+
+it("releases a failed image preparation so the written answer can still be sent", async () => {
+  const key = questionAttachmentDraftId(
+    threadRef.environmentId,
+    threadRef.threadId,
+    "request",
+    "approach",
+  );
+  let rejectPreparation!: (reason: Error) => void;
+  vi.mocked(prepareImageForAttachment).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectPreparation = reject;
+      }),
+  );
+  await act(async () => root.render(<Harness capabilities={capabilities} />));
+  await typeAnswer("Answer survives attachment failure");
+  const clipboardData = new DataTransfer();
+  clipboardData.items.add(new File(["image"], "failed.png", { type: "image/png" }));
+  await act(async () =>
+    answerField().dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(useQuestionAttachmentPreparation.getState().counts[key]).toBe(1);
+  expect(button("Send").disabled).toBe(true);
+  await act(async () => rejectPreparation(new Error("Image preparation failed")));
+  expect(useQuestionAttachmentPreparation.getState().counts[key] ?? 0).toBe(0);
+  expect(container.textContent).toContain("'failed.png' could not be attached.");
+  expect(useComposerDraftStore.getState().getComposerDraft(key)?.images ?? []).toEqual([]);
+  expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.images ?? []).toEqual([]);
+  expect(button("Send").disabled).toBe(false);
+  await act(async () => button("Send").click());
+  expect(output("answer")).toBe('{"approach":"Answer survives attachment failure"}');
+  expect(output("messages")).toBe("[]");
+  expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Thread message"]')!.value).toBe(
+    "independent thread draft",
+  );
 });
 
 it("shows legacy unavailable attachments and removes them without changing the thread draft", async () => {

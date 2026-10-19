@@ -206,27 +206,23 @@ export function useQuestionAnswerAttachments(input: {
       return reservation ? [{ file, reservation }] : [];
     });
     await Promise.all(
-      reservations.map(async ({ file, reservation }) => {
-        try {
-          await storeFile(file, reservation.active);
-        } catch {
-          report(`'${file.name}' could not be attached.`);
-        } finally {
-          reservation.release();
-        }
-      }),
+      reservations.map(({ file, reservation }) =>
+        storeFile(file, reservation.active)
+          .catch(() => report(`'${file.name}' could not be attached.`))
+          .finally(reservation.release),
+      ),
     );
   };
   const importFile = async (load: () => Promise<File>, isCurrent: () => boolean = () => true) => {
     const reservation = reserve();
     if (!reservation) return;
-    try {
-      await storeFile(await load(), () => reservation.active() && isCurrent());
-    } catch {
-      report("The attached context could not be loaded. Try again or attach the file directly.");
-    } finally {
-      reservation.release();
-    }
+    const loadAndStore = async () =>
+      storeFile(await load(), () => reservation.active() && isCurrent());
+    await loadAndStore()
+      .catch(() =>
+        report("The attached context could not be loaded. Try again or attach the file directly."),
+      )
+      .finally(reservation.release);
   };
   const addThreads = (
     refs: ReadonlyArray<ScopedThreadRef>,
