@@ -221,6 +221,72 @@ describe("settlement notification controller", () => {
     expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(3);
   });
 
+  it("recovers a transient inbox read failure before replacing durable pending notices or acknowledgements", async () => {
+    const h = harness();
+    const pending = entry();
+    const acknowledged = entry("acknowledged", 150);
+    h.data.inbox = encodeSettlementInbox({
+      ...emptyInbox(),
+      entries: [pending, acknowledged],
+      acknowledged: [acknowledged.id],
+    });
+    h.data.baselines.set(
+      env,
+      encodeSettlementBaseline(
+        baseline({
+          threads: { "thread-a": 200, acknowledged: 150 },
+          watermarkMs: 200,
+        }),
+      ),
+    );
+    h.store.loadInbox.mockImplementationOnce(() => {
+      throw new Error("temporary SQLite read failure");
+    });
+    const controller = createSettlementNotificationController({ store: h.store });
+    controller.observe(env, shell(2, [thread("thread-a", 200), thread("acknowledged", 150)]));
+    await controller.hydrate();
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([pending.id]);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toContain(acknowledged.id);
+    const restarted = createSettlementNotificationController({ store: h.store });
+    await restarted.hydrate();
+    expect(restarted.getSnapshot().visible.map((value) => value.id)).toEqual([pending.id]);
+  });
+
+  it("preserves unread durable state and baselines until a failed inbox read can be retried", async () => {
+    const h = harness();
+    const pending = entry();
+    const acknowledged = entry("acknowledged", 150);
+    const original = encodeSettlementInbox({
+      ...emptyInbox(),
+      entries: [pending, acknowledged],
+      acknowledged: [acknowledged.id],
+    });
+    h.data.inbox = original;
+    h.store.loadInbox.mockImplementation(() => {
+      throw new Error("SQLite temporarily unreadable");
+    });
+    const controller = createSettlementNotificationController({ store: h.store });
+    controller.observe(
+      env,
+      shell(2, [thread("thread-a", 200), thread("new", 300), thread("acknowledged", 150)]),
+    );
+    await controller.flush();
+    expect(h.data.inbox).toBe(original);
+    expect(h.store.saveInbox).not.toHaveBeenCalled();
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().persistence).toBe("degraded");
+    h.store.loadInbox.mockImplementation(() => h.data.inbox);
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([
+      entry("new", 300).id,
+      pending.id,
+    ]);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toContain(acknowledged.id);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(2);
+    expect(controller.getSnapshot().persistence).toBe("ok");
+  });
+
   it.each([
     "not json",
     '{"version":2}',

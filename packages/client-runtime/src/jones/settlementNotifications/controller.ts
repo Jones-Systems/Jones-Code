@@ -48,6 +48,7 @@ export function createSettlementNotificationController(deps: {
   const staleSince = new Map<EnvironmentId, number>();
   const catalog = new Set<EnvironmentId>();
   let inbox = emptyInbox();
+  let inboxLoaded = false;
   let inboxRevision = 0;
   let changeRevision = 0;
   let persistedInboxRevision = 0;
@@ -131,9 +132,34 @@ export function createSettlementNotificationController(deps: {
     return value;
   }
 
+  async function loadInbox(): Promise<boolean> {
+    let json: string | null;
+    try {
+      json = await store.loadInbox();
+    } catch {
+      fail("inbox", "settlement-notifications.inbox-load-failed");
+      return false;
+    }
+    inboxLoaded = true;
+    try {
+      if (json !== null)
+        updateInbox(refreshConfirmed(mergeInbox(inbox, decodeSettlementInbox(json))));
+    } catch {
+      fail("inbox", "settlement-notifications.inbox-load-failed");
+      inboxRevision++;
+    }
+    return true;
+  }
+
   async function persistBatch() {
+    // A failed read leaves durable entries and acknowledgements unknown.
+    // Recover and merge them before either the inbox or its baselines can advance.
+    if (!inboxLoaded) {
+      if (!(await loadInbox())) return;
+      inboxRevision++;
+    }
     if (inboxRevision === persistedInboxRevision && dirtyBaselines.size === 0) return;
-    // Capture one coherent pair before the first await. A later observation may
+    // Capture one coherent pair before saving. A later observation may
     // change memory while the adapter is saving this inbox.
     const revision = inboxRevision;
     const inboxJson = encodeSettlementInbox(inbox);
@@ -269,13 +295,7 @@ export function createSettlementNotificationController(deps: {
         } catch {
           fail("subscription", "settlement-notifications.external-subscribe-failed");
         }
-        try {
-          const json = await store.loadInbox();
-          if (json !== null) updateInbox(mergeInbox(inbox, decodeSettlementInbox(json)));
-        } catch {
-          fail("inbox", "settlement-notifications.inbox-load-failed");
-          inboxRevision++;
-        }
+        await loadInbox();
         try {
           const ids = await store.listBaselineEnvironmentIds();
           for (const id of ids) catalog.add(EnvironmentId.make(id));
