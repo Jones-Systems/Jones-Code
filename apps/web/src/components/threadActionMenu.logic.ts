@@ -1,7 +1,10 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
 
+import type { EnvironmentScopeAccess } from "../state/session";
+
 export type ThreadActionMenuId =
+  | "environment-access-status"
   | "new-thread-on-branch"
   | "filter-by-project"
   | "project-settings"
@@ -69,6 +72,7 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
+  readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
   readonly branch: string | null;
   readonly projectFilter: {
     readonly label: string;
@@ -108,7 +112,24 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
+  const accessLabels = {
+    checking: "Checking access to this environment…",
+    check_failed: "Couldn't check access to this environment. Refresh to retry.",
+    signed_out: "Sign in to this environment to change threads.",
+    scope_missing: "This connection can't change threads.",
+  };
   const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
+    ...(!state.canOperate &&
+    state.environmentAccessStatus &&
+    state.environmentAccessStatus !== "granted"
+      ? [
+          {
+            id: "environment-access-status" as const,
+            label: accessLabels[state.environmentAccessStatus],
+            disabled: true,
+          },
+        ]
+      : []),
     ...(state.branch
       ? [
           {

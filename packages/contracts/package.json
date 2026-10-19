@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsRegistrationAvailability": {
+      "types": "./src/jones/workstreamsRegistrationAvailability.ts",
+      "import": "./src/jones/workstreamsRegistrationAvailability.ts"
+    },
     "./jones/fleet-updates": {
       "types": "./src/jones/fleetUpdates/index.ts",
       "import": "./src/jones/fleetUpdates/index.ts"

@@ -30,8 +30,21 @@ export interface NativeThreadAssignmentMenu {
   readonly onAction: (action: ThreadActionMenuId) => void;
 }
 
+export interface NativeThreadExternalDrop {
+  readonly locateExternal: (
+    point: { x: number; y: number },
+    thread: EnvironmentThreadShell,
+  ) => boolean;
+  readonly dropExternal: (
+    point: { x: number; y: number },
+    thread: EnvironmentThreadShell,
+  ) => Promise<boolean> | null;
+  readonly clear: () => void;
+}
+
 export function WorkstreamNativeSidebar({
   assignmentMenuRef,
+  externalDropRef,
   ...props
 }: {
   readonly controller: WorkstreamListView;
@@ -44,6 +57,8 @@ export function WorkstreamNativeSidebar({
   readonly assignmentMenuRef?: RefObject<
     ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
   >;
+  readonly externalDropRef?: RefObject<NativeThreadExternalDrop | null>;
+  readonly canOperate: (thread: EnvironmentThreadShell) => boolean;
   readonly canReorder: (thread: EnvironmentThreadShell) => boolean;
   readonly reorder: (
     thread: EnvironmentThreadShell,
@@ -122,38 +137,51 @@ export function WorkstreamNativeSidebar({
   };
   // Another environment's thread is registered through its own server, which checks its source.
   const sourceAvailable = (thread: EnvironmentThreadShell) =>
-    nativeThreadSourceAvailable(controller.registrationContext, thread) ||
-    controller.assignsThroughOwnEnvironment?.(thread.environmentId) === true;
-  // Stale snapshots are read-only; conflicting primaries or a known identity mismatch block
-  // changes until re-verification.
+    controller.assignmentAvailability
+      ? controller.assignmentAvailability(thread).state !== "unavailable"
+      : nativeThreadSourceAvailable(controller.registrationContext, thread) ||
+        controller.assignsThroughOwnEnvironment?.(thread.environmentId) === true;
+  // Stale snapshots block assignment changes; native ordering can use recorded membership.
+  // Conflicting primaries still require re-verification before either operation.
   const canMove = (thread: EnvironmentThreadShell) =>
     canWrite &&
+    props.canOperate(thread) &&
     controller.stale !== true &&
     controller.assignNativeThread !== undefined &&
     sourceAvailable(thread) &&
     !conflicted(thread);
+  const canReorder = (thread: EnvironmentThreadShell) =>
+    !busy &&
+    props.canOperate(thread) &&
+    props.canReorder(thread) &&
+    assignmentChecked(thread) &&
+    (controller.stale !== true || currentWorkstream(thread) !== null) &&
+    !conflicted(thread);
+  const canDrag = (thread: EnvironmentThreadShell) => canMove(thread) || canReorder(thread);
   const hasUnchecked = grouping.ungrouped.some((thread) => !assignmentChecked(thread));
   const hasConflict = grouping.conflictingKeys.size > 0;
   // Unassigned is a claim only a complete, live index can make for every listed row.
   const otherThreadsLabel =
     grouping.assuranceByKey !== undefined ? "Assignment unknown" : "Other threads";
   const assignmentIndex = controller.assignmentIndex ?? null;
-  const run = (operation: () => Promise<void>) => {
-    if (busyRef.current || bindingRef.current !== binding) return;
+  const run = async (operation: () => Promise<void>): Promise<boolean> => {
+    if (busyRef.current || bindingRef.current !== binding) return false;
     busyRef.current = true;
     setBusy(true);
     setError(null);
     const startedBinding = binding;
-    void operation()
-      .catch((cause: unknown) => {
-        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
-      })
-      .finally(() => {
-        if (bindingRef.current === startedBinding) {
-          busyRef.current = false;
-          setBusy(false);
-        }
-      });
+    try {
+      await operation();
+      return bindingRef.current === startedBinding;
+    } catch (cause) {
+      if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
+      return false;
+    } finally {
+      if (bindingRef.current === startedBinding) {
+        busyRef.current = false;
+        setBusy(false);
+      }
+    }
   };
   // Retry reconciles unresolved commands by reading their receipts before it reloads.
   const refreshWorkstreams = () =>
@@ -184,33 +212,70 @@ export function WorkstreamNativeSidebar({
       thread,
     ]),
   );
-  const pointerActions = useRef<{
-    threadsByKey: typeof threadsByKey;
-    canMove: typeof canMove;
-    currentWorkstream: typeof currentWorkstream;
-    assignmentChecked: typeof assignmentChecked;
-    run: typeof run;
-    move: typeof move;
-    reorder: typeof props.reorder;
-    canReorder: typeof props.canReorder;
-  } | null>(null);
+  const locate = (
+    point: { x: number; y: number },
+    thread: EnvironmentThreadShell,
+    external = false,
+  ) => {
+    setDropTarget(null);
+    const element = document.elementFromPoint(point.x, point.y);
+    const group = element?.closest<HTMLElement>("[data-native-workstream]");
+    if (!group || !rootRef.current?.contains(group)) return null;
+    if (external ? !canMove(thread) : !canDrag(thread)) return null;
+    if (!external && !threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id)))
+      return null;
+    const destination = JSON.parse(group.dataset.nativeWorkstream!) as string | null;
+    const row = element?.closest<HTMLElement>("[data-native-workstream-thread]");
+    const neighbor = row?.dataset.nativeWorkstreamThread
+      ? threadsByKey.get(row.dataset.nativeWorkstreamThread)
+      : undefined;
+    const sameGroup = assignmentChecked(thread) && currentWorkstream(thread) === destination;
+    if (
+      !external &&
+      sameGroup &&
+      (!neighbor ||
+        !canReorder(thread) ||
+        !canReorder(neighbor) ||
+        (neighbor.environmentId === thread.environmentId && neighbor.id === thread.id))
+    )
+      return null;
+    if (!sameGroup && !canMove(thread)) return null;
+    const bounds = row?.getBoundingClientRect();
+    const after = bounds !== undefined && point.y > bounds.top + bounds.height / 2;
+    setDropTarget({
+      workstreamId: destination,
+      ...(!external && sameGroup && neighbor
+        ? { threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id), after }
+        : {}),
+    });
+    return { destination, neighbor, after, sameGroup };
+  };
+  const pointerActions = useRef({ locate, run, move, reorder: props.reorder, canReorder });
   useLayoutEffect(() => {
-    pointerActions.current = {
-      threadsByKey,
-      canMove,
-      currentWorkstream,
-      assignmentChecked,
-      run,
-      move,
-      reorder: props.reorder,
-      canReorder: props.canReorder,
+    pointerActions.current = { locate, run, move, reorder: props.reorder, canReorder };
+  });
+  useLayoutEffect(() => {
+    if (!externalDropRef) return;
+    externalDropRef.current = {
+      locateExternal: (point, thread) => locate(point, thread, true) !== null,
+      dropExternal: (point, thread) => {
+        const target = locate(point, thread, true);
+        setDropTarget(null);
+        if (!target) return null;
+        if (target.sameGroup) return Promise.resolve(false);
+        return run(() => move(thread, target.destination));
+      },
+      clear: () => setDropTarget(null),
+    };
+    return () => {
+      externalDropRef.current = null;
     };
   });
   const pointerDown = (event: ReactPointerEvent, thread: EnvironmentThreadShell) => {
     if (
       !event.isPrimary ||
       event.button !== 0 ||
-      !canMove(thread) ||
+      !canDrag(thread) ||
       (event.target as HTMLElement).closest(
         "button, a, input, textarea, select, [contenteditable=true]",
       )
@@ -218,49 +283,9 @@ export function WorkstreamNativeSidebar({
       return;
     sensorRef.current?.cancel();
     const originY = event.clientY;
-    let target: {
-      destination: string | null;
-      neighbor: EnvironmentThreadShell | undefined;
-      after: boolean;
-    } | null = null;
-    const locate = (point: { x: number; y: number }) => {
-      const element = document.elementFromPoint(point.x, point.y);
-      const group = element?.closest<HTMLElement>("[data-native-workstream]");
-      target = null;
-      setDropTarget(null);
-      if (!group || !rootRef.current?.contains(group)) return;
-      const actions = pointerActions.current;
-      if (actions === null) return;
-      if (
-        !actions.canMove(thread) ||
-        !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
-      )
-        return;
-      const destination = JSON.parse(group.dataset.nativeWorkstream!) as string | null;
-      const row = element?.closest<HTMLElement>("[data-native-workstream-thread]");
-      const neighbor = row?.dataset.nativeWorkstreamThread
-        ? actions.threadsByKey.get(row.dataset.nativeWorkstreamThread)
-        : undefined;
-      const sameGroup =
-        actions.assignmentChecked(thread) && actions.currentWorkstream(thread) === destination;
-      if (
-        sameGroup &&
-        (!neighbor ||
-          !actions.assignmentChecked(neighbor) ||
-          (neighbor.environmentId === thread.environmentId && neighbor.id === thread.id) ||
-          !actions.canReorder(thread) ||
-          !actions.canReorder(neighbor))
-      )
-        return;
-      const bounds = row?.getBoundingClientRect();
-      const after = bounds !== undefined && point.y > bounds.top + bounds.height / 2;
-      target = { destination, neighbor, after };
-      setDropTarget({
-        workstreamId: destination,
-        ...(sameGroup && neighbor
-          ? { threadKey: nativeWorkstreamThreadKey(neighbor.environmentId, neighbor.id), after }
-          : {}),
-      });
+    let target: ReturnType<typeof locate> = null;
+    const locatePointer = (point: { x: number; y: number }) => {
+      target = pointerActions.current.locate(point, thread);
     };
     sensorRef.current = new SidebarPointerSensor({
       active: nativeWorkstreamThreadKey(thread.environmentId, thread.id),
@@ -275,7 +300,7 @@ export function WorkstreamNativeSidebar({
           setDropTarget(null);
         },
         onDrop: (point) => {
-          locate(point);
+          locatePointer(point);
           return false;
         },
       },
@@ -284,33 +309,18 @@ export function WorkstreamNativeSidebar({
       onStart: () => setDragged(thread),
       onMove: (point) => {
         setOffsetY(point.y - originY);
-        locate(point);
+        locatePointer(point);
       },
       onCancel: () => {
         target = null;
       },
       onEnd: () => {
         if (!target) return;
-        const { destination, neighbor, after } = target;
+        const { destination, neighbor, after, sameGroup } = target;
         const actions = pointerActions.current;
-        if (actions === null) return;
-        if (
-          !actions.canMove(thread) ||
-          !actions.threadsByKey.has(nativeWorkstreamThreadKey(thread.environmentId, thread.id))
-        )
-          return;
-        actions.run(async () => {
-          if (
-            !actions.assignmentChecked(thread) ||
-            actions.currentWorkstream(thread) !== destination
-          )
-            await actions.move(thread, destination);
-          else if (
-            neighbor &&
-            actions.assignmentChecked(neighbor) &&
-            actions.canReorder(thread) &&
-            actions.canReorder(neighbor)
-          )
+        void actions.run(async () => {
+          if (!sameGroup) await actions.move(thread, destination);
+          else if (neighbor && actions.canReorder(thread) && actions.canReorder(neighbor))
             await actions.reorder(thread, neighbor, after);
         });
       },
@@ -332,7 +342,8 @@ export function WorkstreamNativeSidebar({
               {
                 id: "assign-workstream:status" as const,
                 label: !sourceAvailable(thread)
-                  ? "Assignment unavailable for this environment"
+                  ? (controller.assignmentAvailability?.(thread).reason ??
+                    "Assignment unavailable for this environment")
                   : conflicted(thread)
                     ? "Conflicting assignments; changes blocked"
                     : assuranceOf(thread) === undefined
@@ -398,7 +409,7 @@ export function WorkstreamNativeSidebar({
             <li
               key={key}
               data-native-workstream-thread={key}
-              className={`relative rounded ${canMove(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${isDragging ? "pointer-events-none z-30 bg-sidebar shadow-lg" : ""}`}
+              className={`relative rounded ${canDrag(thread) ? "cursor-grab active:cursor-grabbing" : ""} ${isDragging ? "pointer-events-none z-30 bg-sidebar shadow-lg" : ""}`}
               style={isDragging ? { transform: `translateY(${offsetY}px)` } : undefined}
               onPointerDown={(event) => pointerDown(event, thread)}
               data-drop-position={

@@ -1115,7 +1115,15 @@
     "packages/contracts/src/jones/providerConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned"
+    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned",
+    "apps/web/src/state/session.ts": "accepted-shared",
+    "packages/client-runtime/src/state/session.ts": "accepted-shared",
+    "apps/web/src/state/session.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/session.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/workstreams-interaction-recovery.json": "jones-owned",
+    "apps/server/src/http.ts": "hook",
+    "apps/server/src/http.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/Sidebar.pointer.browser.test.tsx": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

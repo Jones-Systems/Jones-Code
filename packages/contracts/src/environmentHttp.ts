@@ -403,6 +403,7 @@ const EnvironmentWorkstreamSnapshotErrors = [
 ] as const;
 const EnvironmentWorkstreamCommandErrors = [
   EnvironmentRequestInvalidError,
+  EnvironmentHttpConflictError,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
