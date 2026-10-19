@@ -763,7 +763,8 @@
         "apps/server/src/entrypoint.test.ts",
         "scripts/jones/updates/native-fixture-support.node-test.mjs",
         "apps/server/src/jones/cloud/capturedProcess.test.ts",
-        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
+        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+        "apps/server/src/jones/updates/recoverQualifiedStage.test.ts"
       ],
       "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
     },
