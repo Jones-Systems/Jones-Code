@@ -1,3 +1,9 @@
+import {
+  EnvironmentHttpConflictError,
+  EnvironmentRequestInvalidError,
+  EnvironmentScopeRequiredError,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   T3WorkstreamListResult,
   WorkstreamReadContext,
@@ -48,12 +54,30 @@ function workstreamActionMessage(reason: WorkstreamActionError["reason"]): strin
     case "invalid-pr":
       return "Enter a full GitHub pull request URL.";
     case "unknown":
-      return "The effect is unknown. Retry reloads metadata and checks the existing command; it does not resubmit.";
+      return "The effect is unknown. Retry checks the existing command and reloads metadata; it does not resubmit.";
   }
 }
 
 export const workstreamFailureMessage = (cause: unknown): string =>
-  cause instanceof WorkstreamActionError ? cause.message : workstreamActionMessage("unknown");
+  cause instanceof WorkstreamActionError
+    ? cause.message
+    : "Could not complete the action. Refresh before trying again.";
+
+const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
+const isInvalidRequest = Schema.is(EnvironmentRequestInvalidError);
+const isScopeRequired = Schema.is(EnvironmentScopeRequiredError);
+
+/** Only these decoded POST refusals prove that the gateway did not submit the command. */
+export function workstreamCommandNoEffect(cause: unknown): "stale" | "denied" | null {
+  if (isHttpConflict(cause) && cause.message === "workstream_command_not_current") return "stale";
+  if (isInvalidRequest(cause) || isScopeRequired(cause)) return "denied";
+  return null;
+}
+
+export const workstreamOperationFailure = (cause: unknown, commandAttempted: boolean): unknown =>
+  commandAttempted && !(cause instanceof WorkstreamActionError)
+    ? new WorkstreamActionError("unknown")
+    : cause;
 
 export function assertWorkstreamReadContext(
   data: T3WorkstreamListResult,

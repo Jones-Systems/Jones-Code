@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 export interface AgentScopeShape {
   readonly wrap: (input: {
@@ -24,7 +25,17 @@ export interface AgentScopeShape {
   readonly clear: (threadId: string) => Effect.Effect<void>;
 }
 
+export class AgentScopeStopError extends Schema.TaggedError<AgentScopeStopError>()(
+  "AgentScopeStopError",
+  {
+    unit: Schema.String,
+    detail: Schema.String,
+  },
+) {}
+
 export interface AgentScopeCommand {
+  /** Stops this captured scope and verifies it is empty; failure leaves retirement unknown. */
+  readonly stop?: Effect.Effect<void, AgentScopeStopError>;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
 }

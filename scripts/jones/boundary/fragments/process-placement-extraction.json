@@ -9,7 +9,14 @@
     "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
     "apps/server/src/jones/processPlacement/processPlacementSpawner.ts",
     "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-    "apps/server/src/jones/processPlacement/qualificationPayload.mjs"
+    "apps/server/src/jones/processPlacement/qualificationPayload.mjs",
+    "apps/server/src/jones/processPlacement/processPlacementAgentScope.ts",
+    "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+    "apps/server/src/jones/processPlacement/processPlacementAcp.ts",
+    "apps/server/src/jones/processPlacement/processPlacementRuntime.ts",
+    "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+    "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+    "apps/server/src/jones/processPlacement/scopedCommand.ts"
   ],
   "hookPaths": [],
   "tombstones": [
@@ -20,5 +27,22 @@
     "apps/server/src/process/processPlacementSpawner.test.ts",
     "apps/server/src/process/processPlacementSpawner.ts"
   ],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacementRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/NativeTelemetryClient.ts",
+      "to": "apps/server/src/jones/processPlacement/processPlacementSpawner.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/processPlacement/scopedCommand.ts"
+    }
+  ]
 }

@@ -62,6 +62,8 @@ const registration: WorkstreamsRegistrationContextAcceptedResponse = {
   registry_version: data.binding.registryVersion,
   sources: [],
 };
+const decodedAndResponse = <A,>(body: A) => [body, { headers: {} }] as const;
+
 const unavailable = new EnvironmentInternalError({
   code: "internal_error",
   reason: "internal_error",
@@ -108,7 +110,7 @@ it("recovers list and registration reads after CP outages without replacing the 
     .mockRejectedValueOnce(unavailable)
     .mockResolvedValueOnce(data)
     .mockRejectedValueOnce(unavailable)
-    .mockResolvedValueOnce(registration);
+    .mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -143,7 +145,7 @@ it("ignores a late registration failure from a superseded read without starting 
     .mockResolvedValueOnce(data)
     .mockReturnValueOnce(interrupted)
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce(registration);
+    .mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -170,9 +172,9 @@ it("reloads the list and context together when registration recovery observes a 
   http.run
     .mockResolvedValueOnce(data)
     .mockRejectedValueOnce(unavailable)
-    .mockResolvedValueOnce(updatedRegistration)
+    .mockResolvedValueOnce(decodedAndResponse(updatedRegistration))
     .mockResolvedValueOnce(updatedData)
-    .mockResolvedValueOnce(updatedRegistration);
+    .mockResolvedValueOnce(decodedAndResponse(updatedRegistration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -196,7 +198,9 @@ it("shares the finite recovery budget between outages and repeated registry chan
   http.run.mockResolvedValueOnce(data).mockRejectedValueOnce(unavailable);
   for (let advance = 1; advance <= 5; advance += 1) {
     const version = data.binding.registryVersion + advance;
-    http.run.mockResolvedValueOnce({ ...registration, registry_version: version });
+    http.run.mockResolvedValueOnce(
+      decodedAndResponse({ ...registration, registry_version: version }),
+    );
     if (advance < 5)
       http.run.mockResolvedValueOnce({
         ...data,
@@ -231,11 +235,13 @@ it.each([
   "does not turn a registry change with an authority mismatch into a retry: %j",
   async (mismatch) => {
     vi.useFakeTimers();
-    http.run.mockResolvedValueOnce(data).mockResolvedValueOnce({
-      ...registration,
-      registry_version: registration.registry_version + 1,
-      ...mismatch,
-    });
+    http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(
+      decodedAndResponse({
+        ...registration,
+        registry_version: registration.registry_version + 1,
+        ...mismatch,
+      }),
+    );
     await act(() => {
       renderer = create(
         <RegistryContext.Provider value={registry}>
@@ -261,10 +267,12 @@ it("fences a late list reload after a registry mismatch when refresh supersedes 
   });
   http.run
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce({ ...registration, registry_version: registration.registry_version + 1 })
+    .mockResolvedValueOnce(
+      decodedAndResponse({ ...registration, registry_version: registration.registry_version + 1 }),
+    )
     .mockReturnValueOnce(interrupted)
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce(registration);
+    .mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -289,7 +297,9 @@ it("hides the previous list when authorization rejects a coherent reload", async
   const denied = new EnvironmentHttpUnauthorizedError({ message: "authorization revoked" });
   http.run
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce({ ...registration, registry_version: registration.registry_version + 1 })
+    .mockResolvedValueOnce(
+      decodedAndResponse({ ...registration, registry_version: registration.registry_version + 1 }),
+    )
     .mockRejectedValueOnce(denied);
   await act(() => {
     renderer = create(
@@ -322,7 +332,7 @@ it("stops automatic reads after a bounded outage and permits an explicit retry",
   await act(() => vi.advanceTimersByTimeAsync(60_000));
   expect(http.run).toHaveBeenCalledTimes(6);
 
-  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(registration);
+  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => latest.refresh());
   expect(latest.data).toEqual(data);
   expect(latest.registrationContext).toEqual(registration);
@@ -360,7 +370,7 @@ it.each(["refresh", "reconnect", "unmount"] as const)(
     http.run
       .mockRejectedValueOnce(unavailable)
       .mockResolvedValueOnce(data)
-      .mockResolvedValueOnce(registration);
+      .mockResolvedValueOnce(decodedAndResponse(registration));
     await act(() => {
       renderer = create(
         <RegistryContext.Provider value={registry}>
@@ -393,7 +403,7 @@ it("refreshes the same mounted Workstreams view after an interrupted read and or
   http.run
     .mockRejectedValueOnce(new Error("Connection interrupted"))
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce(registration);
+    .mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -421,7 +431,7 @@ it("refreshes the same mounted Workstreams view after an interrupted read and or
 });
 
 it("does not duplicate the mount read or refresh for same-generation connection updates", async () => {
-  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(registration);
+  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -446,7 +456,7 @@ it("aborts an interrupted read and ignores its late failure after reconnect reco
   http.run
     .mockReturnValueOnce(interrupted)
     .mockResolvedValueOnce(data)
-    .mockResolvedValueOnce(registration);
+    .mockResolvedValueOnce(decodedAndResponse(registration));
   await act(() => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -736,7 +746,7 @@ it.each([11, 12])(
 );
 
 it("keeps an explicit recovery path after a preflight refusal without submitting any command", async () => {
-  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(registration);
+  http.run.mockResolvedValueOnce(data).mockResolvedValueOnce(decodedAndResponse(registration));
   await act(async () => {
     renderer = create(
       <RegistryContext.Provider value={registry}>
@@ -763,7 +773,7 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
   const fresh = { ...data, binding: { ...data.binding, registryVersion: 12 } };
   http.run
     .mockResolvedValueOnce(fresh)
-    .mockResolvedValueOnce({ ...registration, registry_version: 12 });
+    .mockResolvedValueOnce(decodedAndResponse({ ...registration, registry_version: 12 }));
   await act(async () => latest.refresh());
   expect(latest.data).toEqual(fresh);
   expect(latest.stale).toBe(false);

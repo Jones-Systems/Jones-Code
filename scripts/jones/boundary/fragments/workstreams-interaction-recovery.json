@@ -1,0 +1,32 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workstreams-interaction-recovery",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/workstreams/sidebarThreadDrop.ts",
+    "apps/web/src/jones/workstreams/registrationAvailability.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/workstreams/sidebarThreadDrop.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.logic.ts",
+      "to": "apps/web/src/jones/workstreams/sidebarThreadDrop.ts"
+    },
+    {
+      "from": "apps/server/src/http.ts",
+      "to": "packages/contracts/src/jones/workstreamsRegistrationAvailability.ts"
+    },
+    {
+      "from": "apps/server/src/http.test.ts",
+      "to": "packages/contracts/src/jones/workstreamsRegistrationAvailability.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.pointer.browser.test.tsx",
+      "to": "apps/web/src/jones/workstreams/sidebarThreadDrop.ts"
+    }
+  ]
+}

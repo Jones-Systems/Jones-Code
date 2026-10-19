@@ -215,6 +215,7 @@ describe("Workstream sidebar with an environment trust conflict", () => {
           summaryGrouping={grouping}
           assignmentMenuRef={menuRef}
           renderThread={(item) => <li>{(item as unknown as { title: string }).title}</li>}
+          canOperate={() => true}
           canReorder={() => true}
           reorder={vi.fn(async () => undefined)}
         />,

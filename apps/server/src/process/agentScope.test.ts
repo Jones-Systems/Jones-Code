@@ -7,6 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { ChildProcessSpawner } from "effect/process";
 
@@ -68,6 +69,7 @@ const withFakeSystemd = <A, E>(
     readonly calls: ReadonlyArray<ReadonlyArray<string>>;
     readonly stateDir: string;
   }) => Effect.Effect<A, E>,
+  options: { readonly stopCompletes?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const bin = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-agent-scope-"));
@@ -92,6 +94,8 @@ const withFakeSystemd = <A, E>(
           calls.push(args);
           const [, verb, unit = ""] = args;
           if (verb === "reset-failed") units.delete(unit);
+          if (verb === "stop" && options.stopCompletes !== false && units.has(unit))
+            units.set(unit, { activeState: "inactive", result: "success" });
           if (verb !== "show") return output("");
           const state = units.get(unit);
           return output(
@@ -190,3 +194,55 @@ describe("AgentScope service", () => {
     ),
   );
 });
+
+it.effect("stops the captured session scope after its thread mapping is replaced", () =>
+  withFakeSystemd(({ scope, units, calls }) =>
+    Effect.gen(function* () {
+      const first = yield* scope.wrap({
+        command: "agent",
+        args: [],
+        name: "acp",
+        threadId: "same-thread",
+      });
+      const second = yield* scope.wrap({
+        command: "agent",
+        args: [],
+        name: "acp",
+        threadId: "same-thread",
+      });
+      const unit = (command: typeof first) =>
+        command.args.find((arg) => arg.startsWith("--unit="))!.slice(7);
+      units.set(unit(first), { activeState: "active", result: "success" });
+      units.set(unit(second), { activeState: "active", result: "success" });
+      expect(first.stop).toBeDefined();
+      yield* first.stop!;
+      expect(calls).toContainEqual(["--user", "stop", unit(first)]);
+      expect(units.get(unit(second))?.activeState).toBe("active");
+      const count = calls.filter((args) => args[1] === "stop").length;
+      yield* first.stop!;
+      expect(calls.filter((args) => args[1] === "stop")).toHaveLength(count);
+    }),
+  ),
+);
+
+it.effect("reports unknown retirement and never retries a failed captured stop blindly", () =>
+  withFakeSystemd(
+    ({ scope, units, calls }) =>
+      Effect.gen(function* () {
+        const command = yield* scope.wrap({
+          command: "agent",
+          args: [],
+          name: "acp",
+          threadId: "failed-stop",
+        });
+        const unit = command.args.find((arg) => arg.startsWith("--unit="))!.slice(7);
+        units.set(unit, { activeState: "active", result: "success" });
+        const first = yield* command.stop!.pipe(Effect.exit);
+        expect(Exit.isFailure(first)).toBe(true);
+        expect(Exit.isFailure(yield* command.stop!.pipe(Effect.exit))).toBe(true);
+        expect(calls.filter((args) => args[1] === "stop" && args[2] === unit)).toHaveLength(1);
+        expect(units.get(unit)?.activeState).toBe("active");
+      }),
+    { stopCompletes: false },
+  ),
+);

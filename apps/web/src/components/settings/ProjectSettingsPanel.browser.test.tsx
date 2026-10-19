@@ -21,6 +21,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -117,6 +118,7 @@ vi.mock(import("./ProjectActionsSettings"), async (original) => ({
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../../sidebarProjectGrouping";
+import { readEnvironmentScopeAccess } from "../../state/session";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 
 const primaryId = EnvironmentId.make("primary");
@@ -337,22 +339,77 @@ describe("project settings permissions", () => {
   });
 
   it.each([
-    ["loading", () => AsyncResult.initial<AuthSessionState, Error>(), false],
+    ["loading", () => AsyncResult.initial<AuthSessionState, Error>(), "checking"],
     [
       "failed",
       () => AsyncResult.failure<AuthSessionState, Error>(Cause.fail(new Error("Disconnected"))),
-      false,
+      "check_failed",
     ],
-    ["refreshing", () => AsyncResult.waiting(writable()), true],
+    ["refreshing", () => AsyncResult.waiting(writable()), "checking"],
   ] as const)(
-    "uses the current grant while a member's session is %s",
-    async (_state, result, allowed) => {
+    "disables shared mutations while a member's session is %s and restores them after a fresh grant",
+    async (_state, result, status) => {
       await grant(remoteId, result());
       await mountPanel();
-      expect(nameInput().disabled).toBe(!allowed);
-      if (!allowed) return;
+      expect(readEnvironmentScopeAccess(remoteId, AuthOrchestrationOperateScope)).toEqual({
+        status,
+      });
+      expect(nameInput().value).toBe("Shared repo");
+      expect(nameInput().disabled).toBe(true);
+      expect(removeAll().disabled).toBe(true);
+      expect(removeCheckout("/work/remote").disabled).toBe(true);
+      expect(removeCheckout("/work/primary").disabled).toBe(false);
+      expect(state.update).not.toHaveBeenCalled();
+      expect(state.delete).not.toHaveBeenCalled();
+
+      await grant(remoteId, writable());
+      expect(nameInput().disabled).toBe(false);
+      expect(removeAll().disabled).toBe(false);
+      expect(removeCheckout("/work/remote").disabled).toBe(false);
       await rename("Renamed");
       expect(state.update).toHaveBeenCalledTimes(2);
+      expect(state.projects.map((project) => project.title)).toEqual(["Renamed", "Renamed"]);
+    },
+  );
+
+  it.each([
+    ["scope_missing", () => AsyncResult.success(session([AuthSettingsWriteScope]))],
+    ["signed_out", () => AsyncResult.success({ ...session([]), authenticated: false })],
+    [
+      "check_failed",
+      () =>
+        AsyncResult.failure<AuthSessionState, Error>(Cause.fail(new Error("Disconnected")), {
+          previousSuccess: Option.some(writable()),
+        }),
+    ],
+  ] as const)(
+    "keeps an in-progress edit unsaved when session refresh resolves to %s",
+    async (status, result) => {
+      await mountPanel();
+      await userEvent.fill(nameInput(), "Unsaved rename");
+
+      await grant(remoteId, AsyncResult.waiting(writable()));
+      expect(readEnvironmentScopeAccess(remoteId, AuthOrchestrationOperateScope)).toEqual({
+        status: "checking",
+      });
+      expect(nameInput().disabled).toBe(true);
+      await act(async () => nameInput().blur());
+      expect(state.update).not.toHaveBeenCalled();
+
+      await grant(remoteId, result());
+      expect(readEnvironmentScopeAccess(remoteId, AuthOrchestrationOperateScope)).toEqual({
+        status,
+      });
+      expect(nameInput().disabled).toBe(true);
+      expect(removeAll().disabled).toBe(true);
+      expect(removeCheckout("/work/remote").disabled).toBe(true);
+      expect(removeCheckout("/work/primary").disabled).toBe(false);
+      expect(state.update).not.toHaveBeenCalled();
+      expect(state.delete).not.toHaveBeenCalled();
+      expect(state.projects.map((project) => project.title)).toEqual([
+        "Shared repo",
+        "Shared repo",
+      ]);
     },
   );
 });

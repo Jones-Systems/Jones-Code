@@ -1,3 +1,4 @@
+import * as RuntimeOperation from "../jones/runtime/RuntimeOperationPermit.ts";
 import * as PhysicalRuntimeEvidence from "../jones/runtime/PhysicalRuntimeEvidence.ts";
 import { PhysicalProcessObservation } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
@@ -170,6 +171,10 @@ export const ProviderSessionManagerV2Error = Schema.Union([
 export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error.Type;
 
 export interface ProviderSessionManagerV2Shape {
+  /** Never opens or stops a runtime. Current reusable providers cannot issue writer permits. */
+  readonly requestRuntimeOperationPermit?: (
+    identity: RuntimeOperation.RuntimeOperationIdentity,
+  ) => Effect.Effect<RuntimeOperation.RuntimePermitAvailability<never, never>>;
   readonly captureCurrentThreadRuntimeStop?: (
     threadId: ThreadId,
   ) => Effect.Effect<CapturedRuntimeStop | null, ProviderSessionManagerV2Error>;
@@ -2725,6 +2730,21 @@ export const layerWithOptions = (
           ),
       );
       return ProviderSessionManagerV2.of({
+        requestRuntimeOperationPermit: (identity) =>
+          Effect.gen(function* () {
+            const { binding } = identity;
+            const entry = (yield* Ref.get(sessions)).get(sessionKey(binding.providerSessionId));
+            const resident =
+              entry !== undefined &&
+              entry.attachedThreadIds.has(binding.threadId) &&
+              entry.loadedProviderThreadKeyByThread.has(binding.threadId) &&
+              entry.runtime.instanceId === binding.providerInstanceId &&
+              entry.runtime.driver === binding.driver;
+            // A denial needs no native probe and makes no currentness or retirement assertion.
+            return RuntimeOperation.unavailableResidentOperationPermit(
+              resident ? entry.runtime.driver : undefined,
+            );
+          }),
         captureCurrentThreadRuntimeStop,
         readCurrentThreadRuntimeAttachment,
         observeThreadActivity,

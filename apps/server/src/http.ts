@@ -1,4 +1,5 @@
 import * as Mime from "effect/http/Mime";
+import { WORKSTREAMS_T3_AVAILABILITY_HEADER } from "@t3tools/contracts/jones/workstreamsRegistrationAvailability";
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
@@ -269,6 +270,7 @@ export const layerBrowserApiCors = Layer.unwrap(
         : {}),
       allowedMethods: browserApiCorsAllowedMethods,
       allowedHeaders: browserApiCorsAllowedHeaders,
+      exposedHeaders: [WORKSTREAMS_T3_AVAILABILITY_HEADER],
       maxAge: 600,
     });
   }),

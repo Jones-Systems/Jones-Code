@@ -4,6 +4,24 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "workstreams-interaction-recovery",
+      "tests": [
+        "packages/client-runtime/src/state/session.test.ts",
+        "apps/web/src/state/session.test.ts",
+        "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
+        "apps/server/src/http.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/web/src/components/Sidebar.drag.test.ts",
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
+      ],
+      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The existing upstream project-settings browser harness retains Jones permission cases because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery."
+    },
+    {
       "id": "sqlite-checkpoint-lifecycle",
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
@@ -234,7 +252,15 @@
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-        "native/process-placement/build.test.mjs"
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "native/process-placement/build.test.mjs",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+        "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
       ]
     },
     {

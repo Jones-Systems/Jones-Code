@@ -21,6 +21,12 @@ import {
   type WorkstreamDetailLoaders,
   type NativePlacementThread,
 } from "./workstreams";
+import { registrationAvailability } from "../jones/workstreams/registrationAvailability";
+import {
+  WorkstreamActionError,
+  workstreamFailureMessage,
+  workstreamOperationFailure,
+} from "../jones/workstreams/workstreamActionSnapshot";
 import { placements } from "../components/workstreams/nativeWorkstreamActions.fixtures";
 
 const binding = {
@@ -561,5 +567,47 @@ describe("Workstream list error classification", () => {
     ).toBe("workstream_cursor_stale");
     expect(workstreamListErrorMessage(new Error("internal failure"))).toBe("internal failure");
     expect(workstreamListErrorMessage("opaque")).toBe("Workstreams are unavailable.");
+  });
+});
+
+describe("Workstream assignment diagnostics", () => {
+  it.each([
+    undefined,
+    "",
+    "ready;reason=source_mismatch",
+    "unavailable;reason=private-value",
+    "unavailable;reason=source_mismatch;extra=x",
+  ])("keeps absent or malformed availability unknown", (value) => {
+    expect(registrationAvailability({ "x-jones-workstreams-t3-availability": value })).toEqual({
+      state: "unknown",
+      reason: null,
+    });
+  });
+  it("uses only sanitized closed reasons", () => {
+    expect(
+      registrationAvailability({
+        "x-jones-workstreams-t3-availability": "unavailable;reason=source_mismatch",
+      }),
+    ).toEqual({ state: "unavailable", reason: "enrolled source or build differs" });
+    expect(registrationAvailability({ "x-jones-workstreams-t3-availability": "ready" })).toEqual({
+      state: "ready",
+      reason: null,
+    });
+  });
+  it("distinguishes pre-submit loading failures from failures after a command attempt", () => {
+    const failure = new Error("private backend detail");
+    expect(workstreamFailureMessage(workstreamOperationFailure(failure, false))).toContain(
+      "Refresh before trying again",
+    );
+    expect(workstreamFailureMessage(workstreamOperationFailure(failure, true))).toContain(
+      "effect is unknown",
+    );
+    expect(workstreamFailureMessage(failure)).toBe(
+      "Could not complete the action. Refresh before trying again.",
+    );
+    expect(workstreamFailureMessage(failure)).not.toContain("private backend detail");
+    expect(workstreamFailureMessage(new WorkstreamActionError("unknown"))).toContain(
+      "effect is unknown",
+    );
   });
 });

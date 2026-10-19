@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -96,4 +97,63 @@ it("places both pipeline payloads and preserves options with an explicit telemet
   } finally {
     fakePlacement.mockRestore();
   }
+});
+
+it.effect("v2 scopes git and pipeline payloads and owns their captured cleanup", () => {
+  const binding: ProcessPlacementBinding = {
+    version: 2,
+    workloadMode: "systemd-descendant",
+    helperPath: "/bound/helper",
+    helperSha256: "a".repeat(64),
+    helperDevice: "1",
+    helperInode: "2",
+    control: { path: "/sys/fs/cgroup/app/control", device: "1", inode: "3" },
+    workload: { path: "/sys/fs/cgroup/app/workload", device: "1", inode: "4" },
+  };
+  const wrapped: string[] = [];
+  let stopped = 0;
+  let received: ChildProcess.Command | undefined;
+  const scope = {
+    ...AgentScope.defaultValue(),
+    wrap: ({ command, args }: { command: string; args: ReadonlyArray<string> }) => {
+      wrapped.push(command);
+      return Effect.succeed({
+        command: "/synthetic/systemd-run",
+        args: ["--", command, ...args],
+        stop: Effect.sync(() => {
+          stopped += 1;
+        }),
+      });
+    },
+  };
+  const underlying = Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      received = command;
+      return Effect.die("captured synthetic spawn");
+    }),
+  );
+  return Effect.gen(function* () {
+    yield* Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      yield* spawner.spawn(
+        ChildProcess.pipeTo(
+          ChildProcess.make("git", ["status"]),
+          ChildProcess.make("/bin/sh", ["-c", "inner-systemd-scope"]),
+        ),
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        layer(binding).pipe(
+          Layer.provide(underlying),
+          Layer.provide(Layer.succeed(AgentScope, scope)),
+        ),
+      ),
+      Effect.exit,
+    );
+    expect(wrapped).toEqual(["git", "/bin/sh"]);
+    expect(received?._tag).toBe("PipedCommand");
+    expect(stopped).toBe(2);
+  });
 });
