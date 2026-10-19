@@ -1,6 +1,5 @@
 import type {
   VoiceReviewAction,
-  VoiceReviewSelfIdentity,
   VoiceReviewDraft,
   VoiceReviewMutationPayload,
   VoiceReviewMutationResult,
@@ -178,17 +177,5 @@ export function remainingSeconds(draft: VoiceReviewDraft, elapsedMs: number) {
   if (draft.remaining_ms === null) return null;
   return Math.ceil(
     Math.max(0, draft.remaining_ms - (draft.state === "held" ? elapsedMs : 0)) / 1000,
-  );
-}
-
-export function voiceReviewEnrollmentEntry(identity: VoiceReviewSelfIdentity): string | null {
-  if (identity.method !== "dpop-access-token" || !identity.proof_key_thumbprint) return null;
-  return JSON.stringify(
-    {
-      subject: identity.subject,
-      proof_key_thumbprint: identity.proof_key_thumbprint,
-    },
-    null,
-    2,
   );
 }

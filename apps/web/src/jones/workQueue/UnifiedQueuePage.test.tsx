@@ -22,6 +22,7 @@ const fixture = vi.hoisted(() => ({
     },
   ],
   voiceList: vi.fn(),
+  selfIdentity: vi.fn(),
   recent: null as VoiceReviewRecentList | null,
   mounts: new Map<string, number>(),
   blockerOptions: null as null | {
@@ -49,7 +50,7 @@ vi.mock("../../components/ui/sidebar", () => ({
 }));
 vi.mock("./useWorkQueueMetadata", () => ({ useWorkQueueMetadata: () => fixture.load }));
 vi.mock("../../components/voiceReview/useVoiceReview", () => ({
-  useVoiceReview: () => ({ fetchList: fixture.voiceList }),
+  useVoiceReview: () => ({ fetchList: fixture.voiceList, fetchSelfIdentity: fixture.selfIdentity }),
 }));
 vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
   EnvironmentVoiceReview: ({
@@ -117,6 +118,7 @@ describe("Prompts environment composition", () => {
     originals = structuredClone(fixture.environments);
     fixture.mounts.clear();
     fixture.recent = null;
+    fixture.selfIdentity.mockReset();
     fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
     fixture.blockerStatus = "idle";
     fixture.blockerOptions = null;
@@ -518,6 +520,27 @@ describe("Prompts environment composition", () => {
     );
     expect(container.textContent).not.toContain("Prompt sources have not all been checked.");
   });
+
+  it.each(["VoiceReviewForbiddenError", "VoiceReviewNotConfiguredError"])(
+    "keeps %s discovery honest without device setup or identity reads",
+    async (_tag) => {
+      setConnection("beta", "disconnected");
+      fixture.voiceList.mockRejectedValue({ _tag });
+      await render();
+      expect(container.textContent).not.toContain("Set up this device");
+      expect(container.querySelector('[aria-label$="device setup"]')).toBeNull();
+      expect(fixture.selfIdentity).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("Prompt review is unavailable on Alpha.");
+      expect(container.textContent).toContain(
+        _tag === "VoiceReviewNotConfiguredError"
+          ? "No prompt review or queue is configured on Alpha."
+          : "Could not check prompt sources on Alpha",
+      );
+      expect(container.textContent).toContain(
+        "Reconnect unavailable servers to access their prompts.",
+      );
+    },
+  );
 
   it("ignores a superseded source check after disconnect and retry", async () => {
     setConnection("beta", "disconnected");

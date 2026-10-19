@@ -16,7 +16,7 @@ import * as Data from "effect/Data";
 import { ServerEnvironmentIdentity } from "../environment/ServerEnvironment.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { WorkstreamGateway } from "../workstreams/WorkstreamGateway.ts";
-import type { VoiceReviewConfig } from "./config.ts";
+import { voiceReviewConfigFromEnv, type VoiceReviewConfig } from "./config.ts";
 import { makeVoiceReviewComposition, makeVoiceReviewCompositionFactory } from "./composition.ts";
 
 class NativeReadFailure extends Data.TaggedError("NativeReadFailure")<{
@@ -34,12 +34,13 @@ const binding = {
   registry_environment: "registered-environment",
   native_environment_id: "native-environment",
 };
-const reviewConfig = {
-  broker_url: "http://127.0.0.1:7000",
-  reviewer_token_file: "/not-read",
-  source_id: "source",
-  allowed_session_ids: new Set(["reader"]),
-};
+const reviewConfig = voiceReviewConfigFromEnv({
+  T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
+  T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/not-read",
+  T3CODE_VOICE_REVIEW_SOURCE_ID: "source",
+  T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["reader"]',
+})!;
+
 const registryThread: ThreadRegistryThread = {
   thread_key: '["native-host","registered-environment","thread"]',
   registration: null,
@@ -186,59 +187,45 @@ describe("voice native service composition", () => {
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
-  it.effect("accepts renewed enrolled DPoP keys and denies shared subjects with other keys", () =>
+  it.effect("accepts scoped principals across sessions authentication methods and proof keys", () =>
     Effect.gen(function* () {
       const fixture = seam();
-      const enrolled = {
-        ...reviewConfig,
-        allowed_session_ids: new Set<string>(),
-        allowed_dpop_identities: [
-          { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" },
-        ],
-      };
-      const device: EnvironmentSessionPrincipalShape = {
-        ...principal,
-        method: "dpop-access-token",
-        subject: "cloud-connect",
-        proofKeyThumbprint: "fixture-key",
-      };
-      for (const session of ["before-renewal", "after-renewal"]) {
-        expect(
-          yield* fixture.run({
-            binding,
-            reviewConfig: enrolled,
-            principal: { ...device, sessionId: AuthSessionId.make(session) },
-          }),
-        ).toBeDefined();
+      for (const method of [
+        "browser-session-cookie",
+        "bearer-access-token",
+        "dpop-access-token",
+      ] as const) {
+        for (const session of ["before-renewal", "after-renewal"]) {
+          for (const proofKeyThumbprint of ["first-key", "another-key"]) {
+            expect(
+              yield* fixture.run({
+                binding,
+                reviewConfig,
+                principal: {
+                  ...principal,
+                  method,
+                  subject: "cloud-connect",
+                  sessionId: AuthSessionId.make(session),
+                  proofKeyThumbprint,
+                },
+              }),
+            ).toBeDefined();
+          }
+        }
       }
-      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
-      for (const denied of [
-        { ...device, proofKeyThumbprint: "other-key" },
-        { ...principal, method: "dpop-access-token" as const, subject: "cloud-connect" },
-        { ...device, method: "bearer-access-token" as const },
-        { ...device, scopes: new Set<never>() },
-      ]) {
-        expect(
-          yield* fixture
-            .run({ binding, reviewConfig: enrolled, principal: denied })
-            .pipe(Effect.flip),
-        ).toBeInstanceOf(VoiceReviewForbiddenError);
-      }
-      expect(fixture.projectionRead).toHaveBeenCalledTimes(2);
+      expect(fixture.projectionRead).toHaveBeenCalledTimes(12);
       expect(fixture.read).not.toHaveBeenCalled();
     }),
   );
-  it.effect("denies non-enrolled sessions before native projection access", () =>
+  it.effect("denies missing read scope before native projection access", () =>
     Effect.gen(function* () {
       const fixture = seam();
-      const error = yield* fixture
-        .run({
-          binding,
-          reviewConfig,
-          principal: { ...principal, sessionId: AuthSessionId.make("other") },
-        })
-        .pipe(Effect.flip);
-      expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
+      for (const scopes of [new Set<never>(), new Set(["orchestration:operate"] as const)]) {
+        const error = yield* fixture
+          .run({ binding, reviewConfig, principal: { ...principal, scopes } })
+          .pipe(Effect.flip);
+        expect(error).toBeInstanceOf(VoiceReviewForbiddenError);
+      }
       expect(fixture.projectionRead).not.toHaveBeenCalled();
       expect(fixture.read).not.toHaveBeenCalled();
     }),

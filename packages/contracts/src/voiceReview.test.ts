@@ -2,7 +2,6 @@ import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import {
   VoiceReviewQueueDeliveryLinks,
-  VoiceReviewSelfIdentity,
   VoiceReviewRevisionPayload,
   VoiceReviewEditSavePayload,
   VoiceReviewEditCancelPayload,
@@ -89,35 +88,4 @@ describe("voice queue delivery links", () => {
         .unlinked_delivery_count,
     ).toBe(200);
   });
-});
-
-it("accepts only the own-identity projection and forbids keys on non-device authentication", () => {
-  const decode = Schema.decodeUnknownSync(VoiceReviewSelfIdentity);
-  const identity = {
-    subject: "cloud-connect",
-    method: "dpop-access-token",
-    proof_key_thumbprint: "verified",
-    enrollment: "not-enrolled",
-  };
-  expect(decode(identity)).toEqual(identity);
-  expect(decode({ ...identity, proof_key_thumbprint: null })).toEqual({
-    ...identity,
-    proof_key_thumbprint: null,
-  });
-  for (const extra of [
-    { sessionId: "private" },
-    { allowed_dpop_identities: [] },
-    { token: "secret" },
-  ]) {
-    expect(() => decode({ ...identity, ...extra })).toThrow();
-  }
-  for (const invalid of [
-    { method: "bearer-access-token" },
-    { method: "browser-session-cookie" },
-    { method: "unknown" },
-    { proof_key_thumbprint: "" },
-    { enrollment: "allowed" },
-  ]) {
-    expect(() => decode({ ...identity, ...invalid })).toThrow();
-  }
 });

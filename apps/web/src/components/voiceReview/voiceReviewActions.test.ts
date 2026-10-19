@@ -3,7 +3,6 @@ import { VoiceReviewDraft, type VoiceReviewMutationResult } from "@t3tools/contr
 import * as Schema from "effect/Schema";
 import {
   remainingSeconds,
-  voiceReviewEnrollmentEntry,
   VoiceReviewActions,
   RegistryCorrectionActions,
   voiceReviewError,
@@ -219,20 +218,4 @@ describe("workstream metadata corrections", () => {
     expect(await actions.correct(payload)).toBeNull();
     expect(actions.uncertain).toBe(true);
   });
-});
-
-it("formats only the verified own-device enrollment tuple", () => {
-  const identity = {
-    subject: "cloud-connect",
-    method: "dpop-access-token" as const,
-    proof_key_thumbprint: "verified",
-    enrollment: "not-enrolled" as const,
-  };
-  expect(voiceReviewEnrollmentEntry(identity)).toBe(
-    '{\n  "subject": "cloud-connect",\n  "proof_key_thumbprint": "verified"\n}',
-  );
-  expect(voiceReviewEnrollmentEntry({ ...identity, proof_key_thumbprint: null })).toBeNull();
-  for (const method of ["bearer-access-token", "browser-session-cookie"] as const) {
-    expect(voiceReviewEnrollmentEntry({ ...identity, method })).toBeNull();
-  }
 });

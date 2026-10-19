@@ -142,7 +142,11 @@
     {
       "id": "voice-review",
       "tests": [
-        "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx",
+        "apps/server/src/voiceReview/bridge.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "packages/contracts/src/voiceReview.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/client-runtime/src/voice-review.test.ts",
         "apps/server/src/voiceReview/http.test.ts",
         "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
         "apps/server/src/voiceReview/composition.test.ts",

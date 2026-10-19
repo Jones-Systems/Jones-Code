@@ -47,7 +47,6 @@ describe("Jones environment HTTP registration", () => {
       ...Object.values(groups.workstreamsNative.endpoints),
     ];
     expect(routes.map(({ identifier, method, path }) => [identifier, method, path])).toEqual([
-      ["selfIdentity", "GET", "/api/voice-review/self-identity"],
       ["recent", "GET", "/api/voice-review/recent"],
       ["registrySnapshot", "GET", "/api/voice-review/registry/snapshot"],
       ["registryWorkstreams", "GET", "/api/voice-review/registry/workstreams"],

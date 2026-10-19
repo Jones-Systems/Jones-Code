@@ -1,6 +1,5 @@
 import {
   VoiceReviewRecentList,
-  type VoiceReviewSelfIdentity,
   VoiceReviewQueueDeliveryLinks,
   type VoiceReviewRecentEntry,
   VoiceReviewDiagnostics,
@@ -44,7 +43,6 @@ import * as NodeFSP from "node:fs/promises";
 import {
   voiceReviewConfigFromEnv,
   voiceReviewNativeBindingFromEnv,
-  isVoiceReviewPrincipalEnrolled,
   type VoiceReviewConfig,
   type VoiceReviewNativeBinding,
 } from "./config.ts";
@@ -167,7 +165,6 @@ export const makeVoiceReviewBridge = (
   const authorize = (principal: EnvironmentSessionPrincipalShape, mutation: boolean) => {
     if (config === null) throw new VoiceReviewNotConfiguredError({});
     if (
-      !isVoiceReviewPrincipalEnrolled(config, principal) ||
       !principal.scopes.has(mutation ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope)
     ) {
       throw new VoiceReviewForbiddenError({});
@@ -608,9 +605,6 @@ export class VoiceReviewDependencies extends Context.Service<
 export class VoiceReview extends Context.Service<
   VoiceReview,
   {
-    readonly selfIdentity: (
-      principal: EnvironmentSessionPrincipalShape,
-    ) => Effect.Effect<VoiceReviewSelfIdentity, VoiceReviewForbiddenError>;
     readonly recent: (
       principal: EnvironmentSessionPrincipalShape,
       limit: number,
@@ -670,25 +664,6 @@ const make = Effect.gen(function* () {
       catch: (error) => (isReviewError(error) ? error : new VoiceReviewUnavailableError({})),
     });
   return VoiceReview.of({
-    selfIdentity: (principal) =>
-      Effect.gen(function* () {
-        if (!principal.scopes.has(AuthOrchestrationReadScope))
-          return yield* new VoiceReviewForbiddenError({});
-        return {
-          subject: principal.subject,
-          method: principal.method,
-          proof_key_thumbprint:
-            principal.method === "dpop-access-token"
-              ? (principal.proofKeyThumbprint ?? null)
-              : null,
-          enrollment:
-            config === null
-              ? "not-configured"
-              : isVoiceReviewPrincipalEnrolled(config, principal)
-                ? "enrolled"
-                : "not-enrolled",
-        };
-      }),
     recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
     registrySnapshot: (principal, cursor, limit) =>
       Effect.gen(function* () {
