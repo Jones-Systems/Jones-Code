@@ -266,3 +266,28 @@ it("retries directory durability after a pointer removal succeeded but fsync fai
     ),
   ).toEqual(f.selection);
 });
+
+it("reestablishes pointer durability after publication succeeds but directory fsync fails", async () => {
+  const f = await fixture();
+  let attempts = 0;
+  const syncDirectory = async (directory: string) => {
+    attempts += 1;
+    if (attempts < 3) throw new Error("injected pointer fsync failure");
+    const parent = await NodeFSP.open(directory, "r");
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  };
+  await expect(retainStagedSelection(f.selection, syncDirectory)).rejects.toThrow(
+    "pointer fsync failure",
+  );
+  expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
+  await expect(retainStagedSelection(f.selection, syncDirectory)).rejects.toThrow(
+    "pointer fsync failure",
+  );
+  await retainStagedSelection(f.selection, syncDirectory);
+  expect(attempts).toBe(3);
+  expect(await restoreStagedSelection(f.root, f.baseline)).toEqual(f.selection);
+});

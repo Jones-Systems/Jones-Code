@@ -91,7 +91,9 @@
     "apps/server/src/jones/cloud/capturedProcess.ts",
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
-    "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
+    "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

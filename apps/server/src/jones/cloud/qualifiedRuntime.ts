@@ -423,12 +423,15 @@ export async function currentQualifiedRuntimeBinding(
 }
 
 export async function stageQualifiedRuntime(input: {
+  readonly stagedHandle?: string;
   readonly artifact: QualifiedRuntimeArtifact;
   readonly binding: QualifiedRuntimeBinding;
   readonly validate: (entryPath: string) => Promise<void>;
   readonly host?: { readonly platform: string; readonly architecture: string };
 }): Promise<StagedQualifiedRuntime> {
   return withQualifiedRuntimeLock(input.binding.baseDir, "qualified-runtime-lock", async () => {
+    if (input.stagedHandle !== undefined && !HANDLE.test(input.stagedHandle))
+      return blocked("invalid-artifact", "Invalid fixed staged update handle.");
     const current = await currentQualifiedRuntimeBinding(
       input.binding.baseDir,
       input.binding.activeVersion,
@@ -459,6 +462,7 @@ export async function stageQualifiedRuntime(input: {
         "invalid-artifact",
         "Candidate does not bind this qualified runtime and platform.",
       );
+    let stagedReceipt = receipt;
     const destination = runtimeDirectory(current.baseDir, receipt.version);
     const occupied = await NodeFSP.lstat(destination).then(
       () => true,
@@ -478,12 +482,18 @@ export async function stageQualifiedRuntime(input: {
           "The occupied runtime cache has no matching qualified receipt; it was preserved.",
         ),
       );
-      if (JSON.stringify(cached) !== JSON.stringify(receipt))
+      // Enrollment history is immutable; the incoming installed source was checked
+      // against the current binding above. Every artifact and payload field must match.
+      const keys = new Set([...Object.keys(receipt), ...Object.keys(cached)]) as Set<
+        keyof QualifiedRuntimeReceipt
+      >;
+      if ([...keys].some((key) => key !== "installedSourceSha" && cached[key] !== receipt[key]))
         return blocked(
           "occupied-cache",
           "The runtime version is occupied by a different candidate; it was preserved.",
         );
       await input.validate(NodePath.join(destination, "t3"));
+      stagedReceipt = cached;
     } else {
       await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
       const ownedScratch = await NodeFSP.mkdtemp(
@@ -516,11 +526,45 @@ export async function stageQualifiedRuntime(input: {
     }
     const staged: StagedQualifiedRuntime = {
       protocol: QUALIFIED_UPDATES_PROTOCOL,
-      stagedHandle: NodeCrypto.randomUUID(),
+      stagedHandle: input.stagedHandle ?? NodeCrypto.randomUUID(),
       binding: current,
-      receipt,
+      receipt: stagedReceipt,
     };
-    await durableCreate(stagedPath(current.baseDir, staged.stagedHandle), staged);
+    const path = stagedPath(current.baseDir, staged.stagedHandle);
+    if (input.stagedHandle !== undefined) {
+      const existing = await NodeFSP.lstat(path).catch((cause: NodeJS.ErrnoException) => {
+        if (cause.code === "ENOENT") return undefined;
+        throw cause;
+      });
+      if (existing !== undefined) {
+        const prior = await verifyStagedQualifiedRuntime(
+          current.baseDir,
+          current.activeVersion,
+          staged.stagedHandle,
+          input.host,
+        );
+        if (JSON.stringify(prior) !== JSON.stringify(staged))
+          return blocked("occupied-cache", "The fixed staged handle belongs to another selection.");
+        // A prior publication may have succeeded before its fsync reply was lost.
+        const file = await NodeFSP.open(
+          path,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        const parent = await NodeFSP.open(NodePath.dirname(path), "r");
+        try {
+          await parent.sync();
+        } finally {
+          await parent.close();
+        }
+        return prior;
+      }
+    }
+    await durableCreate(path, staged);
     return staged;
   });
 }
