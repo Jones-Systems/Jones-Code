@@ -36,6 +36,8 @@ export type ThreadToastData = {
   tooltipStyle?: boolean;
   onClose?: (() => void) | undefined;
   dismissAfterVisibleMs?: number;
+  // Pair with timeout: 0; navigation/actions must not call manager.close themselves.
+  explicitDismissOnly?: boolean;
   hideCopyButton?: boolean;
   additionalActions?: ReadonlyArray<{
     id: string;
@@ -610,17 +612,26 @@ function Toasts({ position }: { position: ToastPosition }) {
                   "--toast-offset-y": `${offsetY}px`,
                 } as CSSProperties
               }
+              onKeyDown={(event) => {
+                if (toast.data?.explicitDismissOnly && event.key === "Escape") {
+                  event.preventBaseUIHandler();
+                }
+              }}
               swipeDirection={
-                position.includes("center")
-                  ? [isTop ? "up" : "down"]
-                  : position.includes("left")
-                    ? ["left", isTop ? "up" : "down"]
-                    : ["right", isTop ? "up" : "down"]
+                toast.data?.explicitDismissOnly
+                  ? []
+                  : position.includes("center")
+                    ? [isTop ? "up" : "down"]
+                    : position.includes("left")
+                      ? ["left", isTop ? "up" : "down"]
+                      : ["right", isTop ? "up" : "down"]
               }
               toast={toast}
             >
               <ThreadToastVisibleAutoDismiss
-                dismissAfterVisibleMs={toast.data?.dismissAfterVisibleMs}
+                dismissAfterVisibleMs={
+                  toast.data?.explicitDismissOnly ? undefined : toast.data?.dismissAfterVisibleMs
+                }
                 toastId={toast.id}
               />
               <div className={toastCornerDismissClass}>
@@ -706,6 +717,12 @@ function AnchoredToasts() {
                     tooltipStyle ? "rounded-md" : "rounded-lg",
                   )}
                   data-slot="toast-popup"
+                  onKeyDown={(event) => {
+                    if (toast.data?.explicitDismissOnly && event.key === "Escape") {
+                      event.preventBaseUIHandler();
+                    }
+                  }}
+                  swipeDirection={toast.data?.explicitDismissOnly ? [] : undefined}
                   toast={toast}
                 >
                   {tooltipStyle ? (

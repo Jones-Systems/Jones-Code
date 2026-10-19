@@ -953,6 +953,20 @@
         "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
       ],
       "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
+    },
+    {
+      "id": "thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+      ],
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus/local-origin exclusions, wire changes, baseline GC or server history claims."
     }
   ]
 }
