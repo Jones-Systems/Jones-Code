@@ -134,6 +134,14 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
+Settled threads appear in a persistent notification, including threads settled
+by agents or automatically. Expand a notification with multiple threads to see
+their titles. Select a title to open its conversation; the notification stays
+until you dismiss it with **X**, including after a refresh or app restart. Each
+browser or mobile app keeps its own notifications. The first time you use this
+feature, existing settled threads are left in the settled shelf without notifying
+you about all of them.
+
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a
 `t3.json` script, for example `cargo clean`. It runs each time a thread in its own

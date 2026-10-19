@@ -328,8 +328,11 @@ exact uncovered effect if the flow requires one.
 
 ## Pull requests
 
-Create a PR only when the owner explicitly asks. That request does not
-authorize merge, release, deployment, or cleanup.
+Ordinary owner-scoped implementation includes source completion, PR publication,
+current-head CI repair and watching, and qualifying merge under the standing
+contract below. An earlier owner-selected finish line or review hold takes
+precedence. Do not request separate permission for each covered step; report
+an actual unmet gate and continue independent work within scope.
 
 Use a conventional commit title in plain language, such as
 `fix(web): new threads no longer spike CPU`. Describe the problem in a sentence
@@ -356,6 +359,53 @@ When asked to watch a PR, inspect current-head checks and new comments, validate
 reported problems against the source, and follow the task's authority for
 disposition and fixes. Stay quiet when nothing changes. Report current-head
 results and unresolved findings; absence of a bot review is not a failure.
+
+### Standing delivery and merge contract
+
+M Jones authorizes ordinary scoped task delivery in the canonical
+`Jones-Systems/Jones-Code` repository through a pull request into `main`, using
+a normal merge commit when the repository's current settings and rules permit
+it. This standing authority covers the scoped commit, normal task-branch push,
+PR publication, CI repair/watch, and qualified merge; it does not depend on a
+new per-PR merge request. It does not extend to other repositories or bases.
+
+- **Publish the scoped result.** Verify repository, isolated worktree, task
+  branch, Git owner, exact HEAD, clean or fully accounted status, and open PRs
+  for overlapping work. Stage only confirmed task paths, preserve hooks, and
+  push the exact task branch with normal fast-forward protections. Open or
+  continue one non-draft PR against `main` so CI runs. Use a draft only for an
+  explicitly requested early checkpoint or visibility-only handoff. An owner
+  merge/review hold still permits publication unless it also limits publication.
+- **Qualify the current head.** Inspect live repository merge settings, branch
+  protections and rulesets; require passing applicable checks on the exact PR
+  head, all required reviews, and resolved review threads. Repair in-scope CI
+  failures and refresh evidence after every head change. Missing, pending,
+  skipped, unavailable, stale or unrelated checks are not passing evidence.
+  Absence of branch protection does not waive these policy requirements.
+  Use app-owned PR watching when available; otherwise use bounded observation.
+  Do not invoke reviewer bots or bypass a required review.
+- **Merge with a guard.** Immediately before merging, re-read the PR head and
+  base, current checks, reviews, thread resolution, mergeability, repository
+  rules and any owner hold. Require the verified scoped head, canonical `main`
+  base, and normal merge-commit method. Use an expected-head guard, for example
+  `gh pr merge <number> --repo Jones-Systems/Jones-Code --merge --match-head-commit <verified-head>`.
+  Never use `--admin`, force push, direct protected-ref updates, ruleset changes,
+  or another bypass. If a native queue or rule requires a different method,
+  hold and report the exact constraint; do not silently change this contract.
+- **Read back the result.** Verify the PR is merged, record its merge commit,
+  and read the receiving `main` ref and tree to prove the reviewed head landed.
+  If `main` has advanced, verify the merge commit and reviewed head are ancestors
+  of its current tip. A failed or lost response with an unknown effect requires
+  read-only reconciliation before any retry. Report publication, CI, merge,
+  and operational results separately.
+
+This contract excludes release, deployment, installation, sudo or equivalent
+elevation, credential/private-state access, branch or worktree deletion,
+history rewriting, and unrelated changes. Those retain their own authorization
+boundaries. Stop the affected operation on an owner hold, changed scope,
+unresolved prior effect, failed qualification, or unavailable native evidence;
+do not turn a blocked merge into a bypass or repeated permission request for
+steps already covered here.
 
 ### Atomic stack qualification
 

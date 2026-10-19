@@ -2,6 +2,33 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstreams-interaction-recovery",
+      "tests": [
+        "packages/client-runtime/src/state/session.test.ts",
+        "apps/web/src/state/session.test.ts",
+        "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
+        "apps/server/src/http.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/web/src/components/Sidebar.drag.test.ts",
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts packages/contracts/src/environmentHttp.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp run --filter @t3tools/web test src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-sqlite-checkpoint-lifecycle",
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
@@ -73,7 +100,8 @@
         "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts apps/web/src/components/Sidebar.pointer.browser.test.tsx packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
+        "vp test run apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/Sidebar.pointer.browser.test.tsx --maxWorkers=1",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -323,10 +351,18 @@
         "apps/server/src/jones/processPlacement/processPlacement.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
-        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
+        "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+        "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts"
+        "vp test run apps/server/src/jones/processPlacement/scopedCommand.test.ts apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/jones/processPlacement/processPlacement.test.ts apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts apps/server/src/jones/processPlacement/processPlacementQualification.test.ts apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts apps/server/src/process/agentScope.test.ts apps/server/src/terminal/NodePtyAdapter.test.ts"
       ]
     },
     {
@@ -1494,6 +1530,85 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/server typecheck",
         "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts"
+      ],
+      "commands": [
+        "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
+        "vp test run apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/composer-logic.test.ts apps/web/src/components/chat/composerSubmission.test.ts apps/web/src/components/chat/composerTypingGuard.test.ts apps/web/src/questionAttachments.test.ts apps/web/src/components/ChatView.logic.test.ts apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts apps/mobile/src/jones/questionAnswer/composerLayout.test.ts apps/mobile/src/features/threads/pendingUserInputLayout.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "compact-sidebar-header",
+      "tests": [
+        "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
+      ],
+      "commands": [
+        "vp run --filter @t3tools/web test src/jones/sidebarHeader/SidebarHeader.browser.test.tsx src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "thread-read-dwell",
+      "tests": [
+        "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+        "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+        "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "vp run --filter @t3tools/web test src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx src/jones/threadReadDwell/markUnread.browser.test.tsx src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run lint:mobile",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
+        "vp test run apps/web/src/jones/settlementNotifications/localStorageStore.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx src/jones/settlementNotifications/explicitDismiss.browser.test.tsx --maxWorkers=1",
+        "vp test run apps/mobile/src/jones/settlementNotifications/kvStore.test.ts apps/mobile/src/jones/settlementNotifications/navigation.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp lint packages/client-runtime/src/jones/settlementNotifications apps/web/src/jones/settlementNotifications",
+        "vp run lint:mobile",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

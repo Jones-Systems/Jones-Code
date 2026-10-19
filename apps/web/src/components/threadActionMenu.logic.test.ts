@@ -40,6 +40,23 @@ function allIds(state: ThreadActionMenuState): string[] {
 }
 
 describe("buildThreadActionMenuItems", () => {
+  it.each(["checking", "check_failed", "signed_out", "scope_missing"] as const)(
+    "explains disabled environment access (%s) without changing authorized menus",
+    (environmentAccessStatus) => {
+      const denied = buildThreadActionMenuItems({
+        ...baseState,
+        canOperate: false,
+        environmentAccessStatus,
+      });
+      expect(denied[0]).toMatchObject({ id: "environment-access-status", disabled: true });
+      expect(denied[0]?.label).toBeTruthy();
+      expect(denied.find((item) => item.id === "rename")?.disabled).toBe(true);
+      expect(denied.find((item) => item.id === "copy")?.disabled).not.toBe(true);
+      expect(buildThreadActionMenuItems({ ...baseState, environmentAccessStatus })).toEqual(
+        buildThreadActionMenuItems(baseState),
+      );
+    },
+  );
   it.each([false, true])(
     "puts assignment directly below Snooze/Wake with read-only gating (snoozed: %s)",
     (isSnoozed) => {

@@ -20,12 +20,17 @@ import { SidebarThreadHeader } from "../sidebar/SidebarThreadHeader";
 import { SidebarProvider } from "../ui/sidebar";
 import { canEditWorkstreams } from "./nativeWorkstreamActions";
 import { summarizeWorkstreamThreadStatuses } from "./workstreamThreadStatus";
-import { WorkstreamNativeSidebar } from "./WorkstreamNativeSidebar";
+import { WorkstreamNativeSidebar, type NativeThreadExternalDrop } from "./WorkstreamNativeSidebar";
 import { dismissContextMenu, showContextMenuFallback } from "../../contextMenuFallback";
 import { buildThreadActionMenuItems } from "../threadActionMenu.logic";
 import { groupNativeThreadsByWorkstream } from "./nativeThreadGrouping";
 import { data, now, placements, reference, thread } from "./nativeWorkstreamActions.fixtures";
 
+import {
+  dropPinnedThreadOnWorkstream,
+  planWritableSidebarReorder,
+} from "../../jones/workstreams/sidebarThreadDrop";
+import { sortThreadsForSidebar } from "../Sidebar.logic";
 import { assignNativeThread } from "../../jones/workstreams/nativeThreadAssignment";
 
 const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
@@ -153,6 +158,10 @@ async function render(
   assignment: {
     readonly assignmentIndex?: WorkstreamAssignmentIndex;
     readonly verificationNow?: string;
+    readonly canOperate?: (thread: EnvironmentThreadShell) => boolean;
+    readonly canReorder?: (thread: EnvironmentThreadShell) => boolean;
+    readonly externalDropRef?: { current: NativeThreadExternalDrop | null };
+    readonly reorder?: typeof reorder;
   } = {},
 ) {
   const group = (members: readonly EnvironmentThreadShell[]) =>
@@ -214,8 +223,10 @@ async function render(
             </div>
           </li>
         )}
-        canReorder={() => true}
-        reorder={reorder}
+        {...(assignment.externalDropRef ? { externalDropRef: assignment.externalDropRef } : {})}
+        canOperate={assignment.canOperate ?? (() => true)}
+        canReorder={assignment.canReorder ?? (() => true)}
+        reorder={assignment.reorder ?? reorder}
       />,
     ),
   );
@@ -354,6 +365,64 @@ describe("native Workstream sidebar interactions", () => {
     expect(target.getAttribute("data-drop-position")).toBe("after");
     await release();
     expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("reorders confirmed members while registration is unavailable and assignments are stale", async () => {
+    controller = {
+      ...controller,
+      stale: true,
+      registrationContext: null,
+      placements: {
+        ...placements,
+        items: [
+          ...placements.items,
+          {
+            ...placements.items[0]!,
+            native_reference_id: "reference-two",
+            native_thread_id: "unassigned",
+            membership_id: "member-two",
+          },
+        ],
+      },
+    };
+    await render();
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(nativeRow(1).closest("[data-native-workstream-thread]")!);
+    await release();
+    expect(reorder).toHaveBeenCalledWith(threads[0], threads[1], true);
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it.each(["scope", "capability"])("rejects a same-group neighbor without %s", async (denied) => {
+    controller = {
+      ...controller,
+      placements: {
+        ...placements,
+        items: [
+          ...placements.items,
+          { ...placements.items[0]!, native_thread_id: "unassigned", membership_id: "member-two" },
+        ],
+      },
+    };
+    await render(threads, threads, {
+      [denied === "scope" ? "canOperate" : "canReorder"]: (item: EnvironmentThreadShell) =>
+        item.id === threads[0]!.id,
+    });
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(nativeRow(1).closest("[data-native-workstream-thread]")!);
+    await release();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(controller.submit).not.toHaveBeenCalled();
+  });
+
+  it("does not offer manual reorder when the displayed shelf is time ordered", async () => {
+    controller = { ...controller, registrationContext: null };
+    await render(threads, threads, { canReorder: () => false });
+    await pointerEvent(nativeRow(0), "pointerdown");
+    await pointAt(nativeRow(1));
+    await release();
+    expect(reorder).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
@@ -1262,5 +1331,185 @@ describe("durable Workstream assignment display", () => {
       expect(menuButton(label)?.disabled, label).toBe(true);
     expect(assignment).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("pinned dnd-kit to native Workstream bridge", () => {
+  const point = { x: 10, y: 20 };
+  const pinned = { ...threads[0]!, pinnedAt: "2026-10-01T00:00:00Z" };
+  let bridge: { current: NativeThreadExternalDrop | null };
+  const atGroup = (label: string) => {
+    const target = container
+      .querySelector(`[aria-label="Collapse ${label}"]`)!
+      .closest("[data-native-workstream]")!;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => target,
+    });
+    return target;
+  };
+  const renderBridge = async (canOperate = () => true) => {
+    bridge = { current: null };
+    await render([threads[1]!], [pinned, threads[1]!], { externalDropRef: bridge, canOperate });
+  };
+  const drop = async (unpin: () => Promise<void>, onError = vi.fn()) => {
+    let claimed = false;
+    await act(async () => {
+      claimed = dropPinnedThreadOnWorkstream({
+        bridge: bridge.current,
+        point,
+        thread: pinned,
+        unpin,
+        onError,
+      });
+    });
+    return claimed;
+  };
+
+  it("assigns exactly once before unpinning and claims the drop before ordinary planning", async () => {
+    let finish!: () => void;
+    const assign = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    controller = { ...controller, assignNativeThread: assign };
+    await renderBridge();
+    const target = atGroup("beta");
+    await act(async () => {
+      expect(bridge.current!.locateExternal(point, pinned)).toBe(true);
+    });
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    const unpin = vi.fn(async () => undefined);
+    const ordinaryPlan = vi.fn();
+    if (!(await drop(unpin))) ordinaryPlan();
+    expect(assign).toHaveBeenCalledOnce();
+    expect(assign).toHaveBeenCalledWith(pinned, "beta", expect.any(Object));
+    expect(unpin).not.toHaveBeenCalled();
+    expect(ordinaryPlan).not.toHaveBeenCalled();
+    await act(async () => finish());
+    expect(unpin).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+  });
+
+  it.each(["failed", "unknown"])("preserves the pin when assignment is %s", async (message) => {
+    const assign = vi.fn(async () => {
+      throw new Error(message);
+    });
+    controller = { ...controller, assignNativeThread: assign };
+    await renderBridge();
+    atGroup("beta");
+    const unpin = vi.fn(async () => undefined);
+    expect(await drop(unpin)).toBe(true);
+    expect(assign).toHaveBeenCalledOnce();
+    expect(unpin).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  it("keeps a same-group drop a claimed no-op and clears cancelled feedback", async () => {
+    const assign = vi.fn(async () => undefined);
+    controller = { ...controller, assignNativeThread: assign };
+    await renderBridge();
+    atGroup("alpha");
+    const unpin = vi.fn(async () => undefined);
+    expect(await drop(unpin)).toBe(true);
+    expect(assign).not.toHaveBeenCalled();
+    expect(unpin).not.toHaveBeenCalled();
+    const target = atGroup("beta");
+    await act(async () => {
+      bridge.current!.locateExternal(point, pinned);
+    });
+    expect(target.getAttribute("data-drop-target")).toBe("thread");
+    await act(async () => bridge.current!.clear());
+    expect(target.getAttribute("data-drop-target")).toBeNull();
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("assigns to Unassigned before unpinning and reports a failed unpin without resubmission", async () => {
+    const assign = vi.fn(async () => undefined);
+    controller = { ...controller, assignNativeThread: assign };
+    await renderBridge();
+    atGroup("Unassigned");
+    const onError = vi.fn();
+    const unpin = vi.fn(async () => {
+      throw new Error("pin write rejected");
+    });
+    expect(await drop(unpin, onError)).toBe(true);
+    expect(assign).toHaveBeenCalledWith(pinned, null, expect.any(Object));
+    expect(assign).toHaveBeenCalledOnce();
+    expect(unpin).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "pin write rejected" }),
+    );
+  });
+
+  it("rejects missing operate scope and refuses an observed unavailable source", async () => {
+    const assign = vi.fn(async () => undefined);
+    controller = { ...controller, assignNativeThread: assign };
+    await renderBridge(() => false);
+    atGroup("beta");
+    expect(await drop(vi.fn())).toBe(false);
+    controller = {
+      ...controller,
+      assignmentAvailability: () => ({ state: "unavailable", reason: "Enrolled build differs" }),
+    };
+    await renderBridge();
+    atGroup("beta");
+    expect(await drop(vi.fn())).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+});
+
+describe("native reorder persisted keys", () => {
+  it("changes visible native order without rewriting keyless unsupported or denied neighbors", () => {
+    const members = [
+      { ...threads[0]!, id: "first", activeOrderKey: "g", createdAt: "2026-10-01T00:00:00Z" },
+      {
+        ...threads[0]!,
+        id: "unsupported",
+        environmentId: "old-server",
+        activeOrderKey: null,
+        createdAt: "2026-09-01T00:00:00Z",
+      },
+      {
+        ...threads[0]!,
+        id: "denied",
+        environmentId: "read-only",
+        activeOrderKey: null,
+        createdAt: "2026-09-01T00:00:00Z",
+      },
+      { ...threads[1]!, id: "second", activeOrderKey: "n", createdAt: "2026-10-01T00:00:00Z" },
+    ] as EnvironmentThreadShell[];
+    const keys = new Map(members.map((item) => [item.id, item.activeOrderKey]));
+    expect(sortThreadsForSidebar(members).map((item) => item.id)).toEqual([
+      "denied",
+      "unsupported",
+      "first",
+      "second",
+    ]);
+    const writes = planWritableSidebarReorder(
+      ["second", "first", "unsupported", "denied"],
+      keys,
+      "second",
+      new Set(["first", "second"]),
+    );
+    expect(writes).toHaveLength(1);
+    expect(writes![0]!.id).toBe("second");
+    const persisted = members.map((item) => ({
+      ...item,
+      activeOrderKey:
+        writes!.find((write) => write.id === item.id)?.orderKey ?? item.activeOrderKey,
+    }));
+    expect(sortThreadsForSidebar(persisted).map((item) => item.id)).toEqual([
+      "denied",
+      "unsupported",
+      "second",
+      "first",
+    ]);
+    expect(persisted.find((item) => item.id === "unsupported")?.activeOrderKey).toBeNull();
+    expect(
+      planWritableSidebarReorder(["second", "first"], keys, "second", new Set(["first"])),
+    ).toBeNull();
   });
 });

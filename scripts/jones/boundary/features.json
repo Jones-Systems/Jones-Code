@@ -4,6 +4,24 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "workstreams-interaction-recovery",
+      "tests": [
+        "packages/client-runtime/src/state/session.test.ts",
+        "apps/web/src/state/session.test.ts",
+        "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
+        "apps/server/src/http.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/web/src/components/Sidebar.drag.test.ts",
+        "apps/web/src/components/Sidebar.statusFilter.test.tsx",
+        "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
+      ],
+      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The existing upstream project-settings browser harness retains Jones permission cases because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery."
+    },
+    {
       "id": "sqlite-checkpoint-lifecycle",
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
@@ -234,7 +252,15 @@
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-        "native/process-placement/build.test.mjs"
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "native/process-placement/build.test.mjs",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+        "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
       ]
     },
     {
@@ -895,6 +921,54 @@
         "apps/server/src/orchestration-v2/http.test.ts"
       ],
       "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
+    },
+    {
+      "id": "question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
+      ],
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+    },
+    {
+      "id": "compact-sidebar-header",
+      "tests": [
+        "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
+      ],
+      "scope": "Actual available-width fitting removes Code first, continuously scales status and adjacent spacing from original down to 25%, then removes J3 only if needed. The selected filter count has a stronger background without an underline; controls remain in one accessible row."
+    },
+    {
+      "id": "thread-read-dwell",
+      "tests": [
+        "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+        "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+        "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+      ],
+      "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
+    },
+    {
+      "id": "thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+      ],
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus/local-origin exclusions, wire changes, baseline GC or server history claims."
     }
   ]
 }

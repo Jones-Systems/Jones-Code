@@ -1,4 +1,8 @@
 import { AuthOrchestrationReadScope, EnvironmentHttpBadRequestError } from "@t3tools/contracts";
+import {
+  WORKSTREAMS_T3_AVAILABILITY_HEADER,
+  formatWorkstreamsT3Availability,
+} from "@t3tools/contracts/jones/workstreamsRegistrationAvailability";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as HttpEffect from "effect/http/HttpEffect";
@@ -46,6 +50,15 @@ export const createRegistrationContextHandler = (
           operation: "registrationContext",
           reason: error.reason,
         }),
+      ),
+    );
+    yield* HttpEffect.appendPreResponseHandler((_request, response) =>
+      Effect.succeed(
+        HttpServerResponse.setHeader(
+          response,
+          WORKSTREAMS_T3_AVAILABILITY_HEADER,
+          formatWorkstreamsT3Availability(result.t3Availability),
+        ),
       ),
     );
     return result.context;

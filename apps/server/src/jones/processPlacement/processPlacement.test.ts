@@ -61,11 +61,20 @@ describe("required process placement", () => {
       ),
     ).toEqual({ ...binding, serverPriority: { nice: -15, resetOnFork: true } });
   });
+  it("decodes v2 and verifies workload descendants without changing control arguments", () => {
+    const v2 = { ...binding, version: 2, workloadMode: "systemd-descendant" } as const;
+    expect(readProcessPlacementBinding(environment(v2))).toEqual(v2);
+    expect(placementArguments(v2, "workload").slice(-2)).toEqual(["--verify-descendant", "--"]);
+    expect(placementArguments(v2, "control")).toEqual(placementArguments(binding, "control"));
+    expect(placementArguments(binding, "workload")).not.toContain("--verify-descendant");
+  });
   it.each([
     "",
     "null",
     "{}",
     JSON.stringify({ ...binding, version: 2 }),
+    JSON.stringify({ ...binding, workloadMode: "systemd-descendant" }),
+    JSON.stringify({ ...binding, version: 2, workloadMode: "move" }),
     JSON.stringify({ ...binding, helperPath: "helper" }),
     JSON.stringify({ ...binding, extra: true }),
     JSON.stringify({ ...binding, helperPath: "/opt/unsafe\nhelper" }),

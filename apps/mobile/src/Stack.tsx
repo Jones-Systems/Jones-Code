@@ -1,3 +1,4 @@
+import { SettlementNotificationOverlay } from "./jones/settlementNotifications/SettlementNotificationOverlay";
 import { ComponentCatalogScreen } from "./features/development/ComponentCatalogScreen";
 import { PullRequestGuideStopScreen } from "./features/pull-requests/guide/PullRequestGuideScreen";
 import { PullRequestInlineCommentScreen } from "./features/pull-requests/PullRequestInlineCommentScreen";
@@ -627,6 +628,7 @@ function RootStackLayout(props: {
           </AdaptiveWorkspaceLayout>
         </AndroidWorkspaceTabsProvider>
       </ExistingThreadSettingsRouteProvider>
+      <SettlementNotificationOverlay />
     </HardwareKeyboardCommandProvider>
   );
 }

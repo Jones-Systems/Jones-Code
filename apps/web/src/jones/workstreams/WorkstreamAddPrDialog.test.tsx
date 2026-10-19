@@ -3,7 +3,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { WorkstreamReferenceController } from "./workstreamActionSnapshot";
+import {
+  WorkstreamActionError,
+  type WorkstreamReferenceController,
+} from "./workstreamActionSnapshot";
 import { data, reference } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import { WorkstreamAddPrDialog } from "./WorkstreamAddPrDialog";
 import { prepareWorkstreamPr } from "./workstreamReferenceActions";
@@ -129,7 +132,7 @@ describe("Add PR reference dialog", () => {
     expect(document.body.textContent).not.toContain("unavailable");
   });
   it("renders a fixed unknown-effect message and Retry only observes metadata", async () => {
-    vi.mocked(prepareWorkstreamPr).mockRejectedValue(new Error("arbitrary private exception"));
+    vi.mocked(prepareWorkstreamPr).mockRejectedValue(new WorkstreamActionError("unknown"));
     await render();
     await enterUrl("https://github.com/a/b/pull/42");
     await act(async () => button("Add reference").click());
@@ -139,6 +142,15 @@ describe("Add PR reference dialog", () => {
     await act(async () => button("Retry").click());
     expect(controller.retry).toHaveBeenCalledOnce();
     expect(prepareWorkstreamPr).toHaveBeenCalledOnce();
+  });
+  it("uses neutral text for an unclassified failure without exposing exception details", async () => {
+    vi.mocked(prepareWorkstreamPr).mockRejectedValue(new Error("arbitrary private exception"));
+    await render();
+    await enterUrl("https://github.com/a/b/pull/42");
+    await act(async () => button("Add reference").click());
+    expect(document.body.textContent).toContain("Could not complete the action");
+    expect(document.body.textContent).not.toContain("arbitrary private exception");
+    expect(document.body.textContent).not.toContain("no command was submitted");
   });
   it("aborts a closed session and ignores its completion after reopening", async () => {
     let resolve!: (value: typeof reference) => void;

@@ -229,22 +229,24 @@ async function downloadLocalUpdate(
   }
 }
 
-async function installLocalUpdate(
-  bridge: DesktopBridge,
+export async function installLocalUpdate(
+  bridge: Pick<DesktopBridge, "getUpdateState" | "installUpdate" | "fleetUpdates" | "openExternal">,
   reportError: ReportLocalUpdateError = toastUpdateError,
 ): Promise<boolean> {
   try {
-    const result = await bridge.installUpdate();
+    // Update everything installs after its own download finishes, so the rendered
+    // state can predate the staged selection that the installer requires.
+    const result = await installLocalDesktopUpdate(bridge, await bridge.getUpdateState());
+    const actionError = getDesktopUpdateActionError(result);
+    if (actionError) {
+      reportError("Could not install update", actionError);
+      return false;
+    }
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
     }
-    const actionError = shouldToastDesktopUpdateActionResult(result)
-      ? getDesktopUpdateActionError(result)
-      : null;
-    if (!actionError) return true;
-    reportError("Could not install update", actionError);
-    return false;
+    return true;
   } catch (error) {
     reportError(
       "Could not install update",

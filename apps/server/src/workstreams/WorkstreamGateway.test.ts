@@ -246,7 +246,8 @@ it.effect("binds the accepted contract and exact idempotency bytes", () =>
       { binding },
     );
     const mismatch = yield* mismatchGateway.submit(command).pipe(Effect.flip);
-    expect(mismatch.reason).toBe("contract-mismatch");
+    expect(mismatch.reason).toBe("authorization-not-current");
+    expect(mismatch.cause).toMatchObject({ reason: "contract-mismatch" });
   }),
 );
 

@@ -1,3 +1,4 @@
+import { controlCommand } from "../jones/processPlacement/processPlacementSpawner.ts";
 import type {
   HostPowerSnapshot,
   ResourceMonitorCapabilities,
@@ -570,17 +571,19 @@ export const make = Effect.fn("resourceTelemetry.nativeTelemetryClient.make")(fu
   const runAttempt: Effect.Effect<void, NativeTelemetryClientError> = Effect.scoped(
     Effect.gen(function* () {
       const executablePath = yield* binary.resolve;
-      const command = ChildProcess.make(executablePath, [], {
-        cwd: config.cwd,
-        stdin: {
-          stream: "pipe",
-          endOnDone: false,
-        },
-        stdout: "pipe",
-        stderr: "pipe",
-        killSignal: "SIGTERM",
-        forceKillAfter: Duration.seconds(2),
-      });
+      const command = controlCommand(
+        ChildProcess.make(executablePath, [], {
+          cwd: config.cwd,
+          stdin: {
+            stream: "pipe",
+            endOnDone: false,
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          killSignal: "SIGTERM",
+          forceKillAfter: Duration.seconds(2),
+        }),
+      );
       const handle = yield* Effect.acquireRelease(
         spawner
           .spawn(command)

@@ -17,6 +17,7 @@ import { PrimaryEnvironmentHttpClient } from "../../environments/primary/httpCli
 export interface WorkstreamsHttpCall {
   readonly route: string;
   readonly request: {
+    readonly responseMode?: "decoded-and-response";
     readonly params?: Record<string, string>;
     readonly payload?: Record<string, unknown>;
   };
@@ -37,7 +38,10 @@ const capturingClient = {
  * client so tests can answer concurrent index reads deterministically by route.
  */
 export const routeWorkstreamsHttp =
-  (handle: (call: WorkstreamsHttpCall, signal?: AbortSignal) => unknown) =>
+  (
+    handle: (call: WorkstreamsHttpCall, signal?: AbortSignal) => unknown,
+    headers: Readonly<Record<string, string>> = {},
+  ) =>
   async (effect: unknown, options?: { readonly signal?: AbortSignal }): Promise<unknown> => {
     const call = Effect.runSync(
       Effect.provideService(
@@ -47,7 +51,8 @@ export const routeWorkstreamsHttp =
       ),
     );
     options?.signal?.throwIfAborted();
-    return handle(call, options?.signal);
+    const value = await handle(call, options?.signal);
+    return call.request.responseMode === "decoded-and-response" ? [value, { headers }] : value;
   };
 
 const sha256Hex = async (text: string): Promise<string> =>

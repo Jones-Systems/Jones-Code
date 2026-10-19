@@ -60,6 +60,8 @@ function Questions({ initialIndex = 0 }: { initialIndex?: number }) {
             ),
           }));
         }}
+        onChangeCustomAnswer={() => {}}
+        onPrevious={() => {}}
         onDismiss={() => {}}
       />
     </>

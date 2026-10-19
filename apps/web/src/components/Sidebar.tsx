@@ -15,7 +15,10 @@ import {
 } from "./chat/threadContextDrag";
 import { discardComposerDraft } from "../lib/discardComposerDraft";
 import { WorkstreamCreateForm } from "./workstreams/WorkstreamSidebarSection";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  planWritableSidebarReorder,
+  dropPinnedThreadOnWorkstream,
+} from "../jones/workstreams/sidebarThreadDrop";
 import { canEditWorkstreams, moveNativeThreadOrder } from "./workstreams/nativeWorkstreamActions";
 import { useWorkstreams } from "../state/workstreams";
 import { groupNativeThreadsWithConnectedTrust } from "../jones/workstreams/connectedWorkstreamTrust";
@@ -23,6 +26,7 @@ import { useConnectedWorkstreamTrust } from "../jones/workstreams/useConnectedWo
 import {
   WorkstreamNativeSidebar,
   type NativeThreadAssignmentMenu,
+  type NativeThreadExternalDrop,
 } from "./workstreams/WorkstreamNativeSidebar";
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
@@ -186,7 +190,11 @@ import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
-import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
+import {
+  ensureEnvironmentScope,
+  readEnvironmentScope,
+  useEnvironmentScope,
+} from "../state/session";
 import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
 import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
@@ -489,6 +497,7 @@ function useSidebarThreads(input: {
     scopedThreads,
     "current",
     nowMinute > snoozeWakeAt ? nowMinute : snoozeWakeAt,
+    routeThreadKey,
   );
   // Counts include filtered-out threads, so arm the scoped roster's next wake.
   useEffect(() => {
@@ -3091,6 +3100,7 @@ export default function Sidebar() {
   const workstreamAssignmentMenuRef = useRef<
     ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
   >(null);
+  const workstreamExternalDropRef = useRef<NativeThreadExternalDrop | null>(null);
   const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
   const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
   const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
@@ -3438,6 +3448,7 @@ export default function Sidebar() {
   const isContextDrag = dragState?.contextDrag === true || dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
   const finishThreadDrag = (started: boolean) => {
+    workstreamExternalDropRef.current?.clear();
     dragSensorRef.current = null;
     contextDragKeyRef.current = null;
     endThreadContextDrag();
@@ -3451,6 +3462,7 @@ export default function Sidebar() {
   };
   const cancelThreadDrag = () => {
     dragSensorRef.current?.cancel();
+    workstreamExternalDropRef.current?.clear();
   };
   const contextDragThreads = (): ReadonlyArray<ScopedThreadRef> => {
     const key = contextDragKeyRef.current;
@@ -3475,16 +3487,58 @@ export default function Sidebar() {
     );
     if (!contextDrag) {
       endThreadContextDrag();
+      const key = contextDragKeyRef.current;
+      const thread = key === null ? undefined : threadByKeyRef.current.get(key);
+      if (
+        thread?.pinnedAt != null &&
+        key !== null &&
+        sectionByThreadKeyRef.current.get(key) === "pinned"
+      )
+        workstreamExternalDropRef.current?.locateExternal(point, thread);
+      else workstreamExternalDropRef.current?.clear();
       return false;
     }
+    workstreamExternalDropRef.current?.clear();
     const threads = contextDragThreads();
     const title =
       threadByKeyRef.current.get(contextDragKeyRef.current ?? "")?.title.trim() || "Thread";
     moveThreadContextDragGhost(point, { title, count: threads.length });
     return true;
   };
+  const dropPinnedWorkstreamThread = (point: { x: number; y: number }) => {
+    const activeKey = contextDragKeyRef.current;
+    if (activeKey === null) return false;
+    const activeThread = threadByKeyRef.current.get(activeKey);
+    return Boolean(
+      activeThread &&
+      sectionByThreadKeyRef.current.get(activeKey) === "pinned" &&
+      dropPinnedThreadOnWorkstream({
+        bridge: workstreamExternalDropRef.current,
+        point,
+        thread: activeThread,
+        unpin: async () => {
+          if (!checkThreadOperations([activeThread])) return;
+          const result = await unpinThread(
+            scopeThreadRef(activeThread.environmentId, activeThread.id),
+          );
+          if (result._tag !== "Success")
+            throw new Error(
+              "Workstream assigned, but the thread could not be unpinned. Retry unpinning it.",
+            );
+        },
+        onError: (cause) =>
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not move pinned thread",
+              description: cause instanceof Error ? cause.message : "Refresh before retrying.",
+            }),
+          ),
+      }),
+    );
+  };
   const dropThreadContextDrag = (point: { x: number; y: number }) => {
-    if (!pointerOutsideThreadList(point)) return false;
+    if (!pointerOutsideThreadList(point)) return dropPinnedWorkstreamThread(point);
     dropThreadContext(point, contextDragThreads());
     return true;
   };
@@ -3744,6 +3798,7 @@ export default function Sidebar() {
   });
   const reorderWorkstreamThread = useStableCallback(
     async (thread: EnvironmentThreadShell, neighbor: EnvironmentThreadShell, after: boolean) => {
+      if (workingShelfEnabled || !checkThreadOperations([thread, neighbor])) return;
       const movedId = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       const neighborId = scopedThreadKey(scopeThreadRef(neighbor.environmentId, neighbor.id));
       if (
@@ -3753,12 +3808,22 @@ export default function Sidebar() {
       )
         return;
       const orderedIds = moveNativeThreadOrder(activeKeys, movedId, neighborId, after);
-      const assignments = planPinnedReorder({ orderedIds, keysById: activeKeysById, movedId });
-      if (assignments.some((assignment) => !activeReorderableThreadKeys.has(assignment.id)))
-        throw new Error("An environment does not support active thread ordering.");
+      const writable = new Set(
+        [...activeReorderableThreadKeys].filter((key) => {
+          const candidate = threadByKey.get(key);
+          return (
+            candidate !== undefined &&
+            readEnvironmentScope(candidate.environmentId, AuthOrchestrationOperateScope)
+          );
+        }),
+      );
+      if (!writable.has(neighborId)) return;
+      const assignments = planWritableSidebarReorder(orderedIds, activeKeysById, movedId, writable);
+      if (assignments === null) return;
       for (const assignment of assignments) {
         const target = threadByKey.get(assignment.id);
         if (!target) throw new Error("Thread changed while reordering. Try again.");
+        if (!checkThreadOperations([target])) return;
         const result = await reorderActiveThread(
           scopeThreadRef(target.environmentId, target.id),
           assignment.orderKey,
@@ -4319,7 +4384,11 @@ export default function Sidebar() {
         }
         const thread = threadByKeyRef.current.get(threadKey);
         if (!thread) return;
-        const assignmentMenu = assignment ?? workstreamAssignmentMenuRef.current?.(thread);
+        const environmentAccess = await ensureEnvironmentScope(
+          threadRef.environmentId,
+          AuthOrchestrationOperateScope,
+        );
+        const assignmentMenu = workstreamAssignmentMenuRef.current?.(thread) ?? assignment;
         const threadWorkspacePath =
           thread.worktreePath ??
           projectByKey.get(`${thread.environmentId}:${thread.projectId}`)?.workspaceRoot ??
@@ -4353,6 +4422,7 @@ export default function Sidebar() {
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
+              environmentAccessStatus: environmentAccess.status,
               assignmentItems: assignmentMenu?.items,
               canOperate: readEnvironmentScope(
                 threadRef.environmentId,
@@ -5101,12 +5171,20 @@ export default function Sidebar() {
                             <WorkstreamNativeSidebar
                               controller={workstreamController}
                               assignmentMenuRef={workstreamAssignmentMenuRef}
+                              externalDropRef={workstreamExternalDropRef}
+                              canOperate={(thread) =>
+                                readEnvironmentScope(
+                                  thread.environmentId,
+                                  AuthOrchestrationOperateScope,
+                                )
+                              }
                               grouping={workstreamGrouping}
                               summaryGrouping={workstreamSummaryGrouping}
                               renderThread={(thread, assignment) =>
                                 renderThreadRow(thread, "active", assignment)
                               }
                               canReorder={(thread) =>
+                                !workingShelfEnabled &&
                                 activeReorderableThreadKeys.has(
                                   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
                                 )
