@@ -29,7 +29,7 @@ const isServerEnvironmentIdPersistenceError = Schema.is(
 const layerServerEnvironment = (baseDir: string) =>
   ServerEnvironment.layer.pipe(
     Layer.provide(ServerSecretStore.layer),
-    Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+    Layer.provide(layerIsolatedServerConfig(baseDir)),
   );
 
 const layerEmptySecretStore = Layer.succeed(
@@ -79,6 +79,19 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
   } satisfies ServerConfig.ServerConfig["Service"];
 });
 
+// Descriptor fixtures need isolated state, not native database startup admission,
+// which also inspects the desktop profile inherited from the launching process.
+const layerIsolatedServerConfig = (baseDir: string) =>
+  Layer.effect(
+    ServerConfig.ServerConfig,
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const config = yield* makeServerConfig(baseDir);
+      yield* fileSystem.makeDirectory(config.stateDir, { recursive: true });
+      return config;
+    }),
+  );
+
 it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
@@ -94,6 +107,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         '{"name":"t3","version":"0.0.45","bin":{"t3":"./dist/bin.mjs"}}',
       );
       yield* fs.symlink(entry, `${prefix}/bin/t3`);
+      const canonicalPrefix = yield* fs.realPath(prefix);
       const config = yield* makeServerConfig(baseDir);
       yield* fs.makeDirectory(config.stateDir, { recursive: true });
       for (const mode of ["web", "desktop"] as const) {
@@ -113,7 +127,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
           Effect.provideService(HostProcess.Environment, {}),
         );
         expect(descriptor.capabilities.serverInstallation).toEqual(
-          mode === "web" ? { kind: "npm-global", prefix } : undefined,
+          mode === "web" ? { kind: "npm-global", prefix: canonicalPrefix } : undefined,
         );
         expect(descriptor.capabilities.serverSelfUpdate).toBe(
           mode === "web" ? undefined : "desktop-managed",
@@ -243,7 +257,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       const layerTest = Layer.mergeAll(
         ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer)),
         ServerSecretStore.layer,
-      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)));
+      ).pipe(Layer.provide(layerIsolatedServerConfig(baseDir)));
 
       yield* Effect.gen(function* () {
         const secrets = yield* ServerSecretStore.ServerSecretStore;
@@ -502,7 +516,7 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
       const layerTest = Layer.mergeAll(
         ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer)),
         ServerSecretStore.layer,
-      ).pipe(Layer.provide(ServerConfig.layerTest(process.cwd(), baseDir)));
+      ).pipe(Layer.provide(layerIsolatedServerConfig(baseDir)));
 
       yield* Effect.gen(function* () {
         const secrets = yield* ServerSecretStore.ServerSecretStore;

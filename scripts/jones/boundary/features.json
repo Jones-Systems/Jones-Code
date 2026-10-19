@@ -894,6 +894,23 @@
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts"
       ],
       "scope": "Admin-only guarded original-thread conversation reselection, preserving stored identity/evidence/history with transaction CAS and command receipts. Both preview and commit require live operate plus maintain scopes; startup gate and the shared dispatch lock serialize recovery. Additive RPCs intentionally absent from MCP/UI. No native call, replay, new run, outbox effect or migration. Narrow shared edits register wire methods, permissions, instrumentation aggregate tags, layer and EventSink transaction context. Integration coverage stays in the existing Jones production-layer harness."
+    },
+    {
+      "id": "thread-attention",
+      "tests": [
+        "packages/contracts/src/jones/threadAttention.test.ts",
+        "packages/shared/src/jones/threadAttention.test.ts",
+        "apps/server/src/jones/threadAttention.test.ts",
+        "packages/client-runtime/src/state/threadShell.test.ts",
+        "packages/client-runtime/src/state/entities.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/threadCorpusProtocol.test.ts",
+        "apps/server/src/orchestration-v2/http.test.ts"
+      ],
+      "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
     }
   ]
 }

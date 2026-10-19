@@ -3,7 +3,11 @@ import {
   threadRuntimeIsActive,
   resolveThreadWorkingStartedAt,
 } from "@t3tools/client-runtime/state/models";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { resolveThreadAttentionPill } from "@t3tools/shared/jones/threadAttention";
+export {
+  hasUnseenCompletion,
+  resolveThreadAttentionStatus as resolveSidebarThreadStatus,
+} from "@t3tools/shared/jones/threadAttention";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -743,17 +747,6 @@ export function resolveThreadLastVisitedAt(
   return serverLastVisitedAt ?? undefined;
 }
 
-export function hasUnseenCompletion(thread: ThreadStatusInput): boolean {
-  if (!thread.latestRun?.completedAt) return false;
-  const completedAt = Date.parse(thread.latestRun.completedAt);
-  if (Number.isNaN(completedAt)) return false;
-  if (!thread.lastVisitedAt) return false;
-
-  const lastVisitedAt = Date.parse(thread.lastVisitedAt);
-  if (Number.isNaN(lastVisitedAt)) return true;
-  return completedAt > lastVisitedAt;
-}
-
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;
   return !target.closest(THREAD_SELECTION_SAFE_SELECTOR);
@@ -932,33 +925,6 @@ export function shouldRecedeSidebarThread(input: {
   return false;
 }
 
-type SidebarThreadStatusInput = Pick<
-  SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
->;
-
-export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
-  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
-    return "approval";
-  }
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
-    return "input";
-  }
-  if (
-    thread.runtime !== null &&
-    ["preparing", "queued", "starting", "running", "waiting"].includes(thread.runtime.status)
-  ) {
-    return "working";
-  }
-  if (thread.runtime?.status === "idle") {
-    return "waiting";
-  }
-  if (thread.runtime?.status === "failed") {
-    return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
-  }
-  return "ready";
-}
-
 export type SidebarV2TopStatusKind =
   | "approval"
   | "done"
@@ -1116,82 +1082,47 @@ export function formatWorkingDurationLabel(elapsedMs: number): string {
 export function resolveThreadStatusPill(input: {
   thread: ThreadStatusInput;
 }): ThreadStatusPill | null {
-  const { thread } = input;
-
-  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
-    return {
-      label: "Pending Approval",
-      colorClass: "text-amber-600 dark:text-amber-300/90",
-      dotClass: "bg-amber-500 dark:bg-amber-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
-    return {
-      label: "Awaiting Input",
-      colorClass: "text-indigo-600 dark:text-indigo-300/90",
-      dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
-      pulse: false,
-    };
-  }
-
-  if (thread.runtime?.status === "running" || thread.runtime?.status === "waiting") {
-    return {
-      label: "Working",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (
-    thread.runtime?.status === "preparing" ||
-    thread.runtime?.status === "starting" ||
-    thread.runtime?.status === "queued"
-  ) {
-    return {
-      label: "Connecting",
-      colorClass: "text-sky-600 dark:text-sky-300/80",
-      dotClass: "bg-sky-500 dark:bg-sky-300/80",
-      pulse: true,
-    };
-  }
-
-  if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) {
-    return {
-      label: "Waiting",
-      colorClass: "text-sidebar-muted-foreground",
-      dotClass: "bg-sidebar-muted-foreground",
-      pulse: false,
-    };
-  }
-
-  const hasPlanReadyPrompt =
-    !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
-    isLatestRunSettled(thread.latestRun, thread.runtime) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return {
-      label: "Plan Ready",
-      colorClass: "text-violet-600 dark:text-violet-300/90",
-      dotClass: "bg-violet-500 dark:bg-violet-300/90",
-      pulse: false,
-    };
-  }
-
-  if (hasUnseenCompletion(thread)) {
-    return {
-      label: "Completed",
-      colorClass: "text-emerald-600 dark:text-emerald-300/90",
-      dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
-      pulse: false,
-    };
-  }
-
-  return null;
+  const label = resolveThreadAttentionPill(input);
+  return label === null ? null : { label, ...THREAD_PILL_STYLES[label] };
 }
+
+const THREAD_PILL_STYLES = {
+  "Pending Approval": {
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: "bg-amber-500 dark:bg-amber-300/90",
+    pulse: false,
+  },
+  "Awaiting Input": {
+    colorClass: "text-indigo-600 dark:text-indigo-300/90",
+    dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+    pulse: false,
+  },
+  Working: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Connecting: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Waiting: {
+    colorClass: "text-sidebar-muted-foreground",
+    dotClass: "bg-sidebar-muted-foreground",
+    pulse: false,
+  },
+  "Plan Ready": {
+    colorClass: "text-violet-600 dark:text-violet-300/90",
+    dotClass: "bg-violet-500 dark:bg-violet-300/90",
+    pulse: false,
+  },
+  Completed: {
+    colorClass: "text-emerald-600 dark:text-emerald-300/90",
+    dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+    pulse: false,
+  },
+} as const;
 
 export function resolveProjectStatusIndicator(
   statuses: ReadonlyArray<ThreadStatusPill | null>,

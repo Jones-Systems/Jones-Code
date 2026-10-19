@@ -1,3 +1,4 @@
+import { ThreadAttention } from "./jones/threadAttention.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { MessageId } from "./baseSchemas.ts";
 import { CommandId } from "./baseSchemas.ts";
@@ -704,6 +705,14 @@ export class EnvironmentOrchestrationHttpApi extends HttpApiGroup.make("orchestr
       headers: OrchestrationProtocolHeaders,
       params: EnvironmentOrchestrationThreadSnapshotParams,
       success: OrchestrationV2ThreadDetailSnapshot,
+      error: EnvironmentOrchestrationThreadSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("threadAttention", "/api/orchestration/threads/:threadId/attention", {
+      headers: OrchestrationProtocolHeaders,
+      params: EnvironmentOrchestrationThreadSnapshotParams,
+      success: ThreadAttention,
       error: EnvironmentOrchestrationThreadSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
