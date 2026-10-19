@@ -15,10 +15,17 @@ export function useThreadStatusFilter(
   scopedThreads: ReadonlyArray<SidebarThreadSummary>,
   layout: "current" | "legacy",
   now?: string,
+  activeThreadKey: string | null = null,
 ) {
   const [statusFilter, setStatusFilter] = useState<ThreadStatusFilter>("all");
   const cycleStatusFilter = () => setStatusFilter(nextThreadStatusFilter);
-  const selection = useThreadStatusSelection(scopedThreads, statusFilter, layout, now);
+  const selection = useThreadStatusSelection(
+    scopedThreads,
+    statusFilter,
+    layout,
+    now,
+    activeThreadKey,
+  );
   return { statusFilter, cycleStatusFilter, ...selection };
 }
 
@@ -27,7 +34,14 @@ export function useThreadStatusSelection(
   statusFilter: ThreadStatusFilter,
   layout: "current" | "legacy",
   now?: string,
+  activeThreadKey: string | null = null,
 ) {
+  const [retention, setRetention] = useState({
+    statusFilter,
+    layout,
+    activeThreadKey,
+    retainedThreadKey: null as string | null,
+  });
   const visits = useUiStateStore((state) => state.threadLastVisitedAtById);
   const selection = (() => {
     const observedNow = new Date(
@@ -49,5 +63,37 @@ export function useThreadStatusSelection(
       return classifyThreadStatus({ ...thread, lastVisitedAt }, layout, isWoke);
     });
   })();
-  return selection;
+  const activeIsInScope =
+    activeThreadKey !== null &&
+    scopedThreads.some(
+      (thread) =>
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey,
+    );
+  const activeQualifies = selection.threads.some(
+    (thread) =>
+      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey,
+  );
+  const sameSelection =
+    retention.statusFilter === statusFilter &&
+    retention.layout === layout &&
+    retention.activeThreadKey === activeThreadKey;
+  const retainedThreadKey =
+    (statusFilter === "done" || statusFilter === "input") &&
+    activeIsInScope &&
+    (activeQualifies || (sameSelection && retention.retainedThreadKey === activeThreadKey))
+      ? activeThreadKey
+      : null;
+  if (!sameSelection || retention.retainedThreadKey !== retainedThreadKey) {
+    setRetention({ statusFilter, layout, activeThreadKey, retainedThreadKey });
+  }
+  if (retainedThreadKey === null || activeQualifies) return selection;
+  const selected = new Set(selection.threads);
+  return {
+    counts: selection.counts,
+    threads: scopedThreads.filter(
+      (thread) =>
+        selected.has(thread) ||
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === retainedThreadKey,
+    ),
+  };
 }
