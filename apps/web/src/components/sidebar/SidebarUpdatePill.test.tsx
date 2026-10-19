@@ -1,9 +1,14 @@
-import type { DesktopUpdateCheckResult, DesktopUpdateState } from "@t3tools/contracts";
+import type {
+  DesktopUpdateActionResult,
+  DesktopUpdateCheckResult,
+  DesktopUpdateState,
+} from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   checkForSidebarUpdate,
   handleSidebarUpdateReleaseNotesPopoverOpenChange,
+  installLocalUpdate,
   openSidebarUpdateReleaseNotesPopoverOnForwardTab,
   resolveSidebarUpdateCheckFeedback,
   shouldUseSidebarUpdateReleaseNotesPopover,
@@ -12,6 +17,7 @@ import {
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
 } from "../desktopUpdate.logic";
+import { runUpdateEverything } from "./updateEverything.logic";
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
 vi.mock("../ui/toast", async () => {
@@ -316,4 +322,118 @@ describe("sidebar manual update check feedback", () => {
       );
     },
   );
+});
+
+describe("sidebar combined update install", () => {
+  beforeEach(() => toast.add.mockClear());
+
+  const staged: DesktopUpdateState = {
+    ...nightlyState,
+    status: "downloaded",
+    downloadedVersion: "0.0.36-nightly.3",
+    jones: {
+      source: "jones-actions",
+      channel: "jones-main",
+      phase: "staged",
+      capability: { check: true, download: true, install: true },
+      stagedHandle: "staged-1",
+    },
+  };
+
+  function installBridge(
+    state: DesktopUpdateState,
+    installed: DesktopUpdateActionResult = {
+      accepted: true,
+      completed: false,
+      state: { ...state, jones: { ...state.jones!, phase: "installing" } },
+    },
+  ) {
+    return {
+      getUpdateState: vi.fn().mockResolvedValue(state),
+      installUpdate: vi.fn().mockResolvedValue(installed),
+      openExternal: vi.fn(),
+    };
+  }
+
+  it("reads the current selection and forwards its staged handle", async () => {
+    const bridge = installBridge(staged);
+    const reportError = vi.fn();
+    expect(await installLocalUpdate(bridge, reportError)).toBe(true);
+    expect(bridge.getUpdateState).toHaveBeenCalledOnce();
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("staged-1");
+    expect(reportError).not.toHaveBeenCalled();
+  });
+
+  it("joins a prepared fleet campaign and still installs when fleet bookkeeping fails", async () => {
+    const campaign = {
+      campaignId: "campaign-1",
+      phase: "prepared",
+      desktopStagedHandle: "staged-1",
+      targetSource: undefined,
+    };
+    const tracked = {
+      ...installBridge(staged),
+      fleetUpdates: vi.fn().mockResolvedValue({ campaigns: [campaign], enrollments: [] }),
+    };
+    expect(await installLocalUpdate(tracked, vi.fn())).toBe(true);
+    expect(tracked.installUpdate).toHaveBeenCalledExactlyOnceWith("staged-1", "campaign-1");
+
+    const untracked = {
+      ...installBridge(staged),
+      fleetUpdates: vi.fn().mockRejectedValue(new Error("Fleet store unavailable.")),
+    };
+    expect(await installLocalUpdate(untracked, vi.fn())).toBe(true);
+    expect(untracked.installUpdate).toHaveBeenCalledExactlyOnceWith("staged-1");
+  });
+
+  it("reports a refused install instead of announcing a download", async () => {
+    const refused = {
+      ...staged,
+      jones: { ...staged.jones!, message: "Startup gate unavailable." },
+    };
+    const bridge = installBridge(staged, { accepted: false, completed: false, state: refused });
+    const reportError = vi.fn();
+    expect(await installLocalUpdate(bridge, reportError)).toBe(false);
+    expect(reportError).toHaveBeenCalledExactlyOnceWith(
+      "Could not install update",
+      "Startup gate unavailable.",
+    );
+    expect(toast.add).not.toHaveBeenCalled();
+  });
+
+  it("refuses without a staged handle before reaching the installer", async () => {
+    const { stagedHandle: _stagedHandle, ...jones } = staged.jones!;
+    const bridge = installBridge({ ...staged, jones });
+    const reportError = vi.fn();
+    expect(await installLocalUpdate(bridge, reportError)).toBe(false);
+    expect(bridge.installUpdate).not.toHaveBeenCalled();
+    expect(reportError).toHaveBeenCalledExactlyOnceWith(
+      "Could not install update",
+      "The downloaded update is no longer ready to install. Check for updates again.",
+    );
+  });
+
+  it("still restarts this app after provider updates fail", async () => {
+    const bridge = installBridge(staged);
+    const outcome = await runUpdateEverything({
+      downloadLocal: async () => true,
+      updateProviders: async () => [{ status: "failed" as const, line: "Codex: update failed" }],
+      updateServers: async () => [],
+    });
+    expect(outcome.localReady).toBe(true);
+    expect(await installLocalUpdate(bridge, vi.fn())).toBe(true);
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith("staged-1");
+  });
+
+  it("keeps the upstream install argument-free and its unaccepted downloaded notice", async () => {
+    const { jones: _jones, ...upstream } = staged;
+    const bridge = installBridge(upstream, { accepted: false, completed: false, state: upstream });
+    const reportError = vi.fn();
+    expect(await installLocalUpdate(bridge, reportError)).toBe(false);
+    expect(bridge.installUpdate).toHaveBeenCalledExactlyOnceWith();
+    expect(reportError).not.toHaveBeenCalled();
+    expect(toast.add).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ type: "success", title: "Update downloaded" }),
+    );
+  });
 });
