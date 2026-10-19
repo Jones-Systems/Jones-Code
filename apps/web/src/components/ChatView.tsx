@@ -1,3 +1,8 @@
+import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
+import {
+  INERT_QUESTION_COMPOSER_PROPS,
+  pendingQuestionBlocksSteering,
+} from "../jones/questionAnswer/questionAnswerCard";
 import {
   withShortcutEffort,
   type ComposerModelSelectOptions,
@@ -2454,15 +2459,12 @@ export default function ChatView(props: ChatViewProps) {
     activePendingUserInput,
     activePendingDraftAnswers,
     activePendingQuestionIndex,
-    activePendingProgress,
-    activePendingResolvedAnswers,
     activePendingIsResponding,
     respondingRequestIds,
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
     onSelectActivePendingUserInputOption: onSelectActivePendingUserInputOptionStable,
     onChangeActivePendingUserInputCustomAnswer,
-    onAdvanceActivePendingUserInput,
     onAdvanceActivePendingUserInputStable,
     onPreviousActivePendingUserInputQuestion: onPreviousActivePendingUserInputQuestionStable,
   } = usePendingThreadRequests({
@@ -2471,10 +2473,6 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     serverProjection,
     supportsQuestionAttachments,
-    composerDraftTarget,
-    setComposerDraftPrompt,
-    promptRef,
-    composerRef,
     setThreadError,
   });
   const activeProposedPlan = (() => {
@@ -6057,14 +6055,6 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const sendCtx = composerRef.current?.getSendContext();
-    if (activePendingProgress && sendCtx?.answeringPendingUserInput !== false) {
-      if (directAnnotation) {
-        notifyDirectAnnotationAttached();
-        return;
-      }
-      onAdvanceActivePendingUserInput();
-      return;
-    }
     if (!sendCtx?.providerAvailable) {
       notifyDirectAnnotationAttached();
       return;
@@ -6423,11 +6413,14 @@ export default function ChatView(props: ChatViewProps) {
       resumeCompactionTokens !== null &&
       !keepFullHistory &&
       messageTextForSend.toLowerCase() !== "/compact";
-    const turnDispatchMode = compactBeforeSend || sendQueuesBehindSetup ? "queue" : dispatchMode;
+    const turnDispatchMode =
+      compactBeforeSend || sendQueuesBehindSetup || pendingQuestionBlocksSteering(pendingUserInputs)
+        ? "queue"
+        : dispatchMode;
     const shouldQueueBehindActiveRun =
       compactBeforeSend ||
       sendQueuesBehindSetup ||
-      (phase === "running" && dispatchMode === "queue");
+      (phase === "running" && turnDispatchMode === "queue");
     const outgoingMessageText = formatOutgoingPrompt({
       provider: ctxSelectedProvider,
       model: ctxSelectedModel,
@@ -6974,7 +6967,7 @@ export default function ChatView(props: ChatViewProps) {
         streaming: false,
         ...(shouldQueueBehindActiveRun
           ? { inputIntent: "queued_turn" as const }
-          : phase === "running" && dispatchMode === "steer"
+          : phase === "running" && turnDispatchMode === "steer"
             ? { inputIntent: "steer" as const }
             : {}),
       },
@@ -7777,7 +7770,6 @@ export default function ChatView(props: ChatViewProps) {
     clientSettingsHydrated &&
     !needsLoadBalancing &&
     !activeEnvironmentUnavailable &&
-    !activePendingProgress &&
     !feedbackUploading;
   useEffect(() => {
     if (
@@ -8444,12 +8436,45 @@ export default function ChatView(props: ChatViewProps) {
                               environmentUnavailable={activeEnvironmentUnavailableState}
                               activePendingApproval={activePendingApproval}
                               pendingApprovals={pendingApprovals}
-                              pendingUserInputs={pendingUserInputs}
-                              activePendingProgress={activePendingProgress}
-                              activePendingResolvedAnswers={activePendingResolvedAnswers}
-                              activePendingIsResponding={activePendingIsResponding}
-                              activePendingDraftAnswers={activePendingDraftAnswers}
-                              activePendingQuestionIndex={activePendingQuestionIndex}
+                              {...INERT_QUESTION_COMPOSER_PROPS}
+                              steeringBlockedByQuestion={pendingQuestionBlocksSteering(
+                                pendingUserInputs,
+                              )}
+                              questionCard={
+                                pendingUserInputs.length > 0 ? (
+                                  <ComposerPendingUserInputPanel
+                                    pendingUserInputs={pendingUserInputs}
+                                    cwd={gitCwd ?? undefined}
+                                    threadRef={routeThreadRef}
+                                    disabled={!canOperateThread}
+                                    respondingRequestIds={
+                                      activePendingIsResponding &&
+                                      activePendingUserInput &&
+                                      activePendingUserInput.responseCapability !== "not_resumable"
+                                        ? [
+                                            ...respondingRequestIds,
+                                            activePendingUserInput.requestId,
+                                          ]
+                                        : respondingRequestIds
+                                    }
+                                    answers={activePendingDraftAnswers}
+                                    questionIndex={activePendingQuestionIndex}
+                                    onToggleOption={onSelectActivePendingUserInputOptionStable}
+                                    onChangeCustomAnswer={
+                                      onChangeActivePendingUserInputCustomAnswer
+                                    }
+                                    onPrevious={onPreviousActivePendingUserInputQuestionStable}
+                                    onAdvance={onAdvanceActivePendingUserInputStable}
+                                    onDismiss={onDismissUserInputStable}
+                                    attachmentCapabilities={{
+                                      supportsQuestionAttachments,
+                                      attachmentUploadsCapabilityKnown,
+                                      supportsAttachmentUploads,
+                                      maxFileAttachmentBytes,
+                                    }}
+                                  />
+                                ) : null
+                              }
                               respondingRequestIds={respondingRequestIds}
                               showPlanFollowUpPrompt={showPlanFollowUpPrompt}
                               activeProposedPlan={activeProposedPlan}

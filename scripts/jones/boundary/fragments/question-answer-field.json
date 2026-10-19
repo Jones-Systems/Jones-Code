@@ -1,0 +1,35 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "question-answer-field",
+  "jonesOwnedPaths": [
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.ts",
+    "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.ts",
+    "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts"
+  ],
+  "hookPaths": ["apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "apps/mobile/src/jones/questionAnswer/composerDispatch.ts"
+    }
+  ]
+}

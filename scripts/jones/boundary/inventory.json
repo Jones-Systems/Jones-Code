@@ -1123,7 +1123,26 @@
     "packages/contracts/src/jones/providerConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned"
+    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned",
+    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx": "accepted-shared",
+    "apps/mobile/src/state/use-thread-composer-state.ts": "hook",
+    "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx": "hook",
+    "apps/web/src/components/chat/usePendingThreadRequests.ts": "accepted-shared",
+    "apps/web/src/composer-logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/pendingUserInput.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/pendingUserInput.ts": "accepted-shared",
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts": "jones-owned",
+    "apps/mobile/src/jones/questionAnswer/composerDispatch.ts": "jones-owned",
+    "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts": "jones-owned",
+    "apps/web/src/jones/questionAnswer/questionAnswerCard.ts": "jones-owned",
+    "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/question-answer-field.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1611,6 +1630,22 @@
     {
       "from": "packages/provider-core/src/server/failure.ts",
       "to": "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/QuestionAnswerFooter.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+      "to": "apps/web/src/jones/questionAnswer/questionAnswerCard.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "apps/mobile/src/jones/questionAnswer/composerDispatch.ts"
     }
   ]
 }

@@ -44,6 +44,8 @@ it("cancels an answer's pending auto-submit on revocation and resumes after a ne
       questionIndex={0}
       onToggleOption={onToggleOption}
       onAdvance={onAdvance}
+      onChangeCustomAnswer={() => {}}
+      onPrevious={() => {}}
       onDismiss={onDismiss}
     />
   );
