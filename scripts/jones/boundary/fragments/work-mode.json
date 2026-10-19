@@ -11,6 +11,8 @@
     "apps/server/src/jones/workMode/Policy.ts",
     "apps/server/src/jones/workMode/Retention.test.ts",
     "apps/server/src/jones/workMode/Retention.ts",
+    "apps/server/src/jones/workMode/Settlement.test.ts",
+    "apps/server/src/jones/workMode/Settlement.ts",
     "apps/server/src/jones/workMode/WorkMode.test.ts",
     "apps/server/src/jones/workMode/WorkMode.ts",
     "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
@@ -27,6 +29,7 @@
     "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
     "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+    "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
     "apps/web/src/components/chat/MessagesTimeline.logic.ts",
     "apps/web/src/components/sidebar/SidebarChrome.tsx",
     "packages/contracts/src/settings.ts",
@@ -82,6 +85,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
       "to": "apps/server/src/jones/workMode/Fixtures.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/workMode/Settlement.ts"
     }
   ]
 }

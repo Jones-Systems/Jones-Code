@@ -20,6 +20,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { workModeSettlementActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -311,16 +312,20 @@ export const make = Effect.gen(function* () {
     // their branch lookup, which would otherwise wait for the next minute's
     // sweep on a possibly stale cached answer.
     const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
+    const settlementActivity = yield* workModeSettlementActivity(
+      projections,
+      settings,
+      candidates,
+      nowMs,
+    );
 
     const settleThread = Effect.fn("ThreadSettlementServiceV2.settleThread")(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
-        const currentSettings = resolveProjectSettings(
-          yield* settingsService.getSettings,
-          thread.projectId,
-        ).settings;
+        const serverSettings = yield* settingsService.getSettings;
+        const currentSettings = resolveProjectSettings(serverSettings, thread.projectId).settings;
         const decisionNow = yield* DateTime.now;
         const settledAt = resolveAutoSettlementAt({
-          thread,
+          thread: settlementActivity(thread, serverSettings),
           pullRequest,
           nowMs: DateTime.toEpochMillis(decisionNow),
           autoSettleAfterDays: currentSettings.sidebarAutoSettleAfterDays,
@@ -418,7 +423,7 @@ export const make = Effect.gen(function* () {
         const { settings } = resolveProjectSettings(currentSettings, thread.projectId);
         return (
           resolveAutoSettlementAt({
-            thread,
+            thread: settlementActivity(thread, currentSettings),
             pullRequest,
             nowMs: DateTime.toEpochMillis(decisionNow),
             autoSettleAfterDays: settings.sidebarAutoSettleAfterDays,

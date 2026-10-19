@@ -7,9 +7,15 @@ guaranteed.
 Only existing top-level conversations with an idle, ready provider session are
 refreshed. Subagents, forked conversations, settled or archived threads, snoozed
 threads, stopped sessions, and threads that are running or waiting for input
-are skipped. While on, Work mode retains eligible live sessions past their normal idle
-timeout. It never reopens stopped or expired sessions. Turning it off lets
+are skipped. So are threads with an unfinished goal that is not paused, because
+a refresh could let the agent resume it; pause, finish, or clear the goal to allow
+refreshes. While on, Work mode retains eligible live sessions past their normal idle
+timeout. It does not reopen stopped or expired sessions. The one exception is a
+planned update with **Continue threads after restarts** on: a thread Work mode was
+keeping warm resumes its same conversation for its next refresh. Turning it off lets
 normal idle cleanup resume. Regular conversation activity resets the 55-minute interval.
+Refreshes do not count as activity for automatic settlement, so an idle thread
+still settles on its usual schedule, and refreshing stops when it does.
 Each refresh sends `@@@@@` and asks for the same reply. Plain messages consisting
 only of `@@@@@` are hidden from the visible conversation; unexpected replies
 remain visible.
