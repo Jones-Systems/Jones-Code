@@ -578,22 +578,48 @@ describe("assigning a thread from another environment", () => {
     },
   );
 
-  it("surfaces primary header diagnostics without changing the registration body", async () => {
+  it.each([
+    { header: undefined, present: false, state: "unavailable", reason: "source unavailable" },
+    { header: "malformed", present: false, state: "unavailable", reason: "source unavailable" },
+    { header: "ready", present: false, state: "unavailable", reason: "source unavailable" },
+    { header: undefined, present: true, state: "unknown", reason: null },
+    { header: "malformed", present: true, state: "unknown", reason: null },
+    { header: "ready", present: true, state: "ready", reason: null },
+    ...[false, true].map((present) => ({
+      header: "unavailable;reason=generation_mismatch",
+      present,
+      state: "unavailable",
+      reason: "source generation differs",
+    })),
+  ])("retains primary body eligibility with optional diagnostics: %j", async (testCase) => {
     const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    const environment = remoteEnvironment(shared);
+    const context = {
+      ...shared.registration(),
+      sources: testCase.present ? [{ ...environment.state.sources[0]!, ...primarySource }] : [],
+    };
+    shared.state.intercept = (call) => (call.route === "registrationContext" ? context : undefined);
     await mountWith(shared);
-    expect(latest.assignmentAvailability!(local)).toEqual({ state: "unknown", reason: null });
     http.run.mockImplementation(
-      routeWorkstreamsHttp(shared.handle, {
-        "x-jones-workstreams-t3-availability": "unavailable;reason=generation_mismatch",
-      }),
+      routeWorkstreamsHttp(
+        shared.handle,
+        testCase.header === undefined
+          ? {}
+          : { "x-jones-workstreams-t3-availability": testCase.header },
+      ),
     );
     await act(async () => latest.refresh());
     await settle(() => expect(latest.loading).toBe(false));
-    expect(latest.registrationContext).toEqual(shared.registration());
+    expect(latest.registrationContext).toEqual(context);
     expect(latest.assignmentAvailability!(local)).toEqual({
-      state: "unavailable",
-      reason: "source generation differs",
+      state: testCase.state,
+      reason: testCase.reason,
     });
+    expect(latest.stale).toBe(false);
+    expect(primarySubmits(shared)).toEqual([]);
+    expect(latest.assignmentAvailability!(remote)).toEqual({ state: "unknown", reason: null });
+    expect(await assignRemote()).toBeUndefined();
+    expect(latest.stale).toBe(false);
   });
 
   it("a remote scope denial before submission retains the primary snapshot", async () => {

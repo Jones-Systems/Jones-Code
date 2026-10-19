@@ -1529,7 +1529,7 @@ export function useWorkstreams(
       return registrationContextAvailability;
     return registrationContextAvailability.state === "unavailable"
       ? registrationContextAvailability
-      : { state: "unknown", reason: null };
+      : { state: "unavailable", reason: "source unavailable" };
   };
 
   return {
