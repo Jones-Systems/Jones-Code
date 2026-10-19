@@ -1,9 +1,9 @@
 // @effect-diagnostics globalDate:off globalTimers:off - Browser and native view lifecycles own this imperative timer outside an Effect runtime.
-export const THREAD_READ_DWELL_MS = 3_000;
+const THREAD_READ_DWELL_MS = 3_000;
 // During an active turn the thread's updatedAt advances several times per
 // second, and every server-side visit is a full command dispatch plus a
 // broadcast to all shell subscribers.
-export const THREAD_VISIT_THROTTLE_MS = 10_000;
+const THREAD_VISIT_THROTTLE_MS = 10_000;
 
 type ViewingThread = {
   threadKey: string;
