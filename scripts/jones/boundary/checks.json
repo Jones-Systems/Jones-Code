@@ -2,6 +2,26 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-voice-review-self-identity",
+      "tests": [
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "packages/contracts/src/voiceReview.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/reactCompilerCoverage.test.ts -t \"compiles apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx\" --maxWorkers=1",
+        "vp test run packages/contracts/src/voiceReview.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/voiceReview/http.test.ts apps/server/src/voiceReview/config.test.ts packages/client-runtime/src/voice-review.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/workQueue/UnifiedQueuePage.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-workstreams-interaction-recovery",
       "tests": [
         "packages/client-runtime/src/state/session.test.ts",
@@ -405,9 +425,11 @@
         "apps/server/src/jones/provider/workModePrompt.test.ts",
         "apps/server/src/jones/workMode/Policy.test.ts",
         "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/Settlement.test.ts",
         "apps/server/src/jones/workMode/WorkMode.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
         "packages/contracts/src/jones/workMode.test.ts",
@@ -415,7 +437,7 @@
         "packages/shared/src/serverSettings.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/KeyedLock.test.ts apps/mobile/src/features/threads/pending-thread-feed.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/server/src/jones/provider/workModePrompt.test.ts apps/server/src/jones/workMode/Policy.test.ts apps/server/src/jones/workMode/Retention.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx packages/contracts/src/jones/workMode.test.ts packages/shared/src/jones/workMode.test.ts packages/shared/src/serverSettings.test.ts"
+        "vp test run packages/shared/src/KeyedLock.test.ts apps/mobile/src/features/threads/pending-thread-feed.test.ts apps/mobile/src/lib/threadActivity.test.ts apps/server/src/jones/provider/workModePrompt.test.ts apps/server/src/jones/workMode/Policy.test.ts apps/server/src/jones/workMode/Retention.test.ts apps/server/src/jones/workMode/Settlement.test.ts apps/server/src/jones/workMode/WorkMode.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ThreadSettlementService.test.ts apps/web/src/components/chat/MessagesTimeline.logic.test.ts apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx packages/contracts/src/jones/workMode.test.ts packages/shared/src/jones/workMode.test.ts packages/shared/src/serverSettings.test.ts"
       ]
     },
     {
@@ -1532,6 +1554,30 @@
       ]
     },
     {
+      "id": "jones-question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts"
+      ],
+      "commands": [
+        "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
+        "vp test run apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/composer-logic.test.ts apps/web/src/components/chat/composerSubmission.test.ts apps/web/src/components/chat/composerTypingGuard.test.ts apps/web/src/questionAttachments.test.ts apps/web/src/components/ChatView.logic.test.ts apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts apps/mobile/src/jones/questionAnswer/composerLayout.test.ts apps/mobile/src/features/threads/pendingUserInputLayout.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "compact-sidebar-header",
       "tests": [
         "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
@@ -1559,6 +1605,48 @@
         "vp run --filter @t3tools/mobile typecheck",
         "vp run lint:mobile",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/settlementOrigins/http.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
+        "packages/contracts/src/jones/settlementOrigins.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
+        "vp test run apps/web/src/jones/settlementNotifications/localStorageStore.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx src/jones/settlementNotifications/explicitDismiss.browser.test.tsx --maxWorkers=1",
+        "vp test run apps/mobile/src/jones/settlementNotifications/kvStore.test.ts apps/mobile/src/jones/settlementNotifications/navigation.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp lint packages/client-runtime/src/jones/settlementNotifications apps/web/src/jones/settlementNotifications",
+        "vp run lint:mobile",
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/contracts/src/jones/settlementOrigins.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1",
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1"
       ]
     },
     {

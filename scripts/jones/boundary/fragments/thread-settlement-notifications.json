@@ -1,0 +1,65 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-settlement-notifications",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/settlementNotifications/model.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/detect.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/inbox.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/controller.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/index.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/testFixtures.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+    "apps/web/src/jones/settlementNotifications/localStorageStore.ts",
+    "apps/web/src/jones/settlementNotifications/controller.ts",
+    "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.tsx",
+    "apps/web/src/jones/settlementNotifications/SettlementNotificationToastContent.tsx",
+    "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+    "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+    "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+    "apps/mobile/src/jones/settlementNotifications/kvStore.ts",
+    "apps/mobile/src/jones/settlementNotifications/controller.ts",
+    "apps/mobile/src/jones/settlementNotifications/SettlementNotificationOverlay.tsx",
+    "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+    "apps/mobile/src/jones/settlementNotifications/navigation.ts",
+    "apps/mobile/src/jones/settlementNotifications/navigation.test.ts",
+    "apps/mobile/src/jones/settlementNotifications/resolveOrigins.ts",
+    "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+    "apps/server/src/jones/settlementOrigins/SettlementOrigins.ts",
+    "apps/server/src/jones/settlementOrigins/clientIngress.ts",
+    "apps/server/src/jones/settlementOrigins/http.test.ts",
+    "apps/server/src/jones/settlementOrigins/http.ts",
+    "apps/web/src/jones/settlementNotifications/resolveOrigins.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/ui/toast.tsx",
+    "apps/web/src/routes/__root.tsx",
+    "apps/mobile/src/Stack.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/routes/__root.tsx",
+      "to": "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.tsx"
+    },
+    {
+      "from": "apps/mobile/src/Stack.tsx",
+      "to": "apps/mobile/src/jones/settlementNotifications/SettlementNotificationOverlay.tsx"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/settlementOrigins.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/settlementOrigins/SettlementOrigins.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/settlementOrigins/clientIngress.ts"
+    }
+  ]
+}

@@ -26,6 +26,7 @@ import {
   MenuSeparator,
 } from "../../components/ui/menu";
 import { Toggle, ToggleGroup } from "../../components/ui/toggle-group";
+import { VoiceReviewDeviceSetup } from "../../components/voiceReview/VoiceReviewDeviceSetup";
 import { EnvironmentVoiceReview } from "../../components/voiceReview/VoiceReviewPage";
 import { WorkQueueMetadataPanel } from "./WorkQueueMetadataPanel";
 import { classifySentPrompts } from "./classifySentPrompts";
@@ -546,5 +547,14 @@ function PromptSourceDiscovery({
     );
     return () => controller.abort();
   }, [connected, fetchList, loadQueue, requestKey, supportsQueue]);
-  return null;
+  if (!connected || sources.voiceObservedFor !== requestKey || sources.voice === "configured")
+    return null;
+  return (
+    <section aria-label={`${environment.label} device setup`} className="space-y-2">
+      <p className="text-sm text-muted-foreground">
+        Prompt review is unavailable for this device on {environment.label}.
+      </p>
+      <VoiceReviewDeviceSetup environmentId={environmentId} />
+    </section>
+  );
 }

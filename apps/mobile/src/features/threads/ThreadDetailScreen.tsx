@@ -562,8 +562,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
     useState<RuntimeRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
-  const composerSlotHidden =
-    activeUserInputRequestId !== null || props.creationState?.kind === "failed";
+  const composerSlotHidden = props.creationState?.kind === "failed";
   const [usageLimitsPanel, setUsageLimitsPanel] = useState<{
     readonly key: string;
     readonly threadKey: string;
@@ -637,7 +636,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     keyboardHeight:
       lastKnownKeyboardHeight > 0 ? lastKnownKeyboardHeight : ESTIMATED_KEYBOARD_HEIGHT,
     navigationHeaderHeight,
-    composerOverlapHeight: composerBottomInset,
+    composerOverlapHeight,
   });
   const estimatedOverlayHeight = composerOverlapHeight;
   // The overlay's measured height includes the home-indicator inset (the
@@ -1269,11 +1268,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   {props.activePendingApproval || props.activePendingUserInput ? (
                     <Animated.View
                       className="shrink-0 gap-3 px-4 pb-3"
-                      style={
-                        activeUserInputRequestId !== null
-                          ? { paddingBottom: composerBottomInset }
-                          : undefined
-                      }
                       entering={FadeInDown.duration(220)}
                       exiting={FadeOut.duration(140)}
                     >
@@ -1310,8 +1304,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 </View>
 
                 {/*
-                 * Hidden (not unmounted) while a user-input request owns the composer slot, so
-                 * composer drafts and editor state survive.
+                 * Hide failed thread creation without unmounting the editor, so its draft and
+                 * editor state survive. Pending questions keep this ordinary composer visible.
                  */}
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
                   {isProviderSubagent ? (

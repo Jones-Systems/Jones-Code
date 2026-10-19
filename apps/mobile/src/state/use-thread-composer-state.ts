@@ -124,6 +124,7 @@ import { enqueueThreadOutboxMessage } from "./thread-outbox";
 import { dispatchingQueuedMessageIdAtom, useThreadOutboxMessages } from "./use-thread-outbox";
 import { threadEnvironment } from "./threads";
 import { useAtomCommand } from "./use-atom-command";
+import { resolveQuestionAwareDispatchMode } from "../jones/questionAnswer/composerDispatch";
 
 const EMPTY_QUEUE_WORKFLOW_ATOM = Atom.make<null>(null).pipe(
   Atom.withLabel("mobile-thread-queue-workflow:empty"),
@@ -692,13 +693,12 @@ export function useThreadComposerState() {
       const setupRunning = [selectedThreadActivityRun?.status, selectedThreadRuntime?.status].some(
         (status) => status === "preparing" || status === "starting",
       );
-      const followUpDispatchMode = setupRunning
-        ? "queue"
-        : followUpAction === "auto"
-          ? null
-          : followUpAction === "queue"
-            ? "queue"
-            : "auto";
+      const followUpDispatchMode = resolveQuestionAwareDispatchMode({
+        busy: activeThreadBusy,
+        setupRunning,
+        followUpAction,
+        requests: selectedThreadProjection?.projection.runtimeRequests ?? [],
+      });
 
       if (
         selectedThreadProjection?.projection.thread.historyOrigin === "v1_import" &&

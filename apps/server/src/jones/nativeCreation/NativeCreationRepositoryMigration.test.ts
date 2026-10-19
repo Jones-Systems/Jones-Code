@@ -31,6 +31,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 108, name: "PhysicalProcessEvidence" },
         { migration_id: 109, name: "OrdinaryCheckoutLifecycle" },
         { migration_id: 110, name: "ThreadLookupIndexes" },
+        { migration_id: 111, name: "ClientSettlementCommands" },
       ],
     );
     assert.deepEqual(

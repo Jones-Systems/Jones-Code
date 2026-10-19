@@ -34,6 +34,8 @@ export interface MetadataPageInput {
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
   readonly expectedSnapshotSequence?: number | undefined;
+  readonly threadIds?: ReadonlyArray<ThreadId> | undefined;
+  readonly pinned?: boolean | undefined;
 }
 export class OrganizationMetadataMcpService extends Context.Service<
   OrganizationMetadataMcpService,
@@ -112,29 +114,24 @@ const make = Effect.gen(function* () {
       }),
     listThreadMetadata: (environmentId, input) =>
       Effect.gen(function* () {
+        // One unfiltered read covers active and archived threads in a single
+        // projection transaction, so both halves share one snapshotSequence.
         const snapshot = yield* snapshots
-          .getShellSnapshot({ location: "active" })
+          .getShellSnapshot()
           .pipe(
             Effect.mapError(
               () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
             ),
           );
-        const archived = yield* snapshots
-          .getShellSnapshot({ location: "archive" })
-          .pipe(
-            Effect.mapError(
-              () => new OrganizationMetadataError({ reason: "local-operation-failed" }),
-            ),
-          );
-        if (snapshot.snapshotSequence !== archived.snapshotSequence) {
-          return yield* new OrganizationMetadataError({
-            reason: "snapshot-sequence-changed",
-            expectedSnapshotSequence: snapshot.snapshotSequence,
-            snapshotSequence: archived.snapshotSequence,
-          });
-        }
-        const threads = [...snapshot.threads, ...archived.archivedThreads]
-          .filter((thread) => thread.deletedAt === null)
+        const requested = input.threadIds === undefined ? undefined : new Set(input.threadIds);
+        const selected =
+          requested === undefined && input.pinned !== true
+            ? () => true
+            : (thread: OrchestrationV2ThreadShell) =>
+                requested?.has(thread.id) === true ||
+                (input.pinned === true && thread.pinnedAt !== null);
+        const threads = [...snapshot.threads, ...snapshot.archivedThreads]
+          .filter((thread) => thread.deletedAt === null && selected(thread))
           .toSorted((a, b) => a.id.localeCompare(b.id));
         if (
           input.expectedSnapshotSequence !== undefined &&

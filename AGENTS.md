@@ -68,7 +68,8 @@ Jones-owned tables keyed by upstream IDs, without references to upstream tables.
   Do not invoke automated PR review services or reviewer bots for Jones-Systems
   pull requests.
 - These instructions do not authorize credential access, shared route changes,
-  process termination outside the task, privileged operations, or publication.
+  process termination outside the task, privileged operations, release, or
+  deployment. Ordinary PR publication and merge follow the contract below.
 
 ## Load architecture guidance when it applies
 
@@ -93,6 +94,13 @@ Jones-owned tables keyed by upstream IDs, without references to upstream tables.
   Effect library guidance when needed; vendored references are read-only.
 
 ## Pull request merge qualification
+
+Ordinary scoped implementation includes PR publication, current-head CI repair
+and watching, and qualifying merge unless the owner sets an earlier finish line
+or review hold. Do not ask separately for each covered delivery step. Follow
+[the standing delivery and merge contract](docs/operations/contributor-guidance.md#standing-delivery-and-merge-contract)
+for `Jones-Systems/Jones-Code` targeting `main` with normal merge commits.
+Release, deployment, sudo, branch/worktree deletion, and bypasses are excluded.
 
 Ordinary PR merges require passing applicable checks on the current head.
 For an atomically selected, contiguous complete stack, follow the standing

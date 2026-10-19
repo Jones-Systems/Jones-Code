@@ -17,10 +17,12 @@ import {
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
 import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
   VoiceReviewRecentList,
+  VoiceReviewSelfIdentity,
   VoiceReviewDiagnostics,
   VoiceReviewDraft,
   VoiceReviewDraftList,
@@ -166,6 +168,13 @@ export const makeJonesHttpGroups = ({
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
   );
   class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+    .add(
+      HttpApiEndpoint.get("selfIdentity", "/api/voice-review/self-identity", {
+        headers: VoiceReviewHeaders,
+        success: VoiceReviewSelfIdentity,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
         headers: VoiceReviewHeaders,
@@ -425,6 +434,15 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  class EnvironmentSettlementOriginsHttpApi extends HttpApiGroup.make("settlementOrigins").add(
+    HttpApiEndpoint.post("resolve", "/api/jones/settlement-origins", {
+      headers: OptionalBearerHeaders,
+      payload: SettlementOriginsRequest,
+      success: SettlementOriginsResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
   class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
@@ -510,6 +528,7 @@ export const makeJonesHttpGroups = ({
     EnvironmentImportedHistoryHttpApi,
     EnvironmentJonesUpdatesHttpApi,
     EnvironmentWorkQueueMetadataHttpApi,
+    EnvironmentSettlementOriginsHttpApi,
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,

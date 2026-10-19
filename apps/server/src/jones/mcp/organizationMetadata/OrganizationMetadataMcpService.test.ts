@@ -94,12 +94,14 @@ const harness = (
   options: {
     active?: OrchestrationV2ThreadShell[];
     archived?: OrchestrationV2ThreadShell[];
-    archiveSequence?: number;
-    failureLocation?: "active" | "archive";
+    // Sequence advance per read, as on a server busy with unrelated work.
+    sequenceStep?: number;
+    fail?: boolean;
     address?: NetAddress.SocketAddress;
   } = {},
 ) => {
   const locations: Array<string | undefined> = [];
+  let sequence = 7;
   const dependencies = Layer.mergeAll(
     configLayer,
     Layer.mock(HttpServer.HttpServer)({
@@ -108,18 +110,22 @@ const harness = (
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getShellSnapshot: (input) => {
         locations.push(input?.location);
-        if (input?.location === options.failureLocation)
+        if (options.fail)
           return Effect.fail(
             new OrchestratorProjectionError({
               threadId: caller.threadId,
               cause: "synthetic read failure",
             }),
           );
+        const snapshotSequence = sequence;
+        sequence += options.sequenceStep ?? 0;
+        const active = input?.location === "archive" ? [] : (options.active ?? []);
+        const archived = input?.location === "active" ? [] : (options.archived ?? []);
         return Effect.succeed({
           schemaVersion: 1,
-          snapshotSequence: input?.location === "archive" ? (options.archiveSequence ?? 7) : 7,
-          threads: input?.location === "active" ? (options.active ?? []) : [],
-          archivedThreads: input?.location === "archive" ? (options.archived ?? []) : [],
+          snapshotSequence,
+          threads: active,
+          archivedThreads: archived,
         });
       },
     }),
@@ -152,20 +158,73 @@ it.effect(
       expect((yield* service.listThreadMetadata(environmentId, { offset: 20 })).threads).toEqual(
         [],
       );
-      expect(h.locations).toEqual(["active", "archive", "active", "archive", "active", "archive"]);
+      expect(h.locations).toEqual([undefined, undefined, undefined]);
     }).pipe(Effect.provide(h.layer));
   },
 );
 
-it.effect("fails closed when active and archived reads have different watermarks", () => {
-  const h = harness({ archiveSequence: 8 });
+it.effect("reads one consistent page while unrelated work advances the sequence", () => {
+  const h = harness({
+    active: [thread("b")],
+    archived: [thread("a", { archivedAt: timestamp })],
+    sequenceStep: 49,
+  });
   return Effect.gen(function* () {
     const service = yield* Metadata.OrganizationMetadataMcpService;
-    expect(yield* service.listThreadMetadata(environmentId, {}).pipe(Effect.flip)).toMatchObject({
-      reason: "snapshot-sequence-changed",
-      expectedSnapshotSequence: 7,
-      snapshotSequence: 8,
+    const first = yield* service.listThreadMetadata(environmentId, { limit: 100 });
+    expect(first.snapshotSequence).toBe(7);
+    expect(first.threads.map(({ threadId }) => threadId)).toEqual(["a", "b"]);
+    const second = yield* service.listThreadMetadata(environmentId, { limit: 100 });
+    expect(second.snapshotSequence).toBe(56);
+    expect(h.locations).toEqual([undefined, undefined]);
+  }).pipe(Effect.provide(h.layer));
+});
+
+it.effect("selects named threads and every pinned thread from the same read", () => {
+  const h = harness({
+    active: [
+      thread("target", { activeOrderKey: "a0" }),
+      thread("pin-keyed", { pinnedAt: timestamp, pinOrderKey: "a1" }),
+      thread("pin-keyless", { pinnedAt: timestamp }),
+      thread("other"),
+      thread("pin-deleted", { pinnedAt: timestamp, deletedAt: timestamp }),
+    ],
+    archived: [thread("archived-target", { archivedAt: timestamp })],
+    sequenceStep: 3,
+  });
+  const ids = (page: { threads: ReadonlyArray<{ threadId: string }> }) =>
+    page.threads.map(({ threadId }) => threadId);
+  return Effect.gen(function* () {
+    const service = yield* Metadata.OrganizationMetadataMcpService;
+    const named = yield* service.listThreadMetadata(environmentId, {
+      threadIds: [ThreadId.make("target"), ThreadId.make("archived-target"), ThreadId.make("gone")],
     });
+    expect(ids(named)).toEqual(["archived-target", "target"]);
+    expect(named.nextOffset).toBeNull();
+    const pinned = yield* service.listThreadMetadata(environmentId, { pinned: true });
+    expect(ids(pinned)).toEqual(["pin-keyed", "pin-keyless"]);
+    const union = yield* service.listThreadMetadata(environmentId, {
+      threadIds: [ThreadId.make("target"), ThreadId.make("pin-keyed")],
+      pinned: true,
+    });
+    expect(ids(union)).toEqual(["pin-keyed", "pin-keyless", "target"]);
+    expect(union.threads.find(({ threadId }) => threadId === "target")).toMatchObject({
+      pinnedAt: null,
+      pinOrderKey: null,
+      activeOrderKey: "a0",
+    });
+    expect(union.threads.find(({ threadId }) => threadId === "pin-keyed")).toMatchObject({
+      pinOrderKey: "a1",
+    });
+    const unselected = yield* service.listThreadMetadata(environmentId, { pinned: false });
+    expect(ids(unselected)).toEqual([
+      "archived-target",
+      "other",
+      "pin-keyed",
+      "pin-keyless",
+      "target",
+    ]);
+    expect(h.locations).toEqual([undefined, undefined, undefined, undefined]);
   }).pipe(Effect.provide(h.layer));
 });
 
@@ -311,15 +370,12 @@ it.effect.each(
   }).pipe(Effect.provide(h.layer));
 });
 
-it.effect.each(["active", "archive"] as const)(
-  "maps %s read failures without projecting the cause",
-  (failureLocation) => {
-    const h = harness({ failureLocation });
-    return Effect.gen(function* () {
-      const service = yield* Metadata.OrganizationMetadataMcpService;
-      const error = yield* service.listThreadMetadata(environmentId, {}).pipe(Effect.flip);
-      expect(error.reason).toBe("local-operation-failed");
-      expect(encodeJsonText(error)).not.toContain("synthetic read failure");
-    }).pipe(Effect.provide(h.layer));
-  },
-);
+it.effect("maps read failures without projecting the cause", () => {
+  const h = harness({ fail: true });
+  return Effect.gen(function* () {
+    const service = yield* Metadata.OrganizationMetadataMcpService;
+    const error = yield* service.listThreadMetadata(environmentId, {}).pipe(Effect.flip);
+    expect(error.reason).toBe("local-operation-failed");
+    expect(encodeJsonText(error)).not.toContain("synthetic read failure");
+  }).pipe(Effect.provide(h.layer));
+});

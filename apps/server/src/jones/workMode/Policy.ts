@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   type OrchestrationV2Command,
+  type OrchestrationV2ProviderGoal,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type ModelSelection,
@@ -17,6 +18,14 @@ export interface WorkModeCandidate {
 }
 
 export type WorkModeAdmissionResult = "dispatched" | "acknowledged" | "skipped";
+
+// An unfinished goal resumes after the next completed turn: Codex starts its next
+// goal turn, which the adapter adopts into that run, and Claude re-checks the goal
+// at the end of every message. A refresh must never be what resumes goal work;
+// only paused or complete goals are known not to continue.
+function goalMayContinue(goal: OrchestrationV2ProviderGoal | null | undefined): boolean {
+  return goal != null && goal.status !== "paused" && goal.status !== "complete";
+}
 
 function activityMillis(thread: OrchestrationV2ThreadShell): number | null {
   const dates = [
@@ -53,7 +62,8 @@ export function workModeCandidate(
     thread.limitRecovery != null ||
     thread.lastErrorClass === "usage_limit" ||
     (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs) ||
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
+    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) ||
+    goalMayContinue(thread.goal)
   )
     return null;
   const anchor = activityMillis(thread);
@@ -96,6 +106,7 @@ export function workModeContext(
     owner.appThreadId !== projection.thread.id ||
     owner.providerInstanceId !== projection.thread.modelSelection.instanceId ||
     backgroundWorkHoldsCompletion(owner.pendingBackgroundTasks ?? []) ||
+    goalMayContinue(owner.goal) ||
     !projection.providerTurns.some(
       (turn) =>
         turn.providerThreadId === owner.id &&

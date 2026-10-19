@@ -142,6 +142,7 @@
     {
       "id": "voice-review",
       "tests": [
+        "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx",
         "apps/server/src/voiceReview/http.test.ts",
         "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
         "apps/server/src/voiceReview/composition.test.ts",
@@ -291,16 +292,18 @@
         "apps/server/src/jones/provider/workModePrompt.test.ts",
         "apps/server/src/jones/workMode/Policy.test.ts",
         "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/Settlement.test.ts",
         "apps/server/src/jones/workMode/WorkMode.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
         "packages/contracts/src/jones/workMode.test.ts",
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
     },
     {
       "id": "persistent-host-connections",
@@ -921,6 +924,22 @@
       "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
     },
     {
+      "id": "question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
+      ],
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+    },
+    {
       "id": "compact-sidebar-header",
       "tests": [
         "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
@@ -937,6 +956,28 @@
         "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
       ],
       "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
+    },
+    {
+      "id": "thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/settlementOrigins/http.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
+        "packages/contracts/src/jones/settlementOrigins.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts"
+      ],
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims."
     }
   ]
 }
