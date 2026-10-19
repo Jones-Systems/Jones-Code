@@ -31,7 +31,7 @@ function closeButton() {
   return document.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!;
 }
 
-async function addToast(explicitDismissOnly?: boolean) {
+async function addToast(explicitDismissOnly = false) {
   const onClose = vi.fn();
   const navigate = vi.fn();
   await act(async () => {
@@ -69,10 +69,39 @@ it("keeps an explicit-only toast through navigation and Escape until X closes it
 
 async function swipeRight() {
   const description = document.querySelector<HTMLElement>('[data-slot="toast-description"]')!;
-  await userEvent.dragAndDrop(description, description, {
-    sourcePosition: { x: 1, y: 1 },
-    targetPosition: { x: 250, y: 1 },
+  const toast = description.closest<HTMLElement>("[data-position]")!;
+  // Synthetic pointers have no browser capture; keep the real bubbling handlers.
+  const capture = vi.spyOn(toast, "setPointerCapture").mockImplementation(() => {});
+  const pointer = (type: string, clientX: number, movementX = 0) =>
+    description.dispatchEvent(
+      new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 1,
+        pointerType: "touch",
+        button: 0,
+        buttons: type === "pointerup" ? 0 : 1,
+        clientX,
+        clientY: 20,
+        movementX,
+      }),
+    );
+  await act(async () => {
+    pointer("pointerdown", 20);
   });
+  await act(async () => {
+    pointer("pointermove", 25, 5);
+  });
+  await act(async () => {
+    pointer("pointermove", 100, 75);
+  });
+  await act(async () => {
+    pointer("pointermove", 260, 160);
+  });
+  await act(async () => {
+    pointer("pointerup", 260);
+  });
+  capture.mockRestore();
 }
 
 it("keeps default swipe dismissal", async () => {

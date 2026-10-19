@@ -1560,6 +1560,31 @@
         "vp run lint:mobile",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-thread-settlement-notifications",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementNotifications/detect.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/inbox.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/controller.test.ts",
+        "apps/web/src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx",
+        "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
+        "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
+        "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
+        "vp test run apps/web/src/jones/settlementNotifications/localStorageStore.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/settlementNotifications/SettlementNotificationCoordinator.browser.test.tsx src/jones/settlementNotifications/explicitDismiss.browser.test.tsx --maxWorkers=1",
+        "vp test run apps/mobile/src/jones/settlementNotifications/kvStore.test.ts apps/mobile/src/jones/settlementNotifications/navigation.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp lint packages/client-runtime/src/jones/settlementNotifications apps/web/src/jones/settlementNotifications",
+        "vp run lint:mobile",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
