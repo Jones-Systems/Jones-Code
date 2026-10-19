@@ -45,17 +45,19 @@ function genuineActivity<T extends ProjectionStore.ProjectionSettlementCandidate
  * Each keep-warm refresh is a run and a user message, so upstream inactivity
  * settlement would treat every refreshed thread as active and Work would keep
  * it warm forever. While Work is on, measure inactivity from the latest
- * exchange that is not a refresh. Identity, status and snapshot fields stay as
- * read, so pull-request settlement and the settle command's snapshot guard are
+ * exchange that is not a refresh. The returned view checks the settings current
+ * when each thread is decided, so turning Work off during the history read
+ * restores upstream anchors. Identity, status and snapshot fields stay as read,
+ * so pull-request settlement and the settle command's snapshot guard are
  * unchanged, and a thread whose history cannot be read keeps upstream anchors.
  */
-export function withoutWorkModeActivity<T extends ProjectionStore.ProjectionSettlementCandidate>(
+export function workModeSettlementActivity<T extends ProjectionStore.ProjectionSettlementCandidate>(
   projections: Pick<ProjectionStore.ProjectionStoreV2["Service"], "getThreadRecords">,
   settings: ServerSettings,
   candidates: ReadonlyArray<T>,
   nowMs: number,
-): Effect.Effect<ReadonlyArray<T>> {
-  if (!settings.workModeEnabled) return Effect.succeed(candidates);
+): Effect.Effect<(thread: T, currentSettings: ServerSettings) => T> {
+  if (!settings.workModeEnabled) return Effect.succeed((thread) => thread);
   return Effect.forEach(
     candidates,
     (candidate) => {
@@ -95,5 +97,11 @@ export function withoutWorkModeActivity<T extends ProjectionStore.ProjectionSett
         );
     },
     { concurrency: 8 },
+  ).pipe(
+    Effect.map((discounted) => {
+      const genuine = new Map(discounted.map((thread) => [thread.id, thread]));
+      return (thread, currentSettings) =>
+        currentSettings.workModeEnabled ? (genuine.get(thread.id) ?? thread) : thread;
+    }),
   );
 }

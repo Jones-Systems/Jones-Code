@@ -11,6 +11,7 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
@@ -101,16 +102,24 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
   readonly candidate: ProjectionStore.ProjectionSettlementCandidate;
   readonly settings: ContractServerSettings;
   readonly recordsFail?: boolean;
+  // Holds the history read open until the test changes settings mid-sweep.
+  readonly holdRecords?: boolean;
 }) {
   const activation = yield* Deferred.make<void>();
   const candidateReads = yield* Queue.unbounded<void>();
   const recordReads = yield* Ref.make(0);
+  const recordsRequested = yield* Deferred.make<void>();
+  const recordsReleased = yield* Deferred.make<void>();
+  if (options.holdRecords !== true) yield* Deferred.succeed(recordsReleased, undefined);
+  const settings = yield* Ref.make(options.settings);
   const commands = yield* Ref.make<ReadonlyArray<AutoSettleCommand>>([]);
   const settingsChanges = yield* PubSub.unbounded<ContractServerSettings>();
   const merges = yield* PubSub.unbounded<PullRequestService.PullRequestMergeEvent>();
 
   const getThreadRecords = ((threadId, _fields, filter) =>
     Ref.update(recordReads, (count) => count + 1).pipe(
+      Effect.andThen(Deferred.succeed(recordsRequested, undefined)),
+      Effect.andThen(Deferred.await(recordsReleased)),
       Effect.andThen(
         options.recordsFail === true || threadId !== options.projection.thread.id
           ? Effect.die(new Error("thread records unavailable"))
@@ -157,10 +166,10 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
       ServerSettings.ServerSettingsService.of({
         start: Effect.void,
         ready: Effect.void,
-        getSettings: Effect.succeed(options.settings),
+        getSettings: Ref.get(settings),
         updateSettings: () => Effect.die("Unexpected settings update"),
         updateProviderInstance: () => Effect.die("Unexpected provider mutation"),
-        withSettingsSnapshot: (use) => use(options.settings),
+        withSettingsSnapshot: (use) => Ref.get(settings).pipe(Effect.flatMap(use)),
         streamChanges: Stream.fromPubSub(settingsChanges),
         subscribeChanges: PubSub.subscribe(settingsChanges).pipe(
           Effect.map((subscription) => Stream.fromSubscription(subscription)),
@@ -188,7 +197,14 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     return { commands: yield* Ref.get(commands), recordReads: yield* Ref.get(recordReads) };
   }).pipe(Effect.provide(ThreadSettlementService.layer.pipe(Layer.provide(dependencies))));
 
-  return { sweepOnce };
+  // Changes settings once the sweep is reading history, then lets the read finish.
+  const changeSettingsDuringRecordRead = (next: ContractServerSettings) =>
+    Deferred.await(recordsRequested).pipe(
+      Effect.andThen(Ref.set(settings, next)),
+      Effect.andThen(Deferred.succeed(recordsReleased, undefined)),
+    );
+
+  return { sweepOnce, changeSettingsDuringRecordRead };
 });
 
 const workOn = { ...DEFAULT_SERVER_SETTINGS, workModeEnabled: true };
@@ -228,6 +244,22 @@ describe("Work Mode keep-warm and inactivity settlement", () => {
           settings: DEFAULT_SERVER_SETTINGS,
         });
         expect(yield* harness.sweepOnce).toEqual({ commands: [], recordReads: 0 });
+      }),
+    ),
+  );
+
+  it.effect("keeps upstream anchors when Work mode is turned off while history is read", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW_MS);
+        const harness = yield* makeHarness({
+          ...keptWarmThread(4 * DAY_MS),
+          settings: workOn,
+          holdRecords: true,
+        });
+        const sweep = yield* Effect.forkChild(harness.sweepOnce);
+        yield* harness.changeSettingsDuringRecordRead({ ...workOn, workModeEnabled: false });
+        expect(yield* Fiber.join(sweep)).toEqual({ commands: [], recordReads: 1 });
       }),
     ),
   );
