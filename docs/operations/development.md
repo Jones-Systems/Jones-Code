@@ -238,6 +238,31 @@ Marketing keeps `astro check` for Astro files.
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 
+### Hosted focused precheck
+
+After owner review and merge, [focused-precheck.yml](../../.github/workflows/focused-precheck.yml)
+can check a pushed candidate before opening its PR. Skip content-only changes and
+cases already covered by cheap local checks; after opening a PR, reuse full CI.
+Choose `static` (Knip, boundary, check, typecheck), `tests`, or `static-and-tests`.
+
+```sh
+gh workflow run focused-precheck.yml --ref main \
+  -f candidate_sha=<40-lowercase-hex> -f candidate_branch=<branch> \
+  -f profile=tests -f request_id=<unique-8-to-64-character-id> \
+  -f 'test_paths=packages/shared/src/example.test.ts'
+```
+
+Omit `test_paths` for `static`. The `tests` profile accepts up to 20 exact tracked `*.test.ts` or
+`*.test.tsx` files in server, desktop, mobile, web unit tests, and supported packages.
+Browser, native, packaging, scripts, infrastructure, oxlint-plugin and source-control-testing
+are excluded; changed runner configs or unsupported package scripts remain unknown.
+Correlate the request ID in `gh run list --workflow focused-precheck.yml --event workflow_dispatch --limit 20`;
+check at most six times, ten seconds apart. No match is unknown: reconcile before retrying.
+Read the run's summary and seven-day receipt artifact. The receipt covers the candidate
+tree, not a PR merge commit or merge approval; it is advisory because candidate code
+shares the runner. If default-head ancestry is false or unknown, sync and rerun for the
+new SHA. Full CI remains unchanged; this pilot adds no VPS build or runner-pool demand.
+
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo, then
