@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ServerAuthSessionMethod } from "./auth.ts";
 import { ThreadRegistryAssociation } from "./threadRegistry.ts";
 import { NonNegativeInt, PositiveInt, IsoDateTime } from "./baseSchemas.ts";
 
@@ -82,6 +83,18 @@ const strictPayload = <const Fields extends Schema.Struct.Fields>(fields: Fields
   Schema.Record(Schema.String, Schema.Unknown)
     .check(Schema.isPropertyNames(Schema.Literals(Object.keys(fields))))
     .pipe(Schema.decodeTo(Schema.Struct(fields)));
+
+export const VoiceReviewSelfIdentity = strictPayload({
+  subject: Schema.String,
+  method: ServerAuthSessionMethod,
+  proof_key_thumbprint: Schema.NullOr(Schema.String.check(Schema.isNonEmpty())),
+  enrollment: Schema.Literals(["enrolled", "not-enrolled", "not-configured"]),
+}).check(
+  Schema.makeFilter(
+    (identity) => identity.method === "dpop-access-token" || identity.proof_key_thumbprint === null,
+  ),
+);
+export type VoiceReviewSelfIdentity = typeof VoiceReviewSelfIdentity.Type;
 
 export const VoiceReviewRevisionPayload = strictPayload({
   expected_revision: PositiveInt,

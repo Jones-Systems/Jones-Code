@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off - The native open spy proves that own-identity reads never access the broker credential file.
+import * as NodeFSP from "node:fs/promises";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
@@ -5,6 +7,7 @@ import { expect, it, vi } from "vite-plus/test";
 import {
   AuthSessionId,
   type AuthEnvironmentScope,
+  type EnvironmentSessionPrincipalShape,
   EnvironmentAuthenticatedAuth,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentAuthInvalidError,
@@ -18,6 +21,8 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import { voiceReviewHttpApiLayer, voiceReviewResponseHeadersLayer } from "./http.ts";
 import * as VoiceReview from "./bridge.ts";
+
+vi.mock("node:fs/promises", { spy: true });
 
 class TestApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.voiceReview) {}
 const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
@@ -43,11 +48,12 @@ const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
 );
 const makeApp = (
   serviceLayer = VoiceReview.layer.pipe(Layer.provide(VoiceReview.dependenciesLayer)),
+  authLayer = auth,
 ) =>
   HttpRouter.toWebHandler(
     HttpApiBuilder.layer(TestApi).pipe(
       Layer.provide(voiceReviewHttpApiLayer.pipe(Layer.provide(serviceLayer))),
-      Layer.provide(auth),
+      Layer.provide(authLayer),
       Layer.provide(voiceReviewResponseHeadersLayer),
       Layer.provide(HttpPlatform.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.provide(Etag.layerWeak),
@@ -137,6 +143,7 @@ it("delegates authenticated draft reads to the injected domain service", async (
   const list = vi.fn(() => Effect.succeed({ server_now: "2026-10-02T00:00:00Z", drafts: [] }));
   const app = makeApp(
     Layer.succeed(VoiceReview.VoiceReview, {
+      selfIdentity: () => Effect.die("unexpected selfIdentity"),
       recent: () => Effect.die("unexpected recent"),
       registrySnapshot: () => Effect.die("unexpected registrySnapshot"),
       registryWorkstreams: () => Effect.die("unexpected registryWorkstreams"),
@@ -162,5 +169,166 @@ it("delegates authenticated draft reads to the injected domain service", async (
   } finally {
     await app.dispose();
     vi.unstubAllGlobals();
+  }
+});
+
+it("returns only the authenticated caller identity when review is not configured", async () => {
+  vi.stubEnv("T3CODE_VOICE_REVIEW_BROKER_URL", "");
+  const fetcher = vi.fn(() => {
+    throw new Error("unexpected network access");
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const app = makeApp();
+  try {
+    const response = await app.handler(
+      new Request("http://local/api/voice-review/self-identity", {
+        headers: { authorization: "Bearer other" },
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({
+      subject: "generic-subject",
+      method: "bearer-access-token",
+      proof_key_thumbprint: null,
+      enrollment: "not-configured",
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+  } finally {
+    await app.dispose();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  }
+});
+
+it("authenticates self-identity and projects exact enrollment without IO or granting review", async () => {
+  const fetcher = vi.fn(() => {
+    throw new Error("unexpected network access");
+  });
+  const open = vi.spyOn(NodeFSP, "open").mockRejectedValue(new Error("unexpected file access"));
+  const compositionFactory = vi.fn(() => Effect.die("unexpected native composition"));
+  const base: EnvironmentSessionPrincipalShape = {
+    sessionId: AuthSessionId.make("renewed-session"),
+    subject: "cloud-connect",
+    method: "dpop-access-token",
+    proofKeyThumbprint: "own-verified-key",
+    scopes: new Set<AuthEnvironmentScope>(["orchestration:read"]),
+  };
+  const config = {
+    broker_url: "http://127.0.0.1:7000",
+    reviewer_token_file: "/never-read",
+    source_id: "microphone",
+    allowed_session_ids: new Set(["legacy-session"]),
+    allowed_dpop_identities: [
+      { subject: "cloud-connect", proof_key_thumbprint: "own-verified-key" },
+    ],
+  };
+  const cases = [
+    { principal: base, enrollment: "enrolled", thumbprint: "own-verified-key" },
+    {
+      principal: { ...base, sessionId: AuthSessionId.make("another-renewed-session") },
+      enrollment: "enrolled",
+      thumbprint: "own-verified-key",
+    },
+    {
+      principal: { ...base, subject: "other-subject" },
+      enrollment: "not-enrolled",
+      thumbprint: "own-verified-key",
+    },
+    {
+      principal: { ...base, proofKeyThumbprint: "other-key" },
+      enrollment: "not-enrolled",
+      thumbprint: "other-key",
+    },
+    {
+      principal: { ...base, proofKeyThumbprint: undefined },
+      enrollment: "not-enrolled",
+      thumbprint: null,
+    },
+    {
+      principal: { ...base, method: "bearer-access-token" as const },
+      enrollment: "not-enrolled",
+      thumbprint: null,
+    },
+    {
+      principal: { ...base, method: "browser-session-cookie" as const },
+      enrollment: "not-enrolled",
+      thumbprint: null,
+    },
+    {
+      principal: {
+        ...base,
+        method: "bearer-access-token" as const,
+        sessionId: AuthSessionId.make("legacy-session"),
+      },
+      enrollment: "enrolled",
+      thumbprint: null,
+    },
+  ];
+  try {
+    for (const configured of [false, true]) {
+      for (const item of cases) {
+        for (const hasScope of [false, true]) {
+          const principal = {
+            ...item.principal,
+            scopes: hasScope
+              ? base.scopes
+              : new Set<AuthEnvironmentScope>(["orchestration:operate"]),
+          };
+          const app = makeApp(
+            VoiceReview.layer.pipe(
+              Layer.provide(
+                Layer.succeed(VoiceReview.VoiceReviewDependencies, {
+                  config: configured ? config : null,
+                  fetcher,
+                  compositionFactory,
+                }),
+              ),
+            ),
+            Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
+              handler.pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+            ),
+          );
+          try {
+            const response = await app.handler(
+              new Request("http://local/api/voice-review/self-identity"),
+            );
+            expect(response.headers.get("cache-control")).toBe("no-store");
+            expect(response.status).toBe(hasScope ? 200 : 403);
+            expect(await response.json()).toEqual(
+              hasScope
+                ? {
+                    subject: principal.subject,
+                    method: principal.method,
+                    proof_key_thumbprint: item.thumbprint,
+                    enrollment: configured ? item.enrollment : "not-configured",
+                  }
+                : { _tag: "VoiceReviewForbiddenError" },
+            );
+            if (configured && item.enrollment === "not-enrolled") {
+              const drafts = await app.handler(new Request("http://local/api/voice-review/drafts"));
+              expect(drafts.status).toBe(403);
+            }
+          } finally {
+            await app.dispose();
+          }
+        }
+      }
+    }
+    const app = makeApp();
+    try {
+      const response = await app.handler(
+        new Request("http://local/api/voice-review/self-identity"),
+      );
+      expect(response.status).toBe(401);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await app.dispose();
+    }
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(compositionFactory).not.toHaveBeenCalled();
+  } finally {
+    open.mockRestore();
   }
 });

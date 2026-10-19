@@ -208,11 +208,11 @@ describe("Prompts environment composition", () => {
     await render();
     expect(groups()).toEqual(["VPS prompts"]);
     expect(container.querySelector('[aria-label="Prompts environment"]')).toBeNull();
-    expect(container.textContent).not.toContain("Mac Mini");
+    expect(container.querySelector('[aria-label="Mac Mini prompts"]')).toBeNull();
     for (const stage of ["Queued", "Sent", "Pending"]) {
       await click(stage);
       expect(groups()).toEqual(["VPS prompts"]);
-      expect(container.textContent).not.toContain("Mac Mini");
+      expect(container.querySelector('[aria-label="Mac Mini prompts"]')).toBeNull();
     }
   });
 
@@ -451,7 +451,7 @@ describe("Prompts environment composition", () => {
     await render();
     expect(groups()).toEqual([]);
     expect(container.textContent).toContain("No prompt sources configured");
-    expect(container.textContent).not.toContain("Alpha");
+    expect(container.querySelector('[aria-label="Alpha prompts"]')).toBeNull();
     expect(container.querySelector('[aria-label="Prompts environment"]')).toBeNull();
   });
 

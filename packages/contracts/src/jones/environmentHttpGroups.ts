@@ -22,6 +22,7 @@ import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
   VoiceReviewRecentList,
+  VoiceReviewSelfIdentity,
   VoiceReviewDiagnostics,
   VoiceReviewDraft,
   VoiceReviewDraftList,
@@ -167,6 +168,13 @@ export const makeJonesHttpGroups = ({
     Schema.FiniteFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
   );
   class EnvironmentVoiceReviewHttpApi extends HttpApiGroup.make("voiceReview")
+    .add(
+      HttpApiEndpoint.get("selfIdentity", "/api/voice-review/self-identity", {
+        headers: VoiceReviewHeaders,
+        success: VoiceReviewSelfIdentity,
+        error: VoiceReviewErrors,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.get("recent", "/api/voice-review/recent", {
         headers: VoiceReviewHeaders,
