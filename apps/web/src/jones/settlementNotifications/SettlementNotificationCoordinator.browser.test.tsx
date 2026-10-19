@@ -1,17 +1,32 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
+import { RegistryContext } from "@effect/atom-react";
 import {
   createSettlementNotificationController,
   type SettlementEntry,
+  type SettlementOriginResolver,
 } from "@t3tools/client-runtime/jones/settlement-notifications";
+import { Atom } from "effect/reactivity";
+import * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import type { EnvironmentShellState } from "@t3tools/client-runtime/state/shell";
 import { createLocalStorageSettlementStore, SETTLEMENT_STORAGE_PREFIX } from "./localStorageStore";
 
 const state = vi.hoisted(() => ({
   controller: null as ReturnType<typeof createSettlementNotificationController> | null,
   navigate: vi.fn(),
-  environmentIds: [],
+  environmentIds: [] as EnvironmentId[],
+  shellAtom: null as Atom.Atom<EnvironmentShellState> | null,
+  resolveOrigins: vi.fn<SettlementOriginResolver>(),
 }));
 vi.mock(import("./controller"), () => ({
   getSettlementNotificationController: () => state.controller!,
@@ -20,7 +35,16 @@ vi.mock(
   import("../../state/environments"),
   () => ({ useEnvironmentIds: () => state.environmentIds }) as never,
 );
-vi.mock(import("../../state/shell"), () => ({ environmentShell: {} }) as never);
+vi.mock(
+  import("../../state/shell"),
+  () =>
+    ({
+      environmentShell: { stateValueAtom: () => state.shellAtom! },
+    }) as never,
+);
+vi.mock(import("./resolveOrigins"), () => ({
+  resolveSettlementOrigins: (_environmentId, arrivals) => state.resolveOrigins(arrivals),
+}));
 vi.mock(import("../../hooks/useThreadRouteTarget"), () => ({
   useThreadRouteTarget: () => null,
   useThreadRouteRef: () => null,
@@ -32,6 +56,62 @@ vi.mock("@tanstack/react-router", async (original) => ({
 
 import { SettlementNotificationCoordinator } from "./SettlementNotificationCoordinator";
 import { toastManager, ToastProvider } from "../../components/ui/toast";
+
+const env = EnvironmentId.make("settlement-test-environment");
+
+function thread(id: string, settledAtMs: number | null = null): OrchestrationV2ThreadShell {
+  const threadId = ThreadId.make(id);
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  return {
+    id: threadId,
+    projectId: ProjectId.make("settlement-test-project"),
+    title: id,
+    providerInstanceId,
+    modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    latestRunId: null,
+    activeRunId: null,
+    status: "idle",
+    pendingRuntimeRequest: null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: DateTime.makeUnsafe(100),
+    updatedAt: DateTime.makeUnsafe(settledAtMs ?? 100),
+    archivedAt: null,
+    settledOverride: settledAtMs === null ? null : "settled",
+    settledAt: settledAtMs === null ? null : DateTime.makeUnsafe(settledAtMs),
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+}
+
+function shell(
+  sequence: number,
+  threads: readonly OrchestrationV2ThreadShell[],
+): EnvironmentShellState {
+  return {
+    status: "live",
+    error: Option.none(),
+    snapshot: Option.some({
+      schemaVersion: 1,
+      snapshotSequence: sequence,
+      projects: [],
+      threads,
+      archivedThreads: [],
+    }),
+  };
+}
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -70,14 +150,17 @@ let events: EventTarget;
 let root: Root;
 let container: HTMLDivElement;
 let mounted: boolean;
+let registry: AtomRegistry.AtomRegistry;
 
 async function render() {
   await act(async () => {
     root.render(
       <StrictMode>
-        <ToastProvider>
-          <SettlementNotificationCoordinator />
-        </ToastProvider>
+        <RegistryContext.Provider value={registry}>
+          <ToastProvider>
+            <SettlementNotificationCoordinator />
+          </ToastProvider>
+        </RegistryContext.Provider>
       </StrictMode>,
     );
   });
@@ -102,9 +185,14 @@ function button(label: string) {
 const notices = () => document.querySelectorAll('[data-slot="toast-close"]');
 
 beforeEach(async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  registry = AtomRegistry.make();
   storage = new MemoryStorage();
   events = new EventTarget();
   state.navigate.mockReset();
+  state.environmentIds = [];
+  state.shellAtom = null;
+  state.resolveOrigins.mockReset();
   const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
   await store.saveInbox(inbox([entry("a")]));
   state.controller = createSettlementNotificationController({ store });
@@ -115,8 +203,10 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   if (mounted) await act(async () => root.unmount());
+  registry.dispose();
   container.remove();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("persistent settlement notification", () => {
@@ -198,5 +288,57 @@ describe("persistent settlement notification", () => {
     await publish([], [entry("a").id]);
     await expect.poll(() => notices().length).toBe(0);
     expect(state.controller!.getSnapshot().visible).toHaveLength(0);
+  });
+
+  it("filters manual UI settlement while retaining an agent notice through navigation, remount and explicit X", async () => {
+    storage.clear();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    state.controller = createSettlementNotificationController({ store });
+    state.environmentIds = [env];
+    const shellAtom = Atom.make(shell(1, [thread("manual"), thread("agent")]));
+    state.shellAtom = shellAtom;
+    state.resolveOrigins.mockImplementation(async (arrivals) =>
+      arrivals.map((arrival) => (arrival.threadId === "manual" ? "client" : "other")),
+    );
+    await render();
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    expect(state.controller.getSnapshot().visible).toEqual([]);
+    expect(state.resolveOrigins).not.toHaveBeenCalled();
+    await act(async () => {
+      registry.set(shellAtom, shell(2, [thread("manual", 200), thread("agent", 300)]));
+    });
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    await expect.poll(() => notices().length).toBe(1);
+    expect(state.resolveOrigins).toHaveBeenCalledTimes(1);
+    expect(state.controller.getSnapshot().visible.map((value) => value.threadId)).toEqual([
+      "agent",
+    ]);
+    expect(document.body.textContent).not.toContain("manual");
+    await act(async () => button("agent").click());
+    expect(state.navigate).toHaveBeenCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: env, threadId: "agent" },
+    });
+    expect(notices()).toHaveLength(1);
+    await act(async () => root.unmount());
+    mounted = false;
+    state.controller = createSettlementNotificationController({ store });
+    root = createRoot(container);
+    await render();
+    await expect.poll(() => notices().length).toBe(1);
+    expect(button("agent")).toBeTruthy();
+    expect(document.body.textContent).not.toContain("manual");
+    await act(async () => button("Dismiss notification").click());
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    expect(state.controller.getSnapshot().visible).toEqual([]);
+    const saved = JSON.parse((await store.loadInbox())!);
+    expect(saved.entries.map((value: SettlementEntry) => value.threadId)).toEqual(["agent"]);
+    expect(saved.acknowledged).toEqual([`${env}:agent:300`]);
   });
 });

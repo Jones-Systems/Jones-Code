@@ -4,6 +4,7 @@ import {
   ORCHESTRATION_PROTOCOL_VERSION,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   QUEUE_DISPATCH_CAPABILITY,
+  SETTLEMENT_ORIGINS_CAPABILITY,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -224,6 +225,7 @@ export const make = Effect.gen(function* () {
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       workQueueMetadata: true,
+      settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       currentRuntimeStop: {
         targetRequired: true,
         supportedDrivers: ["codex", "claudeAgent"],

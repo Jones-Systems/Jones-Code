@@ -17,6 +17,7 @@ import {
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
+import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
 import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import {
@@ -425,6 +426,15 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  class EnvironmentSettlementOriginsHttpApi extends HttpApiGroup.make("settlementOrigins").add(
+    HttpApiEndpoint.post("resolve", "/api/jones/settlement-origins", {
+      headers: OptionalBearerHeaders,
+      payload: SettlementOriginsRequest,
+      success: SettlementOriginsResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
   class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
@@ -510,6 +520,7 @@ export const makeJonesHttpGroups = ({
     EnvironmentImportedHistoryHttpApi,
     EnvironmentJonesUpdatesHttpApi,
     EnvironmentWorkQueueMetadataHttpApi,
+    EnvironmentSettlementOriginsHttpApi,
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,

@@ -1,4 +1,6 @@
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
+import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
+export * from "./jones/settlementOrigins.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -98,6 +100,7 @@ export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCa
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
+  settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),
