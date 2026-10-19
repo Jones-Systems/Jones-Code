@@ -17,7 +17,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-static void fail(const char *message) {
+static _Noreturn void fail(const char *message) {
   fprintf(stderr, "t3 process placement: %s\n", message);
   exit(125);
 }
@@ -103,6 +103,39 @@ static int open_directory(const char *path) {
   }
   return fd;
 }
+/* The suffix is relative, canonical and nonempty; prefix lookalikes are not descendants. */
+static const char *descendant_suffix(const char *parent, const char *member) {
+  size_t length = strlen(parent);
+  if (strncmp(parent, member, length) || member[length] != '/' || !member[length + 1])
+    fail("membership is not a strict workload descendant");
+  const char *suffix = member + length + 1;
+  for (const char *part = suffix; *part;) {
+    const char *end = strchr(part, '/');
+    size_t size = end ? (size_t)(end - part) : strlen(part);
+    if (!size || (size == 1 && part[0] == '.') ||
+        (size == 2 && part[0] == '.' && part[1] == '.')) fail("invalid member path");
+    if (!end) break;
+    part = end + 1;
+    if (!*part) fail("invalid member path");
+  }
+  return suffix;
+}
+static int open_descendant(int parent, const char *suffix) {
+  if (!*suffix || suffix[0] == '/' || strlen(suffix) >= PATH_MAX) fail("invalid member path");
+  char copy[PATH_MAX];
+  strcpy(copy, suffix);
+  int fd = fcntl(parent, F_DUPFD_CLOEXEC, 0);
+  if (fd < 0) fail("cannot retain workload directory");
+  char *save = NULL;
+  for (char *part = strtok_r(copy, "/", &save); part; part = strtok_r(NULL, "/", &save)) {
+    if (!strcmp(part, ".") || !strcmp(part, "..")) fail("invalid member path");
+    int next = openat(fd, part, O_PATH | O_NOFOLLOW | O_DIRECTORY | O_CLOEXEC);
+    close(fd);
+    if (next < 0) fail("member unavailable or symlinked");
+    fd = next;
+  }
+  return fd;
+}
 static void identity(int fd, uintmax_t device, uintmax_t inode) {
   struct stat stat;
   struct statfs fs;
@@ -134,11 +167,13 @@ int main(int argc, char **argv) {
     return 0;
   }
   int server_priority = argc >= 13 && !strcmp(argv[9], "--server-priority") && !strcmp(argv[10], "-15");
-  int delimiter = server_priority ? 11 : 9;
+  int verify_descendant = argc >= 12 && !strcmp(argv[9], "--verify-descendant");
+  int delimiter = server_priority ? 11 : (verify_descendant ? 10 : 9);
   if (argc < 11 || strcmp(argv[1], "--role") || strcmp(argv[3], "--cgroup") ||
       strcmp(argv[5], "--device") || strcmp(argv[7], "--inode") || strcmp(argv[delimiter], "--") ||
       (strcmp(argv[2], "control") && strcmp(argv[2], "workload"))) fail("invalid invocation");
   if (server_priority && strcmp(argv[2], "control")) fail("server priority requires control role");
+  if (verify_descendant && strcmp(argv[2], "workload")) fail("descendant verification requires workload role");
   const char *path = argv[4];
   if (strncmp(path, "/sys/fs/cgroup/", 15)) fail("cgroup must be beneath /sys/fs/cgroup");
   uintmax_t device = number(argv[6]), inode = number(argv[8]);
@@ -147,12 +182,14 @@ int main(int argc, char **argv) {
   int cpu = openat(directory, "cpu.max", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
   if (cpu < 0) fail("CPU controller unavailable");
   close(cpu);
-  int procs = openat(directory, "cgroup.procs", O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
-  if (procs < 0) fail("delegation unavailable");
-  char pid[32];
-  int size = snprintf(pid, sizeof(pid), "%ld\n", (long)getpid());
-  if (write(procs, pid, (size_t)size) != size) fail("placement rejected");
-  close(procs);
+  if (!verify_descendant) {
+    int procs = openat(directory, "cgroup.procs", O_WRONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (procs < 0) fail("delegation unavailable");
+    char pid[32];
+    int size = snprintf(pid, sizeof(pid), "%ld\n", (long)getpid());
+    if (write(procs, pid, (size_t)size) != size) fail("placement rejected");
+    close(procs);
+  }
   FILE *membership = fopen("/proc/self/cgroup", "re");
   if (!membership) fail("cannot verify membership");
   char *line = NULL; size_t capacity = 0; int verified = 0;
@@ -161,9 +198,22 @@ int main(int argc, char **argv) {
     line[strcspn(line, "\n")] = 0;
     char current[PATH_MAX];
     if (snprintf(current, sizeof(current), "/sys/fs/cgroup%s", line + 3) >= (int)sizeof(current)) fail("membership too long");
-    int actual = open_directory(current);
-    identity(actual, device, inode);
-    close(actual); verified = 1;
+    if (verify_descendant) {
+      int member = open_descendant(directory, descendant_suffix(path, current));
+      struct stat member_stat;
+      if (fstat(member, &member_stat)) fail("member identity unavailable");
+      int actual = open_directory(current);
+      identity(actual, (uintmax_t)member_stat.st_dev, (uintmax_t)member_stat.st_ino);
+      close(actual); close(member);
+      int parent = open_directory(path);
+      identity(parent, device, inode);
+      close(parent);
+    } else {
+      int actual = open_directory(current);
+      identity(actual, device, inode);
+      close(actual);
+    }
+    verified = 1;
   }
   free(line); fclose(membership);
   if (!verified) fail("membership mismatch");

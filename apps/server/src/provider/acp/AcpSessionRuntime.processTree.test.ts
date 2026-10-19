@@ -72,6 +72,38 @@ function processExists(pid: number): boolean {
   }
 }
 
+// Exercise the real shell wrapper against an owned regular file. Membership is
+// read only to satisfy its verification; this fixture never creates, joins or
+// sweeps a kernel cgroup. Termination callbacks model only explicitly owned PIDs.
+function makeFixtureLease(
+  scratch: string,
+  ownedPids: () => ReadonlyArray<number> = () => [],
+): AcpSessionRuntime.AcpLinuxCgroupLease {
+  const path = NodeFS.mkdtempSync(NodePath.join(scratch, "lease-"));
+  NodeFS.writeFileSync(NodePath.join(path, "cgroup.procs"), "");
+  const relativePath = AcpSessionRuntime.parseUnifiedCgroupPath(
+    NodeFS.readFileSync("/proc/self/cgroup", "utf8"),
+  );
+  if (relativePath === undefined) throw new Error("Missing unified membership for wrapper fixture");
+  return {
+    path,
+    relativePath,
+    contains: (pid) => ownedPids().includes(pid),
+    exists: () => NodeFS.existsSync(path),
+    populated: () => ownedPids().some(processExists),
+    kill: () => {
+      for (const pid of ownedPids()) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
+    },
+    remove: () => NodeFS.rmSync(path, { recursive: true, force: true }),
+  };
+}
+
 describe("terminatePosixOwnedProcessTree", () => {
   it("parses unified cgroup paths and escaped cgroup2 mountinfo", () => {
     expect(AcpSessionRuntime.parseUnifiedCgroupPath("0::/user.slice/app.scope\n")).toBe(
@@ -154,11 +186,13 @@ describe("terminatePosixOwnedProcessTree", () => {
   it.live("preserves exact argv and strips wrapper-only environment before exec", () =>
     Effect.gen(function* () {
       if ((yield* HostProcess.Platform) !== "linux") return;
-      const lease = AcpSessionRuntime.makeLinuxCgroupController().create();
-      if (lease === undefined) return;
       const scratchRoot = NodePath.join(process.cwd(), "tmp");
       NodeFS.mkdirSync(scratchRoot, { recursive: true });
-      const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-"));
+      const scratch = yield* Effect.acquireRelease(
+        Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-wrapper-"))),
+        (path) => Effect.sync(() => NodeFS.rmSync(path, { recursive: true, force: true })),
+      );
+      const lease = makeFixtureLease(scratch);
       const linkedNode = NodePath.join(scratch, "T3 Code AppImage 'quoted'");
       const bareGrok = NodePath.join(scratch, "grok");
       const relativeBin = NodePath.join(scratch, "relative-bin");
@@ -184,7 +218,7 @@ describe("terminatePosixOwnedProcessTree", () => {
         AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
       ).toBeUndefined();
       expect(
-        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("node", scratch, { PATH: undefined }),
+        AcpSessionRuntime.resolveLinuxCgroupTargetCommand("sh", scratch, { PATH: undefined }),
       ).toBeDefined();
       expect(
         AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, {
@@ -227,9 +261,8 @@ describe("terminatePosixOwnedProcessTree", () => {
         );
       } finally {
         yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease).pipe(Effect.ignore);
-        NodeFS.rmSync(scratch, { recursive: true, force: true });
       }
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it("contains a packaged-runtime command without requiring cgroup delegation", () => {
@@ -312,18 +345,29 @@ describe("terminatePosixOwnedProcessTree", () => {
     }
   });
 
-  it.live("kills a post-TERM detached double fork without touching an unrelated sentinel", () =>
+  it.live("synthetic lease kills a post-TERM double fork and preserves a sentinel", () =>
     Effect.gen(function* () {
       if ((yield* HostProcess.Platform) !== "linux") return;
-      const controller = AcpSessionRuntime.makeLinuxCgroupController();
-      const lease = controller.create();
-      if (lease === undefined) return;
-      expect(
-        AcpSessionRuntime.parseUnifiedCgroupPath(NodeFS.readFileSync("/proc/self/cgroup", "utf8")),
-      ).not.toBe(lease.relativePath);
       const scratchRoot = NodePath.join(process.cwd(), "tmp");
       NodeFS.mkdirSync(scratchRoot, { recursive: true });
-      const scratch = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-kill-"));
+      const scratch = yield* Effect.acquireRelease(
+        Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-kill-"))),
+        (path) => Effect.sync(() => NodeFS.rmSync(path, { recursive: true, force: true })),
+      );
+      let detachedChildPid: number | undefined;
+      let firstLease = true;
+      const controller: AcpSessionRuntime.AcpLinuxCgroupController = {
+        create: () => {
+          const ownsChild = firstLease;
+          firstLease = false;
+          return makeFixtureLease(scratch, () =>
+            ownsChild && detachedChildPid !== undefined ? [detachedChildPid] : [],
+          );
+        },
+      };
+      const lease = controller.create()!;
+      // The host/test process and unrelated sentinel are never fixture members.
+      expect(lease.contains(process.pid)).toBe(false);
       const readyPath = NodePath.join(scratch, "ready");
       const childPath = NodePath.join(scratch, "child");
       const childProgram = "setInterval(() => {}, 1000);";
@@ -364,7 +408,6 @@ describe("terminatePosixOwnedProcessTree", () => {
         stdio: "ignore",
       });
       sentinel.unref();
-      let detachedChildPid: number | undefined;
       try {
         yield* Effect.gen(function* () {
           while (!NodeFS.existsSync(readyPath)) yield* Effect.sleep("10 millis");
@@ -380,6 +423,8 @@ describe("terminatePosixOwnedProcessTree", () => {
           }
         }).pipe(Effect.timeout("2 seconds"));
         expect(processExists(detachedChildPid)).toBe(true);
+        expect(lease.contains(detachedChildPid)).toBe(true);
+        expect(lease.contains(sentinel.pid!)).toBe(false);
         yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease);
         expect(processExists(sentinel.pid!)).toBe(true);
         yield* Effect.gen(function* () {
@@ -390,6 +435,8 @@ describe("terminatePosixOwnedProcessTree", () => {
         const replacement = controller.create();
         expect(replacement?.path).not.toBe(lease.path);
         if (replacement !== undefined) {
+          expect(replacement.contains(detachedChildPid)).toBe(false);
+          expect(replacement.populated()).toBe(false);
           NodeFS.mkdirSync(NodePath.join(replacement.path, "nested"));
           yield* AcpSessionRuntime.terminateLinuxCgroupLease(replacement);
           expect(NodeFS.existsSync(replacement.path)).toBe(false);
@@ -407,9 +454,8 @@ describe("terminatePosixOwnedProcessTree", () => {
             process.kill(detachedChildPid, "SIGKILL");
           } catch {}
         }
-        NodeFS.rmSync(scratch, { recursive: true, force: true });
       }
-    }),
+    }).pipe(Effect.scoped),
   );
 
   it.live("re-kills repopulated cgroups and verifies root removal after retryable errors", () =>

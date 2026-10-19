@@ -252,7 +252,15 @@
         "apps/server/src/jones/processPlacement/processPlacementBootstrap.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementSpawner.test.ts",
         "apps/server/src/jones/processPlacement/processPlacementQualification.test.ts",
-        "native/process-placement/build.test.mjs"
+        "apps/server/src/jones/processPlacement/processPlacementRuntime.test.ts",
+        "native/process-placement/build.test.mjs",
+        "apps/server/src/jones/processPlacement/processPlacementAgentScope.test.ts",
+        "apps/server/src/process/agentScope.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/AcpAdapterV2.test.ts",
+        "apps/server/src/provider/acp/AcpSessionRuntime.processTree.test.ts",
+        "apps/server/src/jones/processPlacement/scopedCommand.test.ts",
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
       ]
     },
     {
