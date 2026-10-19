@@ -44,7 +44,6 @@ export const voiceReviewHttpApiLayer = HttpApiBuilder.group(
       run: (principal: EnvironmentAuthenticatedPrincipal["Service"]) => Effect.Effect<A, E>,
     ) => Effect.flatMap(EnvironmentAuthenticatedPrincipal, run);
     return handlers
-      .handle("selfIdentity", () => call((principal) => bridge.selfIdentity(principal)))
       .handle("recent", ({ query }) =>
         call((principal) => bridge.recent(principal, query.limit ?? 50)),
       )

@@ -8,7 +8,6 @@ import { ManagedRelayDpopSigner, type ManagedRelayDpopProofInput } from "./relay
 import { layerRemoteHttpClient } from "./rpc/http.ts";
 import {
   fetchVoiceReviewDrafts,
-  fetchVoiceReviewSelfIdentity,
   fetchVoiceReviewDraft,
   mutateVoiceReviewDraft,
   fetchVoiceReviewRecent,
@@ -215,7 +214,6 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
         ),
       );
     const id = "capture:/ α?x#%";
-    yield* unavailable(fetchVoiceReviewSelfIdentity(input));
     yield* unavailable(fetchVoiceReviewDrafts({ ...input, scope: "recent", limit: 17 }));
     yield* unavailable(fetchVoiceReviewDraft({ ...input, id }));
     yield* unavailable(
@@ -246,7 +244,6 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
       }),
     );
     const expected = [
-      "https://relay.test/api/voice-review/self-identity",
       "https://relay.test/api/voice-review/drafts?scope=recent&limit=17",
       "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25",
       "https://relay.test/api/voice-review/drafts/capture%3A%2F%20%CE%B1%3Fx%23%25/pause",
@@ -259,57 +256,10 @@ it.effect("signs the exact encoded Voice Review and registry request URLs", () =
     expect(urls).toEqual(expected);
     expect(proofs).toEqual(
       expected.map((url, index) => ({
-        method: index === 3 || index === 8 ? "POST" : "GET",
+        method: index === 2 || index === 7 ? "POST" : "GET",
         url,
         accessToken: "fresh-token",
       })),
     );
   }),
-);
-
-it.effect(
-  "decodes own identity with current authorization and degrades missing older-server routes only",
-  () =>
-    Effect.gen(function* () {
-      const input = { prepared, signer: Option.none<ManagedRelayDpopSigner["Service"]>() };
-      const identity = {
-        subject: "caller",
-        method: "bearer-access-token",
-        proof_key_thumbprint: null,
-        enrollment: "not-configured",
-      };
-      const calls: string[] = [];
-      const layer = layerRemoteHttpClient(async (url, init) => {
-        calls.push(String(url));
-        expect(new Headers(init?.headers).get("authorization")).toBe(
-          "Bearer fixture-session-token",
-        );
-        return Response.json(identity);
-      });
-      expect(yield* fetchVoiceReviewSelfIdentity(input).pipe(Effect.provide(layer))).toEqual(
-        identity,
-      );
-      expect(calls).toEqual(["https://fixture.test/api/voice-review/self-identity"]);
-      for (const response of [
-        new Response("Missing", { status: 404 }),
-        Response.json({ _tag: "VoiceReviewNotFoundError" }, { status: 404 }),
-      ]) {
-        expect(
-          yield* fetchVoiceReviewSelfIdentity(input).pipe(
-            Effect.provide(layerRemoteHttpClient(async () => response)),
-          ),
-        ).toBeNull();
-      }
-      for (const response of [
-        Response.json({ ...identity, sessionId: "private" }),
-        Response.json({ _tag: "VoiceReviewForbiddenError" }, { status: 403 }),
-        new Response("Unavailable", { status: 502 }),
-      ]) {
-        const result = yield* fetchVoiceReviewSelfIdentity(input).pipe(
-          Effect.result,
-          Effect.provide(layerRemoteHttpClient(async () => response)),
-        );
-        expect(result._tag).toBe("Failure");
-      }
-    }),
 );

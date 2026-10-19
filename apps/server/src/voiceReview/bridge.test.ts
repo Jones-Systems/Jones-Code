@@ -26,6 +26,8 @@ import { voiceReviewConfigFromEnv } from "./config.ts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 
+vi.mock("node:fs/promises", { spy: true });
+
 const principal: EnvironmentSessionPrincipalShape = {
   sessionId: AuthSessionId.make("owner-session"),
   subject: "generic-subject",
@@ -61,23 +63,44 @@ const withFixture = async (run: (tokenFile: string) => Promise<void>) => {
     await NodeFSP.rm(root, { recursive: true, force: true });
   }
 };
-const config = (reviewer_token_file: string) => ({
-  broker_url: "http://127.0.0.1:7000",
-  reviewer_token_file,
-  source_id: "microphone",
-  allowed_session_ids: new Set(["owner-session"]),
-});
+const config = (reviewer_token_file: string) =>
+  voiceReviewConfigFromEnv({
+    T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
+    T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: reviewer_token_file,
+    T3CODE_VOICE_REVIEW_SOURCE_ID: "microphone",
+    T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["owner-session"]',
+  })!;
 
 describe("voice review server bridge", () => {
-  it("defaults deny and validates only a trusted origin and exact session enrollment", () => {
-    expect(voiceReviewConfigFromEnv({})).toBeNull();
+  it("accepts broker configuration without enrollment and ignores stale allowlist variables", () => {
     const env = {
       T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
       T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/fixture/token",
       T3CODE_VOICE_REVIEW_SOURCE_ID: "microphone",
-      T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["owner-session"]',
     };
-    expect(voiceReviewConfigFromEnv(env)?.allowed_session_ids.has("owner-session")).toBe(true);
+    const expected = {
+      broker_url: "http://127.0.0.1:7000",
+      reviewer_token_file: "/fixture/token",
+      source_id: "microphone",
+    };
+    expect(voiceReviewConfigFromEnv(env)).toEqual(expected);
+    for (const legacy of [
+      "",
+      "[]",
+      "not-json",
+      '["*"]',
+      '["old-session"]',
+      '[{"subject":"cloud-connect","proof_key_thumbprint":"old-key"}]',
+    ]) {
+      expect(
+        voiceReviewConfigFromEnv({
+          ...env,
+          T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: legacy,
+          T3CODE_VOICE_REVIEW_ALLOWED_DPOP_IDENTITIES: legacy,
+        }),
+      ).toEqual(expected);
+    }
+    expect(voiceReviewConfigFromEnv({})).toBeNull();
     for (const url of [
       "http://remote.test",
       "http://localhost",
@@ -87,117 +110,75 @@ describe("voice review server bridge", () => {
     ]) {
       expect(voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_BROKER_URL: url })).toBeNull();
     }
-    expect(
-      voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["*"]' }),
-    ).toBeNull();
-    expect(
-      voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: "[]" }),
-    ).toBeNull();
-  });
-  it("parses exact renewable DPoP enrollments and fails closed on malformed allowlists", () => {
-    const identity = { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" };
-    const env = {
-      T3CODE_VOICE_REVIEW_BROKER_URL: "http://127.0.0.1:7000",
-      T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: "/fixture/token",
-      T3CODE_VOICE_REVIEW_SOURCE_ID: "microphone",
-      T3CODE_VOICE_REVIEW_ALLOWED_DPOP_IDENTITIES: JSON.stringify([identity]),
-    };
-    expect(voiceReviewConfigFromEnv(env)).toMatchObject({
-      allowed_session_ids: new Set(),
-      allowed_dpop_identities: [identity],
-    });
-    for (const invalid of [
-      [],
-      [identity, identity],
-      [{}],
-      ["cloud-connect"],
-      [{ ...identity, subject: "*" }],
-      [{ ...identity, proof_key_thumbprint: "" }],
-      [{ ...identity, proof_key_thumbprint: " key" }],
-      [{ ...identity, extra: true }],
-      [{ ...identity, subject: "cloud\u0000connect" }],
-      null,
-    ]) {
+    for (const file of ["", "relative-token"]) {
       expect(
-        voiceReviewConfigFromEnv({
-          ...env,
-          T3CODE_VOICE_REVIEW_ALLOWED_DPOP_IDENTITIES: JSON.stringify(invalid),
-        }),
+        voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_REVIEWER_TOKEN_FILE: file }),
       ).toBeNull();
     }
-    expect(
-      voiceReviewConfigFromEnv({
-        ...env,
-        T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: '["legacy"]',
-      })?.allowed_session_ids.has("legacy"),
-    ).toBe(true);
-    for (const sessions of ['["*"]', '["same","same"]', "invalid"]) {
+    for (const source of ["", " source", "*", "x".repeat(257)]) {
       expect(
-        voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_ALLOWED_SESSION_IDS: sessions }),
+        voiceReviewConfigFromEnv({ ...env, T3CODE_VOICE_REVIEW_SOURCE_ID: source }),
       ).toBeNull();
     }
   });
-  it("keeps an enrolled DPoP device authorized across renewal without trusting other devices", async () =>
+  it("accepts scoped cookie bearer and DPoP principals across sessions and proof keys", async () =>
     withFixture(async (tokenFile) => {
-      const fetcher = vi.fn<typeof fetch>(async () => Response.json(draft));
-      const bridge = makeVoiceReviewBridge(
-        {
-          ...config(tokenFile),
-          allowed_session_ids: new Set(),
-          allowed_dpop_identities: [
-            { subject: "cloud-connect", proof_key_thumbprint: "fixture-key" },
-          ],
-        },
-        fetcher,
+      const fetcher = vi.fn<typeof fetch>(async (_url, init) =>
+        Response.json(init?.method === "POST" ? { draft, edit_handle: null } : draft),
       );
-      const device: EnvironmentSessionPrincipalShape = {
-        ...principal,
-        method: "dpop-access-token",
-        subject: "cloud-connect",
-        proofKeyThumbprint: "fixture-key",
-      };
-      for (const session of ["before-renewal", "after-renewal"]) {
-        await expect(
-          bridge.get({ ...device, sessionId: AuthSessionId.make(session) }, "capture"),
-        ).resolves.toEqual(draft);
+      const bridge = makeVoiceReviewBridge(config(tokenFile), fetcher);
+      for (const method of [
+        "browser-session-cookie",
+        "bearer-access-token",
+        "dpop-access-token",
+      ] as const) {
+        for (const session of ["before-renewal", "after-renewal"]) {
+          for (const proofKeyThumbprint of ["first-key", "another-key"]) {
+            const device = {
+              ...principal,
+              method,
+              subject: "cloud-connect",
+              sessionId: AuthSessionId.make(session),
+              proofKeyThumbprint,
+            };
+            await expect(bridge.get(device, "capture")).resolves.toEqual(draft);
+            await expect(
+              bridge.mutate(device, "capture", "pause", { expected_revision: 1 }),
+            ).resolves.toEqual({ draft, edit_handle: null });
+          }
+        }
       }
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      for (const denied of [
-        { ...device, proofKeyThumbprint: "other-key" },
-        { ...principal, method: "dpop-access-token" as const, subject: "cloud-connect" },
-        { ...device, subject: "another-subject" },
-        { ...device, method: "bearer-access-token" as const },
-        { ...device, scopes: new Set<never>() },
-      ]) {
-        await expect(bridge.get(denied, "capture")).rejects.toBeInstanceOf(
-          VoiceReviewForbiddenError,
-        );
-      }
-      await expect(
-        bridge.mutate({ ...device, scopes: new Set(["orchestration:read"]) }, "capture", "pause", {
-          expected_revision: 1,
-        }),
-      ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
-      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(36);
     }));
-  it("checks session identity and read/operate scopes before credential access or requests", async () => {
+  it("checks read and operate scopes before credential access or requests", async () => {
     const fetcher = vi.fn<typeof fetch>();
-    await expect(
-      makeVoiceReviewBridge(null, fetcher).get(principal, "capture"),
-    ).rejects.toBeInstanceOf(VoiceReviewNotConfiguredError);
-    const bridge = makeVoiceReviewBridge(config("/not-read"), fetcher);
-    await expect(
-      bridge.get({ ...principal, sessionId: AuthSessionId.make("other") }, "capture"),
-    ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
-    await expect(bridge.get({ ...principal, scopes: new Set() }, "capture")).rejects.toBeInstanceOf(
-      VoiceReviewForbiddenError,
-    );
-    await expect(
-      bridge.mutate({ ...principal, scopes: new Set(["orchestration:read"]) }, "capture", "pause", {
-        expected_revision: 1,
-      }),
-    ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
-    expect(fetcher).not.toHaveBeenCalled();
+    const open = vi.spyOn(NodeFSP, "open");
+    try {
+      await expect(
+        makeVoiceReviewBridge(null, fetcher).get(principal, "capture"),
+      ).rejects.toBeInstanceOf(VoiceReviewNotConfiguredError);
+      const bridge = makeVoiceReviewBridge(config("/not-read"), fetcher);
+      await expect(
+        bridge.get({ ...principal, scopes: new Set() }, "capture"),
+      ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
+      await expect(
+        bridge.get({ ...principal, scopes: new Set(["orchestration:operate"]) }, "capture"),
+      ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
+      await expect(
+        bridge.mutate(
+          { ...principal, scopes: new Set(["orchestration:read"]) },
+          "capture",
+          "pause",
+          {
+            expected_revision: 1,
+          },
+        ),
+      ).rejects.toBeInstanceOf(VoiceReviewForbiddenError);
+      expect(open).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
+    } finally {
+      open.mockRestore();
+    }
   });
   it("keeps credentials server-only, filters fixed source, and blocks a foreign draft before mutation", async () =>
     withFixture(async (tokenFile) => {

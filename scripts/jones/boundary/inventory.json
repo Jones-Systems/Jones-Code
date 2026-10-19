@@ -7,9 +7,6 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
-    "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx": "jones-owned",
-    "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx": "jones-owned",
-
     "packages/client-runtime/src/jones/settlementNotifications/model.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/detect.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/inbox.ts": "jones-owned",
@@ -1231,7 +1228,10 @@
     "packages/client-runtime/src/conversations/",
     "scripts/jones/"
   ],
-  "tombstones": [],
+  "tombstones": [
+    "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx",
+    "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx"
+  ],
   "allowedImports": [
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",

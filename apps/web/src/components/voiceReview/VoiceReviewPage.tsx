@@ -13,7 +13,6 @@ import { Textarea } from "../ui/textarea";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { useVoiceReview } from "./useVoiceReview";
 import { RecentVoicePrompts } from "./RecentVoicePrompts";
-import { VoiceReviewDeviceSetup } from "./VoiceReviewDeviceSetup";
 import { RoutingDiagnostics } from "./RoutingDiagnostics";
 import {
   remainingSeconds,
@@ -152,7 +151,6 @@ export function EnvironmentVoiceReview({
   );
   return (
     <div hidden={pane === "sent"} className="space-y-4">
-      {error && !unavailable ? <VoiceReviewDeviceSetup environmentId={environmentId} /> : null}
       <div hidden={pane === "queued"}>
         <ToggleGroup
           value={[tab]}

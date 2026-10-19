@@ -3,7 +3,6 @@ import * as ManagedRelay from "@t3tools/client-runtime/relay";
 import { createEnvironmentCommand } from "@t3tools/client-runtime/state/runtime";
 import {
   fetchVoiceReviewDraft,
-  fetchVoiceReviewSelfIdentity,
   fetchVoiceReviewDrafts,
   mutateVoiceReviewDraft,
   fetchVoiceReviewRecent,
@@ -34,13 +33,6 @@ const requestContext = Effect.gen(function* () {
   return { prepared: prepared.value, signer };
 });
 
-const selfIdentity = createEnvironmentCommand(connectionAtomRuntime, {
-  label: "web-voice-review:self-identity",
-  execute: () =>
-    Effect.gen(function* () {
-      return yield* fetchVoiceReviewSelfIdentity(yield* requestContext);
-    }),
-});
 const list = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:list",
   execute: (scope: "pending" | "recent") =>
@@ -104,10 +96,6 @@ const association = createEnvironmentCommand(connectionAtomRuntime, {
 });
 
 export function useVoiceReview(environmentId: EnvironmentId) {
-  const runSelfIdentity = useAtomCommand(selfIdentity, {
-    reportFailure: false,
-    reportDefect: false,
-  });
   const runList = useAtomCommand(list, { reportFailure: false, reportDefect: false });
   const runGet = useAtomCommand(get, { reportFailure: false, reportDefect: false });
   const runMutate = useAtomCommand(mutate, { reportFailure: false, reportDefect: false });
@@ -160,10 +148,5 @@ export function useVoiceReview(environmentId: EnvironmentId) {
       return result.value;
     },
   };
-  const fetchSelfIdentity = async () => {
-    const result = await runSelfIdentity({ environmentId, input: undefined });
-    if (result._tag === "Failure") throw Cause.squash(result.cause);
-    return result.value;
-  };
-  return { fetchList, fetchSelfIdentity, transport, review };
+  return { fetchList, transport, review };
 }
