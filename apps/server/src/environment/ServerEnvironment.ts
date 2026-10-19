@@ -1,3 +1,4 @@
+import { THREAD_ATTENTION_CAPABILITY } from "@t3tools/contracts/jones/threadAttention";
 import {
   EnvironmentId,
   ORCHESTRATION_PROTOCOL_VERSION,
@@ -221,6 +222,7 @@ export const make = Effect.gen(function* () {
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
+      threadAttention: THREAD_ATTENTION_CAPABILITY,
       workQueueMetadata: true,
       currentRuntimeStop: {
         targetRequired: true,

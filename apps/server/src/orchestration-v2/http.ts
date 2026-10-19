@@ -1,3 +1,4 @@
+import { makeThreadAttentionQuery } from "../jones/threadAttention.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import { makeProviderGoalState } from "./ProviderGoalState.ts";
 import {
@@ -56,6 +57,7 @@ export const layer = HttpApiBuilder.group(
     const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
     const commandObservation = yield* makeCommandObservationQuery();
     const readGoalState = yield* makeProviderGoalState();
+    const readThreadAttention = yield* makeThreadAttentionQuery();
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
@@ -204,6 +206,21 @@ export const layer = HttpApiBuilder.group(
             snapshotSequence: snapshot.snapshotSequence,
             projection: snapshot.projection,
           };
+        }),
+      )
+      .handle(
+        "threadAttention",
+        Effect.fn("environment.orchestration.threadAttention")(function* (args) {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+          const attention = yield* readThreadAttention(args.params.threadId).pipe(
+            traceLocalHandlerWork,
+            Effect.catch((cause) =>
+              failEnvironmentInternal("orchestration_thread_snapshot_failed", cause),
+            ),
+          );
+          if (attention === null) return yield* failEnvironmentNotFound("thread_not_found");
+          return attention;
         }),
       )
       .handle(

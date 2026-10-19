@@ -1,20 +1,19 @@
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  shellAttentionInput,
+  type ThreadRunSummary,
+  type ThreadRuntimeSummary,
+} from "@t3tools/shared/jones/threadAttention";
+export type { ThreadRunSummary, ThreadRuntimeSummary } from "@t3tools/shared/jones/threadAttention";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import type {
   ThreadLinkedPullRequest,
   EnvironmentId,
-  MessageId,
   OrchestrationProjectShell,
   OrchestrationV2ProviderGoal,
-  OrchestrationV2RunStatus,
-  OrchestrationV2ProviderSettlement,
-  OrchestrationV2ProviderFailureClass,
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
-  PlanId,
   ProjectId,
   ProviderInstanceId,
-  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -33,34 +32,6 @@ export interface EnvironmentProject extends OrchestrationProjectShell {
 export interface EnvironmentThread {
   readonly environmentId: EnvironmentId;
   readonly projection: OrchestrationV2ThreadProjection;
-}
-
-export interface ThreadRunSummary {
-  readonly runId: RunId;
-  readonly status: OrchestrationV2RunStatus;
-  readonly requestedAt: string | null;
-  readonly startedAt: string | null;
-  readonly completedAt: string | null;
-  readonly providerSettlement?:
-    | (Omit<OrchestrationV2ProviderSettlement, "completedAt"> & { readonly completedAt: string })
-    | null;
-  readonly assistantMessageId: MessageId | null;
-  readonly sourcePlanRef?: {
-    readonly threadId: ThreadId;
-    readonly planId: PlanId;
-  };
-}
-
-export interface ThreadRuntimeSummary {
-  readonly status: OrchestrationV2RunStatus | "idle";
-  readonly activeRunId: RunId | null;
-  readonly activityStartedAt?: string | null | undefined;
-  readonly providerInstanceId: ProviderInstanceId;
-  readonly providerName: string | null;
-  readonly lastError: string | null;
-  readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
-  readonly usageLimitResetAt?: string | null;
-  readonly updatedAt: string;
 }
 
 export function threadRuntimeIsActive(runtime: ThreadRuntimeSummary | null | undefined): boolean {
@@ -151,44 +122,6 @@ function nullableIso(value: DateTime.Utc | null): string | null {
   return value === null ? null : iso(value);
 }
 
-function terminalRunStatus(status: OrchestrationV2RunStatus): boolean {
-  return (
-    status === "completed" ||
-    status === "interrupted" ||
-    status === "failed" ||
-    status === "cancelled" ||
-    status === "rolled_back"
-  );
-}
-
-// Only work that wakes the agent holds it: commands it left running, such as a
-// dev server, present the run's own status (#14872). The server suppresses the
-// roster while an interruptible activity run exists, so a remaining roster is
-// stronger than checkpoint-oriented waiting.
-function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary | null {
-  const parkAtIdle =
-    backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
-    thread.status !== "failed";
-  if (thread.latestRunId === null && thread.activeProviderThreadId === null && !parkAtIdle) {
-    return null;
-  }
-  const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
-  return {
-    status,
-    activeRunId: thread.activeRunId,
-    activityStartedAt:
-      thread.activityRunStartedAt === undefined
-        ? undefined
-        : nullableIso(thread.activityRunStartedAt),
-    providerInstanceId: thread.providerInstanceId,
-    providerName: null,
-    lastError: thread.lastError ?? null,
-    lastErrorClass: thread.lastErrorClass ?? null,
-    usageLimitResetAt: thread.usageLimitResetAt ?? null,
-    updatedAt: iso(thread.updatedAt),
-  };
-}
-
 export function scopeProject(
   environmentId: EnvironmentId,
   project: OrchestrationProjectShell,
@@ -204,33 +137,7 @@ export function presentThreadShell(
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
-  const latestRun =
-    thread.latestRunId === null
-      ? null
-      : ({
-          runId: thread.latestRunId,
-          status: thread.status === "idle" ? "completed" : thread.status,
-          requestedAt: nullableIso(thread.latestRunRequestedAt ?? null),
-          startedAt: nullableIso(thread.latestRunStartedAt ?? null),
-          completedAt:
-            thread.latestRunCompletedAt === undefined
-              ? thread.status === "idle" || terminalRunStatus(thread.status)
-                ? updatedAt
-                : null
-              : nullableIso(thread.latestRunCompletedAt),
-          ...(thread.latestRunProviderSettlement === undefined
-            ? {}
-            : {
-                providerSettlement:
-                  thread.latestRunProviderSettlement === null
-                    ? null
-                    : {
-                        ...thread.latestRunProviderSettlement,
-                        completedAt: iso(thread.latestRunProviderSettlement.completedAt),
-                      },
-              }),
-          assistantMessageId: null,
-        } satisfies ThreadRunSummary);
+  const attention = shellAttentionInput(thread, pendingSubagentRequest);
   return {
     environmentId,
     id: thread.id,
@@ -252,17 +159,14 @@ export function presentThreadShell(
     forkedFrom: thread.forkedFrom,
     activeProviderThreadId: thread.activeProviderThreadId,
     ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
-    latestRun,
-    runtime: shellRuntime(thread),
+    latestRun: attention.latestRun,
+    runtime: attention.runtime,
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}
       : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
-    hasPendingApprovals:
-      thread.pendingRuntimeRequest !== null &&
-      thread.pendingRuntimeRequest.kind !== "user_input" &&
-      thread.pendingRuntimeRequest.kind !== "auth_refresh",
-    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
+    hasPendingApprovals: attention.hasPendingApprovals,
+    hasPendingUserInput: attention.hasPendingUserInput,
     pendingSubagentRequest,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
