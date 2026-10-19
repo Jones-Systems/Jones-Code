@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigate } from "@tanstack/react-router";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { SettlementOriginResolver } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { resolveSettlementOrigins } from "./resolveOrigins";
 import { toastManager } from "../../components/ui/toast";
@@ -122,12 +122,10 @@ function EnvironmentObserver({
   controller: Controller;
 }) {
   const state = useAtomValue(environmentShell.stateValueAtom(environmentId));
-  const resolveOrigins = useMemo<SettlementOriginResolver>(
-    () => (arrivals) => resolveSettlementOrigins(environmentId, arrivals),
-    [environmentId],
-  );
   useEffect(() => {
+    const resolveOrigins: SettlementOriginResolver = (arrivals) =>
+      resolveSettlementOrigins(environmentId, arrivals);
     controller.observe(environmentId, state, { resolveOrigins });
-  }, [controller, environmentId, state, resolveOrigins]);
+  }, [controller, environmentId, state]);
   return null;
 }

@@ -32,9 +32,7 @@
     "apps/server/src/jones/settlementOrigins/http.ts",
     "apps/web/src/jones/settlementNotifications/resolveOrigins.ts",
     "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
-    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts",
-    "packages/contracts/src/jones/settlementOrigins.test.ts",
-    "packages/contracts/src/jones/settlementOrigins.ts"
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/ui/toast.tsx",

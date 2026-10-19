@@ -1,7 +1,13 @@
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+  type OrchestrationV2ThreadShell,
+} from "@t3tools/contracts";
 import { RegistryContext } from "@effect/atom-react";
 import {
   createSettlementNotificationController,
@@ -10,12 +16,9 @@ import {
 } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { Atom } from "effect/reactivity";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import type { EnvironmentShellState } from "@t3tools/client-runtime/state/shell";
-import {
-  env,
-  shell,
-  thread,
-} from "../../../../../packages/client-runtime/src/jones/settlementNotifications/testFixtures";
 import { createLocalStorageSettlementStore, SETTLEMENT_STORAGE_PREFIX } from "./localStorageStore";
 
 const state = vi.hoisted(() => ({
@@ -53,6 +56,62 @@ vi.mock("@tanstack/react-router", async (original) => ({
 
 import { SettlementNotificationCoordinator } from "./SettlementNotificationCoordinator";
 import { toastManager, ToastProvider } from "../../components/ui/toast";
+
+const env = EnvironmentId.make("settlement-test-environment");
+
+function thread(id: string, settledAtMs: number | null = null): OrchestrationV2ThreadShell {
+  const threadId = ThreadId.make(id);
+  const providerInstanceId = ProviderInstanceId.make("codex");
+  return {
+    id: threadId,
+    projectId: ProjectId.make("settlement-test-project"),
+    title: id,
+    providerInstanceId,
+    modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    latestRunId: null,
+    activeRunId: null,
+    status: "idle",
+    pendingRuntimeRequest: null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: DateTime.makeUnsafe(100),
+    updatedAt: DateTime.makeUnsafe(settledAtMs ?? 100),
+    archivedAt: null,
+    settledOverride: settledAtMs === null ? null : "settled",
+    settledAt: settledAtMs === null ? null : DateTime.makeUnsafe(settledAtMs),
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+}
+
+function shell(
+  sequence: number,
+  threads: readonly OrchestrationV2ThreadShell[],
+): EnvironmentShellState {
+  return {
+    status: "live",
+    error: Option.none(),
+    snapshot: Option.some({
+      schemaVersion: 1,
+      snapshotSequence: sequence,
+      projects: [],
+      threads,
+      archivedThreads: [],
+    }),
+  };
+}
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
