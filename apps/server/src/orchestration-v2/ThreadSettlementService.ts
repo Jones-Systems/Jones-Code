@@ -20,6 +20,7 @@ import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
+import { withoutWorkModeActivity } from "../jones/workMode/Settlement.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -310,7 +311,12 @@ export const make = Effect.gen(function* () {
     // the merged pull request: most threads carry no link and settle from
     // their branch lookup, which would otherwise wait for the next minute's
     // sweep on a possibly stale cached answer.
-    const candidates = threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs));
+    const candidates = yield* withoutWorkModeActivity(
+      projections,
+      settings,
+      threads.filter((thread) => isAutoSettlementCandidate(thread, nowMs)),
+      nowMs,
+    );
 
     const settleThread = Effect.fn("ThreadSettlementServiceV2.settleThread")(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {

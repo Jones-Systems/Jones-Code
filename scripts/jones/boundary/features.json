@@ -265,16 +265,18 @@
         "apps/server/src/jones/provider/workModePrompt.test.ts",
         "apps/server/src/jones/workMode/Policy.test.ts",
         "apps/server/src/jones/workMode/Retention.test.ts",
+        "apps/server/src/jones/workMode/Settlement.test.ts",
         "apps/server/src/jones/workMode/WorkMode.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
         "packages/contracts/src/jones/workMode.test.ts",
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
     },
     {
       "id": "persistent-host-connections",

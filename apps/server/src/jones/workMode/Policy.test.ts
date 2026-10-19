@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, type OrchestrationV2ProviderGoalStatus } from "@t3tools/contracts";
 import { WORK_MODE_INTERVAL_MS, WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
 import * as DateTime from "effect/DateTime";
 import { threadShellFromProjection } from "../../orchestration-v2/ProjectionStore.ts";
@@ -101,6 +101,29 @@ describe("Work Mode eligibility", () => {
     expect(
       workModeCandidate({ ...shell, latestRunCompletedAt: activityAt }, WORK_MODE_INTERVAL_MS),
     ).toBeNull();
+  });
+
+  it("never refreshes a thread whose provider goal could resume work", () => {
+    const projection = workModeFixture();
+    const shell = threadShellFromProjection(projection);
+    const owner = projection.providerThreads[0]!;
+    const withGoal = (status: OrchestrationV2ProviderGoalStatus) => {
+      const goal = { objective: "Finish the migration", status };
+      return {
+        shell: { ...shell, goal },
+        projection: { ...projection, providerThreads: [{ ...owner, goal }] },
+      };
+    };
+    for (const status of ["active", "blocked", "usage_limited", "budget_limited"] as const) {
+      const variant = withGoal(status);
+      expect(workModeCandidate(variant.shell, WORK_MODE_INTERVAL_MS)).toBeNull();
+      expect(workModeContext(variant.projection, WORK_MODE_INTERVAL_MS)).toBeNull();
+    }
+    for (const status of ["paused", "complete"] as const) {
+      const variant = withGoal(status);
+      expect(workModeCandidate(variant.shell, WORK_MODE_INTERVAL_MS)).not.toBeNull();
+      expect(workModeContext(variant.projection, WORK_MODE_INTERVAL_MS)?.id).toBe(owner.id);
+    }
   });
 
   it("rejects missing, cold, failed or busy provider context and hidden queued work", () => {
