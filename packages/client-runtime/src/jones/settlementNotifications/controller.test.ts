@@ -12,6 +12,8 @@ import {
   emptyInbox,
   encodeSettlementBaseline,
   encodeSettlementInbox,
+  type SettlementOrigin,
+  type SettlementOriginResolver,
 } from "./model.ts";
 import { baseline, entry, env, otherEnv, shell, thread } from "./testFixtures.ts";
 
@@ -406,5 +408,271 @@ describe("settlement notification controller", () => {
     expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(3);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(h.store.saveBaseline).toHaveBeenCalledTimes(1);
+  });
+
+  it("silences positive client evidence while retaining mixed other and unknown arrivals", async () => {
+    const h = harness();
+    const controller = createSettlementNotificationController({ store: h.store, now: () => 1_000 });
+    await controller.hydrate();
+    const resolveOrigins = vi.fn<SettlementOriginResolver>(async () => [
+      "client",
+      "other",
+      "unknown",
+    ]);
+    controller.observe(
+      env,
+      shell(2, [thread("manual", 200), thread("agent", 300), thread("unknown", 400)]),
+      { resolveOrigins },
+    );
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.threadId)).toEqual([
+      "unknown",
+      "agent",
+    ]);
+    expect(controller.getSnapshot().visible.every((value) => value.detectedAtMs === 1_000)).toBe(
+      true,
+    );
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(2);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
+  });
+
+  it.each([null, [], ["client", "other"], ["unexpected"], ["unknown"]])(
+    "notifies conservatively for absent, malformed or unknown origin results: %j",
+    async (origins) => {
+      const h = harness();
+      const controller = createSettlementNotificationController({ store: h.store });
+      await controller.hydrate();
+      controller.observe(env, shell(2, [thread("thread-a", 200)]), {
+        resolveOrigins: async () => origins as readonly SettlementOrigin[] | null,
+      });
+      await controller.flush();
+      expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([entry().id]);
+    },
+  );
+
+  it("retries at bounded offsets and preserves detection time before conservative exhaustion", async () => {
+    const h = harness();
+    let nowMs = 1_000;
+    const log = vi.fn();
+    const controller = createSettlementNotificationController({
+      store: h.store,
+      now: () => nowMs,
+      log,
+    });
+    await controller.hydrate();
+    const detectedAtMs = nowMs;
+    const attempts: number[] = [];
+    const resolveOrigins = vi.fn<SettlementOriginResolver>(async () => {
+      attempts.push(nowMs - detectedAtMs);
+      throw new Error("temporarily unavailable");
+    });
+    controller.observe(env, shell(2, [thread("thread-a", 200)]), { resolveOrigins });
+    await controller.flush();
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    expect(attempts).toEqual([0]);
+    for (const offset of [2_000, 5_000, 15_000]) {
+      await vi.advanceTimersByTimeAsync(detectedAtMs + offset - nowMs - 1);
+      expect(attempts.at(-1)).toBe(nowMs - detectedAtMs);
+      expect(log).not.toHaveBeenCalled();
+      nowMs = detectedAtMs + offset;
+      await vi.advanceTimersByTimeAsync(1);
+    }
+    await controller.flush();
+    expect(attempts).toEqual([0, 2_000, 5_000, 15_000]);
+    expect(controller.getSnapshot().visible[0]?.detectedAtMs).toBe(detectedAtMs);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resolveOrigins).toHaveBeenCalledTimes(4);
+    expect(log.mock.calls).toEqual([["settlement-notifications.origin-unresolved", undefined]]);
+  });
+
+  it("uses a recovered retry's positive evidence without generating a notice", async () => {
+    const h = harness();
+    const log = vi.fn();
+    const controller = createSettlementNotificationController({ store: h.store, log });
+    await controller.hydrate();
+    const resolveOrigins = vi
+      .fn<SettlementOriginResolver>()
+      .mockRejectedValueOnce(new Error("config not yet ready"))
+      .mockResolvedValue(["client"]);
+    controller.observe(env, shell(2, [thread("thread-a", 200)]), { resolveOrigins });
+    await controller.flush();
+    await vi.advanceTimersByTimeAsync(2_000);
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resolveOrigins).toHaveBeenCalledTimes(2);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("flushes other environments while a lookup stalls and redetects pending arrivals after restart", async () => {
+    const h = harness();
+    h.data.baselines.set(otherEnv, encodeSettlementBaseline(baseline({ environmentId: otherEnv })));
+    const held = deferred<readonly SettlementOrigin[]>();
+    const first = createSettlementNotificationController({ store: h.store });
+    await first.hydrate();
+    first.observe(env, shell(2, [thread("thread-a", 200)]), { resolveOrigins: () => held.promise });
+    first.observe(env, shell(3, [thread("thread-a", 200)]), { resolveOrigins: () => held.promise });
+    first.observe(otherEnv, shell(2, [thread("thread-a", 300)]));
+    await first.flush();
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(1);
+    expect(decodeSettlementBaseline(h.data.baselines.get(otherEnv)!).snapshotSequence).toBe(2);
+    expect(
+      decodeSettlementInbox(h.data.inbox!).entries.map((value) => value.environmentId),
+    ).toEqual([otherEnv]);
+    const restarted = createSettlementNotificationController({ store: h.store });
+    const resolveOrigins = vi.fn<SettlementOriginResolver>(async () => ["other"]);
+    restarted.observe(env, shell(3, [thread("thread-a", 200)]), { resolveOrigins });
+    await restarted.flush();
+    expect(resolveOrigins).toHaveBeenCalledTimes(1);
+    expect(restarted.getSnapshot().visible.map((value) => value.id)).toContain(entry().id);
+    held.resolve(["other"]);
+    await first.flush();
+  });
+
+  it("bounds stalled attempts and ignores late client evidence after fallback", async () => {
+    const h = harness();
+    const log = vi.fn();
+    const controller = createSettlementNotificationController({ store: h.store, log });
+    await controller.hydrate();
+    const held = deferred<readonly SettlementOrigin[]>();
+    const resolveOrigins = vi.fn<SettlementOriginResolver>(() => held.promise);
+    controller.observe(env, shell(2, [thread("thread-a", 200)]), { resolveOrigins });
+    await controller.flush();
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(24_999);
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(log).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await controller.flush();
+    expect(resolveOrigins).toHaveBeenCalledTimes(4);
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([entry().id]);
+    held.resolve(["client"]);
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([entry().id]);
+    expect(log.mock.calls).toEqual([["settlement-notifications.origin-unresolved", undefined]]);
+  });
+
+  it("merges out-of-order classifications with current observations, titles and dismissals", async () => {
+    const h = harness();
+    const controller = createSettlementNotificationController({ store: h.store, now: () => 1_000 });
+    await controller.hydrate();
+    const old = deferred<readonly SettlementOrigin[]>();
+    const recent = deferred<readonly SettlementOrigin[]>();
+    const recentPublished = deferred<void>();
+    const unsubscribe = controller.subscribe(() => {
+      if (controller.getSnapshot().visible.some((value) => value.id === entry("another", 400).id))
+        recentPublished.resolve();
+    });
+    const baselineSaved = deferred<void>();
+    const saveBaseline = h.store.saveBaseline.getMockImplementation()!;
+    h.store.saveBaseline.mockImplementation(async (id, json) => {
+      await saveBaseline(id, json);
+      if (id === env && decodeSettlementBaseline(json).snapshotSequence === 4)
+        baselineSaved.resolve();
+    });
+    controller.observe(env, shell(2, [thread("thread-a", 200), thread("another")]), {
+      resolveOrigins: () => old.promise,
+    });
+    controller.observe(env, shell(3, [thread("thread-a", 300), thread("another", 400)]), {
+      resolveOrigins: () => recent.promise,
+    });
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    recent.resolve(["other", "other"]);
+    await recentPublished.promise;
+    unsubscribe();
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([
+      entry("another", 400).id,
+      entry("thread-a", 300).id,
+    ]);
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    controller.dismiss([entry("thread-a", 300).id]);
+    controller.observe(
+      env,
+      shell(4, [thread("thread-a", 300), thread("another", 400, { title: "Renamed" })]),
+    );
+    old.resolve(["other"]);
+    await baselineSaved.promise;
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.title)).toEqual(["Renamed"]);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([entry("thread-a", 300).id]);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(4);
+  });
+
+  it("retains the unread-inbox recovery gate for a classified silent arrival", async () => {
+    const h = harness();
+    const original = encodeSettlementInbox({ ...emptyInbox(), entries: [entry("old", 150)] });
+    h.data.inbox = original;
+    h.store.loadInbox.mockImplementation(() => {
+      throw new Error("read unavailable");
+    });
+    const controller = createSettlementNotificationController({ store: h.store });
+    controller.observe(env, shell(2, [thread("thread-a", 200), thread("old")]), {
+      resolveOrigins: async () => ["client"],
+    });
+    await controller.flush();
+    expect(h.data.inbox).toBe(original);
+    expect(h.store.saveBaseline).not.toHaveBeenCalled();
+    h.store.loadInbox.mockImplementation(() => h.data.inbox);
+    await controller.flush();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([
+      entry("old", 150).id,
+    ]);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(2);
+  });
+
+  it("does not let a silent manual transition suppress a later actual agent settlement", async () => {
+    const h = harness();
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    const resolveOrigins = vi.fn<SettlementOriginResolver>(async (arrivals) =>
+      arrivals.map((arrival) => (arrival.settledAtMs === 200 ? "client" : "other")),
+    );
+    controller.observe(env, shell(2, [thread("thread-a", 200)]), { resolveOrigins });
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    // Re-observing a no-op creates neither a classification nor future suppression.
+    controller.observe(env, shell(3, [thread("thread-a", 200)]), { resolveOrigins });
+    controller.observe(env, shell(4, [thread("thread-a")]), { resolveOrigins });
+    controller.observe(env, shell(5, [thread("thread-a", 300)]), { resolveOrigins });
+    await controller.flush();
+    expect(resolveOrigins).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([
+      entry("thread-a", 300).id,
+    ]);
+  });
+
+  it("persists a completed classification's inbox before its baseline when completion races a save", async () => {
+    const h = harness();
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const held = deferred<readonly SettlementOrigin[]>();
+    const saveInbox = h.store.saveInbox.getMockImplementation()!;
+    h.store.saveInbox.mockImplementationOnce(async (json) => {
+      entered.resolve();
+      await release.promise;
+      await saveInbox(json);
+    });
+    controller.observe(env, shell(2, [thread("thread-a", 200)]), {
+      resolveOrigins: () => held.promise,
+    });
+    controller.dismiss([entry("older", 50).id]);
+    await entered.promise;
+    held.resolve(["other"]);
+    controller.observe(env, shell(3, [thread("thread-a", 200)]));
+    release.resolve();
+    await controller.flush();
+    expect(h.data.writes.map((write) => write.kind)).toEqual(["inbox", "inbox", "baseline"]);
+    expect(decodeSettlementInbox(h.data.writes[0]!.json).entries).toEqual([]);
+    expect(decodeSettlementInbox(h.data.writes[1]!.json).entries.map((value) => value.id)).toEqual([
+      entry().id,
+    ]);
+    expect(decodeSettlementBaseline(h.data.baselines.get(env)!).snapshotSequence).toBe(3);
   });
 });

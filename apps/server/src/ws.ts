@@ -1,4 +1,6 @@
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
+import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
+import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
 import * as ProviderConversationReselection from "./jones/runtime/ProviderConversationReselection.ts";
 import {
   makeNativeStoreAuthorityConfigReader,
@@ -1980,34 +1982,37 @@ const layerWsRpc = (
                   : {}),
               }).pipe(
                 Effect.andThen(
-                  startup
-                    .enqueueCommand(
-                      // A retry also restarts the preparation work the launch owns.
-                      (command.type === "prepared-run.retry"
-                        ? threadLaunch.retryPreparation(command)
-                        : ThreadMessageIntake.dispatchCommand(
-                            ThreadManagementService.withCreationProvenance(command, {
-                              createdBy: "user",
-                              creationSource:
-                                "creationSource" in command ? command.creationSource : "web",
-                            }),
-                          )
-                      ).pipe(Effect.provide(intakeContext)),
-                    )
-                    .pipe(
-                      Effect.tap(() => recordClientCommandAnalytics(command)),
-                      Effect.map((result) => ({ sequence: result.sequence })),
-                      Effect.mapError((cause) => {
-                        const detail = userFacingDispatchErrorMessage(cause);
-                        return new OrchestrationV2DispatchCommandError({
-                          commandId: command.commandId,
-                          commandType: command.type,
-                          message: detail ?? "Failed to dispatch orchestration V2 command",
-                          ...(detail === undefined ? {} : { detail }),
-                          cause,
-                        });
-                      }),
-                    ),
+                  withClientSettlementOrigin(
+                    command,
+                    startup
+                      .enqueueCommand(
+                        // A retry also restarts the preparation work the launch owns.
+                        (command.type === "prepared-run.retry"
+                          ? threadLaunch.retryPreparation(command)
+                          : ThreadMessageIntake.dispatchCommand(
+                              ThreadManagementService.withCreationProvenance(command, {
+                                createdBy: "user",
+                                creationSource:
+                                  "creationSource" in command ? command.creationSource : "web",
+                              }),
+                            )
+                        ).pipe(Effect.provide(intakeContext)),
+                      )
+                      .pipe(
+                        Effect.tap(() => recordClientCommandAnalytics(command)),
+                        Effect.map((result) => ({ sequence: result.sequence })),
+                        Effect.mapError((cause) => {
+                          const detail = userFacingDispatchErrorMessage(cause);
+                          return new OrchestrationV2DispatchCommandError({
+                            commandId: command.commandId,
+                            commandType: command.type,
+                            message: detail ?? "Failed to dispatch orchestration V2 command",
+                            ...(detail === undefined ? {} : { detail }),
+                            cause,
+                          });
+                        }),
+                      ),
+                  ),
                 ),
               ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
@@ -3343,6 +3348,7 @@ export const layer = Layer.unwrap(
               readNativeStoreAuthorityConfig,
             ).pipe(
               Layer.provide(QueueCompatibility.layer),
+              Layer.provide(SettlementOrigins.layer),
               Layer.provideMerge(RpcSerialization.layerJson),
               // Request fibers run in the handlers' context, so this reporter sees
               // their defects, not the rest of the server's.

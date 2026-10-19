@@ -36,6 +36,11 @@ export type EnvironmentSettlementBaseline = typeof EnvironmentSettlementBaseline
 
 export type SettlementArrival = Omit<SettlementEntry, "id" | "detectedAtMs" | "threadGone">;
 
+export type SettlementOrigin = "client" | "other" | "unknown";
+export type SettlementOriginResolver = (
+  arrivals: readonly SettlementArrival[],
+) => Promise<readonly SettlementOrigin[] | null>;
+
 export function settlementEntryId(
   environmentId: EnvironmentId,
   threadId: ThreadId,

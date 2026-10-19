@@ -1198,7 +1198,19 @@
     "packages/client-runtime/src/jones/threadReadDwell.test.ts": "jones-owned",
     "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/thread-read-dwell.json": "jones-owned",
-    "apps/web/src/hooks/useThreadActions.ts": "hook"
+    "apps/web/src/hooks/useThreadActions.ts": "hook",
+    "apps/mobile/src/jones/settlementNotifications/resolveOrigins.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/111_JonesClientSettlementCommands.ts": "jones-owned",
+    "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts": "jones-owned",
+    "apps/server/src/jones/settlementOrigins/SettlementOrigins.ts": "jones-owned",
+    "apps/server/src/jones/settlementOrigins/clientIngress.ts": "jones-owned",
+    "apps/server/src/jones/settlementOrigins/http.test.ts": "jones-owned",
+    "apps/server/src/jones/settlementOrigins/http.ts": "jones-owned",
+    "apps/web/src/jones/settlementNotifications/resolveOrigins.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts": "jones-owned",
+    "packages/contracts/src/jones/settlementOrigins.test.ts": "jones-owned",
+    "packages/contracts/src/jones/settlementOrigins.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

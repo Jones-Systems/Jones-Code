@@ -13,6 +13,8 @@ import {
   encodeSettlementInbox,
   type EnvironmentSettlementBaseline,
   type SettlementEntry,
+  type SettlementArrival,
+  type SettlementOriginResolver,
   type SettlementInboxState,
 } from "./model.ts";
 
@@ -43,7 +45,14 @@ export function createSettlementNotificationController(deps: {
   const baselines = new Map<EnvironmentId, EnvironmentSettlementBaseline | null>();
   const baselineLoads = new Map<EnvironmentId, Promise<void>>();
   const dirtyBaselines = new Map<EnvironmentId, EnvironmentSettlementBaseline>();
-  const observations = new Map<EnvironmentId, EnvironmentShellState>();
+  const observations = new Map<
+    EnvironmentId,
+    {
+      state: EnvironmentShellState;
+      resolveOrigins?: SettlementOriginResolver;
+    }
+  >();
+  const pendingClassifications = new Map<EnvironmentId, number>();
   const confirmed = new Map<EnvironmentId, EnvironmentShellState>();
   const staleSince = new Map<EnvironmentId, number>();
   const catalog = new Set<EnvironmentId>();
@@ -158,12 +167,14 @@ export function createSettlementNotificationController(deps: {
       if (!(await loadInbox())) return;
       inboxRevision++;
     }
-    if (inboxRevision === persistedInboxRevision && dirtyBaselines.size === 0) return;
+    const pendingBaselines = [...dirtyBaselines].filter(
+      ([environmentId]) => !pendingClassifications.has(environmentId),
+    );
+    if (inboxRevision === persistedInboxRevision && pendingBaselines.length === 0) return;
     // Capture one coherent pair before saving. A later observation may
     // change memory while the adapter is saving this inbox.
     const revision = inboxRevision;
     const inboxJson = encodeSettlementInbox(inbox);
-    const pendingBaselines = [...dirtyBaselines];
     try {
       await store.saveInbox(inboxJson);
       persistedInboxRevision = revision;
@@ -205,9 +216,68 @@ export function createSettlementNotificationController(deps: {
     }
   }
 
+  function classifyArrivals(
+    environmentId: EnvironmentId,
+    arrivals: readonly SettlementArrival[],
+    detectedAtMs: number,
+    resolveOrigins: SettlementOriginResolver,
+  ) {
+    pendingClassifications.set(environmentId, (pendingClassifications.get(environmentId) ?? 0) + 1);
+    let finished = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (origins: unknown) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(retryTimer);
+      // Reject the entire positional result if any row is malformed. Only
+      // positive evidence bound to every requested identity may silence a row.
+      const valid =
+        Array.isArray(origins) &&
+        origins.length === arrivals.length &&
+        arrivals.every((_, index) => {
+          const origin = origins[index];
+          return origin === "client" || origin === "other" || origin === "unknown";
+        });
+      const retained = valid
+        ? arrivals.filter((_, index) => origins[index] !== "client")
+        : arrivals;
+      updateInbox(refreshConfirmed(addArrivals(inbox, retained, detectedAtMs)));
+      const remaining = (pendingClassifications.get(environmentId) ?? 1) - 1;
+      if (remaining === 0) pendingClassifications.delete(environmentId);
+      else pendingClassifications.set(environmentId, remaining);
+      changeRevision++;
+      scheduleWrite(true);
+    };
+    const exhaust = () => {
+      if (finished) return;
+      log("settlement-notifications.origin-unresolved");
+      finish(null);
+    };
+    // These are classification attempts, not transport reconnects. A stalled
+    // resolver cannot pin a baseline forever: four attempts and one final
+    // response deadline are the complete lifetime of this classification.
+    const offsets = [0, 2_000, 5_000, 15_000, 25_000];
+    const attempt = (index: number) => {
+      if (finished) return;
+      if (index === offsets.length - 1) {
+        exhaust();
+        return;
+      }
+      // @effect-diagnostics-next-line globalTimers:off - Promise-based external-store boundary; finish cancels this bounded classification timer.
+      retryTimer = setTimeout(() => attempt(index + 1), offsets[index + 1]! - offsets[index]!);
+      void Promise.resolve()
+        .then(() => resolveOrigins(arrivals))
+        .then(finish, () => {
+          if (index === offsets.length - 2) exhaust();
+        });
+    };
+    attempt(0);
+  }
+
   function processObservation(environmentId: EnvironmentId) {
-    const state = observations.get(environmentId);
-    if (!hydrated || !baselines.has(environmentId) || state === undefined) return;
+    const observation = observations.get(environmentId);
+    if (!hydrated || !baselines.has(environmentId) || observation === undefined) return;
+    const { state, resolveOrigins } = observation;
     observations.delete(environmentId);
     try {
       const previous = baselines.get(environmentId) ?? null;
@@ -226,7 +296,12 @@ export function createSettlementNotificationController(deps: {
         log("settlement-notifications.sequence-reset", { environmentId });
       staleSince.delete(environmentId);
       confirmed.set(environmentId, state);
-      const next = result.kind === "compare" ? addArrivals(inbox, result.arrivals, now()) : inbox;
+      const detectedAtMs = now();
+      const arrivals = result.kind === "compare" ? result.arrivals : [];
+      const needsClassification = resolveOrigins !== undefined && arrivals.length > 0;
+      if (needsClassification)
+        classifyArrivals(environmentId, arrivals, detectedAtMs, resolveOrigins);
+      const next = needsClassification ? inbox : addArrivals(inbox, arrivals, detectedAtMs);
       const inboxChanged = updateInbox(refreshFromState(next, environmentId, state));
       baselines.set(environmentId, result.baseline);
       dirtyBaselines.set(environmentId, result.baseline);
@@ -321,8 +396,12 @@ export function createSettlementNotificationController(deps: {
 
   return {
     hydrate,
-    observe(environmentId: EnvironmentId, state: EnvironmentShellState): void {
-      observations.set(environmentId, state);
+    observe(
+      environmentId: EnvironmentId,
+      state: EnvironmentShellState,
+      options?: { resolveOrigins?: SettlementOriginResolver },
+    ): void {
+      observations.set(environmentId, { state, ...options });
       if (!hydrated) {
         void hydrate();
         return;

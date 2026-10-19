@@ -2,6 +2,8 @@ import * as ProjectionStoreV2 from "../../orchestration-v2/ProjectionStore.ts";
 import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as WorkQueueMetadataService from "../workQueueMetadata/WorkQueueMetadataService.ts";
 import { workQueueMetadataHttpApiLayer } from "../workQueueMetadata/http.ts";
+import * as SettlementOrigins from "../settlementOrigins/SettlementOrigins.ts";
+import { settlementOriginsHttpApiLayer } from "../settlementOrigins/http.ts";
 import * as Layer from "effect/Layer";
 import { conversationLibraryHttpApiLayer } from "../../conversations/http.ts";
 import * as HostStatus from "../../hostStatus/HostStatus.ts";
@@ -15,6 +17,7 @@ export { voiceReviewResponseHeadersLayer } from "../../voiceReview/http.ts";
 
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
+    Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
     Layer.provide(
       workQueueMetadataHttpApiLayer.pipe(Layer.provide(WorkQueueMetadataService.layer)),
     ),

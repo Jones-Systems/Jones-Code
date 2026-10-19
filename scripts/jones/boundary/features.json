@@ -964,9 +964,13 @@
         "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
         "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
         "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
-        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/settlementOrigins/http.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
+        "packages/contracts/src/jones/settlementOrigins.test.ts"
       ],
-      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus/local-origin exclusions, wire changes, baseline GC or server history claims."
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims."
     }
   ]
 }

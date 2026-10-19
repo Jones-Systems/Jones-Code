@@ -1,9 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useLinkTo } from "@react-navigation/native";
-import type { SettlementEntry } from "@t3tools/client-runtime/jones/settlement-notifications";
+import type {
+  SettlementEntry,
+  SettlementOriginResolver,
+} from "@t3tools/client-runtime/jones/settlement-notifications";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -16,13 +19,18 @@ import { MOBILE_SHAPE } from "../../lib/designTokens";
 import { APP_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { environmentShell } from "../../state/shell";
 import { settlementNotificationController as controller } from "./controller";
+import { resolveSettlementOrigins } from "./resolveOrigins";
 import { encodeThreadDeepLink } from "./navigation";
 
 function EnvironmentObserver(props: { readonly environmentId: EnvironmentId }) {
   const state = useAtomValue(environmentShell.stateValueAtom(props.environmentId));
+  const resolveOrigins = useMemo<SettlementOriginResolver>(
+    () => (arrivals) => resolveSettlementOrigins(props.environmentId, arrivals),
+    [props.environmentId],
+  );
   useEffect(() => {
-    if (state.status === "live") controller.observe(props.environmentId, state);
-  }, [props.environmentId, state]);
+    if (state.status === "live") controller.observe(props.environmentId, state, { resolveOrigins });
+  }, [props.environmentId, state, resolveOrigins]);
   return null;
 }
 

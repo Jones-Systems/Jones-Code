@@ -1595,7 +1595,15 @@
         "apps/web/src/jones/settlementNotifications/localStorageStore.test.ts",
         "apps/web/src/jones/settlementNotifications/explicitDismiss.browser.test.tsx",
         "apps/mobile/src/jones/settlementNotifications/kvStore.test.ts",
-        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts"
+        "apps/mobile/src/jones/settlementNotifications/navigation.test.ts",
+        "apps/server/src/jones/settlementOrigins/SettlementOrigins.test.ts",
+        "apps/server/src/jones/settlementOrigins/http.test.ts",
+        "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
+        "packages/contracts/src/jones/settlementOrigins.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
@@ -1607,7 +1615,10 @@
         "vp run --filter @t3tools/mobile typecheck",
         "vp lint packages/client-runtime/src/jones/settlementNotifications apps/web/src/jones/settlementNotifications",
         "vp run lint:mobile",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/contracts/src/jones/settlementOrigins.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck"
       ]
     }
   ]
