@@ -19,6 +19,7 @@ on:
       - vite.config.ts
       - apps/server/package.json
       - apps/server/src/jones/cloud/qualifiedStartup.ts
+      - apps/server/src/jones/cloud/qualifiedBackup*.ts
       - scripts/lib/**
       - native/resource-monitor/**
       - native/browser-secret/**

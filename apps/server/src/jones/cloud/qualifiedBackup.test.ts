@@ -1,6 +1,8 @@
 // These synthetic recovery fixtures check native file identities and durability operations.
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -16,6 +18,16 @@ import {
   writeQualifiedBackupReceipt,
   type QualifiedBackupAdapter,
 } from "./qualifiedBackup.ts";
+
+vi.mock("node:os", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:os")>()),
+}));
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+}));
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
 
 async function fixture(body: (base: string, database: string) => Promise<void>) {
   const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-backup-test-"));
@@ -256,5 +268,202 @@ it("preserves a restore buffer whose durable ownership is unknown", async () => 
     await NodeAssert.rejects(restoreQualifiedBackupFile(source, database), /unknown prior effects/);
     assert.equal(await NodeFSP.readFile(temporary, "utf8"), "unowned-copy");
     assert.equal(await NodeFSP.readFile(database, "utf8"), "before-database");
+  });
+});
+
+// oxlint-disable-next-line t3code/no-global-process-runtime -- This integration fixture requires the actual macOS syscall.
+it.runIf(NodeOS.platform() === "darwin")(
+  "uses native clones for both preflight and copying and preserves an existing destination",
+  async () => {
+    await fixture(async (base, database) => {
+      assert.equal((await preflightQualifiedBackup(base, database)).method, "clone");
+      const target = NodePath.join(base, "native-clone");
+      assert.deepEqual(await copyQualifiedBackupFile(database, target), {
+        method: "clone",
+        bytes: 15,
+      });
+      assert.equal(await NodeFSP.readFile(target, "utf8"), "before-database");
+      assert.notEqual((await NodeFSP.stat(target)).ino, (await NodeFSP.stat(database)).ino);
+      await NodeFSP.writeFile(target, "existing-sentinel");
+      const before = await NodeFSP.stat(target);
+      await NodeAssert.rejects(copyQualifiedBackupFile(database, target), { code: "EEXIST" });
+      assert.equal((await NodeFSP.stat(target)).ino, before.ino);
+      assert.equal(await NodeFSP.readFile(target, "utf8"), "existing-sentinel");
+      assert.equal(await NodeFSP.readFile(database, "utf8"), "before-database");
+      assert.deepEqual(
+        (await NodeFSP.readdir(base)).filter((name) => name.startsWith(".qualified-clone-")),
+        [],
+      );
+    });
+  },
+);
+
+async function withDarwinCloneProcess(
+  run: (source: string, target: string) => Promise<{ stdout: string; cause?: Error }>,
+  body: () => Promise<void>,
+) {
+  const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("darwin");
+  const process = vi.spyOn(NodeChildProcess, "execFile").mockImplementation((...args) => {
+    const [executable, argv, options, callback] = args;
+    assert.equal(executable, "/usr/bin/osascript");
+    assert.isArray(argv);
+    const command = argv as readonly string[];
+    assert.deepEqual(command.slice(0, 3), ["-l", "JavaScript", "-e"]);
+    assert.include(command[3]!, 'ObjC.bindFunction("clonefile"');
+    assert.notInclude(command[3]!, "Application(");
+    assert.deepEqual(options, {
+      encoding: "utf8",
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 4096,
+    });
+    const complete = callback as (cause: Error | null, stdout: string, stderr: string) => void;
+    void run(command[4]!, command[5]!).then(
+      ({ stdout, cause }) => complete(cause ?? null, stdout, ""),
+      (cause: Error) => complete(cause, "", ""),
+    );
+    return {} as NodeChildProcess.ChildProcess;
+  });
+  try {
+    await body();
+  } finally {
+    process.mockRestore();
+    platform.mockRestore();
+  }
+}
+
+it("normalizes Darwin unsupported errno and checks capacity before any full copy", async () => {
+  await fixture(async (base, database) => {
+    const free = await NodeFSP.statfs(base, { bigint: true });
+    const target = NodePath.join(base, "capacity-target");
+    const capacity = vi.spyOn(NodeFSP, "statfs").mockResolvedValue({ ...free, bavail: 0n });
+    try {
+      for (const errno of [18, 22, 45, 78, 102]) {
+        await withDarwinCloneProcess(
+          async () => ({ stdout: `${errno}\n` }),
+          async () => {
+            await NodeAssert.rejects(
+              copyQualifiedBackupFile(database, target),
+              /recovery-capacity/,
+            );
+          },
+        );
+        await NodeAssert.rejects(NodeFSP.lstat(target), { code: "ENOENT" });
+      }
+    } finally {
+      capacity.mockRestore();
+    }
+    await NodeFSP.writeFile(database, "small-copy");
+    await withDarwinCloneProcess(
+      async () => ({ stdout: "45\n" }),
+      async () => {
+        assert.deepEqual(await copyQualifiedBackupFile(database, target), {
+          method: "copy",
+          bytes: 10,
+        });
+      },
+    );
+    assert.equal(await NodeFSP.readFile(target, "utf8"), "small-copy");
+    assert.deepEqual(
+      (await NodeFSP.readdir(base)).filter((name) => name.startsWith(".qualified-clone-")),
+      [],
+    );
+  });
+});
+
+it("cleans owned clone output on malformed or failed subprocess responses without publishing or falling back", async () => {
+  await fixture(async (base, database) => {
+    const target = NodePath.join(base, "unpublished");
+    for (const response of [
+      { stdout: "unexpected output" },
+      {
+        stdout: "0\n",
+        cause: Object.assign(new Error("synthetic timeout"), { killed: true, signal: "SIGKILL" }),
+      },
+      {
+        stdout: "",
+        cause: Object.assign(new Error("synthetic missing bridge"), { code: "ENOENT" }),
+      },
+    ]) {
+      await withDarwinCloneProcess(
+        async (_source, temporary) => {
+          await NodeFSP.writeFile(temporary, "owned-clone-output", { flag: "wx" });
+          return response;
+        },
+        async () => {
+          await NodeAssert.rejects(
+            copyQualifiedBackupFile(database, target),
+            /Native recovery clone/,
+          );
+        },
+      );
+      await NodeAssert.rejects(NodeFSP.lstat(target), { code: "ENOENT" });
+      assert.deepEqual(
+        (await NodeFSP.readdir(base)).filter((name) => name.startsWith(".qualified-clone-")),
+        [],
+      );
+    }
+  });
+});
+
+it("preserves a racing destination and fails closed on native permission and space errors", async () => {
+  await fixture(async (base, database) => {
+    const target = NodePath.join(base, "racing-target");
+    await withDarwinCloneProcess(
+      async (_source, temporary) => {
+        await NodeFSP.writeFile(temporary, "clone-output", { flag: "wx" });
+        await NodeFSP.writeFile(target, "race-sentinel", { flag: "wx" });
+        return { stdout: "0\n" };
+      },
+      async () => {
+        await NodeAssert.rejects(copyQualifiedBackupFile(database, target), { code: "EEXIST" });
+      },
+    );
+    assert.equal(await NodeFSP.readFile(target, "utf8"), "race-sentinel");
+    for (const [errno, code] of [
+      [13, "EACCES"],
+      [17, "EEXIST"],
+      [28, "ENOSPC"],
+      [999, "UNKNOWN"],
+    ] as const) {
+      await withDarwinCloneProcess(
+        async () => ({ stdout: `${errno}\n` }),
+        async () => {
+          await NodeAssert.rejects(
+            copyQualifiedBackupFile(database, NodePath.join(base, "no-copy")),
+            { code },
+          );
+        },
+      );
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(base, "no-copy")), { code: "ENOENT" });
+    }
+    assert.deepEqual(
+      (await NodeFSP.readdir(base)).filter((name) => name.startsWith(".qualified-clone-")),
+      [],
+    );
+  });
+});
+
+it("retains the Node forced-clone primitive on non-Darwin hosts", async () => {
+  await fixture(async (base, database) => {
+    const originalCopy = NodeFSP.copyFile;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const native = vi.spyOn(NodeChildProcess, "execFile");
+    const copy = vi.spyOn(NodeFSP, "copyFile").mockImplementation((source, target, flags) => {
+      assert.equal(flags, NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE_FORCE);
+      return originalCopy(source, target, NodeFS.constants.COPYFILE_EXCL);
+    });
+    try {
+      assert.equal(
+        (await copyQualifiedBackupFile(database, NodePath.join(base, "linux-target"))).method,
+        "clone",
+      );
+      assert.equal(copy.mock.calls.length, 1);
+      assert.equal(native.mock.calls.length, 0);
+    } finally {
+      copy.mockRestore();
+      native.mockRestore();
+      platform.mockRestore();
+    }
   });
 });
