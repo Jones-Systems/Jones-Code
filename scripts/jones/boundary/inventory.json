@@ -1123,7 +1123,22 @@
     "packages/contracts/src/jones/providerConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.ts": "jones-owned",
     "apps/server/src/jones/runtime/ProviderConversationReselection.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned"
+    "scripts/jones/boundary/fragments/provider-conversation-reselection.json": "jones-owned",
+    "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/sidebarHeader/compactSidebarHeader.css": "jones-owned",
+    "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/compact-sidebar-header.json": "jones-owned",
+    "apps/web/src/jones/threadReadDwell/useMarkThreadUnread.ts": "jones-owned",
+    "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.tsx": "jones-owned",
+    "packages/client-runtime/src/jones/threadReadDwell.ts": "jones-owned",
+    "packages/client-runtime/src/jones/threadReadDwell.test.ts": "jones-owned",
+    "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-read-dwell.json": "jones-owned",
+    "apps/web/src/hooks/useThreadActions.ts": "hook",
+    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

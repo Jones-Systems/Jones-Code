@@ -9,6 +9,12 @@ const colors = {
   done: "text-emerald-600 dark:text-emerald-300/90",
 };
 
+const selectedNumbers = {
+  working: "bg-sky-600/30 dark:bg-sky-300/30",
+  input: "bg-indigo-600/30 dark:bg-indigo-300/30",
+  done: "bg-emerald-600/30 dark:bg-emerald-300/30",
+};
+
 const backgrounds = {
   all: "bg-muted/30 hover:bg-muted/60",
   working: "bg-sky-600/20 ring-1 ring-sky-600/30 dark:bg-sky-300/20 dark:ring-sky-300/30",
@@ -34,17 +40,26 @@ export function ThreadStatusFilterPill({
             type="button"
             aria-label={label}
             onClick={onCycle}
+            style={{ gap: "var(--sidebar-status-gap, 2px)" }}
             className={cn(
-              "relative z-10 inline-flex h-6 shrink-0 items-center gap-0.5 rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
+              "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-1 text-xs font-medium outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
               backgrounds[filter],
             )}
           >
             {(["working", "input", "done"] as const).map((status, index) => (
-              <span key={status} className="inline-flex items-center gap-0.5" aria-hidden="true">
+              <span
+                key={status}
+                className="inline-flex items-center"
+                aria-hidden="true"
+                style={{ gap: "var(--sidebar-status-gap, 2px)" }}
+              >
                 {index > 0 ? <span className="text-muted-foreground/60">·</span> : null}
                 <span
+                  style={{ paddingInline: "var(--sidebar-status-number-padding, 6px)" }}
                   className={cn(
-                    "px-1.5 tabular-nums",
+                    "rounded-sm tabular-nums",
+                    filter === status && "font-semibold underline decoration-2 underline-offset-2",
+                    filter === status && selectedNumbers[status],
                     counts[status] > 0 ? colors[status] : "text-muted-foreground/60",
                   )}
                 >

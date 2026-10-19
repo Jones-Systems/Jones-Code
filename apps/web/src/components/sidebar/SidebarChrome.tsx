@@ -1,5 +1,6 @@
 import { SidebarEnvironmentFilters } from "../../jones/environmentFilters/SidebarEnvironmentFilters";
 import { memo } from "react";
+import { CompactSidebarHeader } from "../../jones/sidebarHeader/CompactSidebarHeader";
 import { Link } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
@@ -47,7 +48,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   return (
     <div
       className={cn(
-        "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2 pr-3",
+        "relative flex h-[var(--workspace-topbar-height)] shrink-0 flex-row items-center gap-2",
         isElectron && "drag-region",
       )}
     >
@@ -59,7 +60,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           aria-label="Toggle main sidebar"
         />
       </div>
-      <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
+      <CompactSidebarHeader>
         <SidebarBrand onBackdrop={backdropVariant !== null} />
         {onCycleStatusFilter ? (
           <ThreadStatusFilterPill
@@ -70,13 +71,13 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
         ) : null}
         <SidebarWorkModePill />
         {pillLabel ? (
-          <div className="ml-1 flex h-7 items-center">
+          <div className="flex h-7 shrink-0 items-center">
             <Badge data-environment-identification="pill" size="sm" variant="secondary">
               {pillLabel}
             </Badge>
           </div>
         ) : null}
-      </div>
+      </CompactSidebarHeader>
     </div>
   );
 });
@@ -108,6 +109,7 @@ export function SidebarBrandWidthProbe({
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   return (
     <Link
+      data-sidebar-brand
       aria-label="Go to threads"
       className={cn(
         "relative z-10 ml-[var(--workspace-titlebar-content-left)] hidden h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset md:flex",
@@ -125,6 +127,7 @@ function SidebarBrandMark({ onBackdrop }: { onBackdrop: boolean }) {
     <span className="inline-flex min-w-0 items-baseline gap-1 text-sm font-medium tracking-tight">
       <T3Wordmark aria-label="J3" className="h-[1cap] w-auto shrink-0" />
       <span
+        data-sidebar-brand-code
         className={cn(
           "truncate [text-box:trim-both_cap_alphabetic] supports-[text-box:trim-both_cap_alphabetic]:py-1",
           onBackdrop ? "text-white/70" : "text-muted-foreground",

@@ -489,6 +489,7 @@ function useSidebarThreads(input: {
     scopedThreads,
     "current",
     nowMinute > snoozeWakeAt ? nowMinute : snoozeWakeAt,
+    routeThreadKey,
   );
   // Counts include filtered-out threads, so arm the scoped roster's next wake.
   useEffect(() => {

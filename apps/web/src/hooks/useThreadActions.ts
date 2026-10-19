@@ -1,3 +1,4 @@
+import { useMarkThreadUnread } from "../jones/threadReadDwell/useMarkThreadUnread";
 import {
   parseScopedThreadKey,
   scopeProjectRef,
@@ -197,24 +198,6 @@ export async function navigateAfterThreadDeletion(navigate: () => Promise<void>)
       }),
     );
   }
-}
-
-function useMarkThreadUnread() {
-  const markThreadUnreadMutation = useAtomCommand(threadEnvironment.markUnread, {
-    reportFailure: false,
-  });
-  const markThreadUnreadLocal = useUiStateStore((state) => state.markThreadUnread);
-  return (target: ScopedThreadRef) => {
-    if (readEnvironmentSupportsVisitedTracking(target.environmentId)) {
-      void markThreadUnreadMutation({
-        environmentId: target.environmentId,
-        input: { threadId: target.threadId },
-      });
-      return;
-    }
-    const thread = readThreadShell(target);
-    markThreadUnreadLocal(scopedThreadKey(target), thread?.latestRun?.completedAt);
-  };
 }
 
 export function useAcknowledgeThreadWoke() {

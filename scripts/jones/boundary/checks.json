@@ -1494,6 +1494,36 @@
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "compact-sidebar-header",
+      "tests": [
+        "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
+      ],
+      "commands": [
+        "vp run --filter @t3tools/web test src/jones/sidebarHeader/SidebarHeader.browser.test.tsx src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "thread-read-dwell",
+      "tests": [
+        "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+        "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+        "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "vp run --filter @t3tools/web test src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx src/jones/threadReadDwell/markUnread.browser.test.tsx src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run lint:mobile",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

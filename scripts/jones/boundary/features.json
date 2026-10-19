@@ -893,6 +893,24 @@
         "apps/server/src/orchestration-v2/http.test.ts"
       ],
       "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
+    },
+    {
+      "id": "compact-sidebar-header",
+      "tests": [
+        "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
+      ],
+      "scope": "Actual available-width fitting removes Code first, reduces status and adjacent spacing progressively, then removes the brand only if needed. The selected filter count has an underline and stronger background; controls remain in one accessible row."
+    },
+    {
+      "id": "thread-read-dwell",
+      "tests": [
+        "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+        "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+        "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+      ],
+      "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
     }
   ]
 }
