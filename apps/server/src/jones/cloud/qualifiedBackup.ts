@@ -1,8 +1,10 @@
 // The detached launcher must load this recovery boundary using Node built-ins only.
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 export const QUALIFIED_STARTUP_STATE_FILES = [
   "settings.json",
@@ -31,8 +33,84 @@ export interface QualifiedBackupAdapter {
   readonly availableBytes: (directory: string) => Promise<number>;
 }
 
+// Node's forced-clone path can return ENOSYS on macOS. cp -c is unsuitable here:
+// it silently copies when cloning fails, before the full-copy capacity guard.
+const DARWIN_CLONE_SCRIPT = `
+ObjC.import("stdlib");
+ObjC.bindFunction("clonefile", ["int", ["char *", "char *", "int"]]);
+ObjC.bindFunction("__error", ["int *", []]);
+function run(argv) {
+  var error = $.__error();
+  return $.clonefile(argv[0], argv[1], 0) === 0 ? 0 : error[0];
+}
+`;
+
+// These are Darwin errno values, including when a test runs on another host.
+const DARWIN_CLONE_ERRORS: Readonly<Record<number, string>> = {
+  1: "EPERM",
+  2: "ENOENT",
+  5: "EIO",
+  13: "EACCES",
+  17: "EEXIST",
+  18: "EXDEV",
+  22: "EINVAL",
+  28: "ENOSPC",
+  45: "ENOTSUP",
+  78: "ENOSYS",
+  102: "EOPNOTSUPP",
+};
+
+async function cloneDarwinFile(source: string, target: string): Promise<void> {
+  const temporary = await NodeFSP.mkdtemp(
+    NodePath.join(NodePath.dirname(target), ".qualified-clone-"),
+  );
+  const cloned = NodePath.join(temporary, "file");
+  try {
+    const errno = await new Promise<number>((resolve, reject) => {
+      NodeChildProcess.execFile(
+        "/usr/bin/osascript",
+        [
+          "-l",
+          "JavaScript",
+          "-e",
+          DARWIN_CLONE_SCRIPT,
+          NodePath.resolve(source),
+          NodePath.resolve(cloned),
+        ],
+        { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL", maxBuffer: 4096 },
+        (cause, stdout) => {
+          if (cause !== null) {
+            reject(new Error("Native recovery clone process failed.", { cause }));
+          } else if (!/^(0|[1-9][0-9]{0,2})\n?$/.test(stdout)) {
+            reject(new Error("Native recovery clone returned an invalid result."));
+          } else {
+            resolve(Number(stdout));
+          }
+        },
+      );
+    });
+    if (errno !== 0) {
+      throw Object.assign(new Error("Native recovery clone failed."), {
+        code: DARWIN_CLONE_ERRORS[errno] ?? "UNKNOWN",
+        errno: -errno,
+        syscall: "clonefile",
+      });
+    }
+    await fileSize(cloned);
+    // Only publish after confirmed syscall success. A lost subprocess response
+    // leaves output inside our private directory; link preserves EXCL atomically.
+    await NodeFSP.link(cloned, target);
+  } finally {
+    await NodeFSP.rm(temporary, { recursive: true, force: true });
+  }
+}
+
 const nativeAdapter: QualifiedBackupAdapter = {
-  copyFile: NodeFSP.copyFile,
+  copyFile: (source, target, flags) =>
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- Detached launcher has no Effect runtime.
+    NodeOS.platform() === "darwin" && flags & NodeFS.constants.COPYFILE_FICLONE_FORCE
+      ? cloneDarwinFile(source, target)
+      : NodeFSP.copyFile(source, target, flags),
   availableBytes: async (directory) => {
     const capacity = await NodeFSP.statfs(directory, { bigint: true });
     const bytes = capacity.bavail * capacity.bsize;
