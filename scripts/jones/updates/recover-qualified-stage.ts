@@ -13,22 +13,50 @@ import {
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const api: RecoveryApi = {
   get: async (endpoint) => {
-    let stdout: string;
-    try {
-      ({ stdout } = await execFile(
-        "gh",
-        ["api", "--hostname", "github.com", "--method", "GET", "--include", endpoint],
-        { maxBuffer: 2 * 1024 * 1024 },
-      ));
-    } catch (cause) {
-      const failed = cause as { stdout?: string };
-      if (typeof failed.stdout !== "string")
-        throw new Error("GitHub API invocation failed without a response.", { cause });
-      stdout = failed.stdout;
+    const args = ["api", "--hostname", "github.com", "--method", "GET", "--include"];
+    if (
+      /^repos\/Jones-Systems\/Jones-Code\/compare\/[a-f0-9]{40}\.\.\.[a-f0-9]{40}$/.test(endpoint)
+    ) {
+      // Project before buffering: ancestry qualification needs no commit list or file diffs.
+      args.push("--jq", "{status, merge_base_commit: {sha: .merge_base_commit.sha}}");
     }
+    args.push(endpoint);
+    const maxBuffer = 2 * 1024 * 1024;
+    let stdout: string;
+    let failedInvocation = false;
+    try {
+      ({ stdout } = await execFile("gh", args, { maxBuffer }));
+    } catch (cause) {
+      const failed = cause as {
+        code?: unknown;
+        stdout?: unknown;
+        killed?: boolean;
+        signal?: unknown;
+      };
+      if (
+        failed.code !== 1 ||
+        failed.killed === true ||
+        failed.signal != null ||
+        typeof failed.stdout !== "string"
+      )
+        // oxlint-disable-next-line preserve-caught-error -- Subprocess errors can retain unbounded stdout/stderr; CLI diagnostics must not disclose those bodies.
+        throw new Error("GitHub API invocation failed or exceeded its response limit.");
+      stdout = failed.stdout;
+      failedInvocation = true;
+    }
+    if (Buffer.byteLength(stdout, "utf8") > maxBuffer)
+      throw new Error("GitHub API response exceeded its response limit.");
     const match = /^HTTP\/\S+ (\d{3})[^\r\n]*\r?\n[\s\S]*?\r?\n\r?\n([\s\S]*)$/.exec(stdout);
     if (match === null) throw new Error("GitHub API response status is unavailable.");
-    return { status: Number(match[1]), body: JSON.parse(match[2]!) as unknown };
+    const status = Number(match[1]);
+    if (failedInvocation && status !== 404)
+      throw new Error("GitHub API invocation failed; its response cannot qualify recovery.");
+    try {
+      return { status, body: JSON.parse(match[2]!) as unknown };
+    } catch {
+      // JSON errors may include response text. Preserve only a bounded diagnostic at this CLI boundary.
+      throw new Error("GitHub API response body is incomplete or invalid JSON.");
+    }
   },
 };
 
