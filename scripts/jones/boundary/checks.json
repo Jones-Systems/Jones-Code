@@ -14,15 +14,18 @@
         "apps/web/src/components/Sidebar.drag.test.ts",
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts"
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts packages/contracts/src/environmentHttp.test.ts --maxWorkers=1",
+        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts packages/contracts/src/environmentHttp.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp run --filter @t3tools/web test src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1"
       ]
     },
     {

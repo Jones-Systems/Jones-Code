@@ -7,6 +7,7 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/jones/runtime/RuntimeOperationPermit.ts": "jones-owned",
     "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts": "jones-owned",
     "packages/shared/src/nodeSqliteClient.ts": "accepted-shared",

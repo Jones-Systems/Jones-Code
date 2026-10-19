@@ -15,9 +15,11 @@
         "apps/web/src/components/Sidebar.drag.test.ts",
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts"
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
       ],
-      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands."
+      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The existing upstream project-settings browser harness retains Jones permission cases because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery."
     },
     {
       "id": "sqlite-checkpoint-lifecycle",

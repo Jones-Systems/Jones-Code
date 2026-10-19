@@ -170,18 +170,20 @@ export function WorkstreamNativeSidebar({
     setBusy(true);
     setError(null);
     const startedBinding = binding;
-    try {
-      await operation();
-      return bindingRef.current === startedBinding;
-    } catch (cause) {
-      if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
-      return false;
-    } finally {
+    return (async () => {
+      try {
+        await operation();
+        return bindingRef.current === startedBinding;
+      } catch (cause) {
+        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
+        return false;
+      }
+    })().finally(() => {
       if (bindingRef.current === startedBinding) {
         busyRef.current = false;
         setBusy(false);
       }
-    }
+    });
   };
   // Retry reconciles unresolved commands by reading their receipts before it reloads.
   const refreshWorkstreams = () =>

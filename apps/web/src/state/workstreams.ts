@@ -85,6 +85,19 @@ type PrimaryClient = Effect.Success<typeof PrimaryEnvironmentHttpClient>;
 const request = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>, signal?: AbortSignal) =>
   runPrimaryHttp(PrimaryEnvironmentHttpClient.pipe(Effect.flatMap(run)), { signal });
 
+function refreshWorkstreamSessions(ids: ReadonlySet<string>): void {
+  void import("./session")
+    .then(async ({ refreshEnvironmentSession, readPreparedConnection }) => {
+      await Promise.allSettled(
+        [...ids].map(async (id) => {
+          const environmentId = EnvironmentId.make(id);
+          if (readPreparedConnection(environmentId)) await refreshEnvironmentSession(environmentId);
+        }),
+      );
+    })
+    .catch(() => undefined);
+}
+
 const metadataCache = new LiveWorkstreamMetadataCache();
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
 const isInternalReadError = Schema.is(EnvironmentInternalError);
@@ -694,17 +707,7 @@ export function useWorkstreams(
     setRemoteRefusals(new Map());
     const ids = new Set(nativeThreadsSnapshot.current.map((thread) => thread.environmentId));
     if (primaryEnvironmentId !== null) ids.add(primaryEnvironmentId);
-    void import("./session")
-      .then(async ({ refreshEnvironmentSession, readPreparedConnection }) => {
-        await Promise.allSettled(
-          [...ids].map(async (id) => {
-            const environmentId = EnvironmentId.make(id);
-            if (readPreparedConnection(environmentId))
-              await refreshEnvironmentSession(environmentId);
-          }),
-        );
-      })
-      .catch(() => undefined);
+    refreshWorkstreamSessions(ids);
   });
   const refreshFromUser = useStableCallback(() => {
     refreshAccess();
@@ -1128,7 +1131,7 @@ export function useWorkstreams(
           if (classifyWorkstreamReadFailure(cause) === "unauthenticated") purgeAuthorizedState();
           else markStale();
           setError("Workstreams changed or are unavailable. Retry to reload current access.");
-          refreshAfterOperation ||= commandAttempted;
+          refreshAfterOperation = refreshAfterOperation || commandAttempted;
         }
         throw workstreamOperationFailure(cause, commandAttempted);
       }
@@ -1502,11 +1505,9 @@ export function useWorkstreams(
     if (reconciliationFailures.length > 0)
       throw workstreamOperationFailure(reconciliationFailures[0], true);
     // Receipt reads precede metadata: an outage must not prevent exact-command reconciliation.
-    try {
-      await loadActionSnapshot();
-    } finally {
+    await loadActionSnapshot().finally(() => {
       refresh();
-    }
+    });
   };
 
   // Edit gates read `data`; a stale snapshot must not look current to them.
