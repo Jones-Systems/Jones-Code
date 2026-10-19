@@ -1,3 +1,8 @@
+import { QuestionAnswerFooter } from "../../jones/questionAnswer/QuestionAnswerFooter";
+import {
+  NO_QUESTION_ATTACHMENT_CAPABILITIES,
+  type QuestionAnswerAttachmentCapabilities,
+} from "../../jones/questionAnswer/questionAnswerCard";
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { memo, useEffect, useEffectEvent, useRef, useState } from "react";
 import { useStableCallback } from "~/hooks/useStableCallback";
@@ -21,6 +26,9 @@ interface PendingUserInputPanelProps {
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionValue: string) => void;
+  onChangeCustomAnswer: (questionId: string, value: string) => void;
+  onPrevious: () => void;
+  attachmentCapabilities?: QuestionAnswerAttachmentCapabilities;
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
 }
@@ -34,6 +42,9 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   answers,
   questionIndex,
   onToggleOption,
+  onChangeCustomAnswer,
+  onPrevious,
+  attachmentCapabilities = NO_QUESTION_ATTACHMENT_CAPABILITIES,
   onAdvance,
   onDismiss,
 }: PendingUserInputPanelProps) {
@@ -52,6 +63,9 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
       answers={answers}
       questionIndex={questionIndex}
       onToggleOption={onToggleOption}
+      onChangeCustomAnswer={onChangeCustomAnswer}
+      onPrevious={onPrevious}
+      attachmentCapabilities={attachmentCapabilities}
       onAdvance={onAdvance}
       onDismiss={onDismiss}
     />
@@ -67,6 +81,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   answers,
   questionIndex,
   onToggleOption,
+  onChangeCustomAnswer,
+  onPrevious,
+  attachmentCapabilities = NO_QUESTION_ATTACHMENT_CAPABILITIES,
   onAdvance,
   onDismiss,
 }: {
@@ -78,6 +95,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionValue: string) => void;
+  onChangeCustomAnswer: (questionId: string, value: string) => void;
+  onPrevious: () => void;
+  attachmentCapabilities?: QuestionAnswerAttachmentCapabilities;
   onAdvance: () => void;
   onDismiss: (requestId: RuntimeRequestId) => void;
 }) {
@@ -123,12 +143,12 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
         autoAdvanceTimerRef.current = null;
       }
     };
-    if (disabled || activeQuestion?.id === undefined) clearAutoAdvance();
+    if (responseDisabled || activeQuestion?.id === undefined) clearAutoAdvance();
     return clearAutoAdvance;
-  }, [activeQuestion?.id, disabled]);
+  }, [activeQuestion?.id, responseDisabled]);
 
   const handleOptionSelection = (questionId: string, optionValue: string) => {
-    if (disabled || isResponding) return;
+    if (responseDisabled) return;
     if (activeQuestion?.multiSelect) {
       onToggleOption(questionId, optionValue);
       return;
@@ -214,18 +234,18 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               render={<span role="button" tabIndex={0} />}
               aria-label="Dismiss question without answering"
               title="Dismiss question without answering"
-              disabled={isResponding}
+              disabled={disabled || isResponding}
               data-pending-user-input-dismiss
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                onDismiss(prompt.requestId);
+                if (!disabled && !isResponding) onDismiss(prompt.requestId);
               }}
               onKeyDown={(event) => {
                 if (event.key !== "Enter" && event.key !== " ") return;
                 event.preventDefault();
                 event.stopPropagation();
-                onDismiss(prompt.requestId);
+                if (!disabled && !isResponding) onDismiss(prompt.requestId);
               }}
             />
           ) : null}
@@ -285,7 +305,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                   <button
                     key={`${activeQuestion.id}:${optionValue}`}
                     type="button"
-                    disabled={disabled || isResponding}
+                    disabled={responseDisabled}
                     onClick={() => {
                       handleOptionSelection(activeQuestion.id, optionValue);
                     }}
@@ -298,6 +318,31 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             </div>
           </ComposerBanner.Body>
         </ComposerBanner.Scroll>
+        <QuestionAnswerFooter
+          prompt={prompt}
+          progress={progress}
+          threadRef={threadRef}
+          disabled={disabled}
+          isResponding={isResponding}
+          capabilities={attachmentCapabilities}
+          onChangeCustomAnswer={(questionId, value) => {
+            if (autoAdvanceTimerRef.current !== null) {
+              window.clearTimeout(autoAdvanceTimerRef.current);
+              autoAdvanceTimerRef.current = null;
+            }
+            setOptimisticSingleSelect(null);
+            onChangeCustomAnswer(questionId, value);
+          }}
+          onPrevious={onPrevious}
+          onAdvance={() => {
+            if (autoAdvanceTimerRef.current !== null) {
+              window.clearTimeout(autoAdvanceTimerRef.current);
+              autoAdvanceTimerRef.current = null;
+            }
+            onAdvance();
+          }}
+          onDismiss={onDismiss}
+        />
       </CollapsiblePanel>
     </Collapsible>
   );

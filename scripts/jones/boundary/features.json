@@ -921,6 +921,22 @@
       "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
     },
     {
+      "id": "question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
+      ],
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+    },
+    {
       "id": "compact-sidebar-header",
       "tests": [
         "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",

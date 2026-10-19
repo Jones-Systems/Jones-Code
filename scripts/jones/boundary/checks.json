@@ -1532,6 +1532,30 @@
       ]
     },
     {
+      "id": "jones-question-answer-field",
+      "tests": [
+        "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts",
+        "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
+        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/composer-logic.test.ts",
+        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts",
+        "apps/web/src/reactCompilerCoverage.test.ts"
+      ],
+      "commands": [
+        "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
+        "vp test run apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/composer-logic.test.ts apps/web/src/components/chat/composerSubmission.test.ts apps/web/src/components/chat/composerTypingGuard.test.ts apps/web/src/questionAttachments.test.ts apps/web/src/components/ChatView.logic.test.ts apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts apps/mobile/src/jones/questionAnswer/composerLayout.test.ts apps/mobile/src/features/threads/pendingUserInputLayout.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "compact-sidebar-header",
       "tests": [
         "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
