@@ -2,6 +2,24 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-voice-review-self-identity",
+      "tests": [
+        "packages/contracts/src/voiceReview.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/voiceReview/http.test.ts",
+        "apps/server/src/voiceReview/config.test.ts",
+        "packages/client-runtime/src/voice-review.test.ts",
+        "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
+        "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/voiceReview.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/voiceReview/http.test.ts apps/server/src/voiceReview/config.test.ts packages/client-runtime/src/voice-review.test.ts apps/web/src/components/voiceReview/voiceReviewActions.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/workQueue/UnifiedQueuePage.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-workstreams-interaction-recovery",
       "tests": [
         "packages/client-runtime/src/state/session.test.ts",

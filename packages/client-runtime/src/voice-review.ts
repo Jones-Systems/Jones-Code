@@ -42,6 +42,28 @@ const authorization = (input: VoiceReviewClientOptions) =>
     ? Effect.serviceOption(RemoteEnvironmentAuthorization)
     : Effect.succeed(input.remoteAuthorization);
 
+export const fetchVoiceReviewSelfIdentity = Effect.fn("clientRuntime.voiceReview.selfIdentity")(
+  function* (input: VoiceReviewClientOptions) {
+    return yield* unwrapReviewError(
+      executeAuthenticatedEnvironmentHttpRequest({
+        ...input,
+        remoteAuthorization: yield* authorization(input),
+        group: "voiceReview",
+        method: "GET",
+        timeoutMs: input.timeoutMs ?? 15_000,
+        url: (urls) => urls.selfIdentity(),
+        request: ({ client, headers }) => client.selfIdentity({ headers }),
+      }),
+    ).pipe(
+      Effect.catchTags({
+        RemoteEnvironmentAuthUndeclaredStatusError: (error) =>
+          error.status === 404 ? Effect.succeed(null) : Effect.fail(error),
+        VoiceReviewNotFoundError: () => Effect.succeed(null),
+      }),
+    );
+  },
+);
+
 export const fetchVoiceReviewDrafts = Effect.fn("clientRuntime.voiceReview.list")(function* (
   input: VoiceReviewClientOptions & {
     readonly scope?: "pending" | "recent";
