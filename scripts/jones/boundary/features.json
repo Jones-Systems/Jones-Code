@@ -971,7 +971,8 @@
         "packages/contracts/src/jones/settlementOrigins.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
-        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts"
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
       "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims."
     }

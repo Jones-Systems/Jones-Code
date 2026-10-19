@@ -1606,7 +1606,8 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
-        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts"
+        "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
@@ -1622,7 +1623,8 @@
         "vp test run packages/contracts/src/jones/settlementOrigins.test.ts apps/server/src/jones/settlementOrigins/ apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
-        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1"
+        "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1",
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1"
       ]
     }
   ]
