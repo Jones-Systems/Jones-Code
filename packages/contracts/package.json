@@ -38,6 +38,10 @@
     "./jones/designRequests": {
       "types": "./src/jones/designRequests.ts",
       "import": "./src/jones/designRequests.ts"
+    },
+    "./jones/threadAttention": {
+      "types": "./src/jones/threadAttention.ts",
+      "import": "./src/jones/threadAttention.ts"
     }
   },
   "scripts": {
