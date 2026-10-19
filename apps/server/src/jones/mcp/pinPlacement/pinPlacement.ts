@@ -2,6 +2,7 @@ import {
   NonNegativeInt,
   OrchestratorMcpFailure,
   ThreadId,
+  TrimmedNonEmptyString,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import { planPinnedReorder, sortPinnedThreadsByOrderKey } from "@t3tools/shared/jones/pinOrder";
@@ -16,10 +17,15 @@ import {
 } from "../../../orchestration-v2/DispatchModeLimit.ts";
 import type * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 
-/** Where `t3_thread_organize` pins a thread in the pinned order. */
+/**
+ * Where `t3_thread_organize` pins a thread in the pinned order. `exact` takes
+ * an `orderKey` read earlier from the thread's own metadata, so a pin recorded
+ * before settlement can be restored to its original key.
+ */
 export const PinPlacement = Schema.Struct({
-  position: Schema.Literals(["top", "bottom", "above", "below"]),
+  position: Schema.Literals(["top", "bottom", "above", "below", "exact"]),
   anchorThreadId: Schema.optional(ThreadId),
+  orderKey: Schema.optional(TrimmedNonEmptyString),
 });
 export type PinPlacement = typeof PinPlacement.Type;
 
@@ -90,6 +96,42 @@ function placeInPinnedOrder(
 }
 
 /**
+ * Pins (or moves) the target to a caller-supplied key, rewriting no other
+ * thread. A key another pinned thread already holds is refused, so a restored
+ * key never silently joins a different group; place it with an anchor instead.
+ */
+const pinWithExactKey = Effect.fn("jones.mcp.pinWithExactKey")(function* (input: {
+  readonly threads: ThreadManagement.ThreadManagementService["Service"];
+  readonly target: { readonly id: ThreadId; readonly pinnedAt?: unknown };
+  readonly pinned: ReadonlyArray<PinnedRow>;
+  readonly orderKey: string;
+}) {
+  const { threads, target, orderKey } = input;
+  const holders = input.pinned.filter(
+    (row) => row.id !== target.id && row.pinOrderKey === orderKey,
+  );
+  if (holders.length > 0) {
+    return yield* invalid(
+      `orderKey is already held by pinned thread ${holders.map((row) => row.id).join(", ")}.`,
+    );
+  }
+  const common = { commandId: yield* newCommandId(), threadId: target.id, orderKey };
+  const result = yield* threads
+    .dispatch(
+      target.pinnedAt != null
+        ? { ...common, type: "thread.pin.reorder" }
+        : { ...common, type: "thread.pin" },
+    )
+    .pipe(Effect.mapError(dispatchFailure));
+  const shell = yield* threads.getThreadShell(target.id).pipe(Effect.mapError(unavailable));
+  return {
+    sequence: result.sequence,
+    pinOrderKey: shell?.pinOrderKey ?? null,
+    reorderedThreads: [],
+  } satisfies PinPlacementResult;
+});
+
+/**
  * Pins (or moves) one thread to a slot in the environment's pinned order.
  * Keys come from the sidebar's own planner, so keyless neighbors are
  * materialized with spread keys exactly as a sidebar drag would; those
@@ -109,6 +151,14 @@ export const pinWithPlacement = Effect.fn("jones.mcp.pinWithPlacement")(function
       anchored
         ? `placement ${placement.position} requires anchorThreadId.`
         : `placement ${placement.position} does not take anchorThreadId.`,
+    );
+  }
+  const exact = placement.position === "exact";
+  if (exact !== (placement.orderKey !== undefined)) {
+    return yield* invalid(
+      exact
+        ? "placement exact requires orderKey."
+        : `placement ${placement.position} does not take orderKey.`,
     );
   }
   if (placement.anchorThreadId !== undefined) {
@@ -143,6 +193,9 @@ export const pinWithPlacement = Effect.fn("jones.mcp.pinWithPlacement")(function
         ]
       : [],
   );
+  if (placement.orderKey !== undefined) {
+    return yield* pinWithExactKey({ threads, target, pinned, orderKey: placement.orderKey });
+  }
   const orderedIds = placeInPinnedOrder(pinned, target.id, placement);
   if (orderedIds === undefined) {
     return yield* invalid(

@@ -412,6 +412,63 @@ describe("t3_thread_organize placement", () => {
     }),
   );
 
+  it.effect("restores an exact recorded key with one write and no neighbor rewrites", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([
+        shell("x", { pinOrderKey: "f" }),
+        shell("keyless", { pinned: true }),
+        shell("target"),
+      ]);
+      const result = yield* env.invoke({
+        action: "pin",
+        threadId: "target",
+        placement: { position: "exact", orderKey: "a0V" },
+      });
+      expect(result.isFailure).toBe(false);
+      expect(env.commands).toEqual([
+        { type: "thread.pin", commandId: expect.any(String), threadId: "target", orderKey: "a0V" },
+      ]);
+      expect(result.result).toEqual({ sequence: 1, pinOrderKey: "a0V", reorderedThreads: [] });
+      expect(env.pinnedOrder()).toEqual(["target", "x", "keyless"]);
+    }),
+  );
+
+  it.effect("moves an already pinned target to an exact key with a reorder", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([
+        shell("x", { pinOrderKey: "f" }),
+        shell("target", { pinOrderKey: "c" }),
+      ]);
+      yield* env.invoke({
+        action: "pin",
+        threadId: "target",
+        placement: { position: "exact", orderKey: "t" },
+      });
+      expect(env.commands).toEqual([
+        expect.objectContaining({ type: "thread.pin.reorder", threadId: "target", orderKey: "t" }),
+      ]);
+      expect(env.pinnedOrder()).toEqual(["x", "target"]);
+    }),
+  );
+
+  it.effect("refuses an exact key held by another pinned thread, or a malformed request", () =>
+    Effect.gen(function* () {
+      const env = makeEnvironment([shell("holder", { pinOrderKey: "m" }), shell("target")]);
+      const cases: ReadonlyArray<Record<string, unknown>> = [
+        { position: "exact", orderKey: "m" },
+        { position: "exact" },
+        { position: "top", orderKey: "m" },
+        { position: "exact", orderKey: "q", anchorThreadId: "holder" },
+      ];
+      for (const placement of cases) {
+        const result = yield* env.invoke({ action: "pin", threadId: "target", placement });
+        expect(result.isFailure, JSON.stringify(placement)).toBe(true);
+        expect(result.result, JSON.stringify(placement)).toMatchObject({ code: "invalid_request" });
+      }
+      expect(env.commands).toEqual([]);
+    }),
+  );
+
   it.effect("keeps a pin without placement unchanged", () =>
     Effect.gen(function* () {
       const env = makeEnvironment([shell("anchor", { pinOrderKey: "m" }), shell("target")]);
