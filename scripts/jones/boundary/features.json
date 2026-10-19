@@ -935,6 +935,24 @@
         "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
       ],
       "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+    },
+    {
+      "id": "compact-sidebar-header",
+      "tests": [
+        "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
+      ],
+      "scope": "Actual available-width fitting removes Code first, continuously scales status and adjacent spacing from original down to 25%, then removes J3 only if needed. The selected filter count has a stronger background without an underline; controls remain in one accessible row."
+    },
+    {
+      "id": "thread-read-dwell",
+      "tests": [
+        "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+        "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+        "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+      ],
+      "scope": "A shared three-second foreground-view dwell owns automatic visit acknowledgement in web and native mobile; rapid navigation cancels, streaming cannot starve initial acknowledgement, explicit unread suppresses the current view, and current/legacy status-filter retention preserves the selected matching row until navigation."
     }
   ]
 }
