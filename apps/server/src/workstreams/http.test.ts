@@ -30,7 +30,13 @@ import * as HttpPlatform from "effect/http/HttpPlatform";
 import * as Etag from "effect/http/Etag";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { layerAuthenticatedAuth } from "../auth/http.ts";
-import { make, WorkstreamGateway, WorkstreamGatewayError } from "./WorkstreamGateway.ts";
+import {
+  make,
+  WorkstreamGateway,
+  WorkstreamGatewayError,
+  WorkstreamTransportError,
+  type WorkstreamTransport,
+} from "./WorkstreamGateway.ts";
 import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
 import { makeRegistrationFixture } from "../jones/workstreams/registrationContext/testFixtures.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
@@ -119,18 +125,32 @@ const withHttpFixture = Effect.fn(function* (
   run: (fixture: {
     handler: (request: Request) => Promise<Response>;
     calls: { reads: number; writes: number };
+    submissions: { count: number };
   }) => Promise<void>,
   failure?: "offline" | "cursor-stale" | "not-configured",
+  customizeTransport?: (transport: WorkstreamTransport) => WorkstreamTransport,
 ) {
   const calls = { reads: 0, writes: 0 };
-  const gateway = yield* make(makeSyntheticWorkstreamTransport(), {
-    binding: {
-      registryId: "https://workstream-registry.invalid",
-      ownerId: "owner-fixture",
-      principalId: "principal-fixture",
-      authorizationRevision: 1,
+  const submissions = { count: 0 };
+  const synthetic = makeSyntheticWorkstreamTransport();
+  const transport = customizeTransport?.(synthetic) ?? synthetic;
+  const gateway = yield* make(
+    {
+      ...transport,
+      submitCommand: (input) => {
+        submissions.count += 1;
+        return transport.submitCommand(input);
+      },
     },
-  });
+    {
+      binding: {
+        registryId: "https://workstream-registry.invalid",
+        ownerId: "owner-fixture",
+        principalId: "principal-fixture",
+        authorizationRevision: 1,
+      },
+    },
+  );
   const authenticate: EnvironmentAuth.EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
     request,
   ) => {
@@ -190,7 +210,8 @@ const withHttpFixture = Effect.fn(function* (
   );
   return yield* Effect.acquireUseRelease(
     Effect.sync(() => HttpRouter.toWebHandler(routes, { disableLogger: true })),
-    (app) => Effect.promise(() => run({ handler: (request) => app.handler(request), calls })),
+    (app) =>
+      Effect.promise(() => run({ handler: (request) => app.handler(request), calls, submissions })),
     (app) => Effect.promise(() => app.dispose()),
   );
 });
@@ -223,7 +244,7 @@ it.effect.each(credentials)(
 it.effect.each(credentials)(
   "rejects $kind command submission without operate scope before gateway writes",
   ({ headers }) =>
-    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls }) => {
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
       const response = await handler(
         new Request("http://fixture/api/workstreams/commands", {
           method: "POST",
@@ -239,6 +260,7 @@ it.effect.each(credentials)(
           .requiredScope,
       ).toBe(AuthOrchestrationOperateScope);
       expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
     }),
 );
 
@@ -307,6 +329,178 @@ it.effect.each([
       },
       reason,
     ),
+);
+
+const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
+
+const submitRequest = (value: unknown = command) =>
+  new Request("http://fixture/api/workstreams/commands", {
+    method: "POST",
+    headers: { authorization: "Bearer synthetic-token", "content-type": "application/json" },
+    body: JSON.stringify({ command: value }),
+  });
+
+it.effect("rejects malformed commands before transport submission", () =>
+  withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, calls, submissions }) => {
+    const result = await handler(submitRequest({ ...command, action: { operation: "invalid" } }));
+    expect(result.status).toBe(400);
+    expect(await result.text()).toBe("");
+    expect(calls.writes).toBe(0);
+    expect(submissions.count).toBe(0);
+  }),
+);
+
+it.effect.each(["server", "registry"] as const)(
+  "returns a definitive conflict for a changed %s version before transport submission",
+  (version) =>
+    withHttpFixture([AuthOrchestrationOperateScope], async ({ handler, submissions }) => {
+      const result = await handler(
+        submitRequest({
+          ...command,
+          ...(version === "server"
+            ? { expected_server_generation: 6 }
+            : { expected_registry_version: 10 }),
+        }),
+      );
+      expect(submissions.count).toBe(0);
+      expect(result.status).toBe(409);
+      expect(await result.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstream_command_not_current",
+      });
+    }),
+);
+
+it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(
+  "returns a definitive conflict for pre-transport %s authorization rejection",
+  (failure) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(0);
+        expect(result.status).toBe(409);
+        expect(await result.json()).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport.getCapabilities(input).pipe(
+            Effect.map((value) => ({
+              ...value,
+              ...(failure === "permission" ? { permissions: [] } : {}),
+              ...(failure === "owner"
+                ? { context: { ...value.context, owner_id: "other-owner" } }
+                : {}),
+              ...(failure === "contract" ? { manifest_sha256: "0".repeat(64) } : {}),
+              // Malformed transport input deliberately bypasses the decoded capability type.
+              ...(failure === "page-bound"
+                ? { max_page_items: 0 as typeof value.max_page_items }
+                : {}),
+            })),
+          ),
+      }),
+    ),
+);
+
+it.effect.each(["no-effect", "unknown-effect"] as const)(
+  "keeps transport %s failures opaque after dispatch",
+  (effect) =>
+    withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(1);
+        expect(result.status).toBe(500);
+        expect(decodeInternalError(await result.json()).reason).toBe("internal_error");
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        submitCommand: () =>
+          Effect.fail(
+            new WorkstreamTransportError({
+              operation: "submit",
+              effect,
+              detail: "synthetic lost response",
+            }),
+          ),
+      }),
+    ),
+);
+
+it.effect("keeps invalid receipt validation opaque after transport submission", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const result = await handler(submitRequest());
+      expect(submissions.count).toBe(1);
+      expect(result.status).toBe(500);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      submitCommand: (input) =>
+        transport.submitCommand(input).pipe(
+          Effect.map((receipt) => ({
+            ...receipt,
+            actor: { principal_id: "different-principal" },
+          })),
+        ),
+    }),
+  ),
+);
+
+it.effect("keeps capability transport failure opaque without claiming a local rejection", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      const result = await handler(submitRequest());
+      expect(submissions.count).toBe(0);
+      expect(result.status).toBe(500);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      getCapabilities: () =>
+        Effect.fail(
+          new WorkstreamTransportError({
+            operation: "capabilities",
+            effect: "no-effect",
+            detail: "synthetic offline",
+          }),
+        ),
+    }),
+  ),
+);
+
+it.effect("keeps conflicting command bytes opaque because an earlier submission committed", () =>
+  withHttpFixture(
+    [AuthOrchestrationOperateScope],
+    async ({ handler, submissions }) => {
+      expect((await handler(submitRequest())).status).toBe(200);
+      const result = await handler(
+        submitRequest({ ...command, action: { ...command.action, name: "Changed" } }),
+      );
+      expect(result.status).toBe(500);
+      expect(submissions.count).toBe(1);
+    },
+    undefined,
+    (transport) => ({
+      ...transport,
+      getCapabilities: (input) =>
+        transport.getCapabilities(input).pipe(
+          Effect.map((value) => ({
+            ...value,
+            context: { ...value.context, registry_version: command.expected_registry_version },
+          })),
+        ),
+    }),
+  ),
 );
 
 it.effect("both live consumers share one file snapshot and keep it until the next startup", () =>

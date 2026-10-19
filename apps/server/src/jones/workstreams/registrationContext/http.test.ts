@@ -26,6 +26,7 @@ import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import { expect, it } from "vite-plus/test";
 
+import { NativeStoreAuthorityPersistenceError } from "../../../environment/nativeStoreAuthorityPersistence.ts";
 import { createRegistrationContextHandler } from "./http.ts";
 import {
   makeRegistrationFixture,
@@ -35,7 +36,16 @@ import {
   githubSource,
   response,
   fixtureTransportError,
+  encodeFixtureJson,
+  build,
 } from "./testFixtures.ts";
+
+const encodeAcceptedResponse = Schema.encodeSync(
+  Schema.fromJsonString(WorkstreamsRegistrationContextAcceptedResponse),
+);
+const decodeAcceptedResponse = Schema.decodeUnknownSync(
+  WorkstreamsRegistrationContextAcceptedResponse,
+);
 
 class TestGroup extends HttpApiGroup.make("registrationContext").add(
   HttpApiEndpoint.get("context", "/api/workstreams/registration-context", {
@@ -118,7 +128,8 @@ it("authenticates and requires standard read scope before reading registration m
     expect(result.status).toBe(200);
     expect(result.headers.get("cache-control")).toBe("private, no-store");
     expect(result.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(await result.json()).toEqual(response);
+    expect(result.headers.get("x-jones-workstreams-t3-availability")).toBe("ready");
+    expect(await result.text()).toBe(encodeAcceptedResponse(response));
     expect(fixture.reads).toEqual({ registry: 1, authority: 1, build: 1 });
   } finally {
     await app.dispose();
@@ -234,6 +245,68 @@ it("encodes the selected v2 protocol while exposing only this environment and no
     const result = await app.handler(readRequest());
     expect(result.status).toBe(200);
     expect(await result.json()).toEqual({ ...v2Response, sources: [githubSource, t3Source] });
+  } finally {
+    await app.dispose();
+  }
+});
+
+it.each([
+  "descriptor_absent",
+  "build_unavailable",
+  "contract_mismatch",
+  "source_mismatch",
+  "authority_mismatch",
+  "generation_mismatch",
+  "authority_fenced",
+  "authority_unavailable",
+] as const)("returns %s in a header with the unchanged closed body", async (reason) => {
+  const source = {
+    ...t3Source,
+    ...(reason === "source_mismatch" ? { source_instance_id: "different-source" } : {}),
+    ...(reason === "authority_mismatch" ? { authority_namespace: "different-authority" } : {}),
+    ...(reason === "generation_mismatch" ? { store_generation: 99 } : {}),
+    ...(reason === "contract_mismatch" ? { build: { ...build, sha: "c".repeat(40) } } : {}),
+  };
+  let reads = 0;
+  const fixture = makeRegistrationFixture({
+    readRegistrationContext: Effect.sync(() => {
+      reads += 1;
+      return encodeFixtureJson({
+        ...response,
+        sources: reason === "descriptor_absent" ? [githubSource] : [source, githubSource],
+      });
+    }),
+    ...(reason === "build_unavailable" ? { build: Effect.succeedNone } : {}),
+    ...(reason === "authority_fenced" || reason === "authority_unavailable"
+      ? {
+          authority: {
+            readCurrent: Effect.fail(
+              new NativeStoreAuthorityPersistenceError(
+                reason === "authority_fenced" ? "fenced" : "missing",
+                "synthetic",
+                "synthetic",
+              ),
+            ),
+          },
+        }
+      : {}),
+  });
+  const app = makeApp(fixture);
+  try {
+    const result = await app.handler(readRequest());
+    expect(result.status).toBe(200);
+    expect(result.headers.get("x-jones-workstreams-t3-availability")).toBe(
+      `unavailable;reason=${reason}`,
+    );
+    const body = { ...response, sources: [githubSource] };
+    expect(await result.text()).toBe(encodeAcceptedResponse(body));
+    expect(() =>
+      decodeAcceptedResponse({
+        ...body,
+        t3Availability: { state: "unavailable", reason },
+      }),
+    ).toThrow();
+    expect(reads).toBe(1);
   } finally {
     await app.dispose();
   }

@@ -4,6 +4,9 @@ import { RemoteEnvironmentAuthFetchError } from "@t3tools/client-runtime/rpc";
 import { nativeWorkstreamThreadKey } from "@t3tools/client-runtime/state/workstreams";
 import {
   EnvironmentHttpConflictError,
+  EnvironmentScopeRequiredError,
+  EnvironmentRequestInvalidError,
+  EnvironmentInternalError,
   EnvironmentHttpUnauthorizedError,
   t3PlacementInventoryJson,
   type NativeReference,
@@ -19,6 +22,7 @@ import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { workstreamFailureMessage } from "./workstreamActionSnapshot";
 import { data } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
 import {
@@ -29,6 +33,7 @@ import {
 } from "./workstreamsHttp.fixtures";
 
 const http = vi.hoisted(() => ({
+  sessionRefresh: vi.fn<(id: string) => Promise<void>>(),
   run: vi.fn<(effect: unknown, options?: { readonly signal?: AbortSignal }) => Promise<unknown>>(),
   environment:
     vi.fn<
@@ -40,6 +45,10 @@ const http = vi.hoisted(() => ({
         signal?: AbortSignal,
       ) => Promise<unknown>
     >(),
+}));
+vi.mock("../../state/session", () => ({
+  refreshEnvironmentSession: http.sessionRefresh,
+  readPreparedConnection: () => ({}),
 }));
 vi.mock("../../lib/runtime", () => ({ runPrimaryHttp: http.run }));
 vi.mock("./environmentWorkstreamsRequest", () => ({
@@ -148,6 +157,7 @@ function remoteEnvironment(shared: ReturnType<typeof syntheticWorkstreams>) {
   const state = {
     calls: [] as EnvironmentCall[],
     reference: null as NativeReference | null,
+    availabilityHeader: undefined as string | undefined,
     /** Return a value to answer or throw to fail a call before the default handler runs. */
     intercept: null as ((call: EnvironmentCall) => unknown) | null,
     binding: {
@@ -352,7 +362,11 @@ function remoteEnvironment(shared: ReturnType<typeof syntheticWorkstreams>) {
   };
   http.environment.mockImplementation(async (environmentId, _method, _url, run, signal) => {
     signal?.throwIfAborted();
-    return handle({ ...captureCall(run), environmentId });
+    const call = { ...captureCall(run), environmentId };
+    const value = await handle(call);
+    return call.request.responseMode === "decoded-and-response"
+      ? [value, { headers: { "x-jones-workstreams-t3-availability": state.availabilityHeader } }]
+      : value;
   });
   return { state, apply };
 }
@@ -394,6 +408,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: start });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", globalThis);
+  http.sessionRefresh.mockReset().mockResolvedValue(undefined);
   http.run.mockReset();
   http.environment.mockReset();
   registry = AtomRegistry.make();
@@ -411,6 +426,328 @@ afterEach(async () => {
 });
 
 describe("assigning a thread from another environment", () => {
+  const primaryCommand = (id: string): WorkstreamCommand => ({
+    command_id: id,
+    expected_server_generation: data.binding.serverGeneration,
+    expected_registry_version: latest.data!.binding.registryVersion,
+    action: {
+      operation: "update_workstream",
+      workstream_id: "alpha",
+      expected_version: 3,
+      name: "renamed",
+      lifecycle: "active",
+      progress: { state: "unknown" },
+      sort_order: 0,
+    },
+  });
+  const primarySubmit = async (id: string) => {
+    let failure: unknown;
+    await act(async () => {
+      await latest.submit(primaryCommand(id)).catch((cause: unknown) => {
+        failure = cause;
+      });
+    });
+    return failure;
+  };
+  it.each([
+    [new EnvironmentHttpConflictError({ message: "workstream_command_not_current" }), "stale"],
+    [
+      new EnvironmentScopeRequiredError({
+        code: "insufficient_scope",
+        traceId: "test",
+        requiredScope: "orchestration:operate",
+      }),
+      "denied",
+    ],
+    [
+      new EnvironmentRequestInvalidError({
+        code: "invalid_request",
+        reason: "invalid_command",
+        traceId: "test",
+      }),
+      "denied",
+    ],
+  ])("releases only a primary known pre-effect rejection", async (failure, reason) => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    shared.state.intercept = (call) => {
+      if (call.route === "submit") throw failure;
+    };
+    expect(await primarySubmit("primary-no-effect")).toMatchObject({ reason });
+    await act(async () => latest.refresh());
+    await settle(() => expect(latest.loading).toBe(false));
+    expect(latest.data).not.toBeNull();
+    shared.state.intercept = (call) =>
+      call.route === "submit"
+        ? { command_id: "primary-next", state: "committed", registry_version: shared.state.version }
+        : undefined;
+    expect(await primarySubmit("primary-next")).toBeUndefined();
+    expect(shared.state.calls.filter((call) => call.route === "command")).toEqual([]);
+    expect(shared.state.calls.filter((call) => call.route === "submit")).toHaveLength(2);
+  });
+  it.each([
+    new Error("lost response"),
+    new EnvironmentInternalError({
+      code: "internal_error",
+      reason: "internal_error",
+      traceId: "test",
+    }),
+    new EnvironmentHttpConflictError({ message: "idempotency-conflict" }),
+  ])(
+    "keeps primary ambiguous submissions fenced and reconciles before metadata",
+    async (failure) => {
+      const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+      await mountWith(shared);
+      shared.state.intercept = (call) => {
+        if (call.route === "submit") throw failure;
+      };
+      expect(await primarySubmit("primary-lost")).toMatchObject({ reason: "unknown" });
+      await settle(() => expect(latest.loading).toBe(false));
+      expect(await primarySubmit("primary-blocked")).toMatchObject({ reason: "unknown" });
+      shared.state.intercept = (call) => {
+        if (call.route === "command") throw new Error("receipt unavailable");
+      };
+      await act(async () => {
+        await expect(latest.retry!()).rejects.toMatchObject({ reason: "unknown" });
+      });
+      const receiptsBeforeRecovery = shared.state.calls.filter(
+        (call) => call.route === "command",
+      ).length;
+      shared.state.intercept = (call) => {
+        if (call.route === "list") throw new Error("metadata offline");
+        if (call.route === "command")
+          return {
+            command_id: "primary-lost",
+            state: "committed",
+            registry_version: shared.state.version,
+          };
+      };
+      await act(async () => {
+        await latest.retry!().catch(() => undefined);
+      });
+      expect(
+        shared.state.calls
+          .filter((call) => call.route === "command")
+          .slice(receiptsBeforeRecovery)
+          .map((call) => call.request.params?.commandId),
+      ).toEqual(["primary-lost"]);
+      expect(shared.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
+      shared.state.intercept = (call) =>
+        call.route === "submit"
+          ? {
+              command_id: "primary-next",
+              state: "committed",
+              registry_version: shared.state.version,
+            }
+          : undefined;
+      await act(async () => latest.refresh());
+      await settle(() => expect(latest.loading).toBe(false));
+      expect(await primarySubmit("primary-next")).toBeUndefined();
+    },
+  );
+  it.each([false, true])(
+    "classifies a loading error by actual submission phase (%s)",
+    async (submitted) => {
+      const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+      await mountWith(shared);
+      shared.state.intercept = (call) =>
+        call.route === "submit"
+          ? {
+              command_id: "primary-phase",
+              state: "committed",
+              registry_version: shared.state.version,
+            }
+          : undefined;
+      let failure: unknown;
+      await act(async () => {
+        await latest
+          .runBindingOperation(async (submit) => {
+            if (submitted) await submit(primaryCommand("primary-phase"));
+            throw new DOMException("read aborted", "AbortError");
+          })
+          .catch((cause: unknown) => {
+            failure = cause;
+          });
+      });
+      expect(workstreamFailureMessage(failure)).toContain(
+        submitted ? "effect is unknown" : "Refresh before trying again",
+      );
+      expect(shared.state.calls.filter((call) => call.route === "submit")).toHaveLength(
+        submitted ? 1 : 0,
+      );
+    },
+  );
+
+  it.each([
+    { header: undefined, present: false, state: "unavailable", reason: "source unavailable" },
+    { header: "malformed", present: false, state: "unavailable", reason: "source unavailable" },
+    { header: "ready", present: false, state: "unavailable", reason: "source unavailable" },
+    { header: undefined, present: true, state: "unknown", reason: null },
+    { header: "malformed", present: true, state: "unknown", reason: null },
+    { header: "ready", present: true, state: "ready", reason: null },
+    ...[false, true].map((present) => ({
+      header: "unavailable;reason=generation_mismatch",
+      present,
+      state: "unavailable",
+      reason: "source generation differs",
+    })),
+  ])("retains primary body eligibility with optional diagnostics: %j", async (testCase) => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    const environment = remoteEnvironment(shared);
+    const context = {
+      ...shared.registration(),
+      sources: testCase.present ? [{ ...environment.state.sources[0]!, ...primarySource }] : [],
+    };
+    shared.state.intercept = (call) => (call.route === "registrationContext" ? context : undefined);
+    await mountWith(shared);
+    http.run.mockImplementation(
+      routeWorkstreamsHttp(
+        shared.handle,
+        testCase.header === undefined
+          ? {}
+          : { "x-jones-workstreams-t3-availability": testCase.header },
+      ),
+    );
+    await act(async () => latest.refresh());
+    await settle(() => expect(latest.loading).toBe(false));
+    expect(latest.registrationContext).toEqual(context);
+    expect(latest.assignmentAvailability!(local)).toEqual({
+      state: testCase.state,
+      reason: testCase.reason,
+    });
+    expect(latest.stale).toBe(false);
+    expect(primarySubmits(shared)).toEqual([]);
+    expect(latest.assignmentAvailability!(remote)).toEqual({ state: "unknown", reason: null });
+    expect(await assignRemote()).toBeUndefined();
+    expect(latest.stale).toBe(false);
+  });
+
+  it("a remote scope denial before submission retains the primary snapshot", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    environment.state.intercept = () => {
+      throw new EnvironmentScopeRequiredError({
+        code: "insufficient_scope",
+        traceId: "test",
+        requiredScope: "orchestration:operate",
+      });
+    };
+    const snapshot = latest.data;
+    expect(await assignRemote()).toMatchObject({ reason: "denied" });
+    expect(latest.data).toBe(snapshot);
+    expect(latest.stale).toBe(false);
+    expect(environment.state.calls.filter((call) => call.route === "submit")).toEqual([]);
+  });
+
+  it("explicit Refresh rechecks relevant prepared sessions without waiting on metadata", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    shared.state.intercept = (call) => {
+      if (call.route === "list") throw new Error("metadata offline");
+    };
+    await act(async () => latest.refresh());
+    await settle(() =>
+      expect(http.sessionRefresh.mock.calls.map(([id]) => id).sort()).toEqual(["env:a", "env:b"]),
+    );
+  });
+
+  it("retains a sanitized remote refusal until explicit Refresh", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    const sources = environment.state.sources;
+    environment.state.sources = [];
+    environment.state.availabilityHeader = "unavailable;reason=source_mismatch";
+    expect(latest.assignmentAvailability!(remote)).toEqual({ state: "unknown", reason: null });
+    expect(await assignRemote()).toMatchObject({
+      message: expect.stringContaining("enrolled source or build differs"),
+    });
+    expect(latest.assignmentAvailability!(remote)).toMatchObject({
+      state: "unavailable",
+      reason: expect.stringContaining("enrolled source or build differs"),
+    });
+    environment.state.sources = sources;
+    environment.state.availabilityHeader = "ready";
+    const readCount = environment.state.calls.length;
+    expect(await assignRemote()).toBeDefined();
+    expect(environment.state.calls).toHaveLength(readCount);
+    await act(async () => latest.refresh());
+    await settle(() => expect(latest.loading).toBe(false));
+    expect(latest.assignmentAvailability!(remote)).toEqual({ state: "unknown", reason: null });
+    expect(await assignRemote()).toBeUndefined();
+  });
+
+  it.each([
+    [new EnvironmentHttpConflictError({ message: "workstream_command_not_current" }), "stale"],
+    [
+      new EnvironmentRequestInvalidError({
+        code: "invalid_request",
+        reason: "invalid_command",
+        traceId: "test",
+      }),
+      "denied",
+    ],
+    [
+      new EnvironmentScopeRequiredError({
+        code: "insufficient_scope",
+        traceId: "test",
+        requiredScope: "orchestration:operate",
+      }),
+      "denied",
+    ],
+  ])("clears a remote known pre-effect rejection without resubmitting", async (failure, reason) => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    environment.state.intercept = (call) => {
+      if (call.route === "submit") throw failure;
+      return undefined;
+    };
+    expect(await assignRemote()).toMatchObject({ reason });
+    await settle(() => expect(latest.loading).toBe(false));
+    expect(latest.data).not.toBeNull();
+    expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
+    environment.state.intercept = null;
+    expect(await assignRemote()).toBeUndefined();
+    expect(environment.state.calls.filter((call) => call.route === "command")).toHaveLength(0);
+  });
+
+  it("reconciles a remote lost response before failing metadata reads", async () => {
+    const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    await mountWith(shared);
+    const environment = remoteEnvironment(shared);
+    let accepted: WorkstreamReceipt | undefined;
+    environment.state.intercept = (call) => {
+      if (call.route === "submit") {
+        accepted = environment.apply(call.request.payload?.command as WorkstreamCommand);
+        throw new Error("lost response");
+      }
+      if (call.route === "command") return accepted;
+      return undefined;
+    };
+    expect(await assignRemote()).toBeDefined();
+    await settle(() => expect(latest.loading).toBe(false));
+    shared.state.intercept = (call) => {
+      if (call.route === "list") throw new Error("metadata offline");
+      return undefined;
+    };
+    await act(async () => {
+      await latest.retry!().catch(() => undefined);
+    });
+    expect(
+      environment.state.calls
+        .filter((call) => call.route === "command")
+        .map((call) => call.request.params?.commandId),
+    ).toEqual([accepted!.command_id]);
+    expect(environment.state.calls.filter((call) => call.route === "submit")).toHaveLength(1);
+    shared.state.intercept = null;
+    await act(async () => latest.refresh());
+    await settle(() => expect(latest.loading).toBe(false));
+    environment.state.intercept = null;
+    expect(await assignRemote()).toBeUndefined();
+  });
+
   it("registers, verifies and attaches through the thread's own server", async () => {
     const shared = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
     await mountWith(shared);

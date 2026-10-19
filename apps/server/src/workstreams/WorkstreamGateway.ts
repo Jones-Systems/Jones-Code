@@ -79,6 +79,7 @@ export class WorkstreamGatewayError extends Schema.TaggedError<WorkstreamGateway
       "contract-mismatch",
       "permission-denied",
       "version-conflict",
+      "authorization-not-current",
       "cursor-stale",
       "idempotency-conflict",
       "invalid-response",
@@ -682,7 +683,19 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       });
     const submit = (command: WorkstreamCommand) =>
       Effect.gen(function* () {
-        const authorized = yield* authorize("workstreams:write");
+        const authorized = yield* authorize("workstreams:write").pipe(
+          Effect.mapError((error) =>
+            error.reason === "permission-denied" ||
+            error.reason === "contract-mismatch" ||
+            error.reason === "invalid-response"
+              ? new WorkstreamGatewayError({
+                  reason: "authorization-not-current",
+                  detail: "Command authorization is not current.",
+                  cause: error,
+                })
+              : error,
+          ),
+        );
         if (
           command.expected_server_generation !== authorized.binding.serverGeneration ||
           command.expected_registry_version !== authorized.binding.registryVersion
