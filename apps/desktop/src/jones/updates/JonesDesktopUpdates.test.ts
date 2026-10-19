@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - Source-qualified synthetic desktop fixture, never launches a native app.
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -51,6 +52,29 @@ const candidate: JonesActionsCandidate = {
   architecture: "arm64",
 };
 const handle = "e".repeat(64);
+
+/** The actual helper durably writes the claim before it reports preparation-claimed. */
+function claimedPreparation(home: string, transactionId: unknown): string {
+  if (typeof transactionId !== "string") throw new Error("Missing attempt ID.");
+  NodeFS.writeFileSync(
+    NodePath.join(
+      home,
+      "runtime",
+      "jones-updates",
+      "transactions",
+      transactionId,
+      "prepare-intent.json",
+    ),
+    JSON.stringify({ transactionId, stagedHandle: handle }),
+  );
+  return JSON.stringify({
+    protocol: 1,
+    operation: "claim-preparation",
+    handle,
+    transactionId,
+    status: "preparation-claimed",
+  });
+}
 
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {
@@ -405,17 +429,7 @@ describe("Jones desktop updates", () => {
         if (typeof callback !== "function") throw new Error("Missing callback.");
         if (args?.[0] === "--version") callback(null, "Python3", "");
         else if (args?.[3] === "--claim-preparation")
-          callback(
-            null,
-            JSON.stringify({
-              protocol: 1,
-              operation: "claim-preparation",
-              handle,
-              transactionId: args[6],
-              status: "preparation-claimed",
-            }),
-            "",
-          );
+          callback(null, claimedPreparation(f.home, args[6]), "");
         else
           callback(
             null,
@@ -555,17 +569,7 @@ describe("Jones desktop updates", () => {
           expect(args?.[3]).toBe("--claim-preparation");
           expect(args?.[4]).toBe(handle);
           order.push("claim");
-          callback(
-            null,
-            JSON.stringify({
-              protocol: 1,
-              operation: "claim-preparation",
-              handle,
-              transactionId: args?.[6],
-              status: "preparation-claimed",
-            }),
-            "",
-          );
+          callback(null, claimedPreparation(f.home, args?.[6]), "");
         }
         return new NodeChildProcess.ChildProcess();
       });
@@ -748,17 +752,7 @@ describe("Jones desktop updates", () => {
             const selected = args?.[6];
             if (typeof selected !== "string") throw new Error("Missing attempt ID.");
             transactionId = selected;
-            callback(
-              null,
-              JSON.stringify({
-                protocol: 1,
-                operation: "claim-preparation",
-                handle,
-                transactionId,
-                status: "preparation-claimed",
-              }),
-              "",
-            );
+            callback(null, claimedPreparation(f.home, transactionId), "");
           } else {
             expect(args?.[3]).toBe("--claim-activation");
             expect(args?.[4]).toBe(
@@ -1204,6 +1198,200 @@ describe("Jones desktop updates", () => {
         expect(await NodeFSP.readFile(file, "utf8")).toBe("retained-unknown-intent");
         expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
       } finally {
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["retired", "writer-unknown"] as const)(
+    "resolves a retained preparation-only claim at startup when the helper reports %s",
+    async (outcome) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const transactions = NodePath.join(f.home, "runtime", "jones-updates", "transactions");
+      const transaction = NodePath.join(transactions, handle);
+      const operations: string[] = [];
+      try {
+        await NodeFSP.mkdir(transaction, { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(transaction, "prepare-intent.json"), "claim");
+        await NodeFSP.writeFile(
+          NodePath.join(transaction, "prepare-failure.json"),
+          JSON.stringify({ protocol: 1, reason: "Native preparation authorization was refused" }),
+        );
+        nativeCommand.mockImplementation((command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          expect(command).toBe("/usr/bin/python3");
+          const operation = String(args?.[3]).slice(2);
+          operations.push(operation, ...(args?.slice(5) ?? []).map(String));
+          expect(args?.[4]).toBe(handle);
+          void (async () => {
+            if (operation === "retire-preparation") {
+              const retired = NodePath.join(f.home, "runtime", "jones-updates", "retired");
+              await NodeFSP.mkdir(retired);
+              await NodeFSP.rename(transaction, NodePath.join(retired, handle));
+            }
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId: handle,
+                ...(outcome === "writer-unknown"
+                  ? { status: "refused", reason: outcome, planSha256: "a".repeat(64) }
+                  : operation === "inspect-preparation"
+                    ? { status: "ready", evidence: "requester-exited", planSha256: "a".repeat(64) }
+                    : { status: "retired", evidence: "requester-exited" }),
+              }),
+              "",
+            );
+          })().catch((cause) => callback(cause, "", ""));
+          return new NodeChildProcess.ChildProcess();
+        });
+        await f.controller.configure();
+        if (outcome === "retired") {
+          expect(operations).toEqual([
+            "inspect-preparation",
+            "retire-preparation",
+            "--plan-sha256",
+            "a".repeat(64),
+          ]);
+          expect(f.controller.state.jones?.capability.install).toBe(true);
+          expect(await NodeFSP.readdir(transactions)).toEqual([]);
+        } else {
+          expect(operations).toEqual(["inspect-preparation"]);
+          expect(f.controller.state.jones?.phase).toBe("blocked");
+          expect(f.controller.state.jones?.capability.reason).toBe("blocked");
+          expect(f.controller.state.message).toContain(handle);
+          expect(f.controller.state.message).toContain(
+            "Native preparation authorization was refused",
+          );
+          expect(f.controller.state.message).toContain("writer-unknown");
+          expect(f.controller.state.message).toContain("--retire-preparation");
+          expect(
+            await NodeFSP.readFile(NodePath.join(transaction, "prepare-intent.json"), "utf8"),
+          ).toBe("claim");
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["backend-refused", "transport"] as const)(
+    "keeps the original cause visible when preparation fails with %s",
+    async (failure) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+      const proofs = [{ pid: 4242, identity: "Sun Oct 18 10:00:00 2026 Jones Code" }];
+      let transactionId = "";
+      let request: unknown;
+      try {
+        const controller = new JonesDesktopUpdateController({
+          ...f.options,
+          processProofs: async () => proofs,
+          prepareNative: async () => {
+            if (failure === "transport")
+              throw new Error("Native preparation authorization was refused (HTTP 401).");
+            return {
+              phase: "blocked",
+              message:
+                "Native preparation was refused: the backend has not observed this staged build.",
+            };
+          },
+        });
+        await controller.configure();
+        await controller.check();
+        await controller.download();
+        preflight.mockResolvedValueOnce(undefined);
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          const tx = NodePath.join(f.home, "runtime", "jones-updates", "transactions");
+          if (args?.[0] === "--version") callback(null, "Python 3", "");
+          else if (args?.[3] === "--claim-preparation") {
+            transactionId = String(args[6]);
+            callback(null, claimedPreparation(f.home, transactionId), "");
+          } else {
+            const operation = String(args?.[3]).slice(2);
+            expect(args?.[4]).toBe(transactionId);
+            request ??= JSON.parse(
+              NodeFS.readFileSync(NodePath.join(tx, transactionId, "prepare-request.json"), "utf8"),
+            );
+            const refused = failure === "transport";
+            if (operation === "retire-preparation")
+              NodeFS.renameSync(NodePath.join(tx, transactionId), NodePath.join(f.home, "retired"));
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId,
+                ...(refused
+                  ? { status: "refused", reason: "writer-unknown" }
+                  : operation === "inspect-preparation"
+                    ? { status: "ready", evidence: "backend-refused", planSha256: "b".repeat(64) }
+                    : { status: "retired", evidence: "backend-refused" }),
+              }),
+              "",
+            );
+          }
+          return new NodeChildProcess.ChildProcess();
+        });
+        expect(await controller.install(handle)).toEqual({
+          accepted: false,
+          completed: false,
+          failed: true,
+        });
+        const claim = NodeFS.readFileSync(
+          NodePath.join(
+            f.home,
+            ...(failure === "transport"
+              ? ["runtime", "jones-updates", "transactions", transactionId]
+              : ["retired"]),
+            "prepare-intent.json",
+          ),
+        );
+        expect(request).toEqual({
+          protocol: 1,
+          transactionId,
+          stagedHandle: handle,
+          claimSha256: NodeCrypto.createHash("sha256").update(claim).digest("hex"),
+          processes: proofs,
+        });
+        const cause =
+          failure === "transport"
+            ? "Native preparation authorization was refused (HTTP 401)"
+            : "Native preparation was refused: the backend has not observed this staged build";
+        expect(controller.state.message).toContain(cause);
+        if (failure === "transport") {
+          expect(controller.state.jones?.phase).toBe("blocked");
+          expect(controller.state.jones?.capability.reason).toBe("blocked");
+          expect(controller.state.message).toContain("Restart Jones Code");
+          expect(
+            JSON.parse(
+              NodeFS.readFileSync(
+                NodePath.join(
+                  f.home,
+                  "runtime",
+                  "jones-updates",
+                  "transactions",
+                  transactionId,
+                  "prepare-failure.json",
+                ),
+                "utf8",
+              ),
+            ),
+          ).toEqual({ protocol: 1, reason: cause });
+        } else {
+          expect(controller.state.jones?.phase).toBe("staged");
+          expect(controller.state.jones?.capability.reason).not.toBe("blocked");
+          expect(controller.state.jones?.updateId).toBeUndefined();
+          expect(controller.state.message).toContain("Install can be retried");
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        preflight.mockReset();
+        nativeCommand.mockReset();
         await f.cleanup();
       }
     },

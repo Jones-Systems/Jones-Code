@@ -9,8 +9,8 @@ ownership; the cold launcher must establish that binding beforehand.
 
 This is not installed-host acceptance. Kernel-backed placement, full launch-route
 coverage, memory safeguards and short-lived command responsiveness still require
-qualification. Keep the PR held until the source composition and lifecycle
-checks are complete; do not enable a binding merely because it parses.
+qualification. Do not enable a binding merely because it parses; qualify the
+installed environment before relying on placement or responsiveness.
 
 Placement belongs to the environment that owns execution, regardless of the
 client's machine. The versioned [binding](../../apps/server/src/jones/processPlacement/processPlacement.ts)
@@ -114,8 +114,9 @@ has no annotation. This is command-local provenance, not a lifetime registry.
 `jones/runtime/RuntimeOperationPermit.ts` defines a source-only operation port.
 The session owner exposes a deny-only request: resident Codex and Claude return
 `warm_runtime`; missing or unsupported residents return `unsupported`. This
-request never opens, probes or stops a provider. No production available issuer
-or ordinary-checkout consumer is wired to the port.
+request never opens, probes or stops a provider. The typed ordinary-checkout
+adapter accepts explicitly supplied permits, but no application layer installs
+it or supplies a production available issuer.
 The existing executor must supply its captured binding, issuer, generation,
 evidence revision/reference, exact participant writer coverage, serialized
 current-runtime invocation, and retained old-scope observation. A successful
@@ -133,16 +134,16 @@ steer has no admission hook. Neither path supplies operation writer coverage.
 Coverage is frozen at issuance and covers only the declared participant writers.
 The consumer still accounts for every other association and derived effect.
 
-| Situation | Source-port result |
-| --- | --- |
-| Revoke before any durable-start attempt | Participant `not_invoked` |
-| Start attempted, committed, or response lost; no confirmed invocation | `unknown` |
-| Confirmed invocation, complete declared coverage, current owner | Participant `active`; not operation completion |
-| Partial coverage or escaped/unknown descendants | `unknown` |
-| Interrupted or uncertain invocation | `unknown` until independently complete retirement evidence |
-| Complete old-scope quiescence, no pending/future permit invocation | Exact participant `quiescent`, including after invocation-permit expiry |
-| Scope observation overlaps a permit transition | `unknown`; stale emptiness cannot retire later work |
-| Warm reuse, unsupported provider, or restarted issuer | Typed `unavailable` |
+| Situation                                                             | Source-port result                                                      |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Revoke before any durable-start attempt                               | Participant `not_invoked`                                               |
+| Start attempted, committed, or response lost; no confirmed invocation | `unknown`                                                               |
+| Confirmed invocation, complete declared coverage, current owner       | Participant `active`; not operation completion                          |
+| Partial coverage or escaped/unknown descendants                       | `unknown`                                                               |
+| Interrupted or uncertain invocation                                   | `unknown` until independently complete retirement evidence              |
+| Complete old-scope quiescence, no pending/future permit invocation    | Exact participant `quiescent`, including after invocation-permit expiry |
+| Scope observation overlaps a permit transition                        | `unknown`; stale emptiness cannot retire later work                     |
+| Warm reuse, unsupported provider, or restarted issuer                 | Typed `unavailable`                                                     |
 
 There is no post-restart `not_invoked` inference from a dead issuer, lock,
 timeout, or new placement. Warm-provider progression needs a separate qualified

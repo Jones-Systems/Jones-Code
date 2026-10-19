@@ -1,4 +1,11 @@
 import {
+  ProviderConversationReselectionInput,
+  PreviewProviderConversationReselectionResult,
+  ReselectProviderConversationInput,
+  ReselectProviderConversationResult,
+  ProviderConversationReselectionError,
+} from "./jones/providerConversationReselection.ts";
+import {
   StopCurrentThreadRuntimeInput,
   StopCurrentThreadRuntimeResult,
   ReadCurrentRuntimeStopTargetInput,
@@ -1627,6 +1634,22 @@ const WsStopCurrentThreadRuntimeRpc = Rpc.make(
     error: Schema.Union([CurrentRuntimeStopRequestError, EnvironmentAuthorizationError]),
   },
 );
+const WsPreviewProviderConversationReselectionRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection,
+  {
+    payload: ProviderConversationReselectionInput,
+    success: PreviewProviderConversationReselectionResult,
+    error: Schema.Union([ProviderConversationReselectionError, EnvironmentAuthorizationError]),
+  },
+);
+const WsReselectProviderConversationRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation,
+  {
+    payload: ReselectProviderConversationInput,
+    success: ReselectProviderConversationResult,
+    error: Schema.Union([ProviderConversationReselectionError, EnvironmentAuthorizationError]),
+  },
+);
 const WsObserveCurrentThreadRuntimeStopRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop,
   {
@@ -2100,6 +2123,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeResourceTelemetryRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsStopCurrentThreadRuntimeRpc,
+  WsPreviewProviderConversationReselectionRpc,
+  WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,
   WsReadCurrentRuntimeStopTargetRpc,
   WsOrchestrationV2NativeBootstrapRpc,

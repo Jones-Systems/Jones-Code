@@ -3,6 +3,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
+  AuthSessionId,
+  EnvironmentAuthenticatedPrincipal,
+  ProviderThreadId,
   CommandId,
   EventId,
   MessageId,
@@ -19,6 +22,9 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
+import * as ConversationReselection from "../runtime/ProviderConversationReselection.ts";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -178,6 +184,7 @@ const TestLayer = Layer.mergeAll(
   ProjectionStore.layer,
   EffectOutbox.layer,
   ThreadCommandExecutor.layer,
+  AuthSessions.layer,
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
@@ -455,6 +462,152 @@ const queuedToolFixture = Effect.fnUntraced(function* (prefix: string) {
 });
 
 it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
+  it.effect(
+    "reselection shares the dispatch lock and the next same-account run uses its target",
+    () =>
+      Effect.gen(function* () {
+        const prefix = "reselection-runtime-layer";
+        const f = yield* selfSettlementFixture(prefix);
+        const now = yield* DateTime.now;
+        const target = {
+          ...f.provider,
+          status: "idle" as const,
+          nativeThreadRef: {
+            driver,
+            nativeId: "native:healthy-reselection",
+            strength: "strong" as const,
+          },
+          lastRunOrdinal: f.run.ordinal,
+          updatedAt: now,
+        };
+        const old = {
+          ...target,
+          id: ProviderThreadId.make(`${prefix}-obsolete`),
+          nativeThreadRef: {
+            driver,
+            nativeId: "native:obsolete-reselection",
+            strength: "strong" as const,
+          },
+        };
+        yield* f.sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-completed`),
+              type: "run.updated",
+              threadId: f.threadId,
+              runId: f.run.id,
+              occurredAt: now,
+              payload: { ...f.run, status: "completed", startedAt: now, completedAt: now },
+            },
+            {
+              id: EventId.make(`${prefix}-healthy`),
+              type: "provider-thread.updated",
+              threadId: f.threadId,
+              occurredAt: now,
+              payload: target,
+            },
+            {
+              id: EventId.make(`${prefix}-obsolete-selected`),
+              type: "provider-thread.updated",
+              threadId: f.threadId,
+              occurredAt: now,
+              payload: old,
+            },
+          ],
+        });
+        const principal = EnvironmentAuthenticatedPrincipal.of({
+          sessionId: AuthSessionId.make(`${prefix}-actor`),
+          subject: "Synthetic recovery operator",
+          method: "browser-session-cookie",
+          scopes: new Set(["orchestration:operate", "environment:maintain"]),
+        });
+        const auth = yield* AuthSessions.AuthSessionRepository;
+        yield* auth.create({
+          sessionId: principal.sessionId,
+          subject: principal.subject,
+          method: principal.method,
+          scopes: ["orchestration:operate", "environment:maintain"],
+          issuedAt: now,
+          expiresAt: DateTime.add(now, { hours: 1 }),
+          client: {
+            label: null,
+            ipAddress: null,
+            userAgent: null,
+            deviceType: "bot",
+            os: null,
+            browser: null,
+          },
+        });
+        const owner = yield* ConversationReselection.ProviderConversationReselection;
+        const input = {
+          threadId: f.threadId,
+          expectedActiveProviderThreadId: old.id,
+          targetProviderThreadId: target.id,
+          expectedTargetNativeThreadId: "native:healthy-reselection",
+        };
+        const preview = yield* owner.preview(input, principal);
+        assert.deepEqual(preview.refusalCodes, []);
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const withLock = executor.withLock;
+        const attempted = yield* Deferred.make<void>();
+        let finished = false;
+        const observedLock: typeof withLock = (id, action) =>
+          Deferred.succeed(attempted, undefined).pipe(Effect.andThen(withLock(id, action)));
+        const spy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
+        const repair = yield* withLock(
+          f.threadId,
+          Effect.gen(function* () {
+            const fiber = yield* owner
+              .reselect(
+                {
+                  ...input,
+                  commandId: CommandId.make(`${prefix}-repair`),
+                  expectedPreimageDigest: preview.preimageDigest,
+                },
+                principal,
+              )
+              .pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    finished = true;
+                  }),
+                ),
+                Effect.forkChild,
+              );
+            yield* Deferred.await(attempted);
+            assert.isFalse(finished);
+            assert.equal(
+              (yield* f.orchestrator.getThreadProjection(f.threadId)).thread.activeProviderThreadId,
+              old.id,
+            );
+            return fiber;
+          }),
+        ).pipe(Effect.ensuring(Effect.sync(() => spy.mockRestore())));
+        assert.equal((yield* Fiber.join(repair)).activeProviderThreadId, target.id);
+        yield* f.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${prefix}-next`),
+          threadId: f.threadId,
+          messageId: MessageId.make(`${prefix}-next-message`),
+          text: "Synthetic verification turn",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        });
+        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+        assert.equal(after.runs.at(-1)?.providerThreadId, target.id);
+        assert.equal(
+          after.providerThreads.find((row) => row.id === target.id)?.nativeThreadRef?.nativeId,
+          "native:healthy-reselection",
+        );
+        assert.deepEqual(
+          after.providerThreads.find((row) => row.id === old.id),
+          old,
+        );
+      }),
+  );
+
   it.effect.each([null, false] as const)(
     "retains legacy eligibility %s for a separate terminal turn",
     (eligibility) =>

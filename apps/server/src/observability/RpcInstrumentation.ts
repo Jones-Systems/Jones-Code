@@ -16,6 +16,8 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.stopCurrentThreadRuntime]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: "orchestrationV2",
+  [ORCHESTRATION_V2_WS_METHODS.reselectProviderConversation]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.observeCurrentThreadRuntimeStop]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: "orchestrationV2",
   [WS_METHODS.pullRequestsCiStatus]: "pull-requests",

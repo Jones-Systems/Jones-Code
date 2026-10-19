@@ -35,6 +35,7 @@ import {
   writeJonesNativeFile,
 } from "./jonesMacStaging.ts";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
+import { jonesPreparationText } from "./jonesNativePreparation.ts";
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const BuildMetadata = Schema.Struct({
@@ -95,6 +96,28 @@ const decodeNativeSelectionResult = Schema.decodeUnknownSync(
   }),
 );
 
+const decodeNativePreparationResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literals(["inspect-preparation", "retire-preparation"]),
+    transactionId: Schema.String,
+    status: Schema.Literals(["ready", "retired", "refused", "uncertain"]),
+    evidence: Schema.optionalKey(Schema.String),
+    planSha256: Schema.optionalKey(Schema.String),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
+const decodePreparationFailure = Schema.decodeUnknownSync(
+  Schema.Struct({ protocol: Schema.Literal(1), reason: Schema.String }),
+);
+const DISPATCHED_PREPARATION_RECORDS = new Set([
+  "prepare-dispatched.json",
+  "continuation.json",
+  "activation-request.json",
+  "intent.json",
+  "journal.json",
+]);
+
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
 const decodeStagedApp = Schema.decodeUnknownSync(JonesStagedMacApp);
@@ -129,6 +152,16 @@ function jonesContinuationReceiptPath(home: string, transactionId: string): stri
     transactionId,
     "continuation.json",
   );
+}
+
+/** A displayable native cause. System errors carry paths, so only their code is shown. */
+function nativeFailureReason(cause: unknown): string {
+  if (typeof cause === "object" && cause !== null && "code" in cause)
+    return typeof cause.code === "string" && /^[A-Z0-9_]{1,32}$/.test(cause.code)
+      ? `system error ${cause.code}`
+      : "unexpected system error";
+  const text = cause instanceof Error ? jonesPreparationText(cause.message) : "";
+  return text.length === 0 ? "unexpected error" : text.replace(/\.$/, "");
 }
 
 function provenance(candidate: JonesActionsCandidate) {
@@ -208,11 +241,12 @@ export interface JonesDesktopUpdateOptions {
   readonly disabledByEnv: boolean;
   readonly fleet?: Pick<DesktopFleetStore, "bindInstall" | "recordOutcome">;
   readonly onState: (state: DesktopUpdateState) => Promise<void>;
+  /** Resolves with the backend's state; its message explains a missing preparation receipt. */
   readonly prepareNative?: (
     stagedHandle: string,
     transactionId: string,
     active: ActiveInstall,
-  ) => Promise<void>;
+  ) => Promise<{ readonly phase?: string; readonly message?: string } | void>;
   readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
@@ -724,7 +758,26 @@ export class JonesDesktopUpdateController {
         if (cause.code === "ENOENT") return [];
         throw cause;
       });
+      // A preparation-only claim cannot activate. Retire it once no dispatch can follow,
+      // so a failed preparation does not block Install until manual recovery.
+      const preparationHolds = new Map<string, string>();
+      const released = new Set<string>();
       for (const entry of entries) {
+        if (!/^[a-f0-9]{64}$/.test(entry)) continue;
+        const names = await NodeFSP.readdir(NodePath.join(transactions, entry)).catch(
+          (): string[] => [],
+        );
+        if (
+          !names.includes("prepare-intent.json") ||
+          names.some((name) => DISPATCHED_PREPARATION_RECORDS.has(name))
+        )
+          continue;
+        const recovery = await this.#retirePreparation(entry);
+        if (recovery.retired) released.add(entry);
+        else preparationHolds.set(entry, recovery.reason);
+      }
+      const retained = entries.filter((entry) => !released.has(entry));
+      for (const entry of retained) {
         const directory = NodePath.join(transactions, entry);
         let phase: unknown;
         try {
@@ -750,7 +803,7 @@ export class JonesDesktopUpdateController {
         }
       }
       let latestOutcomeTime = -Infinity;
-      for (const entry of entries) {
+      for (const entry of retained) {
         if (!/^[a-f0-9]{64}$/.test(entry))
           throw new Error("Unknown native transaction requires reconciliation.");
         const directory = NodePath.join(transactions, entry);
@@ -775,9 +828,11 @@ export class JonesDesktopUpdateController {
               } catch (preparationError) {
                 if ((preparationError as NodeJS.ErrnoException).code === "ENOENT") {
                   this.#activationBlocked = true;
-                  throw new Error("Native preparation has unknown effects.", {
-                    cause: preparationError,
-                  });
+                  const failure = await this.#preparationFailure(directory);
+                  throw new Error(
+                    `Update preparation ${entry} did not finish${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
+                    { cause: preparationError },
+                  );
                 }
                 throw preparationError;
               }
@@ -1021,6 +1076,55 @@ export class JonesDesktopUpdateController {
     return helper;
   }
 
+  /**
+   * Retires a preparation-only claim when the helper proves no dispatch can follow: the
+   * backend refused it, or the desktop and backends that could receive its request exited.
+   * Unproved claims stay held for the quit-app operator recovery.
+   */
+  async #retirePreparation(transactionId: string): Promise<{ retired: boolean; reason: string }> {
+    try {
+      const helper = await this.#helperPath();
+      const run = async (
+        operation: "inspect-preparation" | "retire-preparation",
+        plan?: string,
+      ) => {
+        const result = decodeNativePreparationResult(
+          JSON.parse(
+            await runNativeCommand("/usr/bin/python3", [
+              helper,
+              "--manifest",
+              this.manifestPath,
+              `--${operation}`,
+              transactionId,
+              ...(plan === undefined ? [] : ["--plan-sha256", plan]),
+            ]),
+          ),
+        );
+        if (result.operation !== operation || result.transactionId !== transactionId)
+          throw new Error("Native preparation recovery identity changed.");
+        return result;
+      };
+      const inspected = await run("inspect-preparation");
+      if (inspected.status === "retired") return { retired: true, reason: "retired" };
+      if (inspected.status !== "ready" || inspected.planSha256 === undefined)
+        return { retired: false, reason: inspected.reason ?? inspected.status };
+      const retired = await run("retire-preparation", inspected.planSha256);
+      return { retired: retired.status === "retired", reason: retired.reason ?? retired.status };
+    } catch {
+      return { retired: false, reason: "helper-unavailable" };
+    }
+  }
+
+  async #preparationFailure(directory: string): Promise<string | undefined> {
+    try {
+      const raw = await NodeFSP.readFile(NodePath.join(directory, "prepare-failure.json"), "utf8");
+      if (raw.length > 4096) return undefined;
+      return jonesPreparationText(decodePreparationFailure(JSON.parse(raw)).reason);
+    } catch {
+      return undefined;
+    }
+  }
+
   async discard(handle: string): Promise<{ accepted: boolean; completed: boolean }> {
     if (
       this.#busy !== null ||
@@ -1150,6 +1254,8 @@ export class JonesDesktopUpdateController {
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
+      // Every process that can carry this claim's one backend request, captured before the claim.
+      const requesters = await this.#options.processProofs();
       await this.#publish("preparing", "downloaded");
       // Claim preparation under the same native lock as discard before the backend can create effects.
       this.#activationBlocked = true;
@@ -1182,12 +1288,40 @@ export class JonesDesktopUpdateController {
       }
       if (preparation.status !== "preparation-claimed")
         throw new Error("Native preparation claim was not confirmed.");
-      await this.#options.prepareNative?.(handle, transactionId, expected);
       // A missing preparation receipt is a real capability blocker; never manufacture it.
       const continuationReceipt = jonesContinuationReceiptPath(this.#options.home, transactionId);
-      const continuation = JSON.parse(
-        await NodeFSP.readFile(continuationReceipt, "utf8"),
-      ) as Record<string, unknown>;
+      let continuation: Record<string, unknown>;
+      try {
+        const claimRaw = await NodeFSP.readFile(NodePath.join(tx, "prepare-intent.json"));
+        await writeJonesNativeFile(
+          NodePath.join(tx, "prepare-request.json"),
+          JSON.stringify({
+            protocol: 1,
+            transactionId,
+            stagedHandle: handle,
+            claimSha256: NodeCrypto.createHash("sha256").update(claimRaw).digest("hex"),
+            processes: requesters,
+          }) + "\n",
+          0o600,
+        );
+        const response = await this.#options.prepareNative?.(handle, transactionId, expected);
+        try {
+          continuation = JSON.parse(await NodeFSP.readFile(continuationReceipt, "utf8")) as Record<
+            string,
+            unknown
+          >;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+          throw new Error(
+            response?.phase === "blocked" && response.message !== undefined
+              ? response.message
+              : "The backend did not record native preparation",
+            { cause },
+          );
+        }
+      } catch (cause) {
+        return await this.#preparationFailed(transactionId, tx, cause);
+      }
       if (
         continuation.prepared !== true ||
         continuation.preparationClaimProtocol !== 2 ||
@@ -1310,10 +1444,46 @@ export class JonesDesktopUpdateController {
         "blocked",
         "downloaded",
         this.#activationBlocked
-          ? "Native installation needs reconciliation; the retained transaction will not be retried automatically."
-          : "Native install could not prove its preparation and launcher binding; the current app remains active.",
+          ? `Native installation needs reconciliation (${nativeFailureReason(cause)}); the retained transaction will not be retried automatically.`
+          : `Native install could not prove its preparation and launcher binding (${nativeFailureReason(cause)}); the current app remains active.`,
       );
       return { accepted: false, completed: false, failed: true };
     }
+  }
+
+  /** Keeps the original cause visible and releases the claim only when the helper proves no dispatch. */
+  async #preparationFailed(
+    transactionId: string,
+    tx: string,
+    cause: unknown,
+  ): Promise<{ accepted: boolean; completed: boolean; failed: boolean }> {
+    const reason = nativeFailureReason(cause);
+    try {
+      await writeJonesNativeFile(
+        NodePath.join(tx, "prepare-failure.json"),
+        JSON.stringify({ protocol: 1, reason }) + "\n",
+        0o600,
+      );
+    } catch {
+      /* The response below still reports the cause; an occupied record is preserved. */
+    }
+    const recovery = await this.#retirePreparation(transactionId);
+    this.#busy = null;
+    if (recovery.retired) {
+      this.#activationBlocked = false;
+      this.#selectedAttempt = undefined;
+      await this.#publish(
+        "staged",
+        "downloaded",
+        `Update preparation stopped before any change: ${reason}. Install can be retried.`,
+      );
+    } else {
+      await this.#publish(
+        "blocked",
+        "downloaded",
+        `Update preparation stopped: ${reason}. Restart Jones Code to release this update attempt, then retry Install.`,
+      );
+    }
+    return { accepted: false, completed: false, failed: true };
   }
 }

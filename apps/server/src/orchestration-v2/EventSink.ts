@@ -1,3 +1,4 @@
+import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import {
   makeDeletionAdmission,
@@ -233,7 +234,10 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
     readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
-    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
+    readonly runtimeIdentityBoundary?: {
+      readonly expectedGeneration: string | null;
+      readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -243,7 +247,10 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
     readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
-    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
+    readonly runtimeIdentityBoundary?: {
+      readonly expectedGeneration: string | null;
+      readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -254,7 +261,10 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
     readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
-    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
+    readonly runtimeIdentityBoundary?: {
+      readonly expectedGeneration: string | null;
+      readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly threadId: ThreadId;
@@ -281,7 +291,10 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
     readonly runtimeIdentityObservation?: RequestedRuntimeIdentity;
-    readonly runtimeIdentityBoundary?: { readonly expectedGeneration: string | null };
+    readonly runtimeIdentityBoundary?: {
+      readonly expectedGeneration: string | null;
+      readonly expectedActiveProviderThreadId?: ProviderThreadId;
+    };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly providerThreadId: ProviderThreadId;
@@ -315,6 +328,7 @@ export interface EventSinkV2Shape {
   readonly commitCommand: (input: {
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
       readonly claimId: string;
@@ -581,11 +595,16 @@ const layerBase: Layer.Layer<
         const update = input.events.find((event) => event.type === "provider-thread.updated");
         if (input.runtimeIdentityBoundary !== undefined) {
           if (update?.type !== "provider-thread.updated") return null;
+          const records = yield* projectionStore.getThreadRecords(update.threadId, [
+            "providerThreads",
+          ]);
           const current =
-            (yield* projectionStore.getThreadRecords(update.threadId, [
-              "providerThreads",
-            ])).providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+            records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
           if (
+            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
+              (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
+                records.thread.activeProviderThreadId !==
+                  input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
             (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
             (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
               input.runtimeIdentityBoundary.expectedGeneration ||
@@ -1058,6 +1077,8 @@ const layerBase: Layer.Layer<
           });
           if (!reserved) {
             const existing = yield* existingCommandResult(input.commandId);
+            if (input.providerConversationReselection)
+              yield* input.providerConversationReselection.revalidate(input, existing);
             if (Option.isSome(checkoutIntent) && ordinaryCommand !== undefined)
               yield* checkoutIntent.value.replay(ordinaryCommand, input.threadId);
             if (imported !== undefined) {
@@ -1097,6 +1118,9 @@ const layerBase: Layer.Layer<
             }
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
+
+          if (input.providerConversationReselection)
+            yield* input.providerConversationReselection.revalidate(input);
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {

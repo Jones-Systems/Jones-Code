@@ -1,3 +1,4 @@
+import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -99,6 +100,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
+  threadAttention: Schema.optionalKey(ThreadAttentionCapability),
   nativeBootstrapCreation: Schema.optionalKey(NativeBootstrapCreationCapability),
   currentRuntimeStop: Schema.optionalKey(
     Schema.Struct({

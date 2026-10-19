@@ -9,7 +9,9 @@ describe this repository.
 
 Before source writes, verify the repository, physical worktree, branch, HEAD,
 status, task scope, and Git owner against the assignment. Use the declared
-non-main task branch. Stop on `main` or `master`, detached HEAD, stale identity,
+non-main task branch in an isolated linked worktree. Follow
+[development state and ports](docs/operations/development.md#state-and-ports)
+for runtime isolation. Stop on `main` or `master`, detached HEAD, stale identity,
 unowned changes, overlapping write scope, or an unknown prior effect. Preserve
 unrelated work. One owner controls Git mutations in each physical worktree.
 

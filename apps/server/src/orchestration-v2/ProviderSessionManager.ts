@@ -392,6 +392,7 @@ export const layerWithOptions = (
           {
             readonly previous: Map<string, string | null>;
             readonly bindings: Map<string, ThreadId>;
+            readonly invalidated: Set<string>;
           }
         >();
         const protocolError = (cause: unknown) =>
@@ -430,6 +431,7 @@ export const layerWithOptions = (
                     ]),
                 ),
                 bindings: new Map(),
+                invalidated: new Set(),
               });
               return generation;
             }).pipe(Effect.mapError(protocolError)),
@@ -472,6 +474,10 @@ export const layerWithOptions = (
                 binding.requested.providerDriver !== driver
               )
                 return yield* protocolError("The launch reservation or native ownership was lost.");
+              if (reservation.invalidated.has(thread.id))
+                return yield* protocolError(
+                  "Another producer already owns this native conversation.",
+                );
               const observedEvent: ProviderAdapterV2Event = {
                 type: "runtime_identity.observed",
                 driver,
@@ -575,7 +581,10 @@ export const layerWithOptions = (
                 const current = yield* readThread(threadId, id);
                 if (current?.runtimeIdentity?.runtimeGeneration !== generation) continue;
                 yield* eventSink.write({
-                  runtimeIdentityBoundary: { expectedGeneration: generation },
+                  runtimeIdentityBoundary: {
+                    expectedGeneration: generation,
+                    expectedActiveProviderThreadId: current.id,
+                  },
                   events: [
                     {
                       id: yield* idAllocator.allocate.event({ threadId, providerSessionId }),
@@ -603,9 +612,15 @@ export const layerWithOptions = (
                 current.nativeThreadRef?.nativeId !== binding.nativeThreadId
               )
                 return;
+              reservations
+                .get(binding.runtimeGeneration)
+                ?.invalidated.add(binding.providerThreadId);
               yield* eventSink.write({
                 runtimeEvidence: binding,
-                runtimeIdentityBoundary: { expectedGeneration: binding.runtimeGeneration },
+                runtimeIdentityBoundary: {
+                  expectedGeneration: binding.runtimeGeneration,
+                  expectedActiveProviderThreadId: binding.providerThreadId,
+                },
                 events: [
                   {
                     id: yield* idAllocator.allocate.event({

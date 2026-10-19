@@ -571,6 +571,133 @@ def attempt_selection_binding(active, staged_handle, transaction_id, selection_p
                 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': active}
     if type(value.get('protocol')) is not int or value != expected: raise SelectionRefused('selection-mismatch')
 
+# Records a preparation claim can hold before backend dispatch. Any other file
+# means preparation advanced or is unknown, so the claim remains held.
+PREPARATION_RECORDS = ('prepare-intent.json', 'prepare-request.json', 'prepare-refused.json', 'prepare-failure.json',
+                       'preparation-retirement.json', 'attempt-selection.json')
+DISPATCHED_RECORDS = ('prepare-dispatched.json', 'continuation.json', 'activation-request.json', 'intent.json', 'journal.json')
+
+def process_exited(proof):
+    if not isinstance(proof, dict) or set(proof) != {'pid', 'identity'} or type(proof['pid']) is not int or proof['pid'] <= 0 or not isinstance(proof['identity'], str) or not proof['identity'].strip():
+        raise SelectionRefused('unknown-state')
+    identity = process_identity(proof['pid'])
+    if identity is None: return True
+    if identity == proof['identity']: return False
+    start = process_start(proof['pid'])
+    if start is None or start[0].startswith('Z'): return True
+    # A different birth time proves the recorded process exited and its PID was reused.
+    if not ' '.join(proof['identity'].split()).startswith(start[1] + ' '): return True
+    raise SelectionRefused('writer-unknown')
+
+def preparation_context(active, transaction_id):
+    if (manifest_path.parent / 'jones-maintenance').exists(): raise SelectionRefused('unknown-state')
+    updates = manifest_path.parent / 'jones-updates'
+    tx = updates / 'transactions' / transaction_id
+    if tx.is_symlink() or not tx.is_dir() or tx.resolve(strict=True) != tx: raise SelectionRefused('unknown-transaction')
+    names = sorted(child.name for child in tx.iterdir())
+    if any(name in DISPATCHED_RECORDS for name in names): raise SelectionRefused('preparation-dispatched')
+    if 'prepare-intent.json' not in names: raise SelectionRefused('unknown-transaction')
+    if any(name not in PREPARATION_RECORDS for name in names): raise SelectionRefused('unknown-state')
+    records = {name: bounded_native_json(tx / name)[:2] for name in names}
+    claim, claim_raw = records['prepare-intent.json']
+    handle, selection_path, selection_digest = (claim.get(key) for key in ('stagedHandle', 'selectionPath', 'selectionSha256'))
+    if not all(isinstance(value, str) for value in (handle, selection_path, selection_digest)) or any(type(claim.get(key)) is not int for key in ('protocol', 'preparationClaimProtocol')):
+        raise SelectionRefused('claim-mismatch')
+    path, _, _, _ = selection_binding(active, handle, selection_path, selection_digest)
+    if claim != preparation_claim(active, handle, transaction_id, path, selection_digest): raise SelectionRefused('claim-mismatch')
+    attempt = updates / 'attempt-selections' / (hashlib.sha256((str(path) + '\n' + selection_digest).encode()).hexdigest() + '.json')
+    # An interrupted retirement may already hold the binding inside the transaction.
+    attempt_value, attempt_raw = records['attempt-selection.json'] if 'attempt-selection.json' in records else bounded_native_json(attempt)[:2]
+    if type(attempt_value.get('protocol')) is not int or attempt_value != {'protocol': PROTOCOL, 'transactionId': transaction_id, 'stagedHandle': handle, 'selectionPath': str(path), 'selectionSha256': selection_digest, 'expected': active}:
+        raise SelectionRefused('selection-mismatch')
+    claim_sha = hashlib.sha256(claim_raw).hexdigest()
+    evidence = None
+    if 'prepare-refused.json' in records:
+        refusal = records['prepare-refused.json'][0]
+        if set(refusal) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'reason'} or type(refusal['protocol']) is not int or refusal['protocol'] != PROTOCOL or refusal['transactionId'] != transaction_id or refusal['stagedHandle'] != handle or refusal['claimSha256'] != claim_sha or not isinstance(refusal['reason'], str):
+            raise SelectionRefused('unknown-state')
+        evidence = 'backend-refused'
+    if evidence is None and 'prepare-request.json' in records:
+        request = records['prepare-request.json'][0]
+        proofs = request.get('processes')
+        if set(request) != {'protocol', 'transactionId', 'stagedHandle', 'claimSha256', 'processes'} or type(request['protocol']) is not int or request['protocol'] != PROTOCOL or request['transactionId'] != transaction_id or request['stagedHandle'] != handle or request['claimSha256'] != claim_sha or not isinstance(proofs, list) or not proofs or len(proofs) > 256:
+            raise SelectionRefused('unknown-state')
+        # The desktop and every backend that could receive this claim's one request have exited.
+        if all(process_exited(proof) for proof in proofs): evidence = 'requester-exited'
+    plan = {'protocol': PROTOCOL, 'transactionId': transaction_id, 'activeBinding': active,
+            'records': {name: hashlib.sha256(raw).hexdigest() for name, (_, raw) in records.items() if name not in ('attempt-selection.json', 'preparation-retirement.json')},
+            'attemptSelection': str(attempt), 'attemptSha256': hashlib.sha256(attempt_raw).hexdigest(),
+            'retiredPath': str(updates / 'retired-preparations' / transaction_id)}
+    return tx, plan, records, evidence
+
+def preparation_command(operation, active, transaction_id, plan_sha=None, quiescent=False):
+    result = {'protocol': PROTOCOL, 'operation': operation, 'transactionId': transaction_id}
+    connections, changed, summary = [], False, {}
+    try:
+        if not isinstance(transaction_id, str) or len(transaction_id) != 64 or any(char not in '0123456789abcdef' for char in transaction_id):
+            raise SelectionRefused('unknown-transaction')
+        updates = manifest_path.parent / 'jones-updates'
+        tx, retired = updates / 'transactions' / transaction_id, updates / 'retired-preparations' / transaction_id
+        if retired.parent.is_symlink() or retired.is_symlink(): raise SelectionRefused('unknown-state')
+        if not tx.exists() and not tx.is_symlink() and retired.is_dir():
+            # The directory rename committed retirement; only its receipt can remain.
+            changed = True
+            intent, _, _ = bounded_native_json(retired / 'preparation-retirement.json')
+            approved, receipt_path = intent.get('planSha256'), retired / 'preparation-retirement-receipt.json'
+            receipt = {'protocol': PROTOCOL, 'transactionId': transaction_id, 'planSha256': approved, 'status': 'retired', 'evidence': intent.get('evidence')}
+            if receipt_path.exists():
+                if bounded_native_json(receipt_path)[0] != receipt: raise SelectionRefused('unknown-retirement')
+            elif operation == 'inspect-preparation':
+                return dict(result, status='ready', planSha256=approved, evidence=receipt['evidence'], retiredPath=str(retired), reconciliation=True)
+            elif plan_sha != approved: raise SelectionRefused('plan-changed')
+            else: durable(receipt_path, receipt, True)
+            return dict(result, status='retired', planSha256=approved, evidence=receipt['evidence'], retiredPath=str(retired))
+        tx, plan, records, evidence = preparation_context(active, transaction_id)
+        approved = retirement_digest(plan)
+        summary = {'planSha256': approved, 'records': plan['records'], 'attemptSelection': plan['attemptSelection'], 'retiredPath': plan['retiredPath']}
+        if 'preparation-retirement.json' in records:
+            # Its evidence was proved before the intent was recorded; finish the same plan.
+            changed = True
+            intent = records['preparation-retirement.json'][0]
+            if intent.get('protocol') != PROTOCOL or intent.get('planSha256') != approved or intent.get('plan') != plan or intent.get('evidence') not in ('backend-refused', 'requester-exited', 'writers-quiescent'):
+                raise SelectionRefused('plan-changed')
+            evidence = intent['evidence']
+        elif evidence is None and quiescent:
+            # Operator route: the app is quit, so no admitted writer holds a native lease.
+            try: connections = acquire_writer_exclusion(active, initialize=False)
+            except sqlite3.OperationalError: raise SelectionRefused('writer-busy')
+            except (OSError, RuntimeError): raise SelectionRefused('writer-lease-unknown')
+            try: prove_quiescence(active)
+            except (OSError, RuntimeError, subprocess.SubprocessError): raise SelectionRefused('writer-active')
+            evidence = 'writers-quiescent'
+        if evidence is None: raise SelectionRefused('writer-unknown')
+        if operation == 'inspect-preparation': return dict(result, status='ready', evidence=evidence, **summary)
+        if plan_sha != approved: raise SelectionRefused('plan-changed')
+        if retired.exists(): raise SelectionRefused('occupied-retirement')
+        changed = True
+        if 'preparation-retirement.json' not in records:
+            durable(tx / 'preparation-retirement.json', {'protocol': PROTOCOL, 'planSha256': approved, 'plan': plan, 'evidence': evidence}, True)
+        if 'attempt-selection.json' not in records:
+            # Retiring the attempt binding gives the next Install a fresh transaction ID.
+            attempt = pathlib.Path(plan['attemptSelection'])
+            os.rename(attempt, tx / 'attempt-selection.json')
+            sync_parent(attempt)
+            sync_parent(tx / 'attempt-selection.json')
+        retired.parent.mkdir(exist_ok=True, mode=0o700)
+        sync_parent(retired.parent)
+        # The rename commits retirement: every reader, including older helpers and
+        # path-based backend writes, stops resolving this claim. Records are preserved.
+        os.rename(tx, retired)
+        sync_parent(tx)
+        sync_parent(retired)
+        durable(retired / 'preparation-retirement-receipt.json', {'protocol': PROTOCOL, 'transactionId': transaction_id, 'planSha256': approved, 'status': 'retired', 'evidence': evidence}, True)
+        return dict(result, status='retired', planSha256=approved, evidence=evidence, retiredPath=str(retired))
+    except SelectionRefused as failure:
+        return dict(result, **summary, status='uncertain' if changed else 'refused', reason=failure.reason)
+    except Exception:
+        return dict(result, **summary, status='uncertain' if changed else 'refused', reason='reconciliation-required' if changed else 'unknown-state')
+    finally: release_writer_exclusion(connections)
+
 def retirement_inventory(path, parent_device):
     entries = []
     device = path.lstat().st_dev
@@ -1118,6 +1245,9 @@ action.add_argument('--claim-activation')
 action.add_argument('--claim-preparation')
 action.add_argument('--inspect-retirement')
 action.add_argument('--retire-transaction')
+action.add_argument('--inspect-preparation')
+action.add_argument('--retire-preparation')
+parser.add_argument('--quiescent', action='store_true')
 parser.add_argument('--transaction')
 parser.add_argument('--staged-handle')
 parser.add_argument('--selection')
@@ -1142,6 +1272,7 @@ except FileExistsError:
 with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     operation = 'discard-staged' if args.discard_staged else 'claim-activation' if args.claim_activation else 'claim-preparation' if args.claim_preparation else None
     retirement_operation = 'inspect-retirement' if args.inspect_retirement else 'retire-transaction' if args.retire_transaction else None
+    preparation_operation = 'inspect-preparation' if args.inspect_preparation else 'retire-preparation' if args.retire_preparation else None
     handle = args.discard_staged or args.claim_preparation or args.staged_handle
     transaction_id = args.transaction if args.claim_preparation else pathlib.Path(args.claim_activation).parent.name if args.claim_activation else None
     try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1151,6 +1282,9 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
             raise SystemExit(0)
         if retirement_operation:
             print(json.dumps({'protocol': PROTOCOL, 'operation': retirement_operation, 'transactionId': args.inspect_retirement or args.retire_transaction, 'status': 'refused', 'reason': 'busy'}))
+            raise SystemExit(0)
+        if preparation_operation:
+            print(json.dumps({'protocol': PROTOCOL, 'operation': preparation_operation, 'transactionId': args.inspect_preparation or args.retire_preparation, 'status': 'refused', 'reason': 'busy'}))
             raise SystemExit(0)
         if operation:
             result = {'protocol': PROTOCOL, 'operation': operation, 'handle': handle, 'status': 'refused', 'reason': 'busy'}
@@ -1171,6 +1305,8 @@ with os.fdopen(descriptor, 'r+', encoding='utf8') as lock:
     bundle_identity(active)
     if retirement_operation:
         print(json.dumps(retirement_command(retirement_operation, active, args.inspect_retirement or args.retire_transaction, args.plan_sha256)))
+    elif preparation_operation:
+        print(json.dumps(preparation_command(preparation_operation, active, args.inspect_preparation or args.retire_preparation, args.plan_sha256, args.quiescent)))
     elif operation:
         print(json.dumps(selection_command(operation, active, handle, args.selection, args.selection_sha256, args.claim_activation, transaction_id)))
     elif args.activate: activate(args.activate)

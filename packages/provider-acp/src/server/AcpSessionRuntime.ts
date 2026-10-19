@@ -459,7 +459,7 @@ function tryCreateLinuxCgroupLease(
   };
 }
 
-export function makeLinuxCgroupController(): AcpLinuxCgroupController {
+function makeLinuxCgroupController(): AcpLinuxCgroupController {
   return {
     create: () => {
       let currentRelative: string | undefined;
