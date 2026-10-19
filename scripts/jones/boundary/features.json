@@ -900,7 +900,7 @@
         "apps/web/src/jones/sidebarHeader/CompactSidebarHeader.browser.test.tsx",
         "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx"
       ],
-      "scope": "Actual available-width fitting removes Code first, reduces status and adjacent spacing progressively, then removes the brand only if needed. The selected filter count has an underline and stronger background; controls remain in one accessible row."
+      "scope": "Actual available-width fitting removes Code first, continuously scales status and adjacent spacing from original down to 25%, then removes J3 only if needed. The selected filter count has a stronger background without an underline; controls remain in one accessible row."
     },
     {
       "id": "thread-read-dwell",

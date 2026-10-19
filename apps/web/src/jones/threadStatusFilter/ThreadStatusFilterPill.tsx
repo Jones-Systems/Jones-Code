@@ -58,7 +58,7 @@ export function ThreadStatusFilterPill({
                   style={{ paddingInline: "var(--sidebar-status-number-padding, 6px)" }}
                   className={cn(
                     "rounded-sm tabular-nums",
-                    filter === status && "font-semibold underline decoration-2 underline-offset-2",
+                    filter === status && "font-semibold",
                     filter === status && selectedNumbers[status],
                     counts[status] > 0 ? colors[status] : "text-muted-foreground/60",
                   )}

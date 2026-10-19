@@ -1,8 +1,9 @@
 [data-sidebar-header] {
-  --sidebar-status-gap: 2px;
-  --sidebar-status-number-padding: 6px;
-  --sidebar-header-gap: 8px;
-  --sidebar-header-right: 12px;
+  --sidebar-header-spacing: 1;
+  --sidebar-status-gap: calc(2px * var(--sidebar-header-spacing));
+  --sidebar-status-number-padding: calc(6px * var(--sidebar-header-spacing));
+  --sidebar-header-gap: calc(8px * var(--sidebar-header-spacing));
+  --sidebar-header-right: calc(12px * var(--sidebar-header-spacing));
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -15,28 +16,6 @@
   min-height: 32px;
   gap: var(--sidebar-header-gap);
   padding-right: var(--sidebar-header-right);
-}
-
-[data-sidebar-header][data-density="third"] {
-  --sidebar-status-gap: 1.333333px;
-  --sidebar-status-number-padding: 4px;
-  --sidebar-header-gap: 5.333333px;
-  --sidebar-header-right: 8px;
-}
-
-[data-sidebar-header][data-density="half"] {
-  --sidebar-status-gap: 1px;
-  --sidebar-status-number-padding: 3px;
-  --sidebar-header-gap: 4px;
-  --sidebar-header-right: 6px;
-}
-
-[data-sidebar-header][data-density="quarter"],
-[data-sidebar-header][data-density="minimal"] {
-  --sidebar-status-gap: 0.5px;
-  --sidebar-status-number-padding: 1.5px;
-  --sidebar-header-gap: 2px;
-  --sidebar-header-right: 3px;
 }
 
 [data-sidebar-header]:not([data-density="full"]) [data-sidebar-brand-code],

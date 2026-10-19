@@ -20,7 +20,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("cycles all statuses with only the selected number underlined and backed", async () => {
+it("cycles all statuses with only the selected number highlighted and no underline", async () => {
   function Fixture() {
     const [filter, setFilter] = useState<ThreadStatusFilter>("all");
     return (
@@ -43,11 +43,10 @@ it("cycles all statuses with only the selected number underlined and backed", as
       `Showing ${["working", "needs input", "done"][selected] ?? "all threads"}.`,
     );
     numbers().forEach((number, index) => {
-      expect(getComputedStyle(number).textDecorationLine.includes("underline")).toBe(
+      expect(getComputedStyle(number).textDecorationLine.includes("underline")).toBe(false);
+      expect(getComputedStyle(number).backgroundColor !== "rgba(0, 0, 0, 0)").toBe(
         index === selected,
       );
-      if (index === selected)
-        expect(getComputedStyle(number).backgroundColor).not.toBe("rgba(0, 0, 0, 0)");
     });
     if (selected !== -1 || button.getAttribute("aria-label")?.includes("Showing all threads"))
       await act(async () => {
