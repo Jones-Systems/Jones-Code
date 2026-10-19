@@ -134,18 +134,12 @@
     },
     {
       "id": "jones-provider-order",
-      "tests": [
-        "apps/web/src/jones/settings/providerOrder.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/web/src/jones/settings/providerOrder.test.ts"
-      ]
+      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/settings/providerOrder.test.ts"]
     },
     {
       "id": "jones-provider-restart-identity",
-      "tests": [
-        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "vp run --filter t3 typecheck"
@@ -153,12 +147,8 @@
     },
     {
       "id": "jones-environment-sidebar-filters",
-      "tests": [
-        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ]
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
     },
     {
       "id": "jones-remote-host-status",
@@ -185,9 +175,7 @@
     },
     {
       "id": "jones-boundary",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ],
+      "tests": ["scripts/jones/check-boundary.test.ts"],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -196,9 +184,7 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": [
-        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -395,12 +381,8 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": [
-        "native/process-placement/build.test.mjs"
-      ],
-      "commands": [
-        "node --test native/process-placement/build.test.mjs"
-      ]
+      "tests": ["native/process-placement/build.test.mjs"],
+      "commands": ["node --test native/process-placement/build.test.mjs"]
     },
     {
       "id": "jones-workstream-appearance",
@@ -683,12 +665,8 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": [
-        "apps/server/scripts/jones/sqliteHealth.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
-      ]
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     },
     {
       "id": "jones-performance-diagnostics",
@@ -704,9 +682,7 @@
     },
     {
       "id": "jones-performance-migration-restore",
-      "tests": [
-        "scripts/jones/performance/migration-restore.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
       ]
@@ -1208,9 +1184,7 @@
     },
     {
       "id": "jones-desktop-workstreams-shell",
-      "tests": [
-        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
-      ],
+      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
@@ -1506,9 +1480,7 @@
     },
     {
       "id": "jones-runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
