@@ -1118,7 +1118,11 @@ function resolveProjectThreadStatus(
 // Thread derivations for one project row. Built in their own hooks so they reach
 // SidebarProjectItem frozen: inline, its later calls made the compiler fuse the
 // ordered keys with the route-dependent panel, handing every row a new array.
-function useProjectThreads(project: SidebarProjectSnapshot, statusFilter: ThreadStatusFilter) {
+function useProjectThreads(
+  project: SidebarProjectSnapshot,
+  statusFilter: ThreadStatusFilter,
+  activeRouteThreadKey: string | null,
+) {
   const threadSortOrder = useClientSettings<SidebarThreadSortOrder>(
     (settings) => settings.sidebarThreadSortOrder,
   );
@@ -1132,6 +1136,8 @@ function useProjectThreads(project: SidebarProjectSnapshot, statusFilter: Thread
     scopedThreads,
     statusFilter,
     "legacy",
+    undefined,
+    activeRouteThreadKey,
   );
   const threadLastVisitedAts = useUiStateStore(
     useShallow((state) =>
@@ -1355,7 +1361,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     visibleProjectThreads,
     orderedProjectThreadKeys,
     lastVisitedAtByThreadKey,
-  } = useProjectThreads(project, props.statusFilter);
+  } = useProjectThreads(project, props.statusFilter, props.activeRouteThreadKey);
   // The "Delete anyway" toast action runs after the toast delay, so it must see
   // the thread list as of the click, not as of the first prompt.
   const readSidebarThreadByKey = useStableCallback(() => sidebarThreadByKey);
@@ -3263,6 +3269,12 @@ function useLegacySidebarThreads(input: {
 }
 
 export default function LegacySidebar() {
+  const routeTarget = useThreadRouteTarget();
+  const routeDraftThread = useComposerDraftStore((store) =>
+    routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
+  );
+  const routeThreadRef = resolveActiveThreadRouteRef(routeTarget, routeDraftThread);
+  const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const allSidebarThreads = useThreadShells();
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const visibleThreads = filterSidebarV2VisibleThreads(
@@ -3274,7 +3286,7 @@ export default function LegacySidebar() {
     cycleStatusFilter,
     counts: statusCounts,
     threads: sidebarThreads,
-  } = useThreadStatusFilter(visibleThreads, "legacy");
+  } = useThreadStatusFilter(visibleThreads, "legacy", undefined, routeThreadKey);
   const reorderProjects = useUiStateStore((store) => store.reorderProjects);
   const navigate = useNavigate();
   const sidebarThreadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
@@ -3284,12 +3296,6 @@ export default function LegacySidebar() {
   const handleNewThread = useNewThreadHandler();
   const { archiveThread, deleteThread, markThreadUnread } = useThreadActions();
   const { isMobile, setOpenMobile } = useSidebar();
-  const routeTarget = useThreadRouteTarget();
-  const routeDraftThread = useComposerDraftStore((store) =>
-    routeTarget?.kind === "draft" ? store.getDraftSession(routeTarget.draftId) : null,
-  );
-  const routeThreadRef = resolveActiveThreadRouteRef(routeTarget, routeDraftThread);
-  const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const routeTerminalOpen = useTerminalUiStateStore((state) =>
     routeThreadRef
       ? selectThreadTerminalUiState(state.terminalUiStateByThreadKey, routeThreadRef).terminalOpen

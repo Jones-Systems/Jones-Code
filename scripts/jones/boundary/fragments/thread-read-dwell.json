@@ -1,0 +1,32 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-read-dwell",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/threadReadDwell/useMarkThreadUnread.ts",
+    "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.browser.test.tsx",
+    "apps/web/src/jones/threadReadDwell/markUnread.browser.test.tsx",
+    "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.tsx",
+    "packages/client-runtime/src/jones/threadReadDwell.ts",
+    "packages/client-runtime/src/jones/threadReadDwell.test.ts",
+    "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+  ],
+  "hookPaths": [
+    "apps/web/src/hooks/useThreadActions.ts",
+    "apps/mobile/src/features/threads/ThreadDetailScreen.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.tsx"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActions.ts",
+      "to": "apps/web/src/jones/threadReadDwell/useMarkThreadUnread.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "packages/client-runtime/src/jones/threadReadDwell.ts"
+    }
+  ]
+}
