@@ -1051,7 +1051,16 @@
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
         "apps/server/src/mcp/McpToolAccess.test.ts",
-        "apps/server/src/mcp/McpToolAccess.race.test.ts"
+        "apps/server/src/mcp/McpToolAccess.race.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/client-runtime/src/t3ToolSummary.test.ts",
+        "packages/client-runtime/src/work-log/presentation.test.ts",
+        "packages/provider-acp/src/server/runtimeModel.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
       "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Unkeyed launch and existing access builders remain unchanged."
     }
