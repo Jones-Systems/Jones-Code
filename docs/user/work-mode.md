@@ -13,7 +13,19 @@ refreshes. While on, Work mode retains eligible live sessions past their normal 
 timeout. It does not reopen stopped or expired sessions. The one exception is a
 planned update with **Continue threads after restarts** on: a thread Work mode was
 keeping warm resumes its same conversation for its next refresh. Turning it off lets
-normal idle cleanup resume. Regular conversation activity resets the 55-minute interval.
+normal idle cleanup resume.
+
+An automatic server scheduler checks every five seconds; an agent does not decide
+when to refresh. The 55-minute clock starts from the latest recorded model processing
+in that provider conversation, including processing user or agent input and tool
+results. Merely receiving a message, editing it, completing a run, or reporting
+context size does not reset the clock. Missing model-usage evidence is skipped.
+A conversation's first refresh must be due and no more than 90 minutes after that
+activity. After a successful refresh with model-usage evidence, that conversation
+continues on the 55-minute cadence; the initial age limit does not recur after a
+restart or toggling Work off and on. A new provider conversation starts fresh.
+A refresh without usable usage evidence cannot establish this sequence, and its
+start time prevents rapid retries.
 Refreshes do not count as activity for automatic settlement, so an idle thread
 still settles on its usual schedule, and refreshing stops when it does.
 Each refresh sends `@@@@@` and asks for the same reply. Plain messages consisting

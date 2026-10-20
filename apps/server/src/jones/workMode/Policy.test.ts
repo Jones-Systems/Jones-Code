@@ -1,16 +1,21 @@
 import { describe, expect, it } from "@effect/vitest";
-import { ThreadId, type OrchestrationV2ProviderGoalStatus } from "@t3tools/contracts";
+import {
+  MessageId,
+  ProviderThreadId,
+  ThreadId,
+  type OrchestrationV2ProviderGoalStatus,
+} from "@t3tools/contracts";
 import { WORK_MODE_INTERVAL_MS, WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
 import * as DateTime from "effect/DateTime";
 import { threadShellFromProjection } from "../../orchestration-v2/ProjectionStore.ts";
 import { workModeFixture } from "./Fixtures.testkit.ts";
-import { workModeCandidate, workModeCommand, workModeContext } from "./Policy.ts";
+import { workModeCandidate, workModeCommand, workModeContext, workModeTiming } from "./Policy.ts";
 
 describe("Work Mode eligibility", () => {
   it("becomes due at 55 minutes and preserves exact server provenance", () => {
     const projection = workModeFixture();
     const shell = threadShellFromProjection(projection);
-    expect(workModeCandidate(shell, WORK_MODE_INTERVAL_MS - 1)).toBeNull();
+    expect(workModeContext(projection, WORK_MODE_INTERVAL_MS - 1)).toBeNull();
     const candidate = workModeCandidate(shell, WORK_MODE_INTERVAL_MS)!;
     const command = workModeCommand(candidate, shell.modelSelection);
     expect(command).toMatchObject({
@@ -86,12 +91,12 @@ describe("Work Mode eligibility", () => {
       expect(workModeCandidate({ ...shell, status }, WORK_MODE_INTERVAL_MS)).toBeNull();
   });
 
-  it("regular activity resets the interval; cosmetic thread updates do not", () => {
+  it("shell changes identify generations without setting the model activity clock", () => {
     const shell = threadShellFromProjection(workModeFixture());
     const activityAt = DateTime.makeUnsafe(WORK_MODE_INTERVAL_MS - 1);
     expect(
       workModeCandidate({ ...shell, latestUserMessageAt: activityAt }, WORK_MODE_INTERVAL_MS),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       workModeCandidate(
         { ...shell, updatedAt: activityAt, lastVisitedAt: activityAt },
@@ -100,7 +105,7 @@ describe("Work Mode eligibility", () => {
     ).not.toBeNull();
     expect(
       workModeCandidate({ ...shell, latestRunCompletedAt: activityAt }, WORK_MODE_INTERVAL_MS),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("never refreshes a thread whose provider goal could resume work", () => {
@@ -171,6 +176,135 @@ describe("Work Mode eligibility", () => {
           messages: [{ ...projection.messages[0]!, updatedAt: DateTime.makeUnsafe(1) }],
         },
         WORK_MODE_INTERVAL_MS,
+      ),
+    ).not.toBeNull();
+  });
+});
+
+describe("Work cache activity", () => {
+  const minute = 60_000;
+
+  it("does not start a first refresh beyond 90 minutes, including after a recent app-only reply", () => {
+    const projection = workModeFixture();
+    expect(workModeContext(projection, 90 * minute)).not.toBeNull();
+    expect(workModeContext(projection, 90 * minute + 1)).toBeNull();
+    const recent = DateTime.makeUnsafe(60 * minute);
+    expect(
+      workModeContext(
+        {
+          ...projection,
+          runs: projection.runs.map((run) => ({ ...run, completedAt: recent })),
+          messages: projection.messages.map((message) => ({ ...message, updatedAt: recent })),
+        },
+        120 * minute,
+      ),
+    ).toBeNull();
+  });
+
+  it("uses the last processed model input despite later run completion or message edits", () => {
+    const projection = workModeFixture();
+    const later = DateTime.makeUnsafe(40 * minute);
+    const held = {
+      ...projection,
+      runs: projection.runs.map((run) => ({ ...run, completedAt: later })),
+      messages: projection.messages.map((message) => ({ ...message, updatedAt: later })),
+    };
+    expect(workModeContext(held, 55 * minute - 1)).toBeNull();
+    expect(workModeContext(held, 55 * minute)).not.toBeNull();
+  });
+
+  it.each([undefined, { usedTokens: 200, maxTokens: 1000, updatedAt: "1970-01-01T00:40:00Z" }])(
+    "does not infer model input from missing or compaction-only usage: %j",
+    (tokenUsage) => {
+      const projection = workModeFixture();
+      expect(
+        workModeContext(
+          {
+            ...projection,
+            providerTurns: projection.providerTurns.map((turn) => ({ ...turn, tokenUsage })),
+          },
+          55 * minute,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it("ignores another provider conversation's recent model calls", () => {
+    const projection = workModeFixture();
+    expect(
+      workModeContext(
+        {
+          ...projection,
+          providerTurns: [
+            ...projection.providerTurns,
+            {
+              ...projection.providerTurns[0]!,
+              providerThreadId: ProviderThreadId.make("other-conversation"),
+              tokenUsage: { usedTokens: 1, inputTokens: 1, updatedAt: "1970-01-01T00:40:00Z" },
+            },
+          ],
+        },
+        55 * minute,
+      ),
+    ).not.toBeNull();
+  });
+
+  it("requires native root-run inference with a usable timestamp", () => {
+    const projection = workModeFixture();
+    const turn = projection.providerTurns[0]!;
+    for (const patch of [
+      { nativeTurnRef: null },
+      { runAttemptId: null },
+      { tokenUsage: { usedTokens: 1, inputTokens: 1, updatedAt: "invalid" } },
+    ])
+      expect(
+        workModeTiming(
+          { ...projection, providerTurns: [{ ...turn, ...patch }] },
+          turn.providerThreadId,
+        ),
+      ).toBeNull();
+    expect(
+      workModeContext(
+        {
+          ...projection,
+          providerTurns: [
+            {
+              ...turn,
+              tokenUsage: {
+                usedTokens: 1,
+                cachedInputTokens: 1,
+                updatedAt: "1970-01-01T01:00:00Z",
+              },
+            },
+          ],
+        },
+        55 * minute,
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps an established successful refresh sequence on the 55-minute rule beyond initial age", () => {
+    const projection = workModeFixture();
+    const message = {
+      ...projection.messages[0]!,
+      id: MessageId.make("work-mode:established"),
+      text: WORK_MODE_SENTINEL,
+      createdBy: "system" as const,
+      creationSource: "server" as const,
+    };
+    const established = {
+      ...projection,
+      runs: projection.runs.map((run) => ({ ...run, userMessageId: message.id })),
+      messages: [message],
+    };
+    expect(workModeContext(established, 3 * 60 * minute)).not.toBeNull();
+    expect(
+      workModeContext(
+        {
+          ...established,
+          messages: [{ ...message, createdBy: "user", creationSource: "web" }],
+        },
+        3 * 60 * minute,
       ),
     ).toBeNull();
   });

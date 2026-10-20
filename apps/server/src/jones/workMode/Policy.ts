@@ -6,11 +6,17 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadShell,
   type ModelSelection,
+  type ProviderThreadId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { WORK_MODE_INTERVAL_MS, WORK_MODE_SENTINEL } from "@t3tools/shared/jones/workMode";
+import {
+  WORK_MODE_INITIAL_MAX_IDLE_MS,
+  WORK_MODE_INTERVAL_MS,
+  WORK_MODE_SENTINEL,
+} from "@t3tools/shared/jones/workMode";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
+import { isWorkModeKeepWarm } from "../provider/workModePrompt.ts";
 
 export interface WorkModeCandidate {
   readonly threadId: ThreadId;
@@ -18,6 +24,64 @@ export interface WorkModeCandidate {
 }
 
 export type WorkModeAdmissionResult = "dispatched" | "acknowledged" | "skipped";
+
+export interface WorkModeTiming {
+  readonly lastActivityMs: number;
+  readonly dueAtMs: number;
+  readonly expiresAtMs: number | null;
+}
+
+export function workModeTiming(
+  records: Pick<OrchestrationV2ThreadProjection, "providerTurns" | "runs" | "messages">,
+  ownerId: ProviderThreadId,
+): WorkModeTiming | null {
+  const runs = new Map(
+    records.runs
+      .filter((run) => run.providerThreadId === ownerId && run.activeAttemptId !== null)
+      .map((run) => [run.activeAttemptId, run]),
+  );
+  const refreshMessages = new Set(
+    records.messages.filter(isWorkModeKeepWarm).map((message) => message.id),
+  );
+  let lastActivityMs = Number.NEGATIVE_INFINITY;
+  let established = false;
+  for (const turn of records.providerTurns) {
+    if (turn.providerThreadId !== ownerId || turn.nativeTurnRef === null) continue;
+    const run = runs.get(turn.runAttemptId);
+    if (run === undefined || run.rootNodeId !== turn.nodeId) continue;
+    const usage = turn.tokenUsage;
+    // Compaction and synthetic replies can update context size without model input/output.
+    if (
+      usage === undefined ||
+      (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0) <= 0
+    )
+      continue;
+    const at = Date.parse(usage.updatedAt);
+    if (!Number.isFinite(at)) continue;
+    lastActivityMs = Math.max(lastActivityMs, at);
+    if (
+      turn.status === "completed" &&
+      run.status === "completed" &&
+      refreshMessages.has(run.userMessageId)
+    )
+      established = true;
+  }
+  if (!Number.isFinite(lastActivityMs)) return null;
+  let lastRefreshStartMs = Number.NEGATIVE_INFINITY;
+  for (const run of runs.values()) {
+    if (!refreshMessages.has(run.userMessageId)) continue;
+    lastRefreshStartMs = Math.max(
+      lastRefreshStartMs,
+      DateTime.toEpochMillis(run.startedAt ?? run.requestedAt),
+    );
+  }
+  return {
+    lastActivityMs,
+    // A completed refresh missing usage must not cause another request on every sweep.
+    dueAtMs: Math.max(lastActivityMs, lastRefreshStartMs) + WORK_MODE_INTERVAL_MS,
+    expiresAtMs: established ? null : lastActivityMs + WORK_MODE_INITIAL_MAX_IDLE_MS,
+  };
+}
 
 // An unfinished goal resumes after the next completed turn: Codex starts its next
 // goal turn, which the adapter adopts into that run, and Claude re-checks the goal
@@ -42,7 +106,7 @@ function activityMillis(thread: OrchestrationV2ThreadShell): number | null {
 export function workModeCandidate(
   thread: OrchestrationV2ThreadShell,
   nowMs: number,
-  options?: { readonly ignoreInterval?: boolean },
+  _options?: { readonly ignoreInterval?: boolean },
 ): WorkModeCandidate | null {
   if (
     thread.lineage.parentThreadId !== null ||
@@ -66,13 +130,9 @@ export function workModeCandidate(
     goalMayContinue(thread.goal)
   )
     return null;
+  // Shell activity identifies dispatch races; only provider usage sets the refresh clock.
   const anchor = activityMillis(thread);
-  if (
-    anchor === null ||
-    !Number.isFinite(nowMs) ||
-    (options?.ignoreInterval !== true && nowMs - anchor < WORK_MODE_INTERVAL_MS)
-  )
-    return null;
+  if (anchor === null || !Number.isFinite(nowMs)) return null;
   return { threadId: thread.id, generation: `${thread.latestRunId}:${anchor}` };
 }
 
@@ -123,32 +183,13 @@ export function workModeContext(
       !(options?.allowStoppedSession === true && session.status === "stopped"))
   )
     return null;
-  const lastMessageAt = projection.messages
-    .filter((message) => message.role !== "system")
-    .reduce(
-      (latest, message) =>
-        Math.max(
-          latest,
-          DateTime.toEpochMillis(message.createdAt),
-          DateTime.toEpochMillis(message.updatedAt),
-        ),
-      Number.NEGATIVE_INFINITY,
-    );
-  const lastRunAt = projection.runs.reduce(
-    (latest, run) =>
-      Math.max(
-        latest,
-        DateTime.toEpochMillis(run.requestedAt),
-        run.startedAt === null ? Number.NEGATIVE_INFINITY : DateTime.toEpochMillis(run.startedAt),
-        run.completedAt === null
-          ? Number.NEGATIVE_INFINITY
-          : DateTime.toEpochMillis(run.completedAt),
-      ),
-    Number.NEGATIVE_INFINITY,
-  );
+  const timing = workModeTiming(projection, owner.id);
   if (
-    options?.ignoreInterval !== true &&
-    nowMs - Math.max(lastMessageAt, lastRunAt) < WORK_MODE_INTERVAL_MS
+    timing === null ||
+    !Number.isFinite(nowMs) ||
+    nowMs < timing.lastActivityMs ||
+    (timing.expiresAtMs !== null && nowMs > timing.expiresAtMs) ||
+    (options?.ignoreInterval !== true && nowMs < timing.dueAtMs)
   )
     return null;
   return owner;
