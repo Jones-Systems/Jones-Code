@@ -1230,7 +1230,36 @@
     "apps/server/src/jones/updates/sourceRelation.ts": "jones-owned",
     "apps/server/src/jones/updates/sourceRelation.test.ts": "jones-owned",
     "apps/web/src/jones/updates/installedSourceObservation.ts": "jones-owned",
-    "apps/web/src/jones/updates/installedSourceObservation.test.ts": "jones-owned"
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts": "jones-owned",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.ts": "hook",
+    "apps/server/src/jones/scheduledTasks/queuedWake.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/queuedWake.test.ts": "jones-owned",
+    "apps/mobile/src/features/threads/ThreadQueueControl.tsx": "hook",
+    "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts": "jones-owned",
+    "apps/web/src/components/chat/QueuedRunsControl.tsx": "hook",
+    "packages/client-runtime/src/state/threadCommands.ts": "hook",
+    "packages/contracts/src/chatAttachment.ts": "hook",
+    "scripts/jones/boundary/checks.json": "policy",
+    "scripts/jones/boundary/features.json": "policy",
+    "scripts/jones/boundary/inventory.json": "policy",
+    "apps/mobile/src/jones/queue/QueuedSteerBatchAction.tsx": "jones-owned",
+    "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/QueuedSteerBatch.ts": "jones-owned",
+    "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/queue/QueuedSteerBatchAction.tsx": "jones-owned",
+    "apps/web/src/jones/queue/useQueuedSteerBatch.ts": "jones-owned",
+    "packages/client-runtime/src/jones/queue/commands.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/queue/commands.ts": "jones-owned",
+    "packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/queue/queuedSteerBatch.ts": "jones-owned",
+    "packages/contracts/src/jones/queuedSteerBatch.test.ts": "jones-owned",
+    "packages/contracts/src/jones/queuedSteerBatch.ts": "jones-owned",
+    "packages/shared/src/jones/queuedSteerBatch.test.ts": "jones-owned",
+    "packages/shared/src/jones/queuedSteerBatch.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/scheduled-wake-coalescing.json": "policy",
+    "scripts/jones/boundary/fragments/queued-steer-batch.json": "policy",
+    "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1741,6 +1770,10 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/updates/sourceRelation.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/queuedWake.ts"
     }
   ]
 }

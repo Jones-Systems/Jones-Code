@@ -8,6 +8,16 @@ const state = vi.hoisted(() => ({
   promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
 
+vi.mock(import("../../state/server"), async (original) => {
+  const actual = await original();
+  const { Atom } = await import("effect/reactivity");
+  const config = Atom.make(null);
+  return {
+    ...actual,
+    serverEnvironment: { ...actual.serverEnvironment, configValueAtom: () => config },
+  } as never;
+});
+
 vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importOriginal) => ({
   ...(await importOriginal()),
   deriveThreadQueueWorkflowState: (() => state.workflow) as never,

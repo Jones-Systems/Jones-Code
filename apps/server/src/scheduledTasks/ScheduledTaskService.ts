@@ -40,6 +40,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
+
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -724,6 +726,26 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        if (
+          trigger === "scheduled" &&
+          (yield* hasQueuedWake(active).pipe(
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
+            Effect.mapError((cause) =>
+              taskError("Could not check queued schedule task runs.", { taskId: active.id, cause }),
+            ),
+          ))
+        ) {
+          yield* rescheduleSkippedRun(active, startedAt, queuedWakeSkipReason);
+          return {
+            ...active,
+            nextRunAt: nextRunAt(active, startedAt),
+            lastRunError: queuedWakeSkipReason,
+          };
+        }
+
         yield* markRunning(active.id, startedAtIso);
         yield* notifyChanged;
 
@@ -818,12 +840,13 @@ export const layer = Layer.effect(
       );
     });
 
-    const rescheduleMissedRun = Effect.fn("ScheduledTaskService.rescheduleMissedRun")(function* (
+    const rescheduleSkippedRun = Effect.fn("ScheduledTaskService.rescheduleSkippedRun")(function* (
       task: ScheduledTask,
       now: DateTime.DateTime,
+      reason?: string,
     ) {
       const next = nextRunAt(task, now);
-      yield* Effect.logInfo("Skipping missed schedule task run", {
+      yield* Effect.logInfo(reason ?? "Skipping missed schedule task run", {
         taskId: task.id,
         missedRunAt: task.nextRunAt,
         rescheduledTo: next,
@@ -831,6 +854,7 @@ export const layer = Layer.effect(
       yield* sql`
         UPDATE scheduled_tasks
         SET next_run_at = ${next},
+            last_run_error = COALESCE(${reason ?? null}, last_run_error),
             updated_at = ${iso(now)}
         WHERE task_id = ${task.id}
       `.pipe(
@@ -854,7 +878,7 @@ export const layer = Layer.effect(
         ({ task, dueAt }) =>
           Effect.suspend(() =>
             isMissedFixedTimeRun(task.schedule, dueAt, now)
-              ? rescheduleMissedRun(task, now)
+              ? rescheduleSkippedRun(task, now)
               : runTask(task, "scheduled"),
           ).pipe(
             Effect.catch((cause) =>

@@ -1,3 +1,4 @@
+import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
   MessageId,
@@ -65,6 +66,7 @@ export interface ProviderTurnControlServiceV2Shape {
     readonly providerThreadId: ProviderThreadId;
     readonly providerTurnId: ProviderTurnId;
     readonly messageId: MessageId;
+    readonly messageIds?: ReadonlyArray<MessageId>;
   }) => Effect.Effect<void, ProviderTurnControlError>;
   readonly interruptAndAwaitTerminal: (input: {
     readonly threadId: ThreadId;
@@ -353,6 +355,41 @@ export const layer: Layer.Layer<
               cause: "The persisted steering message or target run is missing.",
             });
           }
+          let batchPayload: { text: string; attachments: typeof message.attachments } | undefined;
+          if (input.messageIds !== undefined) {
+            const records = yield* projections.getThreadRecords(input.threadId, ["messages"], {
+              messageIds: input.messageIds,
+            });
+            const messages = input.messageIds.map((id) =>
+              records.messages.find((row) => row.id === id),
+            );
+            if (
+              messages.length === 0 ||
+              input.messageIds[0] !== input.messageId ||
+              new Set(input.messageIds).size !== input.messageIds.length ||
+              messages.some(
+                (row) =>
+                  row === undefined || row.runId !== run.id || row.threadId !== input.threadId,
+              )
+            )
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The persisted batch membership changed.",
+              });
+            const plan = planQueuedSteerBatch(
+              messages.map((row) => ({ message: row!, eligible: true })),
+            );
+            if (plan.count !== messages.length)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: "The persisted batch exceeds the steering budget.",
+              });
+            batchPayload = plan;
+          }
           yield* loaded.session.value
             .steerTurn({
               threadId: input.threadId,
@@ -361,11 +398,13 @@ export const layer: Layer.Layer<
               providerTurnId: loaded.providerTurn.id,
               message: {
                 messageId: message.id,
-                text: projectComposerContextForProvider({
-                  text: message.text,
-                  records: message.context?.records ?? [],
-                }),
-                attachments: message.attachments,
+                text:
+                  batchPayload?.text ??
+                  projectComposerContextForProvider({
+                    text: message.text,
+                    records: message.context?.records ?? [],
+                  }),
+                attachments: batchPayload?.attachments ?? message.attachments,
                 createdBy: message.createdBy,
                 creationSource: message.creationSource,
                 ...(message.scheduledTaskId === undefined

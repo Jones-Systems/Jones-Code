@@ -1,3 +1,4 @@
+import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
 import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
 export * from "./jones/settlementOrigins.ts";
@@ -99,6 +100,7 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),

@@ -126,9 +126,20 @@ const QueueReorderTool = Tool.make("t3_queue_reorder", {
 }).annotate(Tool.Destructive, true);
 const QueuePromoteTool = Tool.make("t3_queue_promote_to_steer", {
   ...commandTool,
+  success: Schema.Struct({
+    ...OrchestrationV2DispatchCommandResult.fields,
+    promotedCount: Schema.optional(NonNegativeInt),
+    remainingCount: Schema.optional(NonNegativeInt),
+  }),
   description:
-    "Deliver a queued message as steering to the specified active run. Existing provider and run-state rules apply.",
-  parameters: Schema.Struct({ ...queueTarget, targetRunId: RunId }),
+    "Deliver a queued message as steering to the active run. Supply queuedRunIds for a single bounded combined batch of the leading queue in order; queuedRunId must be its first item. The result reports promotedCount and remainingCount; remaining originals stay queued. Existing provider and run-state rules apply.",
+  parameters: Schema.Struct({
+    ...queueTarget,
+    targetRunId: RunId,
+    queuedRunIds: Schema.optional(
+      Schema.Array(RunId).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+    ),
+  }),
 }).annotate(Tool.Destructive, true);
 
 const requestTarget = { threadId: Schema.optional(ThreadId), requestId: RuntimeRequestId };

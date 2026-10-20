@@ -47,6 +47,7 @@ export const PROCESS_BOUND_EFFECT_TYPES = [
   "provider-turn.start",
   "provider-turn.interrupt",
   "provider-turn.steer",
+  "provider-turn.steer-batch",
   "provider-turn.restart",
   "runtime-request.respond",
 ] as const satisfies ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
@@ -250,7 +251,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         AND NOT (candidate.effect_type = 'provider-runtime.continue'
           AND COALESCE(json_extract(candidate.payload_json, '$.preparedForRestart'), 0) = 1)
         AND (
-          candidate.effect_type != 'provider-turn.steer'
+          candidate.effect_type NOT IN ('provider-turn.steer', 'provider-turn.steer-batch')
           OR candidate.command_id NOT GLOB 'command:queue-tool-boundary:*'
           OR EXISTS (
             SELECT 1 FROM orchestration_command_receipts AS candidate_receipt
@@ -258,7 +259,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND candidate_receipt.aggregate_kind = 'thread'
               AND candidate_receipt.aggregate_id = candidate.thread_id
               AND candidate_receipt.status = 'accepted'
-              AND candidate_receipt.command_type = 'queued-message.promote-to-steer'
+              AND candidate_receipt.command_type IN ('queued-message.promote-to-steer', 'queued-message.promote-batch-to-steer')
               AND typeof(candidate_receipt.result_sequence) = 'integer'
               AND candidate_receipt.result_sequence > 0
               AND NOT EXISTS (
@@ -267,7 +268,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                   ON predecessor_receipt.command_id = predecessor.command_id
                 WHERE predecessor.thread_id = candidate.thread_id
                   AND predecessor.status IN ('pending', 'running', 'failed', 'cancelled')
-                  AND predecessor.effect_type = 'provider-turn.steer'
+                  AND predecessor.effect_type IN ('provider-turn.steer', 'provider-turn.steer-batch')
                   AND predecessor.command_id GLOB 'command:queue-tool-boundary:*'
                   AND predecessor.effect_id != candidate.effect_id
                   AND json_extract(predecessor.payload_json, '$.providerSessionId') = json_extract(candidate.payload_json, '$.providerSessionId')
@@ -278,7 +279,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                     OR predecessor_receipt.aggregate_kind IS NOT 'thread'
                     OR predecessor_receipt.aggregate_id IS NOT predecessor.thread_id
                     OR predecessor_receipt.status IS NOT 'accepted'
-                    OR predecessor_receipt.command_type IS NOT 'queued-message.promote-to-steer'
+                    OR predecessor_receipt.command_type NOT IN ('queued-message.promote-to-steer', 'queued-message.promote-batch-to-steer')
                     OR typeof(predecessor_receipt.result_sequence) != 'integer'
                     OR predecessor_receipt.result_sequence <= 0
                     OR predecessor_receipt.result_sequence < candidate_receipt.result_sequence
@@ -299,7 +300,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 AND active.rowid < candidate.rowid
                 AND NOT (active.effect_type = 'provider-runtime.continue'
                   AND COALESCE(json_extract(active.payload_json, '$.preparedForRestart'), 0) = 1)
-                AND NOT (active.effect_type = 'provider-turn.steer'
+                AND NOT (active.effect_type IN ('provider-turn.steer', 'provider-turn.steer-batch')
                   AND active.command_id GLOB 'command:queue-tool-boundary:*')
                 AND ${
                   excludeRestartContinuations

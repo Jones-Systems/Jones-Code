@@ -66,7 +66,14 @@ export function queuedToolBoundaryTarget(
     )
   )
     return null;
-  const queuedRun = queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
+  const queuedRun = queuedRunsInDeliveryOrder(projection).find((run) => {
+    const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
+    return (
+      run.queueHeld !== true &&
+      message?.delegatedCompletion === undefined &&
+      message?.notification === undefined
+    );
+  });
   const message = projection.messages.find(
     (candidate) => candidate.id === queuedRun?.userMessageId,
   );
@@ -86,11 +93,10 @@ export function queuedToolBoundaryTarget(
   if (
     queuedRun === undefined ||
     queuedRun.queuedToolBoundaryEligible !== true ||
-    message?.createdBy !== "user" ||
+    message === undefined ||
     message.notification !== undefined ||
     message.delegatedCompletion !== undefined ||
     message.scheduledTaskId !== undefined ||
-    message.senderThreadId !== undefined ||
     queuedRun.sourcePlanRef !== undefined ||
     queuedRun.restartContinuationOfRunId !== undefined ||
     maintenance(message) ||

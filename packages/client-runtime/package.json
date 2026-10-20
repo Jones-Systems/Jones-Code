@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/queue": {
+      "types": "./src/jones/queue/queuedSteerBatch.ts",
+      "default": "./src/jones/queue/queuedSteerBatch.ts"
+    },
     "./jones/provider-updates": {
       "types": "./src/jones/providerUpdates/index.ts",
       "default": "./src/jones/providerUpdates/index.ts"

@@ -31,6 +31,7 @@ import {
   type ForkThreadFromRunInput,
   type MergeThreadBackInput,
   type PromoteQueuedRunInput,
+  type PromoteQueuedBatchInput,
   type ReorderQueuedRunInput,
   type LinkThreadPullRequestInput,
   type RespondToThreadApprovalInput,
@@ -65,6 +66,7 @@ import {
   markThreadUnread,
   mergeThreadBack,
   promoteQueuedRun,
+  promoteQueuedBatch,
   reorderQueuedRun,
   resumeThreadQueue,
   retryWorkspacePreparation,
@@ -365,6 +367,12 @@ export function createThreadEnvironmentAtoms<R, E>(
     reorderQueuedRun: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:reorder-queued-run",
       execute: (input: ReorderQueuedRunInput) => reorderQueuedRun(input),
+      scheduler,
+      concurrency,
+    }),
+    promoteQueuedBatch: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:promote-queued-batch",
+      execute: (input: PromoteQueuedBatchInput) => promoteQueuedBatch(input),
       scheduler,
       concurrency,
     }),

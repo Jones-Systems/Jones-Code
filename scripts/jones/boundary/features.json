@@ -1015,6 +1015,25 @@
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
       ],
       "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. App-owned delegated existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, observes setup completion without publishing setup-tracker snapshots: synchronous setup holds provider release, while async setup releases the provider and remains cancellable. Stop (task_cancel) closes its setup terminal without removing the checkout, including cancellation after async release; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations."
+    },
+    {
+      "id": "scheduled-wake-coalescing",
+      "tests": ["apps/server/src/jones/scheduledTasks/queuedWake.test.ts"],
+      "scope": "Timer fires coalesce while the same task has a queued wake in its target thread. A running wake permits one pending wake; other schedules and changed targets remain independent. Existing scheduler reservation and skip rescheduling own concurrency and cadence."
+    },
+    {
+      "id": "queued-steer-batch",
+      "tests": [
+        "packages/contracts/src/jones/queuedSteerBatch.test.ts",
+        "packages/shared/src/jones/queuedSteerBatch.test.ts",
+        "packages/client-runtime/src/jones/queue/commands.test.ts",
+        "packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx",
+        "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx"
+      ],
+      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup."
     }
   ]
 }
