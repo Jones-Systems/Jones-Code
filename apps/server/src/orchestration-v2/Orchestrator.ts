@@ -401,6 +401,7 @@ export interface OrchestratorV2Shape {
     ServerSettings.ServerSettingsService
   >;
   readonly requestSelfSettlement: (input: {
+    readonly projectRemaining?: readonly string[];
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
     readonly mcpCredentialId: string;
@@ -13317,6 +13318,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             acceptedAt: now,
             events: yield* Ref.get(events),
             effects: [],
+            ...(input.projectRemaining === undefined
+              ? {}
+              : {
+                  selfSettlementProjectRemaining: {
+                    commandId: input.commandId,
+                    threadId: input.threadId,
+                    items: input.projectRemaining,
+                  },
+                }),
           })
           .pipe(mapDispatchError(command));
         return intent;

@@ -1632,6 +1632,9 @@ const make = Effect.gen(function* () {
         const threadScope = yield* requireThreadScope(scope, "t3_thread_settle");
         const intent = yield* threadManagement
           .requestSelfSettlement({
+            ...(input.projectRemaining === undefined
+              ? {}
+              : { projectRemaining: input.projectRemaining }),
             threadId: threadScope.thread.threadId,
             mcpCredentialId: threadScope.thread.providerSessionId,
             providerInstanceId: threadScope.thread.providerInstanceId,

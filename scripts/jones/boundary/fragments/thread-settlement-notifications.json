@@ -32,7 +32,8 @@
     "apps/server/src/jones/settlementOrigins/http.ts",
     "apps/web/src/jones/settlementNotifications/resolveOrigins.ts",
     "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts",
-    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts"
+    "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts",
+    "apps/server/src/jones/settlementOrigins/projectRemaining.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/ui/toast.tsx",
@@ -60,6 +61,14 @@
     {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/settlementOrigins/clientIngress.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/settlementOrigins/projectRemaining.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/settlementOrigins.ts"
     }
   ]
 }

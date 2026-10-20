@@ -8,7 +8,13 @@ export function SettlementNotificationToastContent({
   onOpen: (entry: SettlementEntry) => void;
 }) {
   return (
-    <ul className="flex flex-col gap-2">
+    <ul
+      className={
+        entries.length === 1
+          ? "flex max-h-40 flex-col gap-2 overflow-y-auto overscroll-contain"
+          : "flex flex-col gap-2"
+      }
+    >
       {entries.map((entry) => (
         <li key={entry.id} className="min-w-0">
           <button
@@ -18,6 +24,15 @@ export function SettlementNotificationToastContent({
           >
             {entry.title || "Untitled thread"}
           </button>
+          {entry.projectRemaining?.length ? (
+            <ul className="mt-1 list-disc space-y-1 pl-4">
+              {entry.projectRemaining.map((item, index) => (
+                <li key={`${index}:${item}`} className="wrap-anywhere">
+                  {item}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {entry.threadGone ? (
             <span className="ml-2 text-xs text-muted-foreground">Thread unavailable</span>
           ) : null}

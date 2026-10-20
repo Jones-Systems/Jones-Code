@@ -317,6 +317,7 @@ it.effect(
         [110, "ThreadLookupIndexes"],
         [111, "ClientSettlementCommands"],
         [112, "ClientLaunchRequests"],
+        [114, "SelfSettlementProjectItems"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

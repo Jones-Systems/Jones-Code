@@ -1,3 +1,4 @@
+import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -681,6 +682,12 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
 ) {}
 
 export const OrchestratorMcpThreadSettleInput = Schema.Struct({
+  projectRemaining: Schema.optional(
+    SettlementProjectRemaining.annotate({
+      description:
+        "Known remaining project work to show as notification bullets after this thread settles. Up to 64 nonempty printable single-line items, each at most 2048 UTF-8 bytes. Retries preserve the originally accepted items.",
+    }),
+  ),
   clientRequestId: OrchestratorMcpClientRequestId,
 });
 export type OrchestratorMcpThreadSettleInput = typeof OrchestratorMcpThreadSettleInput.Type;

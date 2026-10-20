@@ -1,4 +1,5 @@
 import {
+  SettlementProjectRemaining,
   type CommandId,
   type SettlementOrigin,
   type SettlementOriginQuery,
@@ -37,9 +38,14 @@ export class SettlementOrigins extends Context.Service<
   }
 >()("t3/jones/settlementOrigins/SettlementOrigins") {}
 
+const decodeProjectRemaining = Schema.decodeUnknownOption(
+  Schema.fromJsonString(SettlementProjectRemaining),
+);
+
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const tablePresent = makeJonesTablePresence(sql)("jones_client_settlement_commands");
+  const tables = makeJonesTablePresence(sql);
+  const tablePresent = tables("jones_client_settlement_commands");
   const threadExists = (threadId: ThreadId) =>
     sql`SELECT 1 FROM orchestration_v2_projection_threads
       WHERE thread_id = ${threadId} AND deleted_at IS NULL`.pipe(
@@ -69,8 +75,11 @@ const make = Effect.gen(function* () {
 
   const resolveOne = Effect.fnUntraced(function* (
     query: SettlementOriginQuery,
-  ): Effect.fn.Return<SettlementOrigin, SqlError> {
-    if (!(yield* threadExists(query.threadId))) return "unknown";
+  ): Effect.fn.Return<
+    { origin: SettlementOrigin; projectRemaining?: readonly string[] },
+    SqlError
+  > {
+    if (!(yield* threadExists(query.threadId))) return { origin: "unknown" };
     let afterSequence = 0;
     // Walk forward on the existing thread/sequence index. A recent-event window
     // could mistake a later manual no-op for the transition that set this epoch.
@@ -79,7 +88,8 @@ const make = Effect.gen(function* () {
         readonly sequence: number;
         readonly command_id: string | null;
         readonly settled_at: string | null;
-      }>`SELECT sequence, command_id, json_extract(payload_json, '$.settledAt') AS settled_at
+        readonly self_command_id: string | null;
+      }>`SELECT sequence, command_id, json_extract(payload_json, '$.settledAt') AS settled_at, json_extract(payload_json, '$.selfSettlement.commandId') AS self_command_id
         FROM orchestration_events INDEXED BY idx_orchestration_events_agent_stream_sequence
         WHERE application_event_version = 2 AND aggregate_kind = 'thread'
           AND stream_id = ${query.threadId} AND event_type = 'thread.settled'
@@ -87,15 +97,30 @@ const make = Effect.gen(function* () {
         ORDER BY sequence ASC LIMIT 64`;
       for (const row of rows) {
         const epoch = typeof row.settled_at === "string" ? Date.parse(row.settled_at) : NaN;
-        if (!Number.isFinite(epoch)) return "unknown";
+        if (!Number.isFinite(epoch)) return { origin: "unknown" };
         if (epoch !== query.settledAtMs) continue;
-        if (row.command_id === null) return "unknown";
+        if (row.command_id === null) return { origin: "unknown" };
         const markers = yield* sql<{ readonly thread_id: string }>`
           SELECT thread_id FROM jones_client_settlement_commands
           WHERE command_id = ${row.command_id}`;
-        return markers[0]?.thread_id === query.threadId ? "client" : "other";
+        const origin = markers[0]?.thread_id === query.threadId ? "client" : "other";
+        if (
+          row.self_command_id !== null &&
+          row.command_id === `${row.self_command_id}:settle` &&
+          (yield* tables("jones_self_settlement_project_items"))
+        ) {
+          const saved = yield* sql<{
+            readonly items_json: string;
+          }>`SELECT items_json FROM jones_self_settlement_project_items
+            WHERE command_id = ${row.self_command_id} AND thread_id = ${query.threadId}`;
+          if (saved[0] !== undefined) {
+            const decoded = decodeProjectRemaining(saved[0].items_json);
+            if (decoded._tag === "Some") return { origin, projectRemaining: decoded.value };
+          }
+        }
+        return { origin };
       }
-      if (rows.length < 64) return "unknown";
+      if (rows.length < 64) return { origin: "unknown" };
       afterSequence = rows[rows.length - 1]!.sequence;
     }
   });
@@ -106,7 +131,7 @@ const make = Effect.gen(function* () {
         return { items: input.items.map((item) => ({ ...item, origin: "unknown" as const })) };
       }
       const items = yield* Effect.forEach(input.items, (item) =>
-        resolveOne(item).pipe(Effect.map((origin) => ({ ...item, origin }))),
+        resolveOne(item).pipe(Effect.map((resolved) => ({ ...item, ...resolved }))),
       );
       return { items };
     }).pipe(Effect.mapError((cause) => new SettlementOriginsReadError({ cause })));
