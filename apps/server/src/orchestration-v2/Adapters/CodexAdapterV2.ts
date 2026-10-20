@@ -2437,18 +2437,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly observed: ReturnType<typeof codexObservedRuntimeIdentity>;
           }
         >();
+        const canEmitFor = Effect.fnUntraced(function* (producer: CodexRuntimeProducer) {
+          return (
+            producer.eventProducer.accepting &&
+            (producer.active || (yield* CodexTerminatingProducer) === producer) &&
+            producer === currentProducer
+          );
+        });
         const emitProviderEvent = (
           event: ProviderAdapterV2Event,
           capturedTurn?: ActiveCodexTurnContext,
         ) =>
           Effect.gen(function* () {
             const producer = (yield* CodexProducerContext) ?? currentProducer;
-            if (
-              !producer.eventProducer.accepting ||
-              (!producer.active && (yield* CodexTerminatingProducer) !== producer) ||
-              producer !== currentProducer
-            )
-              return;
+            if (!(yield* canEmitFor(producer))) return;
             const providerThreadId =
               event.type === "provider_thread.updated"
                 ? event.providerThread.id
@@ -6513,6 +6515,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const hold = goalHolds.get(nativeThreadId);
           if (hold === undefined || goalStops.has(nativeThreadId)) return;
           if (expected !== undefined && hold.event !== expected) return;
+          // A queued release must leave a dead producer's hold for termination to fail.
+          if (!(yield* canEmitFor((yield* CodexProducerContext) ?? currentProducer))) return;
           goalHolds.delete(nativeThreadId);
           yield* settleGoalHold(hold, "completed");
         });
@@ -7616,7 +7620,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ...(held ? [hold.context] : []),
                   ]),
                 );
-                if (!held)
+                if (!held || !(yield* canEmitFor((yield* CodexProducerContext) ?? currentProducer)))
                   return { turnInput: { ...turnInput, providerTurnId }, goalTurns, goalPauseIssue };
                 goalHolds.delete(goalThreadId);
                 yield* settleGoalHold(hold, "interrupted");
