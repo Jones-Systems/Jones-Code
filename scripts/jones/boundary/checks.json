@@ -1760,6 +1760,30 @@
         "vp run --filter @t3tools/web test --project unit src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedSteerBatch\"",
         "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\""
       ]
+    },
+    {
+      "id": "jones-request-economy",
+      "tests": [
+        "apps/server/src/vcs/VcsProcess.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/web/src/components/GitActionsControl.browser.test.tsx",
+        "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
+        "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "packages/shared/src/httpObservability.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/vcs/VcsProcess.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/observability/RpcInstrumentation.test.ts packages/shared/src/httpObservability.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/GitActionsControl.browser.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/mobile test src/state/use-selected-thread-git-state.test.tsx --maxWorkers=1",
+        "vp run test:perf:v2-wire",
+        "vp test run apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/orchestration-v2/ThreadSearch.test.ts apps/server/src/orchestration-v2/legacy/LegacyV1Cutover.integration.test.ts apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts apps/server/src/orchestration-v2/http.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --filter @t3tools/source-control-bitbucket --filter @t3tools/shared --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

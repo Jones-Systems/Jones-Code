@@ -1034,6 +1034,21 @@
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx"
       ],
       "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup."
+    },
+    {
+      "id": "request-economy",
+      "tests": [
+        "apps/server/src/vcs/VcsProcess.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/web/src/components/GitActionsControl.browser.test.tsx",
+        "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
+        "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "packages/shared/src/httpObservability.test.ts"
+      ],
+      "scope": "Foreground chat controls proceed while earlier history loads; unused discovery queries are absent, discovery subprocesses use a bounded pool apart from checkpoint operations, absent Bitbucket credentials avoid HTTP probes, and queued per-thread PR refreshes coalesce without dropping a follow-up after processing begins. Small shared edits reuse the existing scheduler, process pools, hooks and worker instead of duplicating their machinery. Existing command, browser and service harnesses retain integration regressions; the adjacent mobile hook test exercises its upstream owner. Foreground snapshot/history and shell reads use the reader while pending legacy hydration retains the writer; streaming RPC spans carry a stream tag, and WebSocket ticket query values are redacted in tracing."
     }
   ]
 }
