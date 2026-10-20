@@ -3469,29 +3469,27 @@ it.effect("cancels tracked setup before provider work is released", () =>
   }),
 );
 
-// Only an app-owned delegated child's existing worktree is prepared under Stop
-// (DelegatedTaskWorkspace.test.ts covers that); a top-level launch is unchanged.
-it.effect("lets a top-level existing-worktree launch finish setup after Stop", () =>
+// Only an app-owned delegated child's existing-worktree setup is observed and
+// prepared under Stop (DelegatedTaskWorkspace.test.ts covers that); a top-level
+// launch is unchanged.
+it.effect("leaves a top-level existing-worktree setup running in the background after Stop", () =>
   Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const allowSetup = yield* Deferred.make<void>();
-    const setupReturned = yield* Deferred.make<void>();
+    const observed: Array<boolean> = [];
     const harness = makeHarness({
-      runSetup: () =>
-        Effect.succeed({
-          status: "started" as const,
-          async: false,
-          scriptId: "setup",
-          scriptName: "Setup",
-          scriptCommand: "vp install",
-          terminalId: "setup",
-          cwd: "/repo-worktrees/existing",
-          completion: Deferred.succeed(entered, undefined).pipe(
-            Effect.andThen(Deferred.await(allowSetup)),
-            Effect.andThen(Deferred.succeed(setupReturned, undefined)),
-            Effect.as({ exitCode: 0, durationMs: 1 }),
-          ),
-        }),
+      // As the real runner does, report a completion only for an observed run.
+      runSetup: (input) =>
+        Effect.sync(() => observed.push(input.observeCompletion !== undefined)).pipe(
+          Effect.as({
+            status: "started" as const,
+            async: false,
+            scriptId: "setup",
+            scriptName: "Setup",
+            scriptCommand: "vp install",
+            terminalId: "setup",
+            cwd: "/repo-worktrees/existing",
+            ...(input.observeCompletion === undefined ? {} : { completion: Effect.never }),
+          }),
+        ),
     });
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3508,7 +3506,17 @@ it.effect("lets a top-level existing-worktree launch finish setup after Stop", (
           },
         }),
       );
-      yield* Deferred.await(entered);
+      // The agent is released without waiting for the unobserved setup.
+      yield* threads
+        .streamStoredEventsFrom({ threadId: launched.threadId, eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" && stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+        );
+      assert.deepEqual(observed, [false]);
       yield* threads.dispatch({
         type: "thread.stop",
         commandId: CommandId.make("command:stop:existing-worktree-stop"),
@@ -3518,9 +3526,7 @@ it.effect("lets a top-level existing-worktree launch finish setup after Stop", (
         (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
         "interrupted",
       );
-      // Setup is not interrupted: it returns once allowed, and its terminal stays open.
-      yield* Deferred.succeed(allowSetup, undefined);
-      yield* Deferred.await(setupReturned);
+      // Stop leaves the setup terminal and the checkout alone.
       assert.equal(harness.closeTerminal.mock.calls.length, 0);
       assert.equal(harness.removeWorktree.mock.calls.length, 0);
     }).pipe(Effect.provide(harness.layer));

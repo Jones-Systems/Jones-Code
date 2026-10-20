@@ -341,12 +341,14 @@ const hqProjectRecord = {
 
 /**
  * Real orchestrator, thread management and launch preparation over in-memory
- * SQLite; Git, setup scripts and provider execution are fakes. Setup blocks
- * until released so each case observes the prepared child before it starts.
+ * SQLite; Git, setup scripts and provider execution are fakes. As with the
+ * real runner, setup reports a completion only when preparation observes it;
+ * that completion blocks until released so each case observes the prepared
+ * child before it starts.
  */
 function makeHarness(
   listWorktreePaths: GitVcsDriver.GitVcsDriver["Service"]["listWorktreePaths"],
-  options: { readonly claudeDisabledIn?: ProjectId } = {},
+  options: { readonly claudeDisabledIn?: ProjectId; readonly setupAsync?: boolean } = {},
 ) {
   const setupEntered = Deferred.makeUnsafe<void>();
   const allowSetup = Deferred.makeUnsafe<void>();
@@ -403,6 +405,8 @@ function makeHarness(
     readonly projectCwd: string | null;
     readonly worktreePath: string;
   }> = [];
+  // Whether each setup run was observed, which is when the real runner returns a completion.
+  const setupObserved: Array<boolean> = [];
   const closeTerminal = vi.fn(
     (_input: Parameters<TerminalManager.TerminalManager["Service"]["close"]>[0]) =>
       Deferred.succeed(terminalClosed, undefined).pipe(Effect.asVoid),
@@ -447,28 +451,39 @@ function makeHarness(
         }),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
-      runForThread: (input) =>
-        Effect.sync(() =>
+      runForThread: (input) => {
+        const observed =
+          input.observeCompletion !== undefined ||
+          input.legacyPreparation !== undefined ||
+          input.nativePreparation !== undefined;
+        return Effect.sync(() => {
           setupInputs.push({
             projectId: input.projectId ?? null,
             projectCwd: input.projectCwd ?? null,
             worktreePath: input.worktreePath,
-          }),
-        ).pipe(
+          });
+          setupObserved.push(observed);
+        }).pipe(
+          Effect.andThen(observed ? Effect.void : Deferred.succeed(setupEntered, undefined)),
           Effect.as({
             status: "started" as const,
-            async: false,
+            async: options.setupAsync === true,
             scriptId: "setup",
             scriptName: "Setup",
             scriptCommand: "setup",
             terminalId: "setup",
             cwd: input.worktreePath,
-            completion: Deferred.succeed(setupEntered, undefined).pipe(
-              Effect.andThen(Deferred.await(allowSetup)),
-              Effect.as({ exitCode: 0, durationMs: 0 }),
-            ),
+            ...(observed
+              ? {
+                  completion: Deferred.succeed(setupEntered, undefined).pipe(
+                    Effect.andThen(Deferred.await(allowSetup)),
+                    Effect.as({ exitCode: 0, durationMs: 0 }),
+                  ),
+                }
+              : {}),
           }),
-        ),
+        );
+      },
     }),
     Layer.mock(TextGeneration.TextGeneration)({
       generateThreadTitle: () => Effect.succeed({ title: "Generated title" }),
@@ -529,6 +544,7 @@ function makeHarness(
     listWorktrees,
     closeTerminal,
     setupInputs,
+    setupObserved,
   };
 }
 
@@ -624,6 +640,39 @@ const startParent = Effect.gen(function* () {
   return { parentThreadId, scope };
 });
 
+const enqueuedRequests = (childThreadId: ThreadId) =>
+  Effect.gen(function* () {
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    return (yield* outbox.listByThreadId(childThreadId)).map((effect) => effect.request.type);
+  });
+
+/**
+ * While a delegated child's observed setup is still running in its existing
+ * worktree: the run is still preparing and no provider turn has been enqueued.
+ */
+const assertHeldInSetup = (harness: ReturnType<typeof makeHarness>, childThreadId: ThreadId) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    assert.deepEqual(harness.setupObserved, [true]);
+    assert.equal((yield* threads.getThreadProjection(childThreadId)).runs[0]?.status, "preparing");
+    assert.notInclude(yield* enqueuedRequests(childThreadId), "provider-turn.start");
+  });
+
+/** Waits until the child's run is released to its agent. */
+const awaitReleased = (childThreadId: ThreadId) =>
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    yield* threads
+      .streamStoredEventsFrom({ threadId: childThreadId, eventType: "run.updated" })
+      .pipe(
+        Stream.filter(
+          (stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting",
+        ),
+        Stream.runHead,
+      );
+  });
+
 /**
  * After a cancelled delegated child's setup terminal closed (only its
  * preparation's cancellation cleanup closes it, so preparation has ended):
@@ -636,17 +685,13 @@ const assertCancelledInExistingWorktree = (
 ) =>
   Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
     assert.deepEqual(
       harness.closeTerminal.mock.calls.map(([input]) => [input.threadId, input.terminalId]),
       [[childThreadId, "setup"]],
     );
     const cancelled = yield* threads.getThreadProjection(childThreadId);
     assert.equal(cancelled.runs[0]?.status, "interrupted");
-    const enqueued = (yield* outbox.listByThreadId(childThreadId)).map(
-      (effect) => effect.request.type,
-    );
-    assert.notInclude(enqueued, "provider-turn.start");
+    assert.notInclude(yield* enqueuedRequests(childThreadId), "provider-turn.start");
     assert.equal(harness.removeWorktree.mock.calls.length, 0);
   });
 
@@ -758,6 +803,7 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
         assert.equal(child.thread.lineage.relationshipToParent, "subagent");
         assert.equal(child.thread.worktreePath, "/repo-worktrees/lane");
         assert.equal(child.thread.branch, "work/hq-t2");
+        yield* assertHeldInSetup(harness, delegated.childThreadId);
 
         // Cancelling stops setup in the delegated child's existing worktree and
         // keeps the checkout; the interrupted run is never released to its agent.
@@ -879,6 +925,7 @@ describe("cross-project delegate_task", () => {
         assert.equal(status.providerInstanceId, claudeInstanceId);
 
         // As in the same project: setup stops, the checkout stays, no release.
+        yield* assertHeldInSetup(harness, delegated.childThreadId);
         yield* service.cancelTask(scope, { taskId: delegated.taskId });
         yield* Deferred.await(harness.terminalClosed);
         yield* assertCancelledInExistingWorktree(harness, delegated.childThreadId);
@@ -1048,4 +1095,83 @@ describe("cross-project delegate_task", () => {
       }).pipe(Effect.provide(harness.layer));
     },
   );
+});
+
+const existingWorktreeCases = [
+  {
+    name: "its own project",
+    seedHq: false,
+    request: {
+      workspaceStrategy: {
+        type: "existing_worktree" as const,
+        worktreePath: "/repo-worktrees/lane",
+      },
+    },
+  },
+  {
+    name: "another project",
+    seedHq: true,
+    request: { projectId: hqProjectId, workspaceStrategy: hqExistingWorktree },
+  },
+];
+
+describe("delegated existing-worktree setup", () => {
+  it.effect.each(existingWorktreeCases)(
+    "releases a child in $name only after its synchronous setup succeeds",
+    ({ seedHq, request }) => {
+      const harness = makeHarness(hqWorktrees);
+      return Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        if (seedHq) yield* seedProject(hqProjectRecord, 1);
+        const { scope } = yield* startParent;
+        const delegated = yield* service.delegateTask(scope, {
+          task: "Continue lane",
+          target: claudeTarget,
+          clientRequestId: "sync-setup",
+          ...request,
+        });
+        yield* Deferred.await(harness.setupEntered);
+        yield* assertHeldInSetup(harness, delegated.childThreadId);
+
+        yield* Deferred.succeed(harness.allowSetup, undefined);
+        yield* awaitReleased(delegated.childThreadId);
+        assert.include(yield* enqueuedRequests(delegated.childThreadId), "provider-turn.start");
+        assert.equal(harness.closeTerminal.mock.calls.length, 0);
+        assert.equal(harness.removeWorktree.mock.calls.length, 0);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
+  it.effect("releases a child before its async setup completes and still stops that setup", () => {
+    const harness = makeHarness(hqWorktrees, { setupAsync: true });
+    return Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const { scope } = yield* startParent;
+      const delegated = yield* service.delegateTask(scope, {
+        task: "Continue lane",
+        target: claudeTarget,
+        clientRequestId: "async-setup",
+        workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/lane" },
+      });
+      // The async setup is never allowed to finish, yet the agent is released.
+      yield* awaitReleased(delegated.childThreadId);
+      assert.deepEqual(harness.setupObserved, [true]);
+      assert.include(yield* enqueuedRequests(delegated.childThreadId), "provider-turn.start");
+      assert.equal(harness.closeTerminal.mock.calls.length, 0);
+
+      // Cancelling after release still closes the observed setup's terminal, once,
+      // and keeps the checkout.
+      yield* service.cancelTask(scope, { taskId: delegated.taskId });
+      yield* Deferred.await(harness.terminalClosed);
+      assert.deepEqual(
+        harness.closeTerminal.mock.calls.map(([input]) => [input.threadId, input.terminalId]),
+        [[delegated.childThreadId, "setup"]],
+      );
+      assert.equal(harness.removeWorktree.mock.calls.length, 0);
+      const cancelled = yield* threads.getThreadProjection(delegated.childThreadId);
+      assert.equal(cancelled.runs[0]?.status, "interrupted");
+      assert.equal(cancelled.thread.worktreePath, "/repo-worktrees/lane");
+    }).pipe(Effect.provide(harness.layer));
+  });
 });
