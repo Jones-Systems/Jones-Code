@@ -14,6 +14,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -889,4 +890,83 @@ it.effect(
         assert.isFalse(yield* fresh.preparationActive(commandId));
       }).pipe(Effect.provide(makeHarness().layer));
     }),
+);
+
+it.effect.each([
+  { hold: true, progress: true, schedules: false },
+  { hold: true, progress: false, schedules: true },
+  { hold: false, progress: true, schedules: true },
+])("T15: preparation reservation policy %j", ({ hold, progress, schedules }) =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Deferred.succeed(entered, undefined).pipe(
+          Effect.andThen(Deferred.await(resume)),
+          Effect.as({ status: "no-script" as const }),
+        ),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const input = launchInput({
+        command: "command:hold-progress",
+        thread: "thread:hold-progress",
+        message: "Prepare",
+      });
+      yield* threads.dispatch({
+        type: "thread.create",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        projectId,
+        title: input.title,
+        modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        branch: null,
+        worktreePath: null,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${input.commandId}:initial-message`),
+        threadId: input.threadId,
+        messageId: input.initialMessage!.messageId,
+        text: "Prepare",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "defer_start", workspaceStrategy: input.workspaceStrategy },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      if (progress)
+        yield* receipts.insertIfAbsent({
+          commandId: CommandId.make(`${input.commandId}:progress:setup`),
+          threadId: input.threadId,
+          commandType: "prepared-run.progress",
+          acceptedAt: yield* DateTime.now,
+          resultSequence: 0,
+          status: "accepted",
+          error: null,
+        });
+      const request = {
+        ...input,
+        ...(hold ? { holdPreparationAfterProgress: true as const } : {}),
+      };
+      yield* launches.launch(request);
+      if (schedules) {
+        yield* Deferred.await(entered);
+        assert.isTrue(yield* launches.preparationActive(input.commandId));
+        yield* launches.launch(request);
+        assert.equal(harness.runSetup.mock.calls.length, 1);
+      } else {
+        assert.isFalse(yield* launches.preparationActive(input.commandId));
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+      }
+      assert.equal(harness.createWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
 );

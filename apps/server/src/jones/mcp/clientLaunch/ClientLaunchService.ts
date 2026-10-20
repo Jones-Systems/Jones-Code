@@ -201,6 +201,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
           },
         };
   const common = {
+    holdPreparationAfterProgress: true as const,
     commandId: ids.commandId,
     threadId: ids.threadId,
     projectId,
@@ -271,18 +272,15 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
         });
     }
     if (workspaceStrategy.type === "worktree")
-      yield* launches
-        .checkWorktreeBase({ projectId, workspaceStrategy })
-        .pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message:
-                  "The requested worktree base could not be resolved. No thread was created.",
-              }),
-          ),
-        );
+      yield* launches.checkWorktreeBase({ projectId, workspaceStrategy }).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "The requested worktree base could not be resolved. No thread was created.",
+            }),
+        ),
+      );
     const modelSelection =
       input.modelSelection ??
       caller.caller?.modelSelection ??
@@ -334,11 +332,20 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
         .pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
-              if ((yield* readReceipt(ids.commandId))?.status === "rejected")
+              const latestReceipt = yield* readReceipt(ids.commandId);
+              if (latestReceipt?.status === "rejected")
                 return yield* new OrchestratorMcpFailure({
                   code: "launch_fenced",
                   message: "This launch key has an authoritative rejection.",
                 });
+              // A fresh invocation can commit creation before its message is refused.
+              // That outcome requires lookup, unlike a pre-effect continuation refusal.
+              if (
+                latestReceipt?.status === "accepted" &&
+                (error.code === "runtime_mode_escalation_denied" ||
+                  error.code === "interaction_mode_escalation_denied")
+              )
+                return yield* unavailable();
               return yield* error;
             }),
           ),

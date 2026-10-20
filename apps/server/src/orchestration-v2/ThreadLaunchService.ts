@@ -120,6 +120,8 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  // Jones hook: keyed retries hold prior progress under preparation ownership.
+  readonly holdPreparationAfterProgress?: true;
   readonly commandId: CommandId;
   /** Server-owned compatibility input; public launch schemas do not decode it. */
   readonly preparationReleaseCommandId?: CommandId;
@@ -2629,6 +2631,19 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
+                // Jones hook: inspect durable progress only while owning this reservation.
+                if (input.holdPreparationAfterProgress && runId !== null) {
+                  for (const suffix of [":progress:worktree", ":progress:setup"]) {
+                    const progress = yield* readReceipt(
+                      input,
+                      CommandId.make(`${input.commandId}${suffix}`),
+                    );
+                    if (Option.isSome(progress) && progress.value.status === "accepted") {
+                      yield* releasePreparation(input.commandId);
+                      return;
+                    }
+                  }
+                }
                 yield* schedulePreparation(
                   {
                     ...input,

@@ -10,6 +10,8 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  OrchestratorMcpFailure,
+  type ThreadId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -22,6 +24,12 @@ import type { ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import * as ClientLaunch from "./ClientLaunchService.ts";
 import { clientLaunchIds } from "./ClientLaunchIdentity.ts";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Ref from "effect/Ref";
+import {
+  DispatchModeLimit,
+  type DispatchModeRefusal,
+} from "../../../orchestration-v2/DispatchModeLimit.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -81,6 +89,7 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface HarnessOptions {
+  readonly afterCreate?: (threadId: ThreadId) => Effect.Effect<void>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
   readonly remoteExists?: GitWorkflow.GitWorkflowService["Service"]["remoteExists"];
@@ -105,11 +114,29 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const serverSettings = ServerSettings.layerTest(options.serverSettings);
-  const threadManagement = ThreadManagement.layer.pipe(
+  const originalThreadManagement = ThreadManagement.layer.pipe(
     Layer.provide(orchestrator),
     Layer.provide(receipts),
     Layer.provide(serverSettings),
   );
+  const threadManagement = Layer.effect(
+    ThreadManagement.ThreadManagementService,
+    Effect.map(ThreadManagement.ThreadManagementService, (service) =>
+      ThreadManagement.ThreadManagementService.of({
+        ...service,
+        dispatch: (command) =>
+          service
+            .dispatch(command)
+            .pipe(
+              Effect.tap(() =>
+                command.type === "thread.create"
+                  ? (options.afterCreate?.(command.threadId) ?? Effect.void)
+                  : Effect.void,
+              ),
+            ),
+      }),
+    ),
+  ).pipe(Layer.provide(originalThreadManagement));
   const outbox = EffectOutbox.layer.pipe(Layer.provide(database));
   const createWorktree = vi.fn(
     options.createWorktree ??
@@ -327,6 +354,78 @@ const failAfter = (
       });
     }),
 });
+
+it.effect.each(["runtime", "interaction"] as const)(
+  "F1: a %s mode refusal after real creation retains an unknown launch outcome",
+  (raisedMode) =>
+    Effect.gen(function* () {
+      const created = yield* Deferred.make<ThreadId>();
+      const resume = yield* Deferred.make<void>();
+      const h = makeHarness({
+        afterCreate: (threadId) =>
+          Deferred.succeed(created, threadId).pipe(Effect.andThen(Deferred.await(resume))),
+      });
+      yield* Effect.gen(function* () {
+        const restricted = {
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+        } as const;
+        const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+        const guarded: ThreadStartGate = {
+          start: Effect.succeed(restricted),
+          continueWithin: (_target, effect) =>
+            effect.pipe(
+              Effect.provideService(DispatchModeLimit, { ...restricted, refused }),
+              Effect.catch((error) =>
+                Effect.flatMap(Ref.get(refused), (refusal) =>
+                  Effect.fail(
+                    refusal === undefined
+                      ? error
+                      : new OrchestratorMcpFailure({
+                          code:
+                            refusal.mode === "runtime"
+                              ? "runtime_mode_escalation_denied"
+                              : "interaction_mode_escalation_denied",
+                          message: "Synthetic caller observes the real dispatch refusal.",
+                        }),
+                  ),
+                ),
+              ),
+            ),
+        };
+        const context = { ...(yield* caller), limits: restricted };
+        const pending = yield* ClientLaunch.launch(input, context, restricted, guarded).pipe(
+          Effect.flip,
+          Effect.forkChild,
+        );
+        const threadId = yield* Deferred.await(created);
+        yield* context.threads.dispatch(
+          raisedMode === "runtime"
+            ? {
+                type: "thread.runtime-mode.set",
+                commandId: CommandId.make("synthetic-user-raise"),
+                threadId,
+                runtimeMode: "full-access",
+              }
+            : {
+                type: "thread.interaction-mode.set",
+                commandId: CommandId.make("synthetic-user-raise"),
+                threadId,
+                interactionMode: "default",
+              },
+        );
+        yield* Deferred.succeed(resume, undefined);
+        const error = yield* Fiber.join(pending);
+        assert.equal((yield* Ref.get(refused))?.mode, raisedMode);
+        assert.equal(error.code, "orchestration_error");
+        const state = yield* ClientLaunch.lookup(namespace, input.clientRequestId);
+        assert.equal(state.state, "launched");
+        assert.equal(state.threadId, threadId);
+        assert.equal(state.initialMessage, "pending");
+        assert.equal(state.runId, null);
+      }).pipe(Effect.provide(h.layer));
+    }),
+);
 
 it.effect(
   "T1/T2/T4: replays one thread and message, conflicts on canonical changes, ignores changed defaults",
@@ -614,4 +713,65 @@ it.effect(
         assert.lengthOf(h.createWorktree.mock.calls, 1);
       }).pipe(Effect.provide(h.layer));
     }),
+);
+
+it.effect("T15: a stale unscheduled retry holds progress recorded before reservation", () =>
+  Effect.gen(function* () {
+    const h = makeHarness();
+    yield* Effect.gen(function* () {
+      const context = yield* caller;
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const request = {
+        ...input,
+        workspaceStrategy: { type: "worktree" as const, branch: "feature" },
+      };
+      const fault = failAfter(launches, "message");
+      yield* Effect.exit(
+        ClientLaunch.launch(request, context, modes, gate).pipe(
+          Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+            ...launches,
+            launch: (value) =>
+              fault
+                .launch(value)
+                .pipe(Effect.provideService(ThreadManagement.ThreadManagementService, threads)),
+          }),
+        ),
+      );
+      assert.equal((yield* ClientLaunch.lookup(namespace, "key")).preparation, "unscheduled");
+      const entered = yield* Deferred.make<ThreadLaunch.ThreadLaunchInput>();
+      const resume = yield* Deferred.make<void>();
+      const retry = yield* ClientLaunch.launch(request, context, modes, gate).pipe(
+        Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+          ...launches,
+          launch: (value) =>
+            Deferred.succeed(entered, value).pipe(
+              Effect.andThen(Deferred.await(resume)),
+              Effect.andThen(launches.launch(value)),
+            ),
+        }),
+        Effect.forkChild,
+      );
+      const captured = yield* Deferred.await(entered);
+      const ids = clientLaunchIds(namespace, "key");
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      yield* receipts.insertIfAbsent({
+        commandId: CommandId.make(`${ids.commandId}:progress:worktree`),
+        threadId: ids.threadId,
+        commandType: "prepared-run.progress",
+        acceptedAt: yield* DateTime.now,
+        resultSequence: 0,
+        status: "accepted",
+        error: null,
+      });
+      yield* Deferred.succeed(resume, undefined);
+      const result = yield* Fiber.join(retry);
+      assert.equal(result.preparation, "unknown_effect");
+      assert.isTrue(result.replayed);
+      assert.equal(Reflect.get(captured, "holdPreparationAfterProgress"), true);
+      assert.equal(h.createWorktree.mock.calls.length, 0);
+      assert.equal(h.runSetup.mock.calls.length, 0);
+      assert.isFalse(yield* launches.preparationActive(ids.commandId));
+    }).pipe(Effect.provide(h.layer));
+  }),
 );
