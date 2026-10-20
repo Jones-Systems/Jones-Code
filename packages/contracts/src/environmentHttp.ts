@@ -990,7 +990,7 @@ export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHt
 
 export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
 export class EnvironmentSettlementOriginsHttpApi extends SettlementOriginsHttpApi {}
-export class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
+class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
 /**
  * Public entry point for webhook tasks. Unauthenticated by design: the token
  * in the path, and an optional body signature, are the credential. The handler
