@@ -3176,6 +3176,18 @@ export type OrchestrationV2Command = typeof OrchestrationV2Command.Type;
  */
 const OrchestrationV2InternalCommand = Schema.Union([
   Schema.Struct({
+    type: Schema.Literal("user_input_request.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    rootNodeId: NodeId,
+    providerInstanceId: ProviderInstanceId,
+    requestId: RuntimeRequestId,
+    requestNodeId: NodeId,
+    turnItemId: TurnItemId,
+    question: OrchestrationV2UserInputQuestion,
+  }),
+  Schema.Struct({
     type: Schema.Literal("legacy-bootstrap.failure-delete"),
     commandId: CommandId,
     threadId: ThreadId,

@@ -142,7 +142,7 @@ describe("shared native thread attention", () => {
         }),
       ).toBe("limited");
   });
-  it("keeps background waits ahead of plan readiness and excludes persistent commands", () => {
+  it("keeps background waits visible and excludes persistent commands", () => {
     const base = shell({
       latestRunId: RunId.make("run"),
       status: "completed",
@@ -162,12 +162,35 @@ describe("shared native thread attention", () => {
       pendingBackgroundTasks: [{ taskId: "task", kind: "command" }],
     });
     expect(resolveThreadAttentionStatus(plan)).toBe("ready");
-    expect(resolveThreadAttentionPill({ thread: plan })).toBe("Plan Ready");
+    expect(resolveThreadAttentionPill({ thread: plan })).toBeNull();
     expect(
       resolveThreadAttentionPill({
         thread: { ...plan, runtime: { ...plan.runtime!, activeRunId: base.latestRunId } },
       }),
     ).toBeNull();
+  });
+  it("does not turn a stale proposed plan into a request for attention", () => {
+    const stalePlan = {
+      ...completed(),
+      interactionMode: "plan" as const,
+      hasActionableProposedPlan: true,
+    };
+    for (const lastVisitedAt of [undefined, null, "2026-10-18T12:00:00.000Z"]) {
+      expect(resolveThreadAttentionPill({ thread: { ...stalePlan, lastVisitedAt } })).toBeNull();
+    }
+    expect(
+      resolveThreadAttentionPill({
+        thread: { ...stalePlan, lastVisitedAt: "2026-10-17T12:00:00.000Z" },
+      }),
+    ).toBe("Completed");
+    for (const [request, pill] of [
+      [{ hasPendingUserInput: true }, "Awaiting Input"],
+      [{ hasPendingApprovals: true }, "Pending Approval"],
+      [{ pendingSubagentRequest: "user_input" }, "Awaiting Input"],
+      [{ pendingSubagentRequest: "approval" }, "Pending Approval"],
+    ] as const) {
+      expect(resolveThreadAttentionPill({ thread: { ...stalePlan, ...request } })).toBe(pill);
+    }
   });
   it("preserves null/unavailable visits, malformed visits and unseen completion separately", () => {
     const base = completed();

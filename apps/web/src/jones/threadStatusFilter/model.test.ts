@@ -76,6 +76,31 @@ describe("sidebar status filter", () => {
     },
   );
 
+  it.each(["current", "legacy"] as const)(
+    "requires an explicit request despite a stale proposed plan in %s",
+    (layout) => {
+      const stalePlan = {
+        ...base,
+        interactionMode: "plan" as const,
+        hasActionableProposedPlan: true,
+        latestRun,
+        runtime: runtime("completed"),
+      };
+      for (const lastVisitedAt of [undefined, null, completed]) {
+        expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt }, layout)).toBeNull();
+      }
+      expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt: visited }, layout)).toBe("done");
+      for (const request of [
+        { hasPendingUserInput: true },
+        { hasPendingApprovals: true },
+        { pendingSubagentRequest: "user_input" as const },
+        { pendingSubagentRequest: "approval" as const },
+      ]) {
+        expect(classifyThreadStatus({ ...stalePlan, ...request }, layout)).toBe("input");
+      }
+    },
+  );
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];
@@ -114,7 +139,7 @@ describe("sidebar status filter", () => {
           { ...base, interactionMode: "plan", latestRun, hasActionableProposedPlan: true },
           layout,
         ),
-      ).toBe("input");
+      ).toBeNull();
     },
   );
 

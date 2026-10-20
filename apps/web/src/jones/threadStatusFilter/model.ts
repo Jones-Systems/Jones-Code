@@ -37,7 +37,6 @@ export function classifyThreadStatus(
         return "working";
       case "Pending Approval":
       case "Awaiting Input":
-      case "Plan Ready":
         return "input";
       case "Completed":
         return "done";
@@ -53,7 +52,6 @@ export function classifyThreadStatus(
   });
   if (topStatus === "working") return "working";
   if (topStatus === "approval" || topStatus === "input") return "input";
-  if (status === "ready" && pill?.label === "Plan Ready") return "input";
   return topStatus === "done" ? "done" : null;
 }
 

@@ -2044,6 +2044,24 @@
         "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/textGeneration/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck"
       ]
+    },
+    {
+      "id": "jones-durable-owner-response",
+      "tests": [
+        "packages/contracts/src/jones/userResponseRequest.test.ts",
+        "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter @t3tools/provider-core typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

@@ -126,7 +126,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
-      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Needs input requires an explicit pending own or live child request; a proposed plan alone does not qualify. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
     },
     {
       "id": "provider-order",
@@ -978,7 +978,7 @@
         "packages/contracts/src/threadCorpusProtocol.test.ts",
         "apps/server/src/orchestration-v2/http.test.ts"
       ],
-      "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation. Cross-host compatibility keeps attention semantics shared with the client shell and supplies canonical thread membership keys to the existing sidebar/filter harnesses."
+      "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. Proposed plans do not produce attention pills; unseen completion and explicit requests retain precedence. The existing upstream Sidebar.logic integration assertion is updated to prove the shared projector no longer infers a request from a settled plan turn. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation. Cross-host compatibility keeps attention semantics shared with the client shell and supplies canonical thread membership keys to the existing sidebar/filter harnesses."
     },
     {
       "id": "question-answer-field",
@@ -1238,6 +1238,17 @@
         "apps/server/src/git/GitManager.test.ts"
       ],
       "scope": "Jones-owned typed remote-request evaluation schema, bounded input and prompt helpers extend the existing provider text-generation interface through explicit hooks. Claude opts into tool-less evaluation; unsupported providers return typed failures. Existing provider drivers and generation services retain the method wiring because they own provider resolution and invocation. Their existing mock-process and registry tests remain upstream harness exceptions, proving disabled task tools, provider routing and unsupported results without duplicating adapter machinery."
+    },
+    {
+      "id": "durable-owner-response",
+      "tests": [
+        "packages/contracts/src/jones/userResponseRequest.test.ts",
+        "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts"
+      ],
+      "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command, database schema or UI changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only."
     }
   ]
 }
