@@ -212,6 +212,20 @@
       ]
     },
     {
+      "id": "jones-codex-capacity-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t 'capacity|native goals' --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-provider-origin",
       "tests": [
         "apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts",
@@ -1760,20 +1774,6 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp run --filter @t3tools/web test --project unit src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedSteerBatch\"",
         "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\""
-      ]
-    },
-    {
-      "id": "jones-codex-capacity-settlement",
-      "tests": [
-        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
-        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts --maxWorkers=1",
-        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t 'capacity|native goals' --maxWorkers=1",
-        "vp test run apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
       ]
     },
     {
