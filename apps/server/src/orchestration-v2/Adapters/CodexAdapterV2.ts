@@ -1,3 +1,4 @@
+import { controlCodexGoal } from "../../jones/goals/CodexGoalControl.ts";
 import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.ts";
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
@@ -8895,6 +8896,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
               ),
             ),
+          controlGoal: (controlInput) =>
+            Effect.suspend(() => {
+              const producer = currentProducer;
+              const nativeId = controlInput.providerThread.nativeThreadRef?.nativeId ?? "";
+              return controlCodexGoal(controlInput, {
+                client,
+                current: NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                  threadId: controlInput.providerThread.appThreadId,
+                  runtimeGeneration: producer.generation,
+                }).pipe(
+                  Effect.andThen(
+                    Effect.sync(
+                      () =>
+                        !capacityScopeClosed &&
+                        !hasUnknownNativeStart() &&
+                        producer.active &&
+                        currentProducer === producer &&
+                        controlInput.providerThread.runtimeIdentity?.runtimeGeneration ===
+                          producer.generation &&
+                        producer.bindings.get(nativeId)?.appThreadId ===
+                          controlInput.providerThread.appThreadId &&
+                        controlInput.providerThread.providerSessionId === input.providerSessionId &&
+                        controlInput.providerThread.providerInstanceId ===
+                          adapterOptions.instanceId &&
+                        producer.bindings.get(nativeId)?.id === controlInput.providerThread.id,
+                    ),
+                  ),
+                  Effect.orElseSucceed(() => false),
+                ),
+                beforeMutation: (action) =>
+                  Effect.sync(() => {
+                    if (action === "pause" || action === "clear") {
+                      const activation = goalActivations.get(nativeId);
+                      if (activation !== undefined) activation.stopped = true;
+                    }
+                  }),
+                observe: (goal) =>
+                  turnTerminalizationPermit.withPermits(1)(
+                    Effect.gen(function* () {
+                      goalsByNativeThread.set(nativeId, goal);
+                      yield* emitGoalUpdate(nativeId);
+                      if (goal?.status !== "active") yield* releaseGoalHold(nativeId);
+                    }),
+                  ),
+              });
+            }),
           readGoalState: (providerThread) =>
             Effect.gen(function* () {
               if (

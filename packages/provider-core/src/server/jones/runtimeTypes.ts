@@ -39,3 +39,15 @@ export interface PhysicalProcessLease {
   readonly runtimeGeneration: string;
   readonly capture: Effect.Effect<PhysicalProcessObservation>;
 }
+
+export interface ProviderGoalControlInput {
+  readonly providerThread: import("@t3tools/contracts").OrchestrationV2ProviderThread;
+  readonly action: "read" | "pause" | "clear" | "replace";
+  readonly objective?: string;
+  readonly revalidate: Effect.Effect<boolean>;
+}
+export interface ProviderGoalControlResult {
+  readonly outcome: "observed" | "applied" | "unsupported" | "unavailable" | "stale" | "unknown";
+  readonly goal: import("@t3tools/contracts").OrchestrationV2ProviderGoal | null;
+  readonly reason: string;
+}

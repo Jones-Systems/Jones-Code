@@ -1,0 +1,44 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "native-goal-controls",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/goals/CodexGoalControl.ts",
+    "apps/server/src/jones/goals/CodexGoalControl.test.ts",
+    "apps/server/src/jones/goals/GoalControl.ts",
+    "apps/server/src/jones/goals/GoalControl.test.ts",
+    "apps/server/src/jones/goals/GoalStartDispatch.ts",
+    "apps/server/src/jones/goals/tool.ts",
+    "apps/server/src/jones/goals/GoalStartDispatch.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+    "apps/server/src/mcp/toolkits/orchestrator/handlers.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/threadGoal.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/goals/CodexGoalControl.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/goals/GoalControl.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/goals/GoalStartDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+      "to": "apps/server/src/jones/goals/tool.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
+      "to": "apps/server/src/jones/goals/tool.ts"
+    }
+  ]
+}

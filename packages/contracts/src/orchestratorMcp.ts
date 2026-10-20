@@ -27,6 +27,7 @@ import { ThreadLinkedPullRequest } from "./threadPullRequest.ts";
 import { ThreadTitleRegeneration } from "./threadTitle.ts";
 import {
   OrchestrationV2Actor,
+  OrchestrationV2ProviderGoal,
   OrchestrationV2CreationSource,
   OrchestrationV2RunStatus,
   OrchestrationV2TurnItemStatus,
@@ -316,6 +317,8 @@ export const OrchestratorMcpThreadActivityObservation = Schema.Struct({
 });
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
+  goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
+  goalSource: Schema.optional(Schema.Literal("provider_projection")),
   activityObservation: Schema.optional(OrchestratorMcpThreadActivityObservation),
   threadId: ThreadId,
   title: Schema.String,
@@ -363,6 +366,8 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
+  goalSource: Schema.optional(Schema.Literal("provider_projection")),
   threadId: ThreadId,
   projectId: ProjectId,
   title: Schema.String,

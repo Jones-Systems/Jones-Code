@@ -84,6 +84,7 @@ import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
   Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
 );
@@ -1401,6 +1402,27 @@ describe("orchestrator MCP toolkit", () => {
             const threadListTool = server.tools.find(({ tool }) => tool.name === "t3_thread_list");
             expect(threadListTool?.tool.annotations?.readOnlyHint).toBe(true);
             expect(threadListTool?.tool.annotations?.idempotentHint).toBe(true);
+            const goalTool = server.tools.find(({ tool }) => tool.name === "t3_thread_goal");
+            expect(goalTool?.tool.annotations?.idempotentHint).toBe(true);
+            const goalRead = yield* invoke("t3_thread_goal", {
+              threadId: parentThreadId,
+              action: "read",
+            });
+            expect(goalRead.isError).toBe(false);
+            expect(goalRead.structuredContent).toMatchObject({
+              action: "read",
+              outcome: "unsupported",
+            });
+            const missingGoalKey = yield* invoke("t3_thread_goal", {
+              threadId: parentThreadId,
+              action: "pause",
+            });
+            expect(declaredFailure(missingGoalKey)).toMatchObject({ code: "invalid_request" });
+            const invalidGoalAction = yield* invoke("t3_thread_goal", {
+              threadId: parentThreadId,
+              action: "complete",
+            }).pipe(Effect.flip);
+            expect(invalidGoalAction).toBeDefined();
             const threadReadTool = server.tools.find(({ tool }) => tool.name === "t3_thread_read");
             expect(threadReadTool?.tool.annotations?.readOnlyHint).toBe(false);
             expect(threadReadTool?.tool.inputSchema).toMatchObject({ additionalProperties: false });

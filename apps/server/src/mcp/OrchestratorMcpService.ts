@@ -716,6 +716,9 @@ function listItemFromShell(
 ): OrchestratorMcpThreadListItem {
   return {
     threadId: shell.id,
+    ...(shell.goal === undefined
+      ? {}
+      : { goal: shell.goal, goalSource: "provider_projection" as const }),
     title: shell.title,
     createdBy: shell.createdBy,
     creationSource: shell.creationSource,
@@ -747,6 +750,9 @@ function threadDetail(
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
     threadId: projection.thread.id,
+    ...(shell.goal === undefined
+      ? {}
+      : { goal: shell.goal, goalSource: "provider_projection" as const }),
     projectId: projection.thread.projectId,
     title: projection.thread.title,
     createdBy: projection.thread.createdBy,

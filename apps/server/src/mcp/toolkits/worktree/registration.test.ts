@@ -1,3 +1,5 @@
+import * as EventSink from "../../../orchestration-v2/EventSink.ts";
+import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -38,6 +40,8 @@ import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
 import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 
 const layerStubServices = Layer.mergeAll(
+  SqlitePersistence.layerMemory,
+  Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
   Layer.mock(DeviceService.DeviceService)({}),

@@ -7,6 +7,8 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/toolkits/core.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/jones/settlementNotifications/model.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/detect.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/inbox.ts": "jones-owned",
@@ -1260,7 +1262,17 @@
     "scripts/jones/boundary/fragments/queued-steer-batch.json": "policy",
     "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts": "hook",
-    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/goals/GoalStartDispatch.test.ts": "jones-owned",
+    "packages/contracts/src/jones/threadGoal.ts": "jones-owned",
+    "packages/contracts/src/jones/threadGoal.test.ts": "jones-owned",
+    "apps/server/src/jones/goals/CodexGoalControl.ts": "jones-owned",
+    "apps/server/src/jones/goals/CodexGoalControl.test.ts": "jones-owned",
+    "apps/server/src/jones/goals/GoalControl.ts": "jones-owned",
+    "apps/server/src/jones/goals/GoalControl.test.ts": "jones-owned",
+    "apps/server/src/jones/goals/GoalStartDispatch.ts": "jones-owned",
+    "apps/server/src/jones/goals/tool.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/native-goal-controls.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
