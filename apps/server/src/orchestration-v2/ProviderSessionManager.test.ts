@@ -30,6 +30,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderTurnId,
   type ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -46,6 +47,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as Scope from "effect/Scope";
 import { TestClock } from "effect/testing";
 import { HttpServer } from "effect/http";
 
@@ -342,7 +344,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
-    readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
+    readonly beforeOpen?: (
+      input: ProviderAdapterV2OpenSessionInput,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
@@ -500,7 +504,9 @@ function layerTest(input: {
   readonly mcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
-  readonly beforeOpen?: (input: ProviderAdapterV2OpenSessionInput) => Effect.Effect<void>;
+  readonly beforeOpen?: (
+    input: ProviderAdapterV2OpenSessionInput,
+  ) => Effect.Effect<void, never, Scope.Scope>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -3777,6 +3783,263 @@ it.effect(
       });
 
       yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+    }),
+);
+
+it.effect.each(["drain", "replace", "shutdown"] as const)(
+  "ProviderSessionManagerV2 waits for terminal subscriber settlement before dead scope close (%s)",
+  (mode) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      let starts = 0;
+      const processing = yield* Deferred.make<void>();
+      const finishProcessing = yield* Deferred.make<void>();
+      const observerFinished = yield* Deferred.make<void>();
+      const firstScopeClosed = yield* Deferred.make<void>();
+      const lifecycleStates: Array<{ lifecycle: ProviderRuntimeLifecycle; generation?: string }> =
+        [];
+      const scope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+        Scope.close(scope, Exit.void),
+      );
+      const context = yield* Layer.buildWithScope(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          startTurn: Effect.sync(() => {
+            starts++;
+          }),
+          beforeOpen: (input) =>
+            Effect.gen(function* () {
+              const lifecycle = input.runtimeLifecycle!;
+              const opened: (typeof lifecycleStates)[number] = { lifecycle };
+              lifecycleStates.push(opened);
+              yield* Effect.addFinalizer(() =>
+                (opened.generation === undefined
+                  ? Effect.void
+                  : lifecycle.abandon(opened.generation).pipe(Effect.orDie)
+                ).pipe(
+                  Effect.andThen(
+                    lifecycleStates[0] === opened
+                      ? Deferred.succeed(firstScopeClosed, undefined)
+                      : Effect.void,
+                  ),
+                ),
+              );
+            }),
+        }),
+        scope,
+      );
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread-subscriber-settlement-${mode}`);
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const original = lifecycleStates[0]!;
+        original.generation = yield* original.lifecycle.reserve(threadId);
+        const providerThread = yield* original.lifecycle.bind({
+          providerThread: makeProviderThread({
+            idAllocator: ids,
+            threadId,
+            providerSessionId,
+            now,
+          }),
+          runtimeGeneration: original.generation,
+          requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+          observed: unobservedRuntimeIdentity(),
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        const observer = yield* runtime.subscribeEvents!;
+        let processed = false;
+        const consumer = yield* subscription.events.pipe(
+          Stream.runForEach(() =>
+            Deferred.succeed(processing, undefined).pipe(
+              Effect.andThen(Deferred.await(finishProcessing)),
+              Effect.andThen(
+                Effect.sync(() => {
+                  processed = true;
+                }),
+              ),
+            ),
+          ),
+          Effect.exit,
+          Effect.forkScoped,
+        );
+        yield* observer.events.pipe(
+          Stream.runDrain,
+          Effect.exit,
+          Effect.andThen(Deferred.succeed(observerFinished, undefined)),
+          Effect.forkScoped,
+        );
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId: providerThread.id,
+          providerTurnId: ProviderTurnId.make("settlement-turn"),
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* Deferred.await(processing);
+        yield* Queue.end(queue);
+        yield* Deferred.await(observerFinished);
+        yield* Effect.yieldNow;
+        assert.equal(yield* manager.isLive(providerSessionId), false);
+        assert.equal(
+          (yield* Ref.get(state)).closeCount,
+          0,
+          "scope must remain open while terminal processing is held",
+        );
+        assert.equal(
+          (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+            ?.runtimeGeneration,
+          original.generation,
+          "the terminal generation must remain bound until processing exits",
+        );
+        const lateSubscription = yield* runtime.subscribeEvents!;
+        const lateResult = yield* lateSubscription.events.pipe(Stream.runDrain, Effect.exit);
+        assert.equal(
+          lateResult._tag,
+          "Failure",
+          "a removed runtime cannot admit an un-signaled subscriber",
+        );
+        yield* lateSubscription.close;
+        yield* lateSubscription.close;
+        if (mode === "shutdown") {
+          yield* Scope.close(scope, Exit.void);
+          assert.equal((yield* Ref.get(state)).closeCount, 1);
+          assert.equal(processed, false);
+          yield* Fiber.interrupt(consumer);
+          return;
+        }
+        let replacementGeneration: string | undefined;
+        let replacement: ProviderAdapter.ProviderAdapterV2SessionRuntime | undefined;
+        if (mode === "replace") {
+          replacement = yield* manager.open({
+            threadId,
+            providerSessionId,
+            modelSelection,
+            runtimePolicy,
+          });
+          assert.notEqual(replacement, runtime);
+          const next = lifecycleStates[1]!;
+          next.generation = yield* next.lifecycle.reserve(threadId);
+          replacementGeneration = next.generation;
+          yield* next.lifecycle.bind({
+            providerThread,
+            runtimeGeneration: next.generation,
+            requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+            observed: unobservedRuntimeIdentity(),
+          });
+        }
+        yield* Deferred.succeed(finishProcessing, undefined);
+        yield* Fiber.join(consumer);
+        yield* Deferred.await(firstScopeClosed);
+        assert.equal(processed, true);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        if (mode === "replace") {
+          assert.equal(yield* manager.isLive(providerSessionId), true);
+          assert.equal(
+            (yield* store.getThreadProjection(threadId)).providerSessions.at(-1)?.status,
+            "ready",
+          );
+          assert.equal(
+            (yield* store.getThreadProjection(threadId)).providerThreads[0]?.runtimeIdentity
+              ?.runtimeGeneration,
+            replacementGeneration,
+          );
+          assert.equal(starts, 0, "process loss and replacement do not start a turn");
+          const resumed = yield* replacement!.resumeThread({ threadId, providerThread });
+          assert.equal(resumed.nativeThreadRef?.nativeId, providerThread.nativeThreadRef?.nativeId);
+          assert.equal((yield* Ref.get(state)).resumeCount, 1);
+          const runId = ids.derive.run({ threadId, ordinal: 2 });
+          yield* replacement!.startTurn({
+            appThread: (yield* store.getThreadProjection(threadId)).thread,
+            threadId,
+            runId,
+            runOrdinal: 2,
+            providerTurnOrdinal: 1,
+            attemptId: ids.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+            rootNodeId: ids.derive.rootNode({ runId }),
+            providerThread: resumed,
+            message: {
+              createdBy: "user",
+              creationSource: "web",
+              messageId: yield* ids.allocate.message({ threadId, ordinal: 2 }),
+              text: "Next explicit request",
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          assert.equal(starts, 1);
+          assert.equal((yield* Ref.get(state)).openCount, 2);
+        }
+      }).pipe(Effect.provide(context));
+    }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 preserves the original producer stream failure after subscriber settlement",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const failure = new Error("synthetic producer transport failure");
+      yield* Effect.gen(function* () {
+        const sink = yield* EventSink.EventSinkV2;
+        const ids = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("original-producer-failure");
+        const providerSessionId = yield* ids.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const subscription = yield* runtime.subscribeEvents!;
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!;
+        yield* Queue.offer(queue, {
+          type: "provider_session.updated",
+          driver: CODEX_DRIVER,
+          providerSession: runtime.providerSession,
+        });
+        const result = yield* subscription.events.pipe(Stream.runDrain, Effect.exit);
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.equal(Cause.squash(result.cause), failure);
+        assert.equal(yield* manager.isLive(providerSessionId), false);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeEventDelivery: () => Effect.die(failure),
+          }),
+        ),
+      );
     }),
 );
 

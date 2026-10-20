@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "packages/effect-codex-app-server/src/client.ts": "accepted-shared",
+    "packages/effect-codex-app-server/src/replay.ts": "accepted-shared",
+    "packages/effect-codex-app-server/src/client.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/jones/settlementNotifications/model.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/detect.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/inbox.ts": "jones-owned",
@@ -1297,7 +1300,9 @@
     "docs/internals/connection-runtime.md": "accepted-shared",
     "packages/shared/src/httpObservability.ts": "accepted-shared",
     "packages/shared/src/httpObservability.test.ts": "jones-owned",
-    "apps/server/src/jones/requestEconomy/foregroundReads.test.ts": "jones-owned"
+    "apps/server/src/jones/requestEconomy/foregroundReads.test.ts": "jones-owned",
+    "apps/server/src/orchestration-v2/testkit/fixtures/delegated_task_status/codex_transcript.ndjson": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/testkit/fixtures/thread_fork_native/codex_transcript.ndjson": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

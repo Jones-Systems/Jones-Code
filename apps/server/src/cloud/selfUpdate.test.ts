@@ -10,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
@@ -525,4 +526,132 @@ it.effect(
       yield* install(request).pipe(Effect.flip);
       expect(events).toEqual(["prepare", "clear", "prepare", "clear"]);
     }),
+);
+
+it.effect("expires only qualified preparation, clears continuations and admits a retry", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const events: string[] = [];
+    let stall = true;
+    const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+      mode: "web",
+      prepare: Effect.sync(() => {
+        events.push("mark");
+        return [ThreadId.make("deadline-thread")];
+      }),
+      clear: () =>
+        Effect.sync(() => {
+          events.push("clear");
+        }),
+      selfUpdate: {
+        update: () => Effect.die("legacy update must not run"),
+        commitDesktopUpdate: () => Effect.never,
+        installQualified: (_request, accepted) =>
+          ServerSelfUpdate.runQualifiedInstallPhases({
+            prepare: Effect.gen(function* () {
+              events.push("prepare");
+              yield* Deferred.succeed(entered, undefined);
+              if (stall) return yield* Effect.never;
+            }),
+            handoff: () =>
+              Effect.gen(function* () {
+                events.push("handoff");
+                yield* accepted?.() ?? Effect.void;
+                return { targetVersion: "1.2.3", method: "boot-service" as const };
+              }),
+          }),
+      },
+    });
+    const install = wrapped.installQualified!;
+    const request = { stagedHandle: "fixed", continueRunningThreads: true };
+    const fiber = yield* Effect.forkChild(install(request).pipe(Effect.flip));
+    yield* Deferred.await(entered);
+    yield* TestClock.adjust("20 minutes");
+    expect((yield* Fiber.join(fiber)).reason).toContain("preparation timed out");
+    expect(events).toEqual(["mark", "prepare", "clear"]);
+    stall = false;
+    yield* install(request);
+    expect(events).toEqual(["mark", "prepare", "clear", "mark", "prepare", "handoff"]);
+  }),
+);
+
+it.effect("keeps continuation marking outside the qualified preparation deadline", () =>
+  Effect.gen(function* () {
+    const marking = yield* Deferred.make<void>();
+    const events: string[] = [];
+    const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+      mode: "web",
+      prepare: Effect.gen(function* () {
+        yield* Deferred.succeed(marking, undefined);
+        yield* Effect.sleep("21 minutes");
+        events.push("marked");
+        return [ThreadId.make("slow-marking")];
+      }),
+      clear: () =>
+        Effect.sync(() => {
+          events.push("clear");
+        }),
+      selfUpdate: {
+        update: () => Effect.die("legacy update must not run"),
+        commitDesktopUpdate: () => Effect.never,
+        installQualified: (_request, accepted) =>
+          ServerSelfUpdate.runQualifiedInstallPhases({
+            prepare: Effect.sync(() => {
+              events.push("verified");
+            }),
+            handoff: () =>
+              (accepted?.() ?? Effect.void).pipe(
+                Effect.as({
+                  targetVersion: "1.2.3",
+                  method: "boot-service" as const,
+                }),
+              ),
+          }),
+      },
+    });
+    const fiber = yield* Effect.forkChild(
+      wrapped.installQualified!({
+        stagedHandle: "fixed",
+        continueRunningThreads: true,
+      }),
+    );
+    yield* Deferred.await(marking);
+    yield* TestClock.adjust("21 minutes");
+    expect((yield* Fiber.join(fiber)).method).toBe("boot-service");
+    expect(events).toEqual(["marked", "verified"]);
+  }),
+);
+
+it.effect("does not time out or interrupt launcher handoff after preparation succeeds", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const accepted = yield* Deferred.make<void>();
+    const events: string[] = [];
+    const fiber = yield* Effect.forkChild(
+      ServerSelfUpdate.runQualifiedInstallPhases({
+        prepare: Effect.succeed("prepared"),
+        handoff: (prepared) =>
+          Effect.gen(function* () {
+            expect(prepared).toBe("prepared");
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(accepted);
+            events.push("accepted");
+            return "installed";
+          }).pipe(
+            Effect.onInterrupt(() =>
+              Effect.sync(() => {
+                events.push("interrupted");
+              }),
+            ),
+          ),
+      }),
+    );
+    yield* Deferred.await(entered);
+    yield* TestClock.adjust("21 minutes");
+    const interrupted = yield* Effect.forkChild(Fiber.interrupt(fiber), { startImmediately: true });
+    expect(events).toEqual([]);
+    yield* Deferred.succeed(accepted, undefined);
+    yield* Fiber.join(interrupted);
+    expect(events).toEqual(["accepted"]);
+  }),
 );

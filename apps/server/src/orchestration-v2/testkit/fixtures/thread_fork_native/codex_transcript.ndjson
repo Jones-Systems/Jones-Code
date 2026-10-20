@@ -18,4 +18,3 @@
 {"type":"emit_inbound","label":"item/completed/fork-user","frame":{"method":"item/completed","params":{"item":{"type":"userMessage","id":"native-fork-user-item","content":[{"type":"text","text":"Respond with the following text: fork native ok","text_elements":[]}]},"threadId":"native-fork-thread","turnId":"native-fork-turn"}}}
 {"type":"emit_inbound","label":"item/completed/fork-agent","frame":{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"native-fork-agent-item","text":"fork native ok","phase":"final_answer","memoryCitation":null},"threadId":"native-fork-thread","turnId":"native-fork-turn"}}}
 {"type":"emit_inbound","label":"turn/completed/fork","frame":{"method":"turn/completed","params":{"threadId":"native-fork-thread","turn":{"id":"native-fork-turn","items":[],"status":"completed","error":null,"startedAt":1776739361,"completedAt":1776739363,"durationMs":2000}}}}
-{"type":"runtime_exit","status":"success"}

@@ -26,6 +26,8 @@ export interface QualifiedBackupReceipt {
   readonly startedAt: string;
   readonly completedAt: string;
   readonly durationMs: number;
+  readonly copyMs?: number;
+  readonly syncMs?: number;
 }
 
 export interface QualifiedBackupAdapter {
@@ -194,7 +196,7 @@ export async function preflightQualifiedBackup(
       return { method: "clone", bytes };
     } catch (cause) {
       if (!cloneUnavailable(cause)) throw cause;
-      await requireCapacity(parent, bytes, adapter);
+      await requireCapacity(parent, 2 * bytes + Math.ceil(0.05 * bytes), adapter);
       return { method: "copy", bytes };
     }
   } finally {
@@ -292,6 +294,11 @@ export async function readQualifiedBackupReceipt(
     typeof receipt.durationMs !== "number" ||
     !Number.isFinite(receipt.durationMs) ||
     receipt.durationMs < 0 ||
+    [receipt.copyMs, receipt.syncMs].some(
+      (duration) =>
+        duration !== undefined &&
+        (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0),
+    ) ||
     typeof receipt.startedAt !== "string" ||
     !Number.isFinite(Date.parse(receipt.startedAt)) ||
     typeof receipt.completedAt !== "string" ||

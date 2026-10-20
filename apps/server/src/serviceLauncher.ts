@@ -378,24 +378,34 @@ async function backupDatabaseOnce(
     const started = performance.now();
     let method: "clone" | "copy" = "clone";
     let bytes = 0;
+    let copyMs = 0;
+    let syncMs = 0;
     if (pending.qualified !== undefined) {
       for (const suffix of DB_FILE_SUFFIXES) {
         const source = `${pending.dbPath}${suffix}`;
         if (suffix !== "" && !(await pathExists(source))) continue;
         const destination = databaseBackupFile(stagingDir, suffix);
+        const copyStarted = performance.now();
         const copied = await copyQualifiedBackupFile(source, destination, adapter);
+        copyMs += performance.now() - copyStarted;
         bytes += copied.bytes;
         if (copied.method === "copy") method = "copy";
+        const syncStarted = performance.now();
         await syncFile(destination);
+        syncMs += performance.now() - syncStarted;
       }
-      await backupPairedSettings(baseDir, stagingDir);
+      const settingsTiming = await backupPairedSettings(baseDir, stagingDir);
+      copyMs += settingsTiming.copyMs;
+      syncMs += settingsTiming.syncMs;
       const bindingPath = NodePath.join(stagingDir, "paired-binding.json");
       await NodeFSP.writeFile(
         bindingPath,
         JSON.stringify({ transactionId: pending.id, qualified: pending.qualified }),
         { flag: "wx", mode: 0o600 },
       );
+      const bindingSyncStarted = performance.now();
       await syncFile(bindingPath);
+      syncMs += performance.now() - bindingSyncStarted;
       await writeQualifiedBackupReceipt(stagingDir, {
         protocol: 1,
         updateId: pending.id,
@@ -404,6 +414,8 @@ async function backupDatabaseOnce(
         startedAt,
         completedAt: new Date().toISOString(),
         durationMs: performance.now() - started,
+        copyMs,
+        syncMs,
       });
     }
     for (const suffix of pending.qualified === undefined ? DB_FILE_SUFFIXES : []) {
@@ -421,8 +433,13 @@ async function backupDatabaseOnce(
   }
 }
 
-async function backupPairedSettings(baseDir: string, destination: string): Promise<void> {
+async function backupPairedSettings(
+  baseDir: string,
+  destination: string,
+): Promise<{ readonly copyMs: number; readonly syncMs: number }> {
   const present: string[] = [];
+  let copyMs = 0;
+  let syncMs = 0;
   for (const name of PAIRED_SETTINGS) {
     const source = NodePath.join(baseDir, "userdata", name);
     if (!(await pathExists(source))) continue;
@@ -430,13 +447,20 @@ async function backupPairedSettings(baseDir: string, destination: string): Promi
     if (!stat.isFile() || stat.isSymbolicLink())
       throw new Error("Startup settings must be regular files.");
     const target = NodePath.join(destination, name);
+    const copyStarted = performance.now();
     await NodeFSP.copyFile(source, target);
+    copyMs += performance.now() - copyStarted;
+    const syncStarted = performance.now();
     await syncFile(target);
+    syncMs += performance.now() - syncStarted;
     present.push(name);
   }
   const manifest = NodePath.join(destination, "paired-settings.json");
   await NodeFSP.writeFile(manifest, JSON.stringify(present), { flag: "wx", mode: 0o600 });
+  const syncStarted = performance.now();
   await syncFile(manifest);
+  syncMs += performance.now() - syncStarted;
+  return { copyMs, syncMs };
 }
 
 async function restorePairedSettings(baseDir: string, backupDir: string): Promise<void> {

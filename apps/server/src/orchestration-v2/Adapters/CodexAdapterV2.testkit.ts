@@ -197,10 +197,10 @@ export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
 }): CodexAdapterV2.CodexAppServerClientFactoryShape {
-  const replayLayer =
+  const replayLayer = (options: CodexClient.CodexAppServerClientOptions) =>
     input.driver === undefined
-      ? CodexReplay.layerReplay(input.transcript)
-      : CodexReplay.layerReplayWithDriver(input.driver);
+      ? CodexReplay.layerReplay(input.transcript, options)
+      : CodexReplay.layerReplayWithDriver(input.driver, options);
   const recordedGoalControl = input.transcript.entries.some(
     (entry) =>
       entry.type === "expect_outbound" &&
@@ -210,7 +210,11 @@ export function makeCodexReplayClientFactory(input: {
   return {
     open: (openInput) =>
       Effect.gen(function* () {
-        const context = yield* Layer.build(replayLayer).pipe(
+        const context = yield* Layer.build(
+          replayLayer(
+            openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
+          ),
+        ).pipe(
           Effect.mapError(
             (cause) =>
               new ProviderAdapter.ProviderAdapterOpenSessionError({
