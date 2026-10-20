@@ -1371,11 +1371,12 @@ it.effect(
 
         const refusal = yield* Deferred.await(stopRefused).pipe(
           Effect.timeout(Duration.seconds(10)),
-          Effect.catchTag("TimeoutError", () =>
-            Effect.die(
-              "The follower did not observe a remote stop refusal while modes were lowered.",
-            ),
-          ),
+          Effect.catchTags({
+            TimeoutError: () =>
+              Effect.die(
+                "The follower did not observe a remote stop refusal while modes were lowered.",
+              ),
+          }),
         );
         expect(refusal.code).toBe("runtime_mode_escalation_denied");
         expect(refusal.message).toContain(
@@ -1399,17 +1400,19 @@ it.effect(
         });
         yield* Deferred.await(thread.interruptedOnce).pipe(
           Effect.timeout(Duration.seconds(10)),
-          Effect.catchTag("TimeoutError", () =>
-            Effect.die(
-              "The original remote child was not stopped after its parent's modes were restored.",
-            ),
-          ),
+          Effect.catchTags({
+            TimeoutError: () =>
+              Effect.die(
+                "The original remote child was not stopped after its parent's modes were restored.",
+              ),
+          }),
         );
         const acknowledged = yield* stoppedThere(a, delegated.taskId, 0).pipe(
           Effect.timeout(Duration.seconds(10)),
-          Effect.catchTag("TimeoutError", () =>
-            Effect.die("The original remote child's stop was not durably acknowledged."),
-          ),
+          Effect.catchTags({
+            TimeoutError: () =>
+              Effect.die("The original remote child's stop was not durably acknowledged."),
+          }),
         );
         expect(acknowledged?.remoteChild).toMatchObject({
           threadId: pending.remoteChild!.threadId,
