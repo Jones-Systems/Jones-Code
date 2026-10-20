@@ -132,6 +132,7 @@ export function cancelsSelfSettlement(command: OrchestrationV2ServerCommand): bo
     "run.interrupt",
     "checkpoint.rollback",
     "queued-message.promote-to-steer",
+    "queued-message.promote-batch-to-steer",
     "queued-run.edit",
     "queue.resume",
     "provider.switch",

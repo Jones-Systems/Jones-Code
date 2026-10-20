@@ -260,6 +260,7 @@ export const layerExecutor: Layer.Layer<
                 ),
               );
           }
+          case "provider-turn.steer-batch":
           case "provider-turn.steer":
             return providerTurnControl
               .steer({
@@ -268,6 +269,9 @@ export const layerExecutor: Layer.Layer<
                 providerThreadId: effect.request.providerThreadId,
                 providerTurnId: effect.request.providerTurnId,
                 messageId: effect.request.messageId,
+                ...(effect.request.type === "provider-turn.steer-batch"
+                  ? { messageIds: effect.request.messageIds }
+                  : {}),
               })
               .pipe(
                 Effect.tap(() =>
@@ -294,9 +298,48 @@ export const layerExecutor: Layer.Layer<
                     if (
                       !("turnCompleted" in error) ||
                       !error.turnCompleted ||
-                      effect.request.type !== "provider-turn.steer"
+                      (effect.request.type !== "provider-turn.steer" &&
+                        effect.request.type !== "provider-turn.steer-batch")
                     ) {
                       return yield* error;
+                    }
+                    if (effect.request.type === "provider-turn.steer-batch") {
+                      const records = yield* threads.getThreadRecords(
+                        effect.threadId,
+                        ["messages", "runs"],
+                        { messageIds: effect.request.messageIds },
+                      );
+                      const members = effect.request.messageIds.map((id) =>
+                        records.messages.find((row) => row.id === id),
+                      );
+                      if (members.some((row) => row === undefined)) return yield* error;
+                      for (const [index, member] of members.entries()) {
+                        const message = member!;
+                        yield* threads.dispatch({
+                          type: "message.dispatch",
+                          commandId: CommandId.make(
+                            `command:steer-follow-up:${effect.id}:${index}`,
+                          ),
+                          threadId: effect.threadId,
+                          messageId: message.id,
+                          text: message.text,
+                          attachments: message.attachments,
+                          ...(message.context ? { context: message.context } : {}),
+                          dispatchMode: {
+                            type: index === 0 ? "start_immediately" : "queue_after_active",
+                          },
+                          queuedToolBoundaryEligible: index > 0,
+                          createdBy: message.createdBy,
+                          creationSource: message.creationSource,
+                          ...(message.senderThreadId === undefined
+                            ? {}
+                            : { senderThreadId: message.senderThreadId }),
+                          ...(message.scheduledTaskId === undefined
+                            ? {}
+                            : { scheduledTaskId: message.scheduledTaskId }),
+                        });
+                      }
+                      return;
                     }
                     const projection = yield* threads.getThreadRecords(
                       effect.threadId,

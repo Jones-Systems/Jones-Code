@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/queuedSteerBatch": {
+      "types": "./src/jones/queuedSteerBatch.ts",
+      "import": "./src/jones/queuedSteerBatch.ts"
+    },
     "./jones/desktopNativeOwner": {
       "types": "./src/jones/desktopNativeOwner.ts",
       "import": "./src/jones/desktopNativeOwner.ts"

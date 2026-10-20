@@ -1,3 +1,9 @@
+import {
+  queuedSteerBatchCandidates,
+  queuedSteerBatchEvents,
+  validateQueuedSteerBatch,
+} from "../jones/orchestration/QueuedSteerBatch.ts";
+import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import type {
   OrchestrationV2SearchThreadInput,
@@ -614,6 +620,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "prepared-run.retry":
     case "subagent.stop":
     case "run.interrupt":
+    case "queued-message.promote-batch-to-steer":
     case "queued-message.promote-to-steer":
     case "queue.resume":
     case "queued-run.reorder":
@@ -8037,6 +8044,133 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     });
 
+  const dispatchQueuedMessagePromoteBatchToSteer = (
+    command: Extract<
+      OrchestrationV2Command,
+      { readonly type: "queued-message.promote-batch-to-steer" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* projectionStore
+        .getThreadRecords(
+          command.threadId,
+          [
+            "runs",
+            "nodes",
+            "attempts",
+            "messages",
+            "providerThreads",
+            "providerTurns",
+            "providerSessions",
+            "turnItems",
+            "runtimeRequests",
+            "subagents",
+          ],
+          { turnItemTypes: [], messageRoles: ["user"] },
+        )
+        .pipe(
+          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+        );
+      const automatic = yield* AutomaticQueuedToolBoundary;
+      const batch = validateQueuedSteerBatch(projection, command, automatic !== undefined);
+      if ("error" in batch)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: batch.error,
+        });
+      const liveSession = yield* providerSessions
+        .get(batch.session.id)
+        .pipe(mapDispatchError(command));
+      if (Option.isNone(liveSession))
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The active provider session is no longer available.",
+        });
+      const policy = yield* enforceCommandPolicy(command)(
+        commandPolicy.decideSteeringExecution({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          providerInstanceId: batch.target.providerInstanceId,
+          capabilities: liveSession.value.providerSession.capabilities,
+          forceRestart: false,
+        }),
+      );
+      if (policy !== "active_steering")
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Batch steering requires active steering; use the individual action for restart providers.",
+        });
+      if (automatic !== undefined) {
+        const boundary = automatic.stored;
+        const first =
+          boundary.event.type === "node.updated"
+            ? queuedToolBoundaryTarget(projection, boundary.event.payload)
+            : null;
+        if (
+          first?.queuedRun.id !== command.items[0]?.queuedRunId ||
+          first?.activeRun.id !== command.targetRunId
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The safe tool boundary changed.",
+          });
+        for (const entry of batch.selected) {
+          if (
+            entry.run.queueHeld === true ||
+            entry.run.queuedToolBoundaryEligible !== true ||
+            entry.message?.scheduledTaskId !== undefined ||
+            !(yield* eventSink
+              .canPromoteQueuedAtToolBoundary({
+                threadId: command.threadId,
+                queuedRunId: entry.run.id,
+                activeRunId: batch.target.id,
+                messageId: entry.run.userMessageId,
+                boundary,
+                births: automatic.births,
+                runtimeMode: projection.thread.runtimeMode,
+                interactionMode: projection.thread.interactionMode,
+              })
+              .pipe(mapDispatchError(command)))
+          )
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Queued message no longer belongs to this safe tool boundary.",
+            });
+        }
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const ordinal = yield* nextTurnItemOrdinal(projection);
+      for (const event of queuedSteerBatchEvents(batch, command, now, ordinal, (messageId) =>
+        idAllocator.derive.userTurnItem({ messageId }),
+      ))
+        yield* emitEvent<OrchestrationV2DomainEvent>(event);
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-turn.steer-batch:${batch.turn.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "provider-turn.steer-batch",
+            providerSessionId: batch.session.id,
+            providerThreadId: batch.provider.id,
+            providerTurnId: batch.turn.id,
+            messageId: command.items[0]!.messageId,
+            messageIds: command.items.map((item) => item.messageId),
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    });
+
   const dispatchQueuedRunReorder = (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-run.reorder" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -12074,6 +12208,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
         break;
+      case "queued-message.promote-batch-to-steer":
+        yield* dispatchQueuedMessagePromoteBatchToSteer(command, events, effects);
+        break;
       case "queued-message.promote-to-steer":
         yield* dispatchQueuedMessagePromoteToSteer(command, events, effects);
         break;
@@ -13333,38 +13470,89 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       yield* threadDispatch.withLock(
         threadId,
         Effect.gen(function* () {
-          while (true) {
-            if (!(yield* projectionStore.hasQueuedToolBoundaryWork(threadId, boundaryNode.runId!)))
-              return;
-            const projection = yield* projectionStore.getQueuedToolBoundaryContext(
-              threadId,
-              boundaryNode,
-            );
-            const target = queuedToolBoundaryTarget(projection, boundaryNode);
+          const projection = yield* projectionStore.getQueuedToolBoundaryContext(
+            threadId,
+            boundaryNode,
+          );
+          const target = queuedToolBoundaryTarget(projection, boundaryNode);
+          if (target === null) return;
+          const provider = projection.providerThreads.find(
+            (row) => row.id === target.activeRun.providerThreadId,
+          );
+          const session = projection.providerSessions.find(
+            (row) => row.id === provider?.providerSessionId,
+          );
+          if (session !== undefined && !["codex", "claudeAgent"].includes(session.driver)) {
+            let legacyTarget: ReturnType<typeof queuedToolBoundaryTarget> = target;
+            while (legacyTarget !== null) {
+              if (
+                !(yield* eventSink.canPromoteQueuedAtToolBoundary({
+                  threadId,
+                  queuedRunId: legacyTarget.queuedRun.id,
+                  activeRunId: legacyTarget.activeRun.id,
+                  messageId: legacyTarget.queuedRun.userMessageId,
+                  boundary: stored,
+                  births,
+                  runtimeMode: projection.thread.runtimeMode,
+                  interactionMode: projection.thread.interactionMode,
+                }))
+              )
+                return;
+              yield* dispatchWithReceiptEffect({
+                type: "queued-message.promote-to-steer",
+                threadId,
+                commandId: CommandId.make(
+                  `command:queue-tool-boundary:${legacyTarget.queuedRun.id}:${legacyTarget.providerTurn.id}:${stored.sequence}`,
+                ),
+                queuedRunId: legacyTarget.queuedRun.id,
+                targetRunId: legacyTarget.activeRun.id,
+              }).pipe(Effect.provideService(AutomaticQueuedToolBoundary, { stored, births }));
+              legacyTarget = queuedToolBoundaryTarget(
+                yield* projectionStore.getQueuedToolBoundaryContext(threadId, boundaryNode),
+                boundaryNode,
+              );
+            }
+            return;
+          }
+          const candidates = queuedSteerBatchCandidates(projection, target.activeRun.id, true);
+          const eligible = [];
+          for (const entry of candidates) {
             if (
-              target === null ||
+              !entry.eligible ||
+              entry.run.queueHeld === true ||
+              entry.run.queuedToolBoundaryEligible !== true ||
+              entry.message?.scheduledTaskId !== undefined ||
               !(yield* eventSink.canPromoteQueuedAtToolBoundary({
                 threadId,
-                queuedRunId: target.queuedRun.id,
+                queuedRunId: entry.run.id,
                 activeRunId: target.activeRun.id,
-                messageId: target.queuedRun.userMessageId,
+                messageId: entry.run.userMessageId,
                 boundary: stored,
                 births,
                 runtimeMode: projection.thread.runtimeMode,
                 interactionMode: projection.thread.interactionMode,
               }))
             )
-              return;
-            yield* dispatchWithReceiptEffect({
-              type: "queued-message.promote-to-steer",
-              threadId,
-              commandId: CommandId.make(
-                `command:queue-tool-boundary:${target.queuedRun.id}:${target.providerTurn.id}:${stored.sequence}`,
-              ),
-              queuedRunId: target.queuedRun.id,
-              targetRunId: target.activeRun.id,
-            }).pipe(Effect.provideService(AutomaticQueuedToolBoundary, { stored, births }));
+              break;
+            eligible.push(entry);
           }
+          const plan = planQueuedSteerBatch(
+            eligible.map((entry) => ({ message: entry.message!, eligible: entry.eligible })),
+          );
+          if (plan.count === 0) return;
+          yield* dispatchWithReceiptEffect({
+            type: "queued-message.promote-batch-to-steer",
+            threadId,
+            commandId: CommandId.make(
+              `command:queue-tool-boundary:batch:${target.queuedRun.id}:${target.providerTurn.id}:${stored.sequence}`,
+            ),
+            targetRunId: target.activeRun.id,
+            items: eligible.slice(0, plan.count).map((entry) => ({
+              queuedRunId: entry.run.id,
+              messageId: entry.message!.id,
+              messageUpdatedAt: DateTime.formatIso(entry.message!.updatedAt),
+            })),
+          }).pipe(Effect.provideService(AutomaticQueuedToolBoundary, { stored, births }));
         }),
       );
     }).pipe(

@@ -54,6 +54,16 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerTurnId: ProviderTurnId,
     messageId: MessageId,
   }),
+  // A distinct tag makes older workers fail closed instead of dropping batch members.
+  // Drain these effects with a capable worker before downgrading.
+  Schema.Struct({
+    type: Schema.Literal("provider-turn.steer-batch"),
+    providerSessionId: ProviderSessionId,
+    providerThreadId: ProviderThreadId,
+    providerTurnId: ProviderTurnId,
+    messageId: MessageId,
+    messageIds: Schema.Array(MessageId).check(Schema.isMinLength(1)),
+  }),
   Schema.Struct({
     type: Schema.Literal("provider-turn.restart"),
     providerSessionId: ProviderSessionId,

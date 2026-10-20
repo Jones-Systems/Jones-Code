@@ -1,4 +1,8 @@
 import {
+  MobileQueuedSteerBatchAction,
+  useMobileQueuedSteerBatch,
+} from "../../jones/queue/QueuedSteerBatchAction";
+import {
   ContinuationChoiceNotice,
   useMobileImportedHistoryChoice,
 } from "../../jones/importedHistory/ContinuationChoiceNotice";
@@ -76,9 +80,10 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     target.environmentId,
     target.threadId,
   );
-  const importedThread =
-    Option.getOrNull(useEnvironmentThread(target.environmentId, target.threadId).data)?.thread
-      .historyOrigin === "v1_import";
+  const projection = Option.getOrNull(
+    useEnvironmentThread(target.environmentId, target.threadId).data,
+  );
+  const importedThread = projection?.thread.historyOrigin === "v1_import";
 
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
@@ -104,10 +109,28 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
     rows: ReadonlyArray<QueueRowLayout>;
   } | null>(null);
   const [translation] = useState(() => new Animated.Value(0));
+  const batch = useMobileQueuedSteerBatch({
+    ...target,
+    projection,
+    editing: editing !== null,
+    busy: busyRunId !== null || draggedRunId !== null || resuming || importedState.busy,
+    mutationLock: {
+      acquire: () => {
+        if (busyRef.current) return false;
+        busyRef.current = true;
+        return true;
+      },
+      release: () => {
+        busyRef.current = false;
+      },
+    },
+  });
+  const queueBusy = busyRunId !== null || batch.pending;
   const queuedRuns = workflow?.queuedRuns ?? [];
   const importedQueueRef = useRef({ target, queuedRuns });
   importedQueueRef.current = { target, queuedRuns };
   const reviewImportedQueued = async (runId: RunId) => {
+    if (busyRef.current) return;
     const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
     if (entry === undefined) return;
     const snapshot = importedHistoryCanonicalJson(entry);
@@ -238,12 +261,13 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 16) + 8 }}
     >
       <ContinuationChoiceNotice environmentId={target.environmentId} threadId={target.threadId} />
+      <MobileQueuedSteerBatchAction batch={batch} />
       {workflow?.isHeld && queuedRuns.length > 0 ? (
         <View className="gap-2 py-3">
           <Text className="text-sm text-foreground-muted">Queue held after restart</Text>
           <Button
             label="Resume queue"
-            disabled={resuming || busyRunId !== null}
+            disabled={resuming || queueBusy}
             onPress={async () => {
               if (busyRef.current) return;
               busyRef.current = true;
@@ -273,7 +297,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
             ? threadDragGapOffset(layout.y, sourceLayout.y, sourceLayout.height, insertionOffset)
             : 0;
         const controls = resolveThreadQueueRowControls({
-          busy: busyRunId !== null || draggedRunId !== null,
+          busy: queueBusy || draggedRunId !== null,
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
           canReorder: workflow?.canReorder ?? false,
           index,
@@ -303,7 +327,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 // Outside the swipeable: two pans on one row would race, and
                 // the handle owns vertical movement while the row owns sideways.
                 <QueueDragHandle
-                  disabled={busyRunId !== null}
+                  disabled={queueBusy}
                   title={title}
                   canMoveUp={controls.canMoveUp}
                   canMoveDown={controls.canMoveDown}
@@ -372,14 +396,14 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                 />
               ) : null}
               <QueueRowSwipeable
-                enabled={draggedRunId === null && busyRunId === null && controls.canDismiss}
+                enabled={draggedRunId === null && !queueBusy && controls.canDismiss}
                 background={theme["--color-sheet"]}
                 onRemove={() => void act(run.id, "remove")}
               >
                 {importedThread ? (
                   <Button
                     label="Review imported history"
-                    disabled={importedState.busy || busyRunId !== null}
+                    disabled={importedState.busy || queueBusy}
                     onPress={() => {
                       void reviewImportedQueued(run.id);
                     }}

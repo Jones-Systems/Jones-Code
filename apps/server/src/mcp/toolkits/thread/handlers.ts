@@ -301,12 +301,34 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     })),
   ),
   t3_queue_promote_to_steer: writesThread((input) =>
-    dispatch(input.threadId, (common) => ({
-      ...common,
-      type: "queued-message.promote-to-steer",
-      queuedRunId: input.queuedRunId,
-      targetRunId: input.targetRunId,
-    })),
+    Effect.gen(function* () {
+      if (input.queuedRunIds === undefined)
+        return yield* dispatch(input.threadId, (common) => ({
+          ...common,
+          type: "queued-message.promote-to-steer",
+          queuedRunId: input.queuedRunId,
+          targetRunId: input.targetRunId,
+        }));
+      if (input.queuedRunIds[0] !== input.queuedRunId)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "queuedRunId must identify the first batch member.",
+        });
+      const { threads, projection } = yield* readThread(input.threadId);
+      if (threads.promoteQueuedBatch === undefined)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message: "Queued batch steering is unavailable.",
+        });
+      return yield* threads
+        .promoteQueuedBatch({
+          commandId: yield* newCommandId(),
+          threadId: projection.thread.id,
+          targetRunId: input.targetRunId,
+          queuedRunIds: input.queuedRunIds,
+        })
+        .pipe(Effect.mapError(dispatchFailure));
+    }),
   ),
   t3_thread_organize: writesThread((input) =>
     Effect.gen(function* () {

@@ -701,13 +701,13 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const effects = yield* outbox.listByCommandId(
           CommandId.make(
-            `command:queue-tool-boundary:${eligible.id}:${f.turnId}:${boundary.sequence}`,
+            `command:queue-tool-boundary:batch:${eligible.id}:${f.turnId}:${boundary.sequence}`,
           ),
         );
         assert.isTrue(
           effects.some(
             (effect) =>
-              effect.request.type === "provider-turn.steer" &&
+              effect.request.type === "provider-turn.steer-batch" &&
               effect.request.messageId === eligible.userMessageId,
           ),
         );
@@ -865,28 +865,24 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           effectTypes: ["provider-turn.start"],
           reason: "Fixture start is already represented by the running provider turn",
         });
-        for (const queuedRun of queued) {
-          const effects = yield* outbox.listByCommandId(
-            CommandId.make(
-              `command:queue-tool-boundary:${queuedRun.id}:${turnId}:${completed[0]!.sequence}`,
-            ),
-          );
-          assert.deepEqual(
-            effects.map((effect) => effect.request.type),
-            ["provider-turn.steer"],
-          );
-        }
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(
+            `command:queue-tool-boundary:batch:${queued.at(-1)!.id}:${turnId}:${completed[0]!.sequence}`,
+          ),
+        );
+        assert.deepEqual(
+          effects.map((effect) => effect.request.type),
+          ["provider-turn.steer-batch"],
+        );
         const workerId = `${prefix}-claim-worker`;
-        for (const expectedMessageId of expectedMessageIds) {
-          const effect = Option.getOrThrow(
-            yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
-          );
-          assert.equal(effect.threadId, threadId);
-          assert.equal(effect.request.type, "provider-turn.steer");
-          if (effect.request.type !== "provider-turn.steer") return;
-          assert.equal(effect.request.messageId, expectedMessageId);
-          assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
-        }
+        const effect = Option.getOrThrow(
+          yield* outbox.claimNext({ workerId, leaseDurationMs: 30_000 }),
+        );
+        assert.equal(effect.threadId, threadId);
+        assert.equal(effect.request.type, "provider-turn.steer-batch");
+        if (effect.request.type !== "provider-turn.steer-batch") return;
+        assert.deepEqual(effect.request.messageIds, expectedMessageIds);
+        assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
       }),
     { timeout: 6000 },
   );
@@ -935,11 +931,11 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         for (const run of [candidate!, tail!]) {
           assert.equal(
             after.runs.find((entry) => entry.id === run.id)?.status,
-            source === "owner" ? "cancelled" : "queued",
+            source !== "scheduled" ? "cancelled" : "queued",
           );
         }
         assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
-        if (source === "owner") {
+        if (source !== "scheduled") {
           assert.equal(
             after.messages.find((message) => message.text === "Candidate")?.runId,
             f.run.id,

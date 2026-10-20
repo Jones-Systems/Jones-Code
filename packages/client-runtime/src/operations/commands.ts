@@ -1,3 +1,4 @@
+export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import {
   type ThreadLinkedPullRequest,

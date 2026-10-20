@@ -1,3 +1,4 @@
+import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
 import {
@@ -2885,7 +2886,7 @@ export const OrchestrationV2Command = Schema.Union([
     manualContinuationOfRunId: Schema.optional(RunId),
     usageLimitRecoveryRequestId: Schema.optional(CommandId),
     deliveryIntent: Schema.optional(Schema.Literals(["auto", "steer", "restart"])),
-    /** Explicitly opt an owner follow-up into automatic tool-boundary delivery if queued. */
+    /** Explicitly opt a follow-up into automatic tool-boundary delivery if queued. */
     queuedToolBoundaryEligible: Schema.optional(Schema.Boolean),
     delegatedCompletion: Schema.optional(
       Schema.Struct({
@@ -2953,6 +2954,7 @@ export const OrchestrationV2Command = Schema.Union([
     reason: Schema.optional(Schema.String),
     holdQueue: Schema.optional(Schema.Boolean),
   }),
+  QueuedSteerBatchCommand,
   Schema.Struct({
     type: Schema.Literal("queued-message.promote-to-steer"),
     commandId: CommandId,

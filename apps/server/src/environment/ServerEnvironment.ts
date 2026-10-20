@@ -1,3 +1,4 @@
+import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
 import { THREAD_ATTENTION_CAPABILITY } from "@t3tools/contracts/jones/threadAttention";
 import {
   EnvironmentId,
@@ -222,6 +223,7 @@ export const make = Effect.gen(function* () {
     ...(jonesSource === undefined ? {} : { jonesSource }),
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
+      queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS,
       queueDispatch: QUEUE_DISPATCH_CAPABILITY,
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       workQueueMetadata: true,

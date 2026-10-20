@@ -1,3 +1,5 @@
+import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
+import { queuedSteerBatchCandidates } from "../jones/orchestration/QueuedSteerBatch.ts";
 import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
@@ -64,7 +66,7 @@ import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as ServerSettings from "../serverSettings.ts";
 
-export type ThreadManagementSendMode = "auto" | "queue" | "steer" | "restart";
+export type ThreadManagementSendMode = "auto" | "queue" | "separate_turn" | "steer" | "restart";
 
 export interface ThreadManagementProvenance {
   readonly createdBy: OrchestrationV2Actor;
@@ -337,6 +339,15 @@ export interface ThreadManagementServiceShape {
     command: OrchestrationV2ServerCommand,
   ) => Effect.Effect<
     Orchestrator.OrchestratorV2DispatchResult,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
+  readonly promoteQueuedBatch?: (input: {
+    readonly commandId: CommandId;
+    readonly threadId: ThreadId;
+    readonly targetRunId: RunId;
+    readonly queuedRunIds: ReadonlyArray<RunId>;
+  }) => Effect.Effect<
+    { readonly sequence: number; readonly promotedCount: number; readonly remainingCount: number },
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   readonly dispatchLegacyFailureDelete?: (
@@ -801,6 +812,65 @@ const make = Effect.gen(function* () {
         ),
       );
 
+  const promoteQueuedBatch: NonNullable<ThreadManagementServiceShape["promoteQueuedBatch"]> = (
+    input,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* orchestrator.getThreadRecords(
+        input.threadId,
+        [
+          "runs",
+          "messages",
+          "nodes",
+          "attempts",
+          "providerThreads",
+          "providerSessions",
+          "providerTurns",
+          "runtimeRequests",
+        ],
+        { messageRoles: ["user"] },
+      );
+      const candidates = queuedSteerBatchCandidates(projection, input.targetRunId).slice(
+        0,
+        input.queuedRunIds.length,
+      );
+      const reject = (cause: string) =>
+        new Orchestrator.OrchestratorDispatchError({
+          commandId: input.commandId,
+          commandType: "queued-message.promote-batch-to-steer",
+          cause,
+        });
+      if (
+        candidates.length !== input.queuedRunIds.length ||
+        candidates.some((candidate, index) => candidate.run.id !== input.queuedRunIds[index])
+      )
+        return yield* reject("Refresh the queue and select its leading messages in order.");
+      const plan = planQueuedSteerBatch(
+        candidates.map((candidate) => ({
+          message: candidate.message!,
+          eligible: candidate.eligible,
+        })),
+      );
+      if (plan.count === 0)
+        return yield* reject(`${plan.reason}: use the first row's individual Steer action.`);
+      const result = yield* dispatch({
+        type: "queued-message.promote-batch-to-steer",
+        commandId: input.commandId,
+        threadId: input.threadId,
+        targetRunId: input.targetRunId,
+        items: candidates.slice(0, plan.count).map((entry) => ({
+          queuedRunId: entry.run.id,
+          messageId: entry.message!.id,
+          messageUpdatedAt: DateTime.formatIso(entry.message!.updatedAt),
+        })),
+      });
+      return {
+        sequence: result.sequence,
+        promotedCount: plan.count,
+        remainingCount: plan.remainingCount,
+      };
+    });
+
   const listProjectThreads: ThreadManagementServiceShape["listProjectThreads"] = (input) =>
     orchestrator.getShellSnapshot({ projectId: input.projectId, location: "active" }).pipe(
       Effect.mapError(
@@ -852,7 +922,10 @@ const make = Effect.gen(function* () {
         dispatchMode = { type: "steer_active", targetRunId: steerableRun.id };
       } else {
         dispatchMode = {
-          type: input.mode === "queue" ? "queue_after_active" : "start_immediately",
+          type:
+            input.mode === "queue" || input.mode === "separate_turn"
+              ? "queue_after_active"
+              : "start_immediately",
         };
       }
 
@@ -867,6 +940,12 @@ const make = Effect.gen(function* () {
         attachments: input.attachments,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
         dispatchMode,
+        ...(input.creationSource === "mcp" &&
+        input.senderThreadId !== undefined &&
+        input.scheduledTaskId === undefined &&
+        (input.mode === "queue" || input.mode === "auto")
+          ? { queuedToolBoundaryEligible: true }
+          : {}),
         createdBy: input.createdBy,
         creationSource: input.creationSource,
       });
@@ -1228,6 +1307,7 @@ const make = Effect.gen(function* () {
         Effect.andThen(orchestrator.searchThread(input)),
       ),
     dispatch,
+    promoteQueuedBatch,
     getThreadHistoryPage: (threadId, cursor, throughEntryId, conversationOnly) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(
