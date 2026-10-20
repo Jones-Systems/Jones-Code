@@ -10,6 +10,20 @@ import {
 } from "./orchestrationInstructions.ts";
 
 describe("T3 orchestration provider instructions", () => {
+  it("routes actual owner actions to durable open input without plan mode or duplicate permissions", () => {
+    for (const text of [
+      "t3_request_user_response",
+      "Free text is always available",
+      "omit choices unless real alternatives exist",
+      "Only claim it was created after acceptance",
+      "Do not create a request for finished results",
+      "never enter app/provider Plan mode",
+      "Native permission prompts remain authoritative",
+      "Codex may use native asynchronous user input",
+    ]) {
+      assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, text);
+    }
+  });
   it("distinguishes delegated subagents from ordinary top-level threads", () => {
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Use `delegate_task`");
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "ordinary top-level T3 conversations");
