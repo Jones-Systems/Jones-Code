@@ -10,7 +10,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Layer from "effect/Layer";
-import migration from "../persistence/Migrations/116_JonesRemoteDelegationIntents.ts";
+import migration from "../persistence/Migrations/117_JonesRemoteDelegationIntents.ts";
 import type * as Store from "./IntentStore.ts";
 export const commandId = CommandId.make("remote:intent:test");
 export const envelope: Store.IntentEnvelope = {

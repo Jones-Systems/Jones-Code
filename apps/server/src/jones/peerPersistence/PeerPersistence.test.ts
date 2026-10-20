@@ -23,8 +23,8 @@ const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const assertJonesPeerSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   assert.deepStrictEqual(
-    yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = 118`,
-    [{ migration_id: 118, name: "PeerEnvironmentLinks" }],
+    yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = 119`,
+    [{ migration_id: 119, name: "PeerEnvironmentLinks" }],
   );
   assert.deepStrictEqual(
     yield* sql`SELECT name FROM sqlite_master WHERE name = 'peer_environment_links'`,
