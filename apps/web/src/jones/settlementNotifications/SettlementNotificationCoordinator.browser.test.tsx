@@ -216,6 +216,80 @@ afterEach(async () => {
 });
 
 describe("persistent settlement notification", () => {
+  it("removes saved child notices and only shows parent and fork settlements after reload", async () => {
+    storage.clear();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    const parent = thread("parent", 200);
+    const children = ["mcp-child", "provider-child", "nested-child"].map((id, index) => ({
+      ...thread(id, 300 + index),
+      createdBy: "agent" as const,
+      creationSource: index === 1 ? ("provider" as const) : ("mcp" as const),
+      lineage: {
+        rootThreadId: parent.id,
+        parentThreadId: index === 2 ? ThreadId.make("mcp-child") : parent.id,
+        relationshipToParent: "subagent" as const,
+      },
+    }));
+    const saved = [parent, ...children].map((row) => ({
+      ...entry(row.id, env),
+      title: row.title,
+    }));
+    await store.saveInbox(inbox(saved));
+    state.controller = createSettlementNotificationController({ store });
+    state.environmentIds = [env];
+    const shellAtom = Atom.make(shell(1, [parent, ...children]));
+    state.shellAtom = shellAtom;
+    state.resolveOrigins.mockImplementation(async (arrivals) =>
+      arrivals.map(() => ({ origin: "other" as const })),
+    );
+    await render();
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    expect(state.controller.getSnapshot().visible.map((row) => row.threadId)).toEqual([parent.id]);
+    expect(button("parent")).toBeTruthy();
+    for (const child of children) expect(document.body.textContent).not.toContain(child.title);
+
+    const fork = {
+      ...thread("fork", 400),
+      createdAt: DateTime.makeUnsafe(400),
+      lineage: { ...children[0]!.lineage, relationshipToParent: "fork" as const },
+    };
+    await act(async () => {
+      registry.set(shellAtom, shell(2, [parent, ...children, fork]));
+    });
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    await act(async () => root.unmount());
+    mounted = false;
+    state.controller = createSettlementNotificationController({ store });
+    root = createRoot(container);
+    await render();
+    await act(async () => {
+      await state.controller!.flush();
+    });
+    await act(async () => button("Show settled threads").click());
+    expect(button("parent")).toBeTruthy();
+    await act(async () => button("fork").click());
+    expect(state.navigate).toHaveBeenLastCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: env, threadId: fork.id },
+    });
+    for (const child of children) expect(document.body.textContent).not.toContain(child.title);
+    const persisted = JSON.parse((await store.loadInbox())!);
+    expect(persisted.acknowledged).toEqual(
+      saved
+        .filter((row) => row.threadId !== parent.id)
+        .map((row) => row.id)
+        .sort(),
+    );
+    expect(state.controller.getSnapshot().visible.map((row) => row.threadId)).toEqual([
+      fork.id,
+      parent.id,
+    ]);
+  });
+
   it.each([375, 1280])("keeps 45 settled threads in one scroll area at %ipx", async (width) => {
     await page.viewport(width, 800);
     const entries = Array.from({ length: 45 }, (_, index) => ({
