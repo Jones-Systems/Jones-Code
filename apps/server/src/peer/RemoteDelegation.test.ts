@@ -9,6 +9,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2Run,
+  type OrchestratorMcpFailure,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -542,6 +543,7 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
+  observeStopFailure?: (error: OrchestratorMcpFailure) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -566,11 +568,25 @@ const makeLaptop = (
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
       Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
     );
+    const layerForwarding =
+      observeStopFailure === undefined
+        ? PeerForwarding.layer
+        : Layer.effect(
+            PeerForwarding.PeerForwarding,
+            Effect.gen(function* () {
+              const forwarding = yield* PeerForwarding.PeerForwarding;
+              return {
+                ...forwarding,
+                interruptThread: (...args: Parameters<typeof forwarding.interruptThread>) =>
+                  forwarding.interruptThread(...args).pipe(Effect.tapError(observeStopFailure)),
+              };
+            }),
+          ).pipe(Layer.provide(PeerForwarding.layer));
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
-          Layer.provideMerge(PeerForwarding.layer),
+          Layer.provideMerge(layerForwarding),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
@@ -1333,7 +1349,10 @@ it.effect(
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
         const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
+        const stopRefused = yield* Deferred.make<OrchestratorMcpFailure>();
+        const a = yield* makeLaptop(database, offers, undefined, (error) =>
+          Deferred.succeed(stopRefused, error).pipe(Effect.asVoid),
+        );
         yield* linkTo(a.links, b, "full-access");
         yield* seedParent(a);
         const delegated = yield* delegateToBox(a);
@@ -1350,22 +1369,18 @@ it.effect(
           commandId: CommandId.make("command:stop:laptop-parent-lowered"),
         });
 
-        yield* a.threads
-          .streamStoredEventsFrom({
-            threadId: parentThreadId,
-            afterSequence: 0,
-            eventType: "subagent.updated",
-          })
-          .pipe(
-            Stream.filter(
-              (stored) =>
-                stored.event.type === "subagent.updated" &&
-                stored.event.payload.id === delegated.taskId &&
-                stored.event.payload.remoteChild?.stopCount === 1,
+        const refusal = yield* Deferred.await(stopRefused).pipe(
+          Effect.timeout(Duration.seconds(10)),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.die(
+              "The follower did not observe a remote stop refusal while modes were lowered.",
             ),
-            Stream.runHead,
-            Effect.timeout(Duration.seconds(10)),
-          );
+          ),
+        );
+        expect(refusal.code).toBe("runtime_mode_escalation_denied");
+        expect(refusal.message).toContain(
+          "full-access is broader than parent mode approval-required",
+        );
         const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
           (task) => task.id === delegated.taskId,
         )!;
@@ -1382,8 +1397,24 @@ it.effect(
           threadId: parentThreadId,
           runtimeMode: "full-access",
         });
-        yield* Deferred.await(thread.interruptedOnce).pipe(Effect.timeout(Duration.seconds(10)));
-        expect((yield* stoppedThere(a, delegated.taskId))?.remoteChild?.stoppedThere).toBe(true);
+        yield* Deferred.await(thread.interruptedOnce).pipe(
+          Effect.timeout(Duration.seconds(10)),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.die(
+              "The original remote child was not stopped after its parent's modes were restored.",
+            ),
+          ),
+        );
+        const acknowledged = yield* stoppedThere(a, delegated.taskId, 0).pipe(
+          Effect.timeout(Duration.seconds(10)),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.die("The original remote child's stop was not durably acknowledged."),
+          ),
+        );
+        expect(acknowledged?.remoteChild).toMatchObject({
+          threadId: pending.remoteChild!.threadId,
+          stoppedThere: true,
+        });
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
 );
@@ -1419,7 +1450,7 @@ it.effect("stopping the parent stops its task there", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-/** Waits until the task here records that the `stopCount`th Stop after its result reached there. */
+/** Waits for the recorded Stop acknowledgment; zero names the initial stop with no counter. */
 const stoppedThere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   taskId: NodeId,
@@ -1437,7 +1468,7 @@ const stoppedThere = (
           stored.event.type === "subagent.updated" &&
           stored.event.payload.id === taskId &&
           stored.event.payload.remoteChild?.stoppedThere === true &&
-          stored.event.payload.remoteChild.stopCount === stopCount,
+          (stored.event.payload.remoteChild.stopCount ?? 0) === stopCount,
       ),
       Stream.runHead,
       Effect.map((stored) =>
