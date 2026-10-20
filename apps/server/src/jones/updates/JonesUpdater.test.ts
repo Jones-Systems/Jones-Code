@@ -255,10 +255,14 @@ describe("exact unaccepted stage retirement", () => {
 
 describe("exact-source staging for this host", () => {
   // Each case scripts what the Actions check returns for the requested source.
-  function exact(check: (targetSource: string | undefined) => Promise<JonesActionsCheckResult>) {
+  function exact(
+    check: (targetSource: string | undefined) => Promise<JonesActionsCheckResult>,
+    download: (artifactId: number) => Promise<void> = async () => {},
+  ) {
     const effects: string[] = [];
     const checks: Array<string | undefined> = [];
     const downloads: number[] = [];
+    const phases: string[] = [];
     const updater = new JonesUpdater(
       {
         initialState: {
@@ -280,6 +284,9 @@ describe("exact-source staging for this host", () => {
         install: async () => {
           effects.push("install");
         },
+        stateChanged: (state) => {
+          phases.push(state.phase);
+        },
       },
       {
         check: async (input) => {
@@ -288,12 +295,22 @@ describe("exact-source staging for this host", () => {
         },
         stage: async (staged) => {
           downloads.push(staged.artifactId);
+          await download(staged.artifactId);
           return { receipt: { sha256: "e".repeat(64) } } as JonesStagedArtifact;
         },
       },
     );
-    return { updater, effects, checks, downloads };
+    return { updater, effects, checks, downloads, phases };
   }
+  function gate() {
+    const held = { release: () => {} };
+    const promise = new Promise<void>((resolve) => (held.release = resolve));
+    return { promise, release: () => held.release() };
+  }
+  /** Lets every already-queued promise continuation run. */
+  const settle = async () => {
+    for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  };
   const offered = async (): Promise<JonesActionsCheckResult> => ({
     state: "available",
     candidate,
@@ -323,23 +340,182 @@ describe("exact-source staging for this host", () => {
     expect(f.effects).toEqual([]);
   });
 
-  it("ignores a candidate left by an earlier check when this check is skipped", async () => {
-    const gate = { release: () => {} };
-    const hold = new Promise<void>((resolve) => (gate.release = resolve));
-    let call = 0;
-    const f = exact(async () => {
-      if (call++ === 1) await hold;
+  it("refuses to start a check or stage while a download owns the host", async () => {
+    const hold = gate();
+    const f = exact(offered, () => hold.promise);
+    await f.updater.check();
+    const downloading = f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    await settle();
+    const result = await f.updater.stageExact(candidate.source);
+    expect(result.phase).toBe("downloading");
+    expect(f.checks).toEqual([undefined]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    hold.release();
+    expect((await downloading).phase).toBe("staged");
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("waits for an in-flight latest-main check, then stages only its own target run", async () => {
+    const hold = gate();
+    const latest = { ...candidate, artifactId: 77 };
+    const f = exact(async (target) => {
+      if (target === undefined) {
+        await hold.promise;
+        return { state: "available", candidate: latest };
+      }
       return { state: "available", candidate };
     });
-    // The first check populates the offered candidate with the target's own source, then a
-    // second one stays in flight so the exact request's check is skipped as busy.
+    const background = f.updater.check();
+    await settle();
+    const staging = f.updater.stageExact(candidate.source);
+    await settle();
+    // The exact request never reads the running latest-main check and has not started its own.
+    expect(f.checks).toEqual([undefined]);
+    hold.release();
+    const staged = await staging;
+    await background;
+    expect(f.checks).toEqual([undefined, candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(staged).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
+  });
+
+  it("never stages an in-flight run's candidate when the target's own run differs", async () => {
+    for (const own of [
+      { state: "available", candidate: { ...candidate, artifactId: 9, source: "f".repeat(40) } },
+      { state: "no-new" },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 0 },
+      { state: "building", retryAfterMs: 0 },
+    ] as const) {
+      const hold = gate();
+      // The latest-main run offers the target's own source; the target's run says otherwise.
+      const f = exact(async (target) => {
+        if (target === undefined) {
+          await hold.promise;
+          return { state: "available", candidate };
+        }
+        return own;
+      });
+      const background = f.updater.check();
+      await settle();
+      const staging = f.updater.stageExact(candidate.source);
+      hold.release();
+      const result = await staging;
+      await background;
+      expect(f.checks).toEqual([undefined, candidate.source]);
+      expect(result.stagedHandle).toBeUndefined();
+      expect(f.downloads).toEqual([]);
+      expect(f.effects).toEqual([]);
+    }
+  });
+
+  it("joins concurrent same-target checks into one run with one completed snapshot", async () => {
+    const hold = gate();
+    const f = exact(async () => {
+      await hold.promise;
+      return { state: "available", candidate };
+    });
+    const first = f.updater.check();
+    await settle();
+    const joined = [f.updater.check(), f.updater.check()];
+    await settle();
+    hold.release();
+    const results = await Promise.all([first, ...joined]);
+    expect(f.checks).toEqual([undefined]);
+    expect(results[1]).toEqual(results[0]);
+    expect(results[2]).toEqual(results[0]);
+    expect(results[0]).toMatchObject({ phase: "available" });
+    expect(f.phases.filter((phase) => phase === "available")).toHaveLength(1);
+  });
+
+  it("joins concurrent exact requests for one target into one check and one download", async () => {
+    const hold = gate();
+    const f = exact(async () => {
+      await hold.promise;
+      return { state: "available", candidate };
+    });
+    const requests = [
+      f.updater.stageExact(candidate.source),
+      f.updater.stageExact(candidate.source),
+    ];
+    await settle();
+    hold.release();
+    const results = await Promise.all(requests);
+    expect(f.checks).toEqual([candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(f.effects).toEqual(["stage"]);
+    expect(results.map((result) => result.stagedHandle ?? result.phase)).toContain("fixed-handle");
+    expect(f.updater.snapshot()).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+  });
+
+  it("sequences concurrent checks for different targets one run at a time", async () => {
+    const holds = [gate(), gate()];
+    const pending = [...holds];
+    const f = exact(async () => {
+      await pending.shift()!.promise;
+      return { state: "no-new" };
+    });
+    const first = f.updater.check();
+    await settle();
+    const second = f.updater.check("f".repeat(40));
+    const third = f.updater.check("f".repeat(40));
+    await settle();
+    expect(f.checks).toEqual([undefined]);
+    holds[0]!.release();
+    await first;
+    await settle();
+    expect(f.checks).toEqual([undefined, "f".repeat(40)]);
+    holds[1]!.release();
+    await Promise.all([second, third]);
+    expect(f.checks).toEqual([undefined, "f".repeat(40)]);
+  });
+
+  it("keeps the last settled result visible while a repeat check runs", async () => {
+    const hold = gate();
+    let calls = 0;
+    const f = exact(async () => {
+      if (calls++ === 1) await hold.promise;
+      return calls === 1 ? { state: "available", candidate } : { state: "no-new" };
+    });
     await f.updater.check();
-    const pending = f.updater.check();
-    const result = await f.updater.stageExact(candidate.source);
-    expect(result.message).toContain("not available from the current check");
+    expect(f.phases).toEqual(["checking", "available"]);
+    const revision = f.updater.snapshot().revision ?? 0;
+    expect(revision).toBeGreaterThan(0);
+    const repeat = f.updater.check();
+    await settle();
+    // No transitional state: the prior result, provenance and revision stay as they were.
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "available",
+      revision,
+      provenance: { sourceSha: candidate.source },
+    });
+    expect(f.phases).toEqual(["checking", "available"]);
+    // The latch still refuses a download while the check owns the host.
+    await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
     expect(f.downloads).toEqual([]);
-    gate.release();
-    await pending;
+    hold.release();
+    expect(await repeat).toMatchObject({ phase: "no-new", revision: revision + 1 });
+    expect(f.phases).toEqual(["checking", "available", "no-new"]);
+  });
+
+  it("starts a fresh run after a failed one instead of replaying its failure", async () => {
+    let calls = 0;
+    const f = exact(async () => {
+      if (calls++ === 0) throw new Error("Actions unavailable");
+      return { state: "available", candidate };
+    });
+    expect(await f.updater.check()).toMatchObject({
+      phase: "blocked",
+      message: "Actions unavailable",
+    });
+    expect(await f.updater.check()).toMatchObject({ phase: "available" });
+    expect(f.checks).toEqual([undefined, undefined]);
   });
 
   it("reports an already-running source as no-new instead of downloading", async () => {
