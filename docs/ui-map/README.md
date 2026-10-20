@@ -20,6 +20,9 @@ services need separate checks; a shared-renderer result cannot qualify them.
 | [Thread/chat](thread-chat.md) | Index/empty, draft, server thread, loading/missing; direct routes, sidebar, palette/shortcuts, links, notifications and reopen | Draft and server routes share ChatView; sidebar, composer, timeline and right-panel consumers are linked in the entry | Source-discovered; runtime `unverified` |
 | [Settings](settings.md)       | General and all discovered settings siblings; direct routes, navigation/search, scope selectors and contextual links           | Shared shell, settings rows/search targets and workspace header/container consumers are linked in the entry           | Source-discovered; runtime `unverified` |
 
+The [host-status companion entry](host-status.md) covers telemetry continuity
+across thread, draft, panel and Settings navigation, with focused runtime evidence.
+
 Discovery checked on **2026-10-20** against Jones Code source
 `e7527d88ef438daa443e49a84d59e9891415918b`: routes, navigation callers, shared
 components, development instructions and verification skills. The central

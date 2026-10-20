@@ -2,8 +2,7 @@
 
 [Map index and shared recipes](README.md). Purpose: reach a project's draft or
 thread and inspect its conversation without confusing a local draft with a
-server-owned thread. The entry-point table is source-discovered and **unverified**;
-focused runtime evidence is recorded separately below.
+server-owned thread. All journeys below are source-discovered and **unverified**.
 
 ## Source, states and layout
 
@@ -50,10 +49,6 @@ Known shared consumers:
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
-- [GlobalHostStatusIndicators](../../apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.tsx)
-  serves both draft and server chat headers. Its gateway selection and retained
-  samples belong to the app session, independently of the displayed thread's
-  environment. Samples still expire 30 seconds after collection.
 
 ## Entry points and journeys
 
@@ -81,38 +76,6 @@ only overlays opened by the journey. Preserve state for inspection.
 | Chat to Settings                                              | Follow provider/model setup, scheduled-task or connection links described in [Settings entry paths](settings.md#entry-paths-and-journeys).                                                                                                                                                                                                      | Correct settings section and scope; use Escape/back navigation to return to the fixture thread.                                                                                                  |
 
 ## Evidence record
-
-### Host status navigation
-
-Use an isolated app with a configured telemetry gateway or task-owned synthetic
-`/api/host-status` responses. After all four chips show readings, delay the next
-response and switch between a server thread and a draft using the sidebar and
-**New thread**. Fresh values should remain visible during the pending response;
-navigation within the polling interval should not issue another telemetry
-request. Also hide/show the tab within that interval, open/close a chat panel,
-and navigate to Settings and back. Check source removal separately: it must
-discard retained readings. Hold a response beyond the sample's 30-second
-deadline to verify that retained values become unavailable rather than staying
-apparently current. Restore the fixture route and remove only task-owned response
-overrides when finished.
-
-Verified on **2026-10-20** in the shared web renderer: server-thread to draft
-navigation, the details panel toggle, and Settings/back retained all four
-readings without a gray frame. The first thread-to-draft switch added no HTTP
-request. The isolated fixture supplied four synthetic host samples with a
-1.2-second response delay; a DOM mutation observer checked the chips during
-navigation. Browser viewport was 1280×800, device scale 2, light theme. The
-candidate was served by `vp run dev` from base
-`ae750c43299f6d66a7406abd890143d26b1f15f3`; the combined Git diff of the three
-telemetry source files against that base has SHA-256
-`5032ad7944f70da7190090682cc38bc6508f50707d8f8f123c307dec86fe150c`.
-The change PR retains before/after images and recordings with the final commit.
-This source/dev-server correspondence is not packaged-build attestation.
-Visibility, expiry, source removal and cancellation have focused automated
-coverage; native shells, real cross-host transports, and other entry paths
-retain their separate verification needs.
-
-### Original source inventory
 
 Source check: **2026-10-20**, Jones Code
 `e7527d88ef438daa443e49a84d59e9891415918b`. Route and caller inspection found the
