@@ -1,5 +1,5 @@
 import { SettingsGroup } from "./SettingsGroup";
-import { ProviderOrderControls } from "~/jones/settings/ProviderOrderControls";
+import { SortableProviderRows } from "~/jones/settings/SortableProviderRows";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
   AuthSettingsWriteScope,
@@ -1065,7 +1065,12 @@ export function EnvironmentProviderSettings({
               className="@min-[48rem]/providers:min-h-0 @min-[48rem]/providers:flex-1"
             >
               <div className="divide-y divide-border/50">
-                {rows.map((row) => renderProviderInstance(row, "list"))}
+                <SortableProviderRows
+                  environmentId={environmentId}
+                  rows={rows}
+                  readOnly={readOnly}
+                  renderRow={(row) => renderProviderInstance(row, "list")}
+                />
                 {!readOnly ? (
                   <button
                     type="button"
@@ -1083,14 +1088,7 @@ export function EnvironmentProviderSettings({
           <div className="min-w-0 @min-[48rem]/providers:min-h-0">
             {selectedRow ? (
               <ScrollArea scrollFade chainVerticalScroll className="@min-[48rem]/providers:h-full">
-                <div className="space-y-6 p-4">
-                  <ProviderOrderControls
-                    environmentId={environmentId}
-                    instanceId={selectedRow.instanceId}
-                    readOnly={readOnly}
-                  />
-                  {renderProviderInstance(selectedRow, "editor")}
-                </div>
+                <div className="space-y-6 p-4">{renderProviderInstance(selectedRow, "editor")}</div>
               </ScrollArea>
             ) : (
               <div className="p-6 text-sm text-muted-foreground">

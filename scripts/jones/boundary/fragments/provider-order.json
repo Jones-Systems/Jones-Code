@@ -4,14 +4,15 @@
   "jonesOwnedPaths": [
     "apps/web/src/jones/settings/providerOrder.ts",
     "apps/web/src/jones/settings/providerOrder.test.ts",
-    "apps/web/src/jones/settings/ProviderOrderControls.tsx"
+    "apps/web/src/jones/settings/SortableProviderRows.tsx",
+    "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx"
   ],
   "hookPaths": ["apps/web/src/components/settings/ProviderSettingsPanel.tsx"],
-  "tombstones": [],
+  "tombstones": ["apps/web/src/jones/settings/ProviderOrderControls.tsx"],
   "allowedImports": [
     {
       "from": "apps/web/src/components/settings/ProviderSettingsPanel.tsx",
-      "to": "apps/web/src/jones/settings/ProviderOrderControls.tsx"
+      "to": "apps/web/src/jones/settings/SortableProviderRows.tsx"
     }
   ]
 }

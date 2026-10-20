@@ -1278,7 +1278,10 @@
     "apps/server/src/mcp/McpToolAccess.ts": "hook",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/mcp/toolkits/project/handlers.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/serverConfigProjection.ts": "accepted-shared",
+    "packages/client-runtime/src/state/serverConfigProjection.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/settings/ProviderOrderControls.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
