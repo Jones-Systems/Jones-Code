@@ -91,38 +91,35 @@ export function SidebarWorkModePill() {
     setError(null);
     const requested =
       retry?.targets ?? eligible.map(({ environmentId, label }) => ({ environmentId, label }));
-    try {
-      const results = await Promise.allSettled(
-        requested.map(async ({ environmentId }) => {
-          const target = targets.find((candidate) => candidate.environmentId === environmentId);
-          if (!target || target.unavailable !== null) return false;
-          if (target.enabled === nextEnabled) return true;
-          const access = readEnvironmentScopeAccess(environmentId, AuthSettingsWriteScope);
-          if (access.status === "scope_missing" || access.status === "signed_out") return false;
-          const result = await updateSettings({
-            environmentId,
-            input: { patch: { workModeEnabled: nextEnabled } },
-          });
-          return result._tag === "Success" && result.value.workModeEnabled === nextEnabled;
-        }),
+    const results = await Promise.allSettled(
+      requested.map(async ({ environmentId }) => {
+        const target = targets.find((candidate) => candidate.environmentId === environmentId);
+        if (!target || target.unavailable !== null) return false;
+        if (target.enabled === nextEnabled) return true;
+        const access = readEnvironmentScopeAccess(environmentId, AuthSettingsWriteScope);
+        if (access.status === "scope_missing" || access.status === "signed_out") return false;
+        const result = await updateSettings({
+          environmentId,
+          input: { patch: { workModeEnabled: nextEnabled } },
+        });
+        return result._tag === "Success" && result.value.workModeEnabled === nextEnabled;
+      }),
+    );
+    const failed = requested.filter(
+      (_, index) => results[index]?.status !== "fulfilled" || results[index].value !== true,
+    );
+    if (failed.length > 0) {
+      const saved = requested.filter((target) => !failed.includes(target));
+      setError(
+        `Could not save Work mode on ${failed.map(({ label }) => label).join(", ")}.${saved.length > 0 ? ` Saved on ${saved.map(({ label }) => label).join(", ")}.` : ""} Reconnect to confirm the saved state before retrying.`,
       );
-      const failed = requested.filter(
-        (_, index) => results[index]?.status !== "fulfilled" || results[index].value !== true,
-      );
-      if (failed.length > 0) {
-        const saved = requested.filter((target) => !failed.includes(target));
-        setError(
-          `Could not save Work mode on ${failed.map(({ label }) => label).join(", ")}.${saved.length > 0 ? ` Saved on ${saved.map(({ label }) => label).join(", ")}.` : ""} Reconnect to confirm the saved state before retrying.`,
-        );
-        // A failed disable must retry off, even though the remaining state is mixed.
-        setRetry({ enabled: nextEnabled, targets: failed });
-      } else {
-        setRetry(null);
-      }
-    } finally {
-      pendingRef.current = false;
-      setPending(false);
+      // A failed disable must retry off, even though the remaining state is mixed.
+      setRetry({ enabled: nextEnabled, targets: failed });
+    } else {
+      setRetry(null);
     }
+    pendingRef.current = false;
+    setPending(false);
   }
 
   return (
