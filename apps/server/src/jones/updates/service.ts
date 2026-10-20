@@ -42,13 +42,14 @@ import {
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
-import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
 import * as Launcher from "../../cloud/serviceLauncherClient.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 
 export class JonesUpdates extends Context.Service<
@@ -104,6 +105,8 @@ export const layer = Layer.effect(
     const selfUpdate = yield* SelfUpdate.ServerSelfUpdate;
     const launcher = yield* Launcher.ServiceLauncherClient;
     const startup = yield* Startup.ServerRuntimeStartup;
+    const admissionFence = yield* UpdateAdmissionFence.UpdateAdmissionFence;
+    const orchestrator = yield* Effect.serviceOption(OrchestratorV2);
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
@@ -554,40 +557,76 @@ export const layer = Layer.effect(
         const operationId =
           input.operationId ??
           (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const installQualified = qualifiedSelfUpdate.installQualified;
+        const admit = input.admit;
         const accepted = await run(
-          qualifiedSelfUpdate.installQualified(
-            { ...input, ...(operationId === undefined ? {} : { operationId }) },
-            undefined,
-            (staged) =>
+          UpdateAdmissionFence.fencedInstall({
+            fence: admissionFence,
+            mode: input.origin === "fleet" ? "automatic" : "manual",
+            ...(admit === undefined
+              ? {}
+              : {
+                  finalCheck: Effect.promise(() =>
+                    admit().catch(() => "Running work on this host could not be read."),
+                  ),
+                }),
+            launcherHolds:
               operationId === undefined
-                ? Effect.void
-                : startup.capturePlannedUpdate === undefined
-                  ? Effect.fail(
-                      new ServerSelfUpdateError({
-                        reason: "Planned update continuity is not configured.",
-                      }),
-                    )
-                  : admitted(input.admit).pipe(
-                      Effect.andThen(
-                        startup
-                          .capturePlannedUpdate({
-                            operationId,
-                            binding: operationBinding(staged),
-                            continueRunningThreads: input.continueRunningThreads === true,
-                          })
-                          .pipe(
-                            Effect.mapError(
-                              (cause) =>
-                                new ServerSelfUpdateError({
-                                  reason: "Could not capture planned update continuity.",
-                                  cause,
-                                }),
-                            ),
-                          ),
-                      ),
+                ? Effect.succeed(false)
+                : reconcileOperation(operationId).pipe(
+                    Effect.map(
+                      (receipt) =>
+                        receipt.state === "pending" ||
+                        receipt.state === "committed" ||
+                        receipt.state === "rolled-back",
                     ),
-            (step) => Effect.sync(() => reportStep?.(step)),
-          ),
+                  ),
+            // Queued runs the fence refused to start stay queued; start them again here.
+            ...(Option.isNone(orchestrator)
+              ? {}
+              : {
+                  reopened: orchestrator.value.resumeQueuedRuns.pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("Could not restart queued runs after an update stopped", {
+                        cause,
+                      }),
+                    ),
+                    Effect.asVoid,
+                  ),
+                }),
+            install: ({ onPrepared, onAccepted }) =>
+              installQualified(
+                { ...input, ...(operationId === undefined ? {} : { operationId }) },
+                () => onAccepted,
+                (staged) =>
+                  onPrepared(
+                    operationId === undefined
+                      ? Effect.void
+                      : startup.capturePlannedUpdate === undefined
+                        ? Effect.fail(
+                            new ServerSelfUpdateError({
+                              reason: "Planned update continuity is not configured.",
+                            }),
+                          )
+                        : startup
+                            .capturePlannedUpdate({
+                              operationId,
+                              binding: operationBinding(staged),
+                              continueRunningThreads: input.continueRunningThreads === true,
+                            })
+                            .pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new ServerSelfUpdateError({
+                                    reason: "Could not capture planned update continuity.",
+                                    cause,
+                                  }),
+                              ),
+                            ),
+                  ),
+                (step) => Effect.sync(() => reportStep?.(step)),
+              ),
+          }),
         );
         return {
           ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
@@ -731,22 +770,3 @@ export const layer = Layer.effect(
     });
   }),
 );
-
-/** Fails before the launcher is asked when an automatic activation is no longer admitted. */
-function admitted(admit: (() => Promise<string | undefined>) | undefined) {
-  if (admit === undefined) return Effect.void;
-  return Effect.promise(() =>
-    admit().catch(() => "Running work on this host could not be read."),
-  ).pipe(
-    Effect.flatMap((reason) =>
-      reason === undefined
-        ? Effect.void
-        : Effect.fail(
-            new ServerSelfUpdateError({
-              reason: `The automatic update was withdrawn: ${reason}`,
-              cause: new AutomaticActivationWithdrawn(reason),
-            }),
-          ),
-    ),
-  );
-}

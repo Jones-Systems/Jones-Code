@@ -31,6 +31,7 @@ import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { jonesUpdatesHttpApiLayer } from "./http.ts";
 import * as JonesUpdates from "./service.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import * as SourceRelation from "./sourceRelation.ts";
 
 class JonesUpdatesTestApi extends HttpApi.make("environment").add(
@@ -68,6 +69,7 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
           },
         });
         const updates = JonesUpdates.layer.pipe(
+          Layer.provide(UpdateAdmissionFence.layer),
           Layer.provide(ServerConfig.layer({ ...config, mode })),
           Layer.provide(Layer.succeed(HostProcess.Platform, "linux")),
           Layer.provide(Layer.succeed(HostProcess.Architecture, "x64")),
