@@ -101,6 +101,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -2631,7 +2632,11 @@ const make = Effect.gen(function* () {
             threadId: input.threadId,
             ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
             messageId,
-            text: input.message,
+            text: composeAgentMessage({
+              body: input.message,
+              acceptedAt: yield* Clock.currentTimeMillis,
+              ...(parent === undefined ? {} : { sender: parent.thread }),
+            }),
             attachments: [],
             mode,
             createdBy: "agent",

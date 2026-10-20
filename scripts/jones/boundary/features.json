@@ -4,6 +4,14 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "agent-message-header",
+      "tests": [
+        "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+      ],
+      "scope": "Native t3_thread_send composes a Jones-owned sender-title link and server acceptance timestamp into stored text. The small service hook and tool description stay in their accepted shared files. The existing MCP integration harness retains the Jones send/replay case because it owns the real toolkit, durable command receipts, trusted sender attribution and deterministic provider delivery. Pure tests cover title escaping, absent sender/title, Eastern DST, full body preservation and unchanged leading-slash commands. No CLI, launch, delegate, attachment, provider or schema changes."
+    },
+    {
       "id": "codex-process-termination",
       "tests": [
         "packages/effect-codex-app-server/src/client.test.ts",

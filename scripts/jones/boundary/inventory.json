@@ -1305,7 +1305,10 @@
     "apps/server/src/orchestration-v2/testkit/fixtures/thread_fork_native/codex_transcript.ndjson": "jones-tests-in-upstream",
     "packages/client-runtime/src/state/serverConfigProjection.ts": "accepted-shared",
     "packages/client-runtime/src/state/serverConfigProjection.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/jones/settings/ProviderOrderControls.tsx": "jones-owned"
+    "apps/web/src/jones/settings/ProviderOrderControls.tsx": "jones-owned",
+    "apps/server/src/jones/mcp/agentMessageHeader.ts": "jones-owned",
+    "apps/server/src/jones/mcp/agentMessageHeader.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
