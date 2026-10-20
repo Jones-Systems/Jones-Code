@@ -2419,7 +2419,7 @@ describe("orchestrator MCP toolkit", () => {
             );
             expect(sentMessage).toMatchObject({
               senderThreadId: parentThreadId,
-              text: `**T3M** · From [MCP \\[sender\\] &lt;one&gt; &amp; two](t3-thread://v1/${parentThreadId}) · Sent: 2026-10-20 10:50:00 EDT\n\n${ordinaryLoopPrompt}`,
+              text: `**T3M** · From [MCP \\[sender\\] &lt;one&gt; &amp; two](t3-thread://v1/${parentThreadId}) · Sent: 10/20 10:50:00\n\n${ordinaryLoopPrompt}`,
             });
             expect(
               sentSource.turnItems.find(
@@ -3809,7 +3809,7 @@ describe("orchestrator MCP toolkit", () => {
           monotonicTimeNanos: liveClock.monotonicTimeNanos,
           sleep: (duration) => liveClock.sleep(duration),
         });
-        const replayHeader = `**T3M** · From [MCP replay parent](t3-thread://v1/${parentThreadId}) · Sent: 2026-10-20 10:50:`;
+        const replayHeader = `**T3M** · From [MCP replay parent](t3-thread://v1/${parentThreadId}) · Sent: 10/20 10:50:`;
         const decodeRecord = Schema.decodeUnknownEffect(
           Schema.Record(Schema.String, Schema.Unknown),
         );
@@ -3834,7 +3834,7 @@ describe("orchestrator MCP toolkit", () => {
                   ...params,
                   input: [
                     {
-                      text: `${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"} EDT\n\n${body}`,
+                      text: `${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"}\n\n${body}`,
                       type: "text",
                     },
                   ],

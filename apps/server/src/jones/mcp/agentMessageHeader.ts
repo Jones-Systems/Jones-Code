@@ -1,13 +1,11 @@
 const sentTimeFormat = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
-  year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
   minute: "2-digit",
   second: "2-digit",
   hourCycle: "h23",
-  timeZoneName: "short",
 });
 
 const escapeTitle = (title: string) =>
@@ -30,7 +28,7 @@ export function composeAgentMessage(input: {
   const parts = Object.fromEntries(
     sentTimeFormat.formatToParts(input.acceptedAt).map(({ type, value }) => [type, value]),
   );
-  const sentAt = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} ${parts.timeZoneName}`;
+  const sentAt = `${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
   const sender =
     input.sender === undefined
       ? "unavailable"
