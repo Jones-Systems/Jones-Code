@@ -166,6 +166,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.serverProbe,
                 "rpc.aggregate": "server",
+                "rpc.stream": false,
               },
             ],
             [
@@ -174,6 +175,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.scheduledTasksList,
                 "rpc.aggregate": "scheduledTasks",
+                "rpc.stream": false,
                 "scheduled_task.id": taskId,
               },
             ],
@@ -183,6 +185,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.serverRetryResourceTelemetry,
                 "rpc.aggregate": "server",
+                "rpc.stream": false,
               },
             ],
             [
@@ -191,6 +194,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.pullRequestsSubscribeRefreshes,
                 "rpc.aggregate": "pull-requests",
+                "rpc.stream": true,
               },
             ],
             [
@@ -199,6 +203,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.scheduledTasksSubscribe,
                 "rpc.aggregate": "scheduledTasks",
+                "rpc.stream": true,
               },
             ],
             [
@@ -207,6 +212,7 @@ describe("WS RPC instrumentation middleware", () => {
                 ...rpcSpanDefaults,
                 "rpc.method": WS_METHODS.serverGetSettings,
                 "rpc.aggregate": "server",
+                "rpc.stream": false,
               },
             ],
           ],

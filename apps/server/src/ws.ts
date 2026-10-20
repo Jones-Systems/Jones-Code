@@ -120,6 +120,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -1044,7 +1045,10 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            const shell = yield* threadManagement.getThreadShell(stored.event.threadId);
+            // Events publish after their commit, so the reader already sees the row.
+            const shell = yield* threadManagement
+              .getThreadShell(stored.event.threadId)
+              .pipe(NodeSqliteClient.readOnly);
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1824,13 +1828,12 @@ const layerWsRpc = (
               Effect.forEach(
                 coalesceStoredThreadEvents(Array.from(events)),
                 (stored) =>
-                  threadManagement
-                    .getThreadShell(stored.event.threadId)
-                    .pipe(
-                      Effect.map((shell) =>
-                        archivedShellStreamItemFromThreadShell({ stored, shell }),
-                      ),
+                  threadManagement.getThreadShell(stored.event.threadId).pipe(
+                    NodeSqliteClient.readOnly,
+                    Effect.map((shell) =>
+                      archivedShellStreamItemFromThreadShell({ stored, shell }),
                     ),
+                  ),
                 { concurrency: 8 },
               ),
             ),
