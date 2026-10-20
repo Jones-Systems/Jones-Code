@@ -13,7 +13,7 @@ import type { PreparedConnection } from "../../connection/model.ts";
 import * as EnvironmentSupervisor from "../../connection/supervisor.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
-import type { SettlementArrival, SettlementOrigin } from "./model.ts";
+import type { SettlementArrival, SettlementOriginDetails } from "./model.ts";
 
 class SettlementOriginsResponseMismatch extends Data.TaggedError(
   "SettlementOriginsResponseMismatch",
@@ -27,7 +27,7 @@ export const fetchSettlementOrigins = Effect.fn("clientRuntime.settlementNotific
     readonly remoteAuthorization?: Option.Option<RemoteEnvironmentAuthorization["Service"]>;
     readonly items: readonly SettlementOriginQuery[];
   }) {
-    const origins: SettlementOrigin[] = [];
+    const origins: SettlementOriginDetails[] = [];
     const remoteAuthorization =
       input.remoteAuthorization ?? (yield* Effect.serviceOption(RemoteEnvironmentAuthorization));
     for (let start = 0; start < input.items.length; start += 100) {
@@ -54,7 +54,12 @@ export const fetchSettlementOrigins = Effect.fn("clientRuntime.settlementNotific
         })
       )
         return yield* new SettlementOriginsResponseMismatch();
-      origins.push(...response.items.map((row) => row.origin));
+      origins.push(
+        ...response.items.map(({ origin, projectRemaining }) => ({
+          origin,
+          ...(projectRemaining === undefined ? {} : { projectRemaining }),
+        })),
+      );
     }
     return origins;
   },

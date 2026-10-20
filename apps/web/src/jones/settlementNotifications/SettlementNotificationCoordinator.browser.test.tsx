@@ -14,7 +14,8 @@ import { RegistryContext } from "@effect/atom-react";
 import {
   createSettlementNotificationController,
   type SettlementEntry,
-  type SettlementOriginResolver,
+  type SettlementArrival,
+  type SettlementOriginDetails,
 } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { Atom } from "effect/reactivity";
 import * as AtomRegistry from "effect/reactivity/AtomRegistry";
@@ -28,7 +29,10 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   environmentIds: [] as EnvironmentId[],
   shellAtom: null as Atom.Atom<EnvironmentShellState> | null,
-  resolveOrigins: vi.fn<SettlementOriginResolver>(),
+  resolveOrigins:
+    vi.fn<
+      (arrivals: readonly SettlementArrival[]) => Promise<readonly SettlementOriginDetails[] | null>
+    >(),
 }));
 vi.mock(import("./controller"), () => ({
   getSettlementNotificationController: () => state.controller!,
@@ -257,12 +261,19 @@ describe("persistent settlement notification", () => {
 
   it.each([375, 1280])("wraps a single unbroken settled title at %ipx", async (width) => {
     await page.viewport(width, 800);
-    const longEntry = { ...entry("long"), title: "x".repeat(200) };
+    const longEntry = {
+      ...entry("long"),
+      title: "x".repeat(200),
+      projectRemaining: Array.from({ length: 64 }, (_, index) => `Remaining work ${index}`),
+    };
     storage.clear();
     await publish([longEntry]);
     await render();
     const title = button(longEntry.title);
     const description = title.closest('[data-slot="toast-description"]')!;
+    const list = title.closest("ul")!;
+    expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
+    expect(list.textContent).toContain("Remaining work 63");
     for (const node of [description, ...description.querySelectorAll<HTMLElement>("*")]) {
       if (node.clientWidth > 0) {
         expect(node.scrollWidth).toBeLessThanOrEqual(node.clientWidth + 1);
@@ -361,7 +372,14 @@ describe("persistent settlement notification", () => {
     const shellAtom = Atom.make(shell(1, [thread("manual"), thread("agent")]));
     state.shellAtom = shellAtom;
     state.resolveOrigins.mockImplementation(async (arrivals) =>
-      arrivals.map((arrival) => (arrival.threadId === "manual" ? "client" : "other")),
+      arrivals.map((arrival) =>
+        arrival.threadId === "manual"
+          ? { origin: "client" }
+          : {
+              origin: "other",
+              projectRemaining: ["Review <script> literally", "Deliver the separate project slice"],
+            },
+      ),
     );
     await render();
     await act(async () => {
@@ -387,6 +405,7 @@ describe("persistent settlement notification", () => {
       params: { environmentId: env, threadId: "agent" },
     });
     expect(notices()).toHaveLength(1);
+    expect(document.body.textContent).toContain("Deliver the separate project slice");
     await act(async () => root.unmount());
     mounted = false;
     state.controller = createSettlementNotificationController({ store });
@@ -394,6 +413,9 @@ describe("persistent settlement notification", () => {
     await render();
     await expect.poll(() => notices().length).toBe(1);
     expect(button("agent")).toBeTruthy();
+    expect(document.body.textContent).toContain("Review <script> literally");
+    expect(document.body.textContent).toContain("Deliver the separate project slice");
+    expect(button("agent").closest("ul")!.querySelector("script")).toBeNull();
     expect(document.body.textContent).not.toContain("manual");
     await act(async () => button("Dismiss notification").click());
     await act(async () => {

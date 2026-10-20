@@ -717,6 +717,9 @@ function listItemFromShell(
 ): OrchestratorMcpThreadListItem {
   return {
     threadId: shell.id,
+    ...(shell.goal === undefined
+      ? {}
+      : { goal: shell.goal, goalSource: "provider_projection" as const }),
     title: shell.title,
     createdBy: shell.createdBy,
     creationSource: shell.creationSource,
@@ -748,6 +751,9 @@ function threadDetail(
   const active = ThreadManagementService.latestActiveRun(projection);
   return {
     threadId: projection.thread.id,
+    ...(shell.goal === undefined
+      ? {}
+      : { goal: shell.goal, goalSource: "provider_projection" as const }),
     projectId: projection.thread.projectId,
     title: projection.thread.title,
     createdBy: projection.thread.createdBy,
@@ -1626,6 +1632,9 @@ const make = Effect.gen(function* () {
         const threadScope = yield* requireThreadScope(scope, "t3_thread_settle");
         const intent = yield* threadManagement
           .requestSelfSettlement({
+            ...(input.projectRemaining === undefined
+              ? {}
+              : { projectRemaining: input.projectRemaining }),
             threadId: threadScope.thread.threadId,
             mcpCredentialId: threadScope.thread.providerSessionId,
             providerInstanceId: threadScope.thread.providerInstanceId,

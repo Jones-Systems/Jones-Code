@@ -283,6 +283,18 @@ row above the composer shows the goal and its progress.
 - Stopping Claude ends the current turn, but the goal stays set. Claude checks it
   again at the end of your next message.
 
+Agents can use `t3_thread_goal` to read a goal or control Codex without queuing
+behind its active run. Read first and reuse the returned control token with a
+stable request ID. Pause and clear let the current turn finish normally;
+replace edits only the objective, preserving status and usage without starting
+a turn. Resume on an idle thread starts an owned run; accepted dispatch still
+needs native readback. Request receipts are kept for the current server and
+session binding. Restart or a binding change expires old control tokens: read
+again and reconcile state before issuing another operation. An unknown result
+blocks further mutations until readback resolves it. Claude reads are transcript observations;
+its SDK does not expose these controls. Thread read/list goal fields are cached
+provider projections; use the goal tool for a fresh Codex observation.
+
 ## Context in your message
 
 Context you attach lands where your cursor is, as a chip inside your text: a terminal excerpt,

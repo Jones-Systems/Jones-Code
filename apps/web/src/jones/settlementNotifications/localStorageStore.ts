@@ -1,3 +1,5 @@
+import { SettlementProjectRemaining } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   SettlementEntry,
   SettlementInboxState,
@@ -17,6 +19,8 @@ function parse(json: string | null): unknown {
   }
 }
 
+const isProjectRemaining = Schema.is(SettlementProjectRemaining);
+
 function isEntry(value: unknown): value is SettlementEntry {
   if (typeof value !== "object" || value === null) return false;
   const row = value as Record<string, unknown>;
@@ -30,6 +34,7 @@ function isEntry(value: unknown): value is SettlementEntry {
     typeof row.detectedAtMs === "number" &&
     Number.isFinite(row.detectedAtMs) &&
     typeof row.threadGone === "boolean" &&
+    (row.projectRemaining === undefined || isProjectRemaining(row.projectRemaining)) &&
     row.id === `${row.environmentId}:${row.threadId}:${row.settledAtMs}`
   );
 }

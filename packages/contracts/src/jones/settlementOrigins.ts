@@ -1,6 +1,17 @@
 import * as Schema from "effect/Schema";
 import { ThreadId } from "../baseSchemas.ts";
 
+export const SettlementProjectRemaining = Schema.Array(
+  Schema.String.check(
+    Schema.makeFilter(
+      (item) =>
+        item.trim().length > 0 &&
+        !/[\p{C}\u2028\u2029]/u.test(item) &&
+        new TextEncoder().encode(item).length <= 2048,
+    ),
+  ),
+).check(Schema.isMaxLength(64));
+
 export const SETTLEMENT_ORIGINS_CAPABILITY = {
   schemaVersion: "jones.settlement-origins/v1",
 } as const;
@@ -28,7 +39,11 @@ export type SettlementOriginsRequest = typeof SettlementOriginsRequest.Type;
 
 export const SettlementOriginsResult = Schema.Struct({
   items: Schema.Array(
-    Schema.Struct({ ...SettlementOriginQuery.fields, origin: SettlementOrigin }),
+    Schema.Struct({
+      ...SettlementOriginQuery.fields,
+      origin: SettlementOrigin,
+      projectRemaining: Schema.optional(SettlementProjectRemaining),
+    }),
   ).check(Schema.isMaxLength(100)),
 });
 export type SettlementOriginsResult = typeof SettlementOriginsResult.Type;
