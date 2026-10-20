@@ -1,3 +1,6 @@
+import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
+import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
+import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
 import * as GoalControl from "../jones/goals/GoalControl.ts";
 import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
 import * as Cause from "effect/Cause";
@@ -861,6 +864,9 @@ export const layerMcpTransport = McpServer.layerHttp({
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 export const layer = Layer.mergeAll(
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
+    Layer.provide(UserResponseRequest.layer),
+  ),
   OrganizationMetadataRegistrationLive,
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,

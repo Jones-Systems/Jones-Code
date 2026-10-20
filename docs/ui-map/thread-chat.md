@@ -2,7 +2,8 @@
 
 [Map index and shared recipes](README.md). Purpose: reach a project's draft or
 thread and inspect its conversation without confusing a local draft with a
-server-owned thread. All journeys below are source-discovered and **unverified**.
+server-owned thread. Navigation journeys are source-discovered and **unverified**;
+the bounded Needs input check has a separate evidence receipt below.
 
 ## Source, states and layout
 
@@ -45,6 +46,12 @@ Known shared consumers:
   [CommandPalette](../../apps/web/src/components/CommandPalette.tsx) share
   [new-thread handling](../../apps/web/src/hooks/useHandleNewThread.ts).
   A current-sidebar check does not cover the legacy variant.
+- Both sidebar status filters consume
+  [thread attention](../../packages/shared/src/jones/threadAttention.ts) through
+  [the status-filter model](../../apps/web/src/jones/threadStatusFilter/model.ts).
+  A proposed plan alone creates no input status; explicit own/child requests and
+  native approvals retain precedence. Existing user-input cards render the
+  instruction, optional choices and open response for `t3_request_user_response`.
 - [RightPanelTabs](../../apps/web/src/components/RightPanelTabs.tsx) also serves
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
   this map's journeys. Shared workspace header consumers are listed in
@@ -77,10 +84,10 @@ only overlays opened by the journey. Preserve state for inspection.
 
 ## Evidence record
 
-Source check: **2026-10-20**, Jones Code
+Original navigation source check: **2026-10-20**, Jones Code
 `e7527d88ef438daa443e49a84d59e9891415918b`. Route and caller inspection found the
-paths above; no runtime action was executed. All rows remain `unverified`.
-Runtime verification is `blocked` in this documentation lane by the absence of
+paths above; no navigation journey was executed in that documentation lane.
+Those rows remain `unverified`. Runtime verification was `blocked` in that lane by the absence of
 an owned running candidate, paired test tab and seeded scenarios. Build,
 viewport/device/text size, harness run and capture artifacts: **none**.
 
@@ -88,3 +95,30 @@ The primary verification owner must supply those prerequisites and record
 expected versus observed outcomes for each exercised row. Native, provider,
 remote-connection and deeper panel states remain gaps. This is a partial map
 addition, not a full maintenance pass or a product defect finding.
+
+### Needs input filter and open response
+
+Use the common isolated-home recipe with two schema-valid synthetic threads:
+a completed, acknowledged review with an old proposed plan and no request, and
+a completed run with an explicit pending message-mode user-input request.
+Follow the SQLite fixture skill; direct projection data proves rendering only.
+Open the explicit-action thread, cycle the header from all to working to Needs
+input with more than 250 ms between clicks, and type into **Your answer**.
+Expect only the explicit-action row, its actionable instruction, an open response
+field and an enabled **Send** button. Do not submit without separately scoped
+provider execution. Clear the typed draft to reset; preserve the owned fixture
+and captures for review, and stop only the captured development-server session.
+
+This bounded journey was **verified** on **2026-10-20** in the shared web renderer
+at 1280×800, light theme and default text size, using Jones Code collaborative
+Browser and the documented Node 24.13.1/Vite development runner. Candidate
+`7fd787fe9aa6ca9776b1635d576d5bb9b65eb668`, with this map-only edit, contains
+the observed application source. The explicit instruction rendered, the stale review was excluded, and
+typing enabled Send. Before/after captures are retained in
+[PR #453](https://github.com/Jones-Systems/Jones-Code/pull/453).
+
+The legacy filter is covered by its affected model tests, not this manual
+journey. Native desktop/mobile, text enlargement, real provider delivery and
+other navigation entries remain unverified here. Serialized request creation,
+completion/recovery persistence, answer acceptance and dismissal use separate
+command integration tests; this projection fixture does not qualify them.
