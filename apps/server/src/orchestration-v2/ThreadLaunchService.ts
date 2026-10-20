@@ -2024,6 +2024,20 @@ const make = Effect.gen(function* () {
       return { commands, legacyResults };
     });
 
+  // Jones: true when the thread is a subagent child whose parent records it as
+  // an app-owned delegated task (delegate_task), not a native or forked child.
+  const isAppOwnedDelegatedChild = (input: PreparationInput, threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const { thread } = yield* threads.getThreadRecords(threadId, []);
+      const parentThreadId = thread.lineage.parentThreadId;
+      if (thread.lineage.relationshipToParent !== "subagent" || parentThreadId === null)
+        return false;
+      const { subagents } = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
+      return subagents.some(
+        (task) => task.origin === "app_owned" && task.childThreadId === threadId,
+      );
+    }).pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+
   const schedulePreparation = Effect.fn("ThreadLaunchService.schedulePreparation")(function* (
     input: PreparationInput,
     threadId: ThreadId,
@@ -2031,11 +2045,14 @@ const make = Effect.gen(function* () {
   ) {
     const prepareWithInterruption = Effect.gen(function* () {
       const prepare = prepareInBackground(input, threadId, runId);
-      if (
-        runId === null ||
-        (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined)
-      ) {
-        return yield* prepare;
+      if (runId === null) return yield* prepare;
+      if (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined) {
+        // Jones: an app-owned delegated child's existing worktree is also
+        // prepared under Stop, so task_cancel closes its setup terminal. The
+        // checkout is not removed: this launch did not create it. Other
+        // existing-worktree and root launches are unchanged.
+        if (input.workspaceStrategy.type !== "existing_worktree") return yield* prepare;
+        if (!(yield* isAppOwnedDelegatedChild(input, threadId))) return yield* prepare;
       }
       const afterSequence = yield* threads
         .getThreadEventSequence(threadId)

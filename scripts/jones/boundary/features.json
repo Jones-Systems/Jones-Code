@@ -982,6 +982,22 @@
         "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
       "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims."
+    },
+    {
+      "id": "delegated-task-workspace",
+      "tests": [
+        "packages/contracts/src/jones/delegatedTaskWorkspace.test.ts",
+        "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts",
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+      ],
+      "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. Stop (task_cancel) interrupts an app-owned delegated child's existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, closing its setup terminal without removing the checkout; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations."
     }
   ]
 }

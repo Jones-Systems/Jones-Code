@@ -389,6 +389,7 @@
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts": "accepted-shared",
     "apps/server/src/mcp/toolkits/preview/handlers.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/toolkits/preview/handlers.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/project/tools.ts": "accepted-shared",
     "apps/server/src/mcp/toolkits/thread/handlers.test.ts": "jones-owned",
     "apps/server/src/mcp/toolkits/thread/handlers.ts": "accepted-shared",
     "apps/server/src/mcp/toolkits/thread/tools.ts": "accepted-shared",
