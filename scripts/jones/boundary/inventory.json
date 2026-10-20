@@ -475,6 +475,7 @@
     "apps/server/src/orchestration-v2/RestartContinuation.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/RestartContinuationPolicy.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/RunExecutionService.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/RunExecutionService.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/SelfSettlement.test.ts": "jones-owned",

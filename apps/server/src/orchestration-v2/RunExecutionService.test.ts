@@ -4957,6 +4957,129 @@ it.effect.each([
     }).pipe(Effect.provide(runtimeTerminalTestLayer)),
 );
 
+it.effect("accepts a validated logical root terminal after a same-attempt successor", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const identity: RunExecutionService.ProviderEventRouteIdentity = {
+      threadId: ThreadId.make("thread:capacity-recovery"),
+      runId: RunId.make("run:capacity-recovery"),
+      attemptId: RunAttemptId.make("attempt:capacity-recovery"),
+      providerThreadId: ProviderThreadId.make("provider-thread:capacity-recovery"),
+      runOrdinal: 2,
+      driver,
+    };
+    const originalTurnId = ProviderTurnId.make("turn:capacity-original");
+    const successorTurnId = ProviderTurnId.make("turn:capacity-successor");
+    const originalTurn = {
+      id: originalTurnId,
+      providerThreadId: identity.providerThreadId,
+      runAttemptId: identity.attemptId,
+      nodeId: NodeId.make("node:capacity-recovery"),
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: "running" as const,
+      startedAt: now,
+      completedAt: null,
+    };
+    let state = RunExecutionService.makeProviderEventRoutingState({
+      identity,
+      providerTurnId: null,
+      relatedThreadIds: [ThreadId.make("thread:auxiliary")],
+    });
+    for (const providerTurn of [
+      originalTurn,
+      { ...originalTurn, id: successorTurnId, ordinal: 2 },
+      {
+        ...originalTurn,
+        id: successorTurnId,
+        ordinal: 2,
+        status: "completed" as const,
+        completedAt: now,
+      },
+    ]) {
+      const [accepted, next] = RunExecutionService.routeProviderEvent(
+        { type: "provider_turn.updated", driver, providerTurn },
+        identity,
+        state,
+      );
+      assert.isTrue(accepted);
+      state = next;
+    }
+    assert.equal(state.rootProviderTurnId, successorTurnId);
+    assert.isFalse(state.rootTurnEnded);
+    const terminal = {
+      type: "turn.terminal" as const,
+      driver,
+      providerThreadId: identity.providerThreadId,
+      providerTurnId: originalTurnId,
+      runOrdinal: 2,
+      status: "completed" as const,
+      failure: null,
+      threadDisposition: "reusable" as const,
+      evidenceKind: "provider_result" as const,
+      providerTurn: { ...originalTurn, status: "completed" as const, completedAt: now },
+    };
+    const auxiliaryTurnId = ProviderTurnId.make("turn:auxiliary");
+    const [auxiliaryAccepted, withAuxiliary] = RunExecutionService.routeProviderEvent(
+      {
+        type: "provider_turn.updated",
+        driver,
+        threadId: ThreadId.make("thread:auxiliary"),
+        providerTurn: {
+          ...originalTurn,
+          id: auxiliaryTurnId,
+          runAttemptId: RunAttemptId.make("attempt:auxiliary"),
+        },
+      },
+      identity,
+      state,
+    );
+    assert.isTrue(auxiliaryAccepted);
+    assert.isTrue(withAuxiliary.ownedProviderTurnIds.has(auxiliaryTurnId));
+    const invalid: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> = [
+      { ...terminal, providerTurn: undefined },
+      { ...terminal, runOrdinal: 1 },
+      { ...terminal, driver: ProviderDriverKind.make("claudeCode") },
+      { ...terminal, providerThreadId: ProviderThreadId.make("other-thread") },
+      {
+        ...terminal,
+        providerTurn: { ...terminal.providerTurn, runAttemptId: RunAttemptId.make("old-attempt") },
+      },
+      {
+        ...terminal,
+        providerTurn: {
+          ...terminal.providerTurn,
+          providerThreadId: ProviderThreadId.make("other"),
+        },
+      },
+      { ...terminal, providerTurn: { ...terminal.providerTurn, completedAt: null } },
+      { ...terminal, providerTurn: { ...terminal.providerTurn, status: "failed" } },
+      ...[ProviderTurnId.make("turn:unowned"), auxiliaryTurnId].map((id) => ({
+        ...terminal,
+        providerTurnId: id,
+        providerTurn: { ...terminal.providerTurn, id },
+      })),
+    ];
+    for (const event of invalid) {
+      const [accepted, unchanged] = RunExecutionService.routeProviderEvent(
+        event,
+        identity,
+        withAuxiliary,
+      );
+      assert.isFalse(accepted);
+      assert.strictEqual(unchanged, withAuxiliary);
+    }
+    const [accepted, settled] = RunExecutionService.routeProviderEvent(
+      terminal,
+      identity,
+      withAuxiliary,
+    );
+    assert.isTrue(accepted);
+    assert.isTrue(settled.rootTurnEnded);
+    assert.equal(settled.rootProviderTurnId, originalTurnId);
+  }),
+);
+
 it.effect("recovers only exact current-attempt terminal-first provider evidence", () =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;

@@ -62,6 +62,7 @@ export interface ProviderEventRoutingState {
   readonly workflowMemberParents: ReadonlyMap<ThreadId, ThreadId>;
   readonly ownedProviderThreadIds: ReadonlySet<ProviderThreadId>;
   readonly ownedProviderTurnIds: ReadonlySet<ProviderTurnId>;
+  readonly ownedRootProviderTurnIds: ReadonlySet<ProviderTurnId>;
   readonly inheritedBackgroundTurnItems: ReadonlyMap<TurnItemId, OrchestrationV2Run["id"]>;
   readonly rootProviderTurnId: ProviderTurnId | null;
 }
@@ -357,6 +358,8 @@ export function makeProviderEventRoutingState(input: {
     ]),
     ownedProviderTurnIds:
       input.providerTurnId === null ? new Set() : new Set([input.providerTurnId]),
+    ownedRootProviderTurnIds:
+      input.providerTurnId === null ? new Set() : new Set([input.providerTurnId]),
     inheritedBackgroundTurnItems: new Map(
       (input.inheritedBackgroundTurnItems ?? []).map((item) => [item.id, item.runId]),
     ),
@@ -383,6 +386,9 @@ export function routeProviderEvent(
   ): ProviderEventRoutingState => ({
     ...state,
     ownedProviderTurnIds: new Set([...state.ownedProviderTurnIds, providerTurnId]),
+    ownedRootProviderTurnIds: root
+      ? new Set([...state.ownedRootProviderTurnIds, providerTurnId])
+      : state.ownedRootProviderTurnIds,
     rootProviderTurnId: root ? providerTurnId : state.rootProviderTurnId,
   });
 
@@ -517,6 +523,10 @@ export function routeProviderEvent(
         (input.runOrdinal === undefined || event.runOrdinal === input.runOrdinal) &&
         (input.driver === undefined || event.driver === input.driver);
       const knownRoot = event.providerTurnId === state.rootProviderTurnId;
+      // Capacity recovery can finish the original logical root after registering successor turns.
+      const logicalRoot =
+        state.ownedRootProviderTurnIds.has(event.providerTurnId) &&
+        terminalSnapshotMatchesAttempt(event, input);
       const recoveredRoot =
         state.rootProviderTurnId === null &&
         event.evidenceKind !== undefined &&
@@ -525,7 +535,7 @@ export function routeProviderEvent(
         terminalSnapshotMatchesAttempt(event, input);
       const snapshotMatches =
         event.providerTurn === undefined || terminalSnapshotMatchesAttempt(event, input);
-      return identityMatches && snapshotMatches && (knownRoot || recoveredRoot)
+      return identityMatches && snapshotMatches && (knownRoot || logicalRoot || recoveredRoot)
         ? [true, { ...addProviderTurn(event.providerTurnId, true), rootTurnEnded: true }]
         : [false, state];
     }
