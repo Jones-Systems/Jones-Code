@@ -316,15 +316,15 @@ the repository by text. Choose a result to insert it as a chip.
 Another thread can be context too. Type `@` followed by part of its title to pick one from
 the same server, or on web and desktop drag a thread out of the sidebar and drop it on the
 composer; a multi-selection drops together. The chip shows the thread's current title and
-opens it when selected. Your prompt only carries a reference: the agent reads the thread's
-history on demand, so attaching a long thread costs nothing until the agent looks. Attaching a
-thread does not change it, and the agent cannot send messages to it unless you ask.
+opens it when selected, including threads from another connected environment. Your prompt
+carries a small reference with the title, thread ID, and source environment, not a transcript.
+The agent can read history on demand only for threads in its own environment. A reference to
+another environment does not give the agent access to that history and does not automatically
+export or attach a saved transcript. Attaching a thread does not change it or authorize the
+agent to message it.
 
-Dropping a thread from another environment attaches a saved transcript file. The source
-environment must be connected and up to date. The transcript includes the visible history and
-saved text context at the time of the drop; later messages and the contents of attached files
-are not copied. The agent can read the saved transcript after the source disconnects. Normal
-file attachment limits apply.
+Dropping or pasting a thread reference preserves its source environment. Existing transcript
+files you attached previously remain ordinary file attachments; this does not remove them.
 
 Images keep their thumbnail shelf above the text and also get a chip at your cursor, so you can
 say exactly which image you mean. Deleting an image chip leaves the image on the shelf; removing

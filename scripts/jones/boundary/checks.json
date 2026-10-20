@@ -1928,6 +1928,27 @@
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter @t3tools/shared --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-thread-reference-only",
+      "tests": [
+        "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/lib/composerContextRecords.test.ts",
+        "apps/web/src/lib/composerContextReferences.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "packages/shared/src/jones/threadReferenceProjection.test.ts",
+        "packages/shared/src/composerContextReferences.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/lib/composerContextRecords.test.ts apps/web/src/lib/composerContextReferences.test.ts apps/web/src/composerDraftStore.test.ts packages/shared/src/jones/threadReferenceProjection.test.ts packages/shared/src/composerContextReferences.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/(jones/questionAnswer/|components/chat/(ChatComposer|usePendingThreadRequests))'",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

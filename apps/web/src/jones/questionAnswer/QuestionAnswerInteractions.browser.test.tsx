@@ -1,3 +1,5 @@
+import { readThreadShell } from "../../state/entities";
+import { THREAD_CONTEXT_DROP_EVENT } from "../../components/chat/threadContextDrag";
 import { listenForWorkspaceFileDragEnd } from "./workspaceFileDragLifecycle";
 import { makeWorkspaceFileDropHandlers } from "../../components/chat/workspaceFileDrop";
 import { seedUserInputDraftAnswers } from "@t3tools/client-runtime/state/thread-requests";
@@ -41,6 +43,11 @@ import {
 vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   ...(await importOriginal()),
   default: (({ text }: { text: string }) => <p>{text}</p>) as never,
+}));
+
+vi.mock(import("../../state/entities"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  readThreadShell: vi.fn(),
 }));
 
 vi.mock(import("../../lib/imageCompression"), async (importOriginal) => {
@@ -179,9 +186,11 @@ function Harness({
                       ];
                     return [
                       q.id,
-                      projectPendingUserInputAnswer(result[q.id], draft?.threadContexts ?? []) as
-                        | string
-                        | string[],
+                      projectPendingUserInputAnswer(
+                        result[q.id],
+                        draft?.threadContexts ?? [],
+                        threadRef.environmentId,
+                      ) as string | string[],
                     ];
                   }),
                 ),
@@ -236,6 +245,7 @@ afterEach(async () => {
     );
   useAttachmentUploadStore.setState({ uploadsByImageId: {} });
   container.remove();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -617,36 +627,63 @@ it("shows legacy unavailable attachments and removes them without changing the t
   );
 });
 
-it("pastes a thread reference into the answer without adding context to the thread draft", async () => {
-  const record = threadContextRecord(
-    { environmentId: threadRef.environmentId, threadId: ThreadId.make("related") },
-    "Related thread",
-  );
-  const clipboardData = new DataTransfer();
-  clipboardData.setData("text/plain", formatInlineContextReference(threadContextReference(record)));
-  clipboardData.setData(
-    COMPOSER_CONTEXT_CLIPBOARD_MIME,
-    encodeComposerContextFragment({
-      version: 1,
-      source: { environmentId: threadRef.environmentId },
-      records: [record],
-    })!,
-  );
-  await act(async () => root.render(<Harness />));
-  await act(async () =>
-    answerField().dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
-    ),
-  );
-  expect(
-    useComposerDraftStore.getState().getComposerDraft(threadRef)?.threadContexts ?? [],
-  ).toEqual([]);
-  await act(async () => button("Send").click());
-  expect(output("answer")).toBe(
-    JSON.stringify({ approach: formatThreadLink(record.threadId, "Related thread") }),
-  );
-  expect(output("messages")).toBe("[]");
-});
+it.each(["question-test", "foreign-environment"])(
+  "pastes a %s thread as a reference without fetching history or files",
+  async (source) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const record = threadContextRecord(
+      { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("related") },
+      "Related thread",
+    );
+    const clipboardData = new DataTransfer();
+    clipboardData.setData(
+      "text/plain",
+      formatInlineContextReference(threadContextReference(record)),
+    );
+    clipboardData.setData(
+      COMPOSER_CONTEXT_CLIPBOARD_MIME,
+      encodeComposerContextFragment({
+        version: 1,
+        source: { environmentId: record.environmentId },
+        records: [record],
+      })!,
+    );
+    await act(async () => root.render(<Harness />));
+    await act(async () =>
+      answerField().dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.threadContexts ?? [],
+    ).toEqual([]);
+    const answerDraft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(
+        questionAttachmentDraftId(
+          threadRef.environmentId,
+          threadRef.threadId,
+          "request",
+          question.id,
+        ),
+      );
+    expect(answerDraft?.threadContexts).toEqual([record]);
+    expect(answerDraft?.files ?? []).toEqual([]);
+    expect(answerField().value).toBe(formatInlineContextReference(threadContextReference(record)));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    await act(async () => button("Send").click());
+    expect(output("answer")).toBe(
+      JSON.stringify({
+        approach:
+          source === "question-test"
+            ? formatThreadLink(record.threadId, "Related thread")
+            : "Related thread (threadId: related; environmentId: foreign-environment; reference only, no history attached; unavailable through this environment's t3_thread_read).",
+      }),
+    );
+    expect(output("messages")).toBe("[]");
+  },
+);
 
 function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: File[]) => void }) {
   const [active, setActive] = useState(false);
@@ -751,3 +788,35 @@ it("clears the workspace overlay on dragend and disposes global listeners", asyn
   window.dispatchEvent(new Event("dragend"));
   expect(clearDrag).not.toHaveBeenCalled();
 });
+
+it.each(["question-test", "foreign-environment"])(
+  "drops a %s thread without exporting or uploading its history",
+  async (source) => {
+    const ref = { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("dropped") };
+    vi.mocked(readThreadShell).mockReturnValue({ title: "Dropped thread" } as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await act(async () => root.render(<Harness />));
+    await act(async () =>
+      container
+        .querySelector("[data-thread-context-drop]")!
+        .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+    );
+    const draft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(
+        questionAttachmentDraftId(
+          threadRef.environmentId,
+          threadRef.threadId,
+          "request",
+          question.id,
+        ),
+      );
+    const record = threadContextRecord(ref, "Dropped thread");
+    expect(draft?.threadContexts).toEqual([record]);
+    expect(draft?.files ?? []).toEqual([]);
+    expect(answerField().value).toBe(
+      formatInlineContextReference(threadContextReference(record)) + " ",
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  },
+);

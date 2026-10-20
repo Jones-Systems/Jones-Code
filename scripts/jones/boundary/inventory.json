@@ -1175,7 +1175,7 @@
     "apps/web/src/components/chat/usePendingThreadRequests.ts": "accepted-shared",
     "apps/web/src/composer-logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/pendingUserInput.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/pendingUserInput.ts": "accepted-shared",
+    "apps/web/src/pendingUserInput.ts": "hook",
     "apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts": "jones-owned",
     "apps/mobile/src/jones/questionAnswer/composerDispatch.ts": "jones-owned",
     "apps/mobile/src/jones/questionAnswer/composerLayout.test.ts": "jones-owned",
@@ -1323,7 +1323,18 @@
     "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts": "jones-owned",
     "apps/server/src/jones/settlementOrigins/projectRemaining.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/114_JonesSelfSettlementProjectItems.ts": "jones-owned",
-    "apps/server/src/orchestration-v2/RestartContinuation.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/orchestration-v2/RestartContinuation.test.ts": "jones-tests-in-upstream",
+    "packages/shared/src/composerContextReferences.ts": "accepted-shared",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts": "jones-owned",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts": "jones-owned",
+    "packages/shared/src/jones/threadReferenceProjection.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-reference-only.json": "jones-owned",
+    "apps/web/src/components/chat/composerThreadImport.ts": "upstream-deleted",
+    "apps/web/src/components/chat/composerThreadImport.test.ts": "upstream-deleted",
+    "apps/web/src/components/chat/composerThreadImport.browser.test.tsx": "upstream-deleted",
+    "apps/web/src/lib/threadContextAttachment.ts": "upstream-deleted",
+    "apps/web/src/lib/threadContextAttachment.test.ts": "upstream-deleted",
+    "docs/user/question-attachments.md": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,0 +1,14 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-reference-only",
+  "jonesOwnedPaths": ["packages/shared/src/jones/threadReferenceProjection.test.ts"],
+  "hookPaths": [],
+  "tombstones": [
+    "apps/web/src/components/chat/composerThreadImport.ts",
+    "apps/web/src/components/chat/composerThreadImport.test.ts",
+    "apps/web/src/components/chat/composerThreadImport.browser.test.tsx",
+    "apps/web/src/lib/threadContextAttachment.ts",
+    "apps/web/src/lib/threadContextAttachment.test.ts"
+  ],
+  "allowedImports": []
+}

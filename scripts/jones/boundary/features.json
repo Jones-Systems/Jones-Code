@@ -1144,6 +1144,20 @@
         "packages/shared/src/t3McpToolPresentation.test.ts"
       ],
       "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement."
+    },
+    {
+      "id": "thread-reference-only",
+      "tests": [
+        "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/lib/composerContextRecords.test.ts",
+        "apps/web/src/lib/composerContextReferences.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "packages/shared/src/jones/threadReferenceProjection.test.ts",
+        "packages/shared/src/composerContextReferences.test.ts"
+      ],
+      "scope": "Web and desktop main-composer and question-answer thread drops and clipboard imports preserve source-environment references without fetching transcripts or creating files. Shared ChatComposer edits remove the upstream import branch and dead reservation bookkeeping; extracting its existing clipboard switch and draft closure would duplicate stateful machinery. Shared provider wording remains in the canonical formatter because the conditional reading rule applies to every thread record and provider. Pending-answer projection delegates to a Jones module and its caller supplies the receiving environment. The existing pending-answer tests only gain the required environment argument. Removed browser/unit importer tests cover the retired transcript-file path, replaced by reference-only drop/paste and projection checks. HTTP transcript export, persisted files, wire contracts, mobile attachment entry points, and server execution are unchanged."
     }
   ]
 }

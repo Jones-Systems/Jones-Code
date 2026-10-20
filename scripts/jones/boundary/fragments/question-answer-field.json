@@ -11,9 +11,14 @@
     "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
     "apps/web/src/jones/questionAnswer/questionAnswerCard.ts",
     "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts",
-    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts"
+    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts",
+    "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts"
   ],
-  "hookPaths": ["apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx"],
+  "hookPaths": [
+    "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",
+    "apps/web/src/pendingUserInput.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -35,6 +40,10 @@
     {
       "from": "apps/web/src/components/ChatView.tsx",
       "to": "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "apps/web/src/jones/questionAnswer/threadReferenceAnswer.ts"
     }
   ]
 }
