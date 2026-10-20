@@ -108,7 +108,7 @@ describe("JonesSourceRelation", () => {
       const first = yield* Effect.forkChild(h.relation(BASE, HEAD));
       const second = yield* Effect.forkChild(h.relation(BASE, HEAD));
       yield* Effect.promise(() => started.promise);
-      yield* Effect.yieldNow();
+      yield* Effect.yieldNow;
       expect(h.calls).toHaveLength(1);
       released.resolve("diverged");
       expect((yield* Fiber.join(first)).relation).toBe("diverged");

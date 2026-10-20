@@ -75,7 +75,7 @@ export function make(options: {
       .compare(base, head)
       .then((relation): Observed => ({
         relation,
-        observedAt: DateTime.formatIso(DateTime.fromMillis(now())),
+        observedAt: DateTime.formatIso(DateTime.makeUnsafe(now())),
       }))
       .catch(() => undefined);
     return Promise.race([compared, timeout]).then((observed) => {
@@ -118,13 +118,13 @@ export function make(options: {
           base,
           head,
           relation: observed?.relation ?? "unknown",
-          observedAt: observed?.observedAt ?? DateTime.formatIso(DateTime.fromMillis(now())),
+          observedAt: observed?.observedAt ?? DateTime.formatIso(DateTime.makeUnsafe(now())),
         });
         if (!SHA.test(base) || !SHA.test(head)) return result(undefined);
         if (base === head)
           return result({
             relation: "identical",
-            observedAt: DateTime.formatIso(DateTime.fromMillis(now())),
+            observedAt: DateTime.formatIso(DateTime.makeUnsafe(now())),
           });
         return result(await observe(base, head));
       }),
