@@ -5,7 +5,7 @@
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts",
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts"
   ],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/scheduledTasks/webhookRoute.ts"],
   "tombstones": [],
   "allowedImports": [
     {

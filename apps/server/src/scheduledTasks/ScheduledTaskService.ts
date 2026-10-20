@@ -117,6 +117,7 @@ export type WebhookDeliveryOutcome =
   | "rejected_signature"
   | "expired"
   | "not_found"
+  | "unavailable"
   | "error";
 
 export type WebhookTriggerResult =
@@ -132,7 +133,9 @@ export type WebhookTriggerResult =
       readonly _tag: "rate_limited";
       readonly outcome: "rate_limited" | "queue_full";
     }
-  | { readonly _tag: "expired" };
+  | { readonly _tag: "expired" }
+  /** Jones: the delivery could not be recorded, so nothing was claimed and a retry can run it. */
+  | { readonly _tag: "unavailable" };
 
 const decodeTask = Schema.decodeUnknownEffect(ScheduledTask);
 const decodeTaskId = Schema.decodeUnknownOption(ScheduledTaskId);
@@ -1468,13 +1471,24 @@ export const layer = Layer.effect(
         // because the delivery log is trimmed. A rate-limited delivery stays
         // held on the relay, so it must give up its claim or the next pass
         // would treat it as already delivered.
+        // Jones hook: a release that fails rolls the claim back with the
+        // acceptance transaction below instead of leaving it claimed.
         const releaseClaim = <A>(result: A) =>
           request.relayDeliveryId === undefined
             ? Effect.succeed(result)
             : sql`
                 DELETE FROM scheduled_task_webhook_relay_deliveries
                 WHERE relay_delivery_id = ${request.relayDeliveryId}
-              `.pipe(Effect.ignore, Effect.as(result));
+              `.pipe(
+                Effect.mapError((cause) =>
+                  taskError("Could not release webhook delivery.", { taskId: task.id, cause }),
+                ),
+                Effect.as(result),
+              );
+        // Set once the delivery holds a queue slot, so the slot is released if
+        // the acceptance does not commit, and the run starts once it has.
+        let acceptedRun: { readonly prompt: string; readonly release: Effect.Effect<void> } | null =
+          null;
         // From the claim until the run is forked nothing may interrupt: a
         // request dropped in between (the relay hangs up after its timeout)
         // would leave a claimed delivery that never runs, or a queue slot that
@@ -1497,10 +1511,6 @@ export const layer = Layer.effect(
                 yield* observe("duplicate");
                 return { _tag: "accepted" as const, deliveryId, outcome: "duplicate" as const };
               }
-              yield* sql`
-                DELETE FROM scheduled_task_webhook_relay_deliveries
-                WHERE seen_at < ${iso(DateTime.subtract(now, { hours: 48 }))}
-              `.pipe(Effect.ignore);
             }
             const log = (
               outcome: ScheduledTaskWebhookDeliveryOutcome,
@@ -1606,11 +1616,12 @@ export const layer = Layer.effect(
               else next.set(queueKey, count);
               return next;
             });
+            acceptedRun = { prompt: rendered.prompt, release };
             yield* log("accepted", {
               signatureVerified: signature !== null,
               missing: rendered.missing,
               renderedPrompt: rendered.prompt,
-            }).pipe(Effect.onError(() => release));
+            });
             // Jones hook: keep the delivery until its run settles, so a restart can run it.
             yield* pendingWebhookRuns.record({
               deliveryId,
@@ -1619,13 +1630,41 @@ export const layer = Layer.effect(
               receivedAt: iso(receivedAt),
               prompt: rendered.prompt,
             });
-            yield* observe("accepted");
-            yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
-              Effect.ensuring(release),
-              Effect.forkIn(serviceScope),
-            );
             return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
-          }),
+          }).pipe(
+            // Jones hook: the claim, the log and the pending run commit together,
+            // and the run starts only after they have. A delivery is acknowledged
+            // only once a restart can run it, and a failed write leaves nothing
+            // claimed, so the retry it asks for is not dropped as a duplicate.
+            sql.withTransaction,
+            Effect.onError(() => acceptedRun?.release ?? Effect.void),
+            Effect.matchEffect({
+              onFailure: (cause) =>
+                Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
+                  Effect.annotateLogs({ taskId: task.id }),
+                  Effect.andThen(Effect.logDebug("Webhook delivery record failure", { cause })),
+                  Effect.andThen(observe("unavailable")),
+                  Effect.as({ _tag: "unavailable" as const }),
+                ),
+              onSuccess: (result) =>
+                Effect.gen(function* () {
+                  if (request.relayDeliveryId !== undefined) {
+                    yield* sql`
+                      DELETE FROM scheduled_task_webhook_relay_deliveries
+                      WHERE seen_at < ${iso(DateTime.subtract(now, { hours: 48 }))}
+                    `.pipe(Effect.ignore);
+                  }
+                  if (acceptedRun !== null) {
+                    yield* observe("accepted");
+                    yield* runWebhookDelivery(task, deliveryId, acceptedRun.prompt).pipe(
+                      Effect.ensuring(acceptedRun.release),
+                      Effect.forkIn(serviceScope),
+                    );
+                  }
+                  return result;
+                }),
+            }),
+          ),
         );
       });
 
