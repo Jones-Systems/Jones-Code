@@ -11,7 +11,9 @@
     "apps/web/src/jones/composer/composerModelEffortShortcuts.ts",
     "apps/web/src/jones/composer/composerShortcutRails.test.ts",
     "apps/web/src/jones/composer/composerShortcutRails.ts",
-    "apps/web/src/jones/composer/ProviderShortcutIcon.tsx"
+    "apps/web/src/jones/composer/ProviderShortcutIcon.tsx",
+    "apps/web/src/jones/composer/providerShortcutLabelColor.ts",
+    "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/ChatView.tsx",

@@ -278,6 +278,73 @@ describe("VcsProcess.run", () => {
     }),
   );
 
+  it.effect("keeps stalled discovery probes from holding checkpoint Git permits", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const starts = yield* Queue.unbounded<number>();
+      const active = yield* Ref.make(0);
+      const peak = yield* Ref.make(0);
+      const succeeded = {
+        stdout: "",
+        stderr: "",
+        code: ChildProcessSpawner.ExitCode(0),
+        timedOut: false,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutInvalidUtf8: false,
+        stderrInvalidUtf8: false,
+      };
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({
+            // Only discovery stalls, standing in for probes that wait out their timeout.
+            run: (input) =>
+              input.command === "git"
+                ? Effect.succeed(succeeded)
+                : Effect.gen(function* () {
+                    const count = yield* Ref.updateAndGet(active, (held) => held + 1);
+                    yield* Ref.update(peak, (held) => Math.max(held, count));
+                    yield* Queue.offer(starts, count);
+                    yield* Deferred.await(gate);
+                    return succeeded;
+                  }).pipe(Effect.ensuring(Ref.update(active, (count) => count - 1))),
+          }),
+        ),
+      );
+
+      // A non-gh CLI, so only the discovery pool can bound the burst.
+      const discovery = yield* Effect.all(
+        Array.from({ length: 16 }, (_, index) =>
+          service.run({
+            operation:
+              index % 2 === 0 ? "source-control.discovery.probe" : "source-control.discovery.auth",
+            command: "glab",
+            args: ["--version"],
+            cwd: "/workspace",
+          }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+
+      yield* Effect.all(Array.from({ length: 4 }, () => Queue.take(starts)));
+      yield* Effect.yieldNow;
+      expect(yield* Queue.size(starts)).toBe(0);
+      expect(yield* Ref.get(peak)).toBe(4);
+
+      const capture = yield* service.run({
+        ...baseInput,
+        operation: VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
+      });
+      expect(capture.exitCode).toBe(0);
+      expect(yield* Ref.get(active)).toBe(4);
+
+      yield* Deferred.succeed(gate, undefined);
+      expect(yield* Fiber.join(discovery)).toHaveLength(16);
+      expect(yield* Ref.get(peak)).toBe(4);
+    }),
+  );
+
   it.effect("collects stdout", () =>
     Effect.gen(function* () {
       const result = yield* run({

@@ -288,7 +288,8 @@
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
-        "apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "apps/web/src/jones/composer/composerShortcutRails.test.ts",
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ]
     },
     {
@@ -1069,6 +1070,21 @@
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
       "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Unkeyed launch and existing access builders remain unchanged."
+    },
+    {
+      "id": "request-economy",
+      "tests": [
+        "apps/server/src/vcs/VcsProcess.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/web/src/components/GitActionsControl.browser.test.tsx",
+        "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
+        "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "packages/shared/src/httpObservability.test.ts"
+      ],
+      "scope": "Foreground chat controls proceed while earlier history loads; unused discovery queries are absent, discovery subprocesses use a bounded pool apart from checkpoint operations, absent Bitbucket credentials avoid HTTP probes, and queued per-thread PR refreshes coalesce without dropping a follow-up after processing begins. Small shared edits reuse the existing scheduler, process pools, hooks and worker instead of duplicating their machinery. Existing command, browser and service harnesses retain integration regressions; the adjacent mobile hook test exercises its upstream owner. Foreground snapshot/history and shell reads use the reader while pending legacy hydration retains the writer; streaming RPC spans carry a stream tag, and WebSocket ticket query values are redacted in tracing."
     }
   ]
 }

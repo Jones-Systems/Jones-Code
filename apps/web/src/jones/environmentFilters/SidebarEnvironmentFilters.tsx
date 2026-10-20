@@ -1,33 +1,63 @@
 import { useAtom } from "@effect/atom-react";
+import { APP_SOURCE_SHA, APP_VERSION } from "../../branding";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
+import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
+import { shortJonesBuildLabel } from "../updates/buildVersion";
 import { SIDEBAR_ENVIRONMENT_FILTERS, toggleSidebarEnvironmentFilter } from "./model";
 import { sidebarEnvironmentFiltersAtom } from "./state";
+
+// The running client's own build, not the selected environment's: the same identity the update
+// banner labels "Client". Both inputs are fixed at build time, so the text is computed once.
+const BUILD_LABEL = shortJonesBuildLabel(APP_VERSION);
+const BUILD_DETAIL = `${isElectron ? "Desktop app" : "Web client"} ${APP_VERSION}${
+  APP_SOURCE_SHA === undefined ? "" : ` · source ${APP_SOURCE_SHA.slice(0, 12)}`
+}`;
 
 export function SidebarEnvironmentFilters() {
   const [filters, setFilters] = useAtom(sidebarEnvironmentFiltersAtom);
   return (
-    <div
-      role="group"
-      aria-label="Thread environments"
-      className="flex items-center gap-2 px-2 py-1"
-    >
-      {SIDEBAR_ENVIRONMENT_FILTERS.map((label) => (
-        <button
-          key={label}
-          type="button"
-          aria-label={`Show ${label} threads`}
-          aria-pressed={filters[label]}
-          onClick={() => setFilters((current) => toggleSidebarEnvironmentFilter(current, label))}
-          className={cn(
-            "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
-            filters[label]
-              ? "bg-success/20 text-success-foreground ring-1 ring-success/30"
-              : "bg-muted/30 text-muted-foreground hover:bg-muted/60",
-          )}
-        >
-          {label}
-        </button>
-      ))}
+    <div className="@container/env-filters flex items-center gap-2 px-2 py-1">
+      <div
+        role="group"
+        aria-label="Thread environments"
+        className="flex shrink-0 items-center gap-2"
+      >
+        {SIDEBAR_ENVIRONMENT_FILTERS.map((label) => (
+          <button
+            key={label}
+            type="button"
+            aria-label={`Show ${label} threads`}
+            aria-pressed={filters[label]}
+            onClick={() => setFilters((current) => toggleSidebarEnvironmentFilter(current, label))}
+            className={cn(
+              "relative z-10 inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-medium outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset [-webkit-app-region:no-drag]",
+              filters[label]
+                ? "bg-success/20 text-success-foreground ring-1 ring-success/30"
+                : "bg-muted/30 text-muted-foreground hover:bg-muted/60",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {BUILD_LABEL === undefined ? null : (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="note"
+                tabIndex={0}
+                aria-label={BUILD_DETAIL}
+                className="ms-auto min-w-0 select-none truncate rounded-sm text-2xs tabular-nums text-muted-foreground/60 outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset @max-[20rem]/env-filters:hidden [-webkit-app-region:no-drag]"
+              >
+                {BUILD_LABEL}
+              </span>
+            }
+          />
+          <TooltipPopup side="bottom">{BUILD_DETAIL}</TooltipPopup>
+        </Tooltip>
+      )}
     </div>
   );
 }

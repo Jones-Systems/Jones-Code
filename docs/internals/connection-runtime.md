@@ -85,3 +85,66 @@ follow replacement sessions. After a transport failure they wait for the
 supervisor; an expected domain failure may resubscribe on the same healthy
 session. Reconnection does not automatically replay mutations, whose retry and
 idempotency rules belong to the operation.
+
+## Foreground requests and shared capacity
+
+Opening a thread, loading its messages, sending, and stopping are the requests a
+user waits on. Background work runs in the same server: pull-request discovery
+and settlement sweeps, VCS status polling, source-control discovery, and storage
+cleanup. Client activity leases gate some of it, such as VCS status polling,
+but none of it yields to a foreground request. These resources are shared today,
+without foreground priority:
+
+- One WebSocket per environment carries every RPC call and subscription in
+  order. Cold thread snapshots and history pages normally use HTTP. The server
+  runs RPC requests concurrently; orchestration commands serialize per thread.
+- The SQLite [writer](../../packages/shared/src/nodeSqliteClient.ts) is one
+  synchronous connection on the server's event loop. Each statement on it blocks
+  the loop, socket frames included, while it executes, and a transaction holds
+  the writer until it ends, so other writer work, reads included, queues behind
+  it. Outside a write transaction, only work wrapped in `NodeSqliteClient.readOnly`
+  uses the single reader worker, which also runs one transaction at a time and
+  serves search and background sweeps.
+  [Foreground reads and the SQLite writer](./performance-regressions.md#foreground-reads-and-the-sqlite-writer)
+  lists the foreground reads routed there.
+- Git subprocesses take permits from process-wide FIFO pools: one in
+  [GitVcsDriverCore](../../apps/server/src/vcs/GitVcsDriverCore.ts) for Git
+  manager, status, and pull-request work, and one in
+  [VcsProcess](../../apps/server/src/vcs/VcsProcess.ts) for VCS driver work,
+  including the checkpoint baseline a turn waits for before its provider starts.
+  Neither reserves capacity for foreground callers. Source-control discovery
+  probes use a separate, smaller VcsProcess pool.
+- The orchestration [effect worker](../../apps/server/src/orchestration-v2/EffectWorker.ts)
+  shares a few slots among turn start, steer, and checkpoint capture.
+- On the client, most thread commands, Send and Stop included, share one serial
+  lane per environment and thread. Mutations therefore dispatch in submission
+  order, and a slow command delays that thread's next Send. Earlier-history loads
+  have their own lane, because a page can take two sequential HTTP requests. VCS
+  commands serialize per working directory.
+
+When adding or changing work that uses these resources:
+
+- Isolate at the scope of the resource that actually contends. Do not add a
+  global serial lane, or widen a key, for unrelated reads or mutations; separate
+  threads, working directories, and environments keep running concurrently.
+- Keep dependent mutations ordered under the narrowest key that expresses the
+  dependency. Give independent work, such as a history page, its own key so it
+  neither waits behind nor delays Send or Stop.
+- Keep pure reads off the writer when they do not need its transaction. Each
+  move adds queueing on the single reader, so check reader wait before routing
+  more work there.
+- Bound background subprocess work with its own concurrency limit, a deadline,
+  and coalescing of repeated requests for a target that is still queued, so a
+  burst cannot hold the permits a foreground operation needs.
+- A timeout that retries, or falls back to another transport, still reaches the
+  same server queues; it adds load rather than avoiding the contention.
+- Keep batching that reduces total work, such as the pull-request sweep's
+  width, which lets GitHub branch lookups share one GraphQL request. Lowering it
+  to reduce contention loses that saving. Do not add batching windows or delays
+  to foreground paths.
+- Measure queue wait separately from work time before and after a change, and
+  record the build, host, environment, and workload. An instantaneous CPU sample
+  does not rule out event-loop stalls.
+  [Observability](../operations/observability.md#separate-lifetimes-from-request-latency)
+  shows which spans separate them. Without that evidence, describe a change by
+  what it removes from the shared path, not as a latency gain.

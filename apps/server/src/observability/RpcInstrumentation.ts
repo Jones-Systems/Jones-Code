@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as References from "effect/References";
 import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 
 import { rpcRequestDuration, rpcRequestsTotal, withMetrics } from "./Metrics.ts";
 
@@ -254,6 +255,9 @@ export const rpcInstrumentationLayer = Layer.succeed(RpcInstrumentation)((effect
         ...DEFAULT_RPC_SPAN_ATTRIBUTES,
         "rpc.method": method,
         "rpc.aggregate": RPC_AGGREGATES[method as WsRpcMethod],
+        // A stream's span lasts as long as its subscription, so trace queries use this to
+        // keep lifetimes out of latency. It stays off the metric labels.
+        "rpc.stream": RpcSchema.isStreamSchema(rpc.successSchema),
       },
     }),
   );

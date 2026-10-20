@@ -25,6 +25,8 @@ const state = vi.hoisted(() => ({
   draft: null as (Branched & { worktreePath: null; envMode: "local" }) | null,
   branch: "main",
   isDefaultRef: false,
+  hasPrimaryRemote: true,
+  queries: [] as unknown[],
   actions: [] as { scope: { cwd: string | null }; input: GitActionInput }[],
   metadataRequests: [] as { environmentId: string; branch: string }[],
   toasts: [] as Toast[],
@@ -51,27 +53,31 @@ vi.mock(import("~/state/entities"), async (original) => ({
 }));
 vi.mock(import("~/state/query"), async (original) => ({
   ...(await original()),
-  // Serves both the VCS status and the source-control discovery queries.
-  useEnvironmentQuery: (() => ({
-    data: {
-      sourceControlProviders: [],
-      isRepo: true,
-      refName: state.branch,
-      isDefaultRef: state.isDefaultRef,
-      hasPrimaryRemote: true,
-      hasWorkingTreeChanges: true,
-      workingTree: {
-        files: [{ path: "file.ts", insertions: 1, deletions: 0 }],
-        insertions: 1,
-        deletions: 0,
+  // Serves both the VCS status and the source-control discovery queries, and records each
+  // atom a render subscribes to: a recorded query atom is one that would reach the server.
+  useEnvironmentQuery: ((atom: unknown) => {
+    state.queries.push(atom);
+    return {
+      data: {
+        sourceControlProviders: [],
+        isRepo: true,
+        refName: state.branch,
+        isDefaultRef: state.isDefaultRef,
+        hasPrimaryRemote: state.hasPrimaryRemote,
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          files: [{ path: "file.ts", insertions: 1, deletions: 0 }],
+          insertions: 1,
+          deletions: 0,
+        },
+        hasUpstream: state.hasPrimaryRemote,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: null,
       },
-      hasUpstream: true,
-      aheadCount: 0,
-      behindCount: 0,
-      pr: null,
-    },
-    error: null,
-  })) as never,
+      error: null,
+    };
+  }) as never,
 }));
 vi.mock(import("~/state/use-atom-command"), async (original) => ({
   ...(await original()),
@@ -135,6 +141,7 @@ vi.mock(import("~/components/ui/toast"), async (original) => {
 });
 
 import { useComposerDraftStore } from "~/composerDraftStore";
+import { sourceControlEnvironment } from "~/state/sourceControl";
 import GitActionsControl from "./GitActionsControl";
 
 // ThreadDetailsPanel keeps this component mounted behind React.memo when threads change.
@@ -167,6 +174,13 @@ async function openCommitDialog() {
   await expect.element(page.getByRole("dialog", { name: "Commit changes" })).toBeVisible();
 }
 
+// Revokes the task grant as the click reaches the control, after its last render saw the grant.
+// Revoking any earlier lets an unrelated render disable the control before the click lands.
+function revokeTaskGrantOnClick(control: ReturnType<typeof button>) {
+  const revoke = () => state.scopes.delete(AuthOrchestrationOperateScope);
+  control.element().addEventListener("click", revoke, { once: true });
+}
+
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.scopes = new Set([AuthSourceControlWriteScope]);
@@ -176,6 +190,8 @@ beforeEach(() => {
   state.draft = null;
   state.branch = "main";
   state.isDefaultRef = false;
+  state.hasPrimaryRemote = true;
+  state.queries = [];
   state.actions = [];
   state.metadataRequests = [];
   state.toasts = [];
@@ -213,10 +229,15 @@ describe("Git actions while thread details load", () => {
     state.scopes.add(AuthOrchestrationOperateScope);
     await render();
     await openCommitDialog();
-    state.scopes.delete(AuthOrchestrationOperateScope);
+    revokeTaskGrantOnClick(button("Commit on new branch"));
 
     await userEvent.click(button("Commit on new branch"));
 
+    // Nothing else here closes the dialog, so the button's handler ran without the grant.
+    await expect
+      .element(page.getByRole("dialog", { name: "Commit changes" }))
+      .not.toBeInTheDocument();
+    expect(state.scopes.has(AuthOrchestrationOperateScope)).toBe(false);
     expect(commits()).toBe(0);
     expect(state.branch).toBe("main");
     expect(state.shell?.branch).toBe("main");
@@ -338,10 +359,14 @@ describe("Default branch prompt", () => {
     await expect
       .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))
       .toBeVisible();
-    state.scopes.delete(AuthOrchestrationOperateScope);
+    revokeTaskGrantOnClick(button("Check out feature branch & continue"));
 
     await userEvent.click(button("Check out feature branch & continue"));
 
+    await expect
+      .element(page.getByRole("dialog", { name: "Commit & push to default ref?" }))
+      .not.toBeInTheDocument();
+    expect(state.scopes.has(AuthOrchestrationOperateScope)).toBe(false);
     expect(commits()).toBe(0);
     expect(state.shell?.branch).toBe("main");
   });
@@ -378,5 +403,46 @@ describe("Git action targets across thread navigation", () => {
       );
     }
     expect(commits()).toBe(3);
+  });
+});
+
+describe("Source-control discovery for publishing", () => {
+  // The family returns the same atom the dialog subscribes to for this environment.
+  const discovery = () =>
+    sourceControlEnvironment.discovery({
+      environmentId: EnvironmentId.make("environment"),
+      input: {},
+    });
+  const publishDialog = () => page.getByRole("dialog", { name: "Publish repository" });
+
+  it("does not probe providers for a repository that already has a remote", async () => {
+    await render();
+    await expect.element(button("Git action options")).toBeVisible();
+
+    expect(state.queries.length).toBeGreaterThan(0);
+    expect(state.queries).not.toContain(discovery());
+  });
+
+  it("prefetches while publish is offered and holds the query only while open", async () => {
+    state.hasPrimaryRemote = false;
+    await render();
+    expect(state.queries).toContain(discovery());
+
+    await userEvent.click(button("Git action options"));
+    await userEvent.click(page.getByRole("menuitem", { name: "Publish repository..." }));
+    await expect.element(publishDialog()).toBeVisible();
+
+    // The remote can appear while the dialog is open, as it does after a successful publish.
+    state.hasPrimaryRemote = true;
+    state.queries = [];
+    await render();
+    expect(state.queries).toContain(discovery());
+
+    await userEvent.click(publishDialog().getByRole("button", { name: "Cancel", exact: true }));
+    await expect.element(publishDialog()).not.toBeInTheDocument();
+    state.queries = [];
+    await render();
+    expect(state.queries.length).toBeGreaterThan(0);
+    expect(state.queries).not.toContain(discovery());
   });
 });

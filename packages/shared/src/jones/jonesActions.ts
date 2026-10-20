@@ -25,6 +25,7 @@ export const JONES_ACTIONS_RECEIPT_FILE = "jones-actions-stage.json";
 const MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024;
 const SHA = /^[a-f0-9]{40}$/;
 const HASH = /^[a-f0-9]{64}$/;
+const ANCESTRY_MEMO_LIMIT = 256;
 const PREVIEW = /^\d+\.\d+\.\d+-preview\.\d{8}\.\d+(?:\.\d+)?$/;
 const API_ROOT = `repos/${JONES_ACTIONS_REPOSITORY}`;
 
@@ -253,6 +254,8 @@ function createGhJonesActionsTransport(): JonesActionsTransport {
 export class JonesActionsClient {
   private readonly transport: JonesActionsTransport;
   private readonly now: () => number;
+  /** Immutable `base...head` ancestry answers, oldest first; bounded by `ANCESTRY_MEMO_LIMIT`. */
+  private readonly ancestry = new Map<string, boolean>();
   constructor(
     options: { readonly transport?: JonesActionsTransport; readonly now?: () => number } = {},
   ) {
@@ -443,12 +446,34 @@ export class JonesActionsClient {
     }
   }
 
+  /**
+   * Whether `base` is an ancestor of `head` and the merge base is `base`. Ancestry between two
+   * exact commits never changes, so a parsed answer is remembered for this client; main
+   * membership is still proven on every check because the fresh main SHA is part of the pair.
+   * Transport failures and unparsable comparisons are never remembered.
+   */
   private async descends(base: string, head: string): Promise<boolean> {
     if (base === head) return true;
-    const comparison = record(
-      await this.transport.api(`${API_ROOT}/compare/${source(base)}...${source(head)}`),
-    );
-    return comparison.status === "ahead" && record(comparison.merge_base_commit).sha === base;
+    const pair = `${source(base)}...${source(head)}`;
+    const known = this.ancestry.get(pair);
+    if (known !== undefined) return known;
+    const comparison = record(await this.transport.api(`${API_ROOT}/compare/${pair}?per_page=1`));
+    if (comparison.status === "ahead") {
+      const proven = record(comparison.merge_base_commit).sha === base;
+      if (proven) this.remember(pair, true);
+      return proven;
+    }
+    if (comparison.status === "behind" || comparison.status === "diverged")
+      this.remember(pair, false);
+    return false;
+  }
+
+  private remember(pair: string, descends: boolean): void {
+    if (this.ancestry.size >= ANCESTRY_MEMO_LIMIT) {
+      const oldest = this.ancestry.keys().next();
+      if (!oldest.done) this.ancestry.delete(oldest.value);
+    }
+    this.ancestry.set(pair, descends);
   }
 
   /** Download changes only the staging cache; it never extracts or launches the candidate app/runtime. */
