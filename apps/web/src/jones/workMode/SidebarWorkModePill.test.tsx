@@ -14,16 +14,28 @@ const state = vi.hoisted(() => ({
       settings: { workModeEnabled: false },
     },
   },
+  environments: [] as Array<{
+    environmentId: string;
+    label: string;
+    entry: { enabled: boolean };
+    connection: { phase: string };
+    serverConfig: {
+      environment: { capabilities: { workMode: boolean } };
+      settings: { workModeEnabled: boolean };
+    } | null;
+  }>,
+  initialConfigs: new Map<string, unknown>(),
+  access: vi.fn(),
   update: vi.fn(),
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.environment.serverConfig }));
+vi.mock("@effect/atom-react", () => ({ useAtomValue: () => state.initialConfigs }));
 vi.mock("../../state/session", () => ({
   environmentSession: { initialConfigValueAtom: () => "initial-config" },
+  readEnvironmentScopeAccess: (...args: unknown[]) => state.access(...args),
 }));
-vi.mock("../../state/presentation", () => ({
-  useEnvironmentPresentation: () => ({ isReady: true }),
+vi.mock("../../state/environments", () => ({
+  useEnvironments: () => ({ isReady: true, environments: state.environments }),
 }));
-vi.mock("../../state/environments", () => ({ usePrimaryEnvironment: () => state.environment }));
 vi.mock("../../state/server", () => ({ serverEnvironment: { updateSettings: "update-settings" } }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => state.update }));
 vi.mock("../../components/ui/tooltip", () => ({
@@ -37,12 +49,20 @@ beforeEach(() => {
   state.environment.connection.phase = "connected";
   state.environment.serverConfig.environment.capabilities.workMode = true;
   state.environment.serverConfig.settings.workModeEnabled = false;
+  state.environments = [state.environment];
+  state.initialConfigs = new Map([
+    [state.environment.environmentId, state.environment.serverConfig],
+  ]);
+  state.access.mockReset().mockReturnValue({ status: "granted" });
   state.update.mockReset();
   state.update.mockImplementation(
-    async (request: { input: { patch: { workModeEnabled: boolean } } }) => ({
-      _tag: "Success",
-      value: request.input.patch,
-    }),
+    async (request: { environmentId: string; input: { patch: { workModeEnabled: boolean } } }) => {
+      const target = state.environments.find(
+        (environment) => environment.environmentId === request.environmentId,
+      );
+      if (target?.serverConfig) target.serverConfig.settings = { ...request.input.patch };
+      return { _tag: "Success", value: request.input.patch };
+    },
   );
 });
 
@@ -60,7 +80,7 @@ async function dispose(renderer: ReactTestRenderer) {
 }
 
 describe("Work mode sidebar interaction", () => {
-  it("changes only the primary environment and renders its persisted state on remount", async () => {
+  it("changes connected environments and renders their persisted state on remount", async () => {
     const renderer = await mount();
     try {
       expect(renderer.root.findByType("button").props["aria-checked"]).toBe(false);
@@ -75,6 +95,7 @@ describe("Work mode sidebar interaction", () => {
         ...state.environment,
         serverConfig: { ...state.environment.serverConfig, settings: { workModeEnabled: true } },
       };
+      state.environments = [state.environment];
       await act(async () => {
         renderer.update(<SidebarWorkModePill />);
       });
@@ -91,9 +112,166 @@ describe("Work mode sidebar interaction", () => {
     }
     const reloaded = await mount();
     try {
-      expect(reloaded.root.findByType("button").props["aria-checked"]).toBe(true);
+      expect(reloaded.root.findByType("button").props["aria-checked"]).toBe(false);
     } finally {
       await dispose(reloaded);
+    }
+  });
+
+  it("enables every connected target even when the laptop is already on", async () => {
+    state.environment.serverConfig.settings.workModeEnabled = true;
+    const vps = structuredClone(state.environment);
+    vps.environmentId = "vps";
+    vps.label = "VPS";
+    vps.serverConfig.settings.workModeEnabled = false;
+    const mini = structuredClone(vps);
+    mini.environmentId = "mini";
+    mini.label = "Mac Mini";
+    state.environments.push(vps, mini);
+    state.initialConfigs.set("vps", vps.serverConfig);
+    state.initialConfigs.set("mini", mini.serverConfig);
+    const renderer = await mount();
+    try {
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(false);
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(state.update.mock.calls.map(([request]) => request.environmentId).sort()).toEqual([
+        "mini",
+        "vps",
+      ]);
+      expect(
+        state.environments.every((target) => target.serverConfig?.settings.workModeEnabled),
+      ).toBe(true);
+      await act(async () => renderer.update(<SidebarWorkModePill />));
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(true);
+      state.update.mockClear();
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(state.update).toHaveBeenCalledTimes(3);
+      expect(
+        state.environments.every(
+          (target) => target.serverConfig?.settings.workModeEnabled === false,
+        ),
+      ).toBe(true);
+    } finally {
+      await dispose(renderer);
+    }
+  });
+
+  it("finishes a partially failed disable without turning successful targets back on", async () => {
+    state.environment.serverConfig.settings.workModeEnabled = true;
+    const vps = structuredClone(state.environment);
+    vps.environmentId = "vps";
+    vps.label = "VPS";
+    state.environments.push(vps);
+    state.initialConfigs.set("vps", vps.serverConfig);
+    const save = state.update.getMockImplementation()!;
+    state.update.mockImplementation(async (request) =>
+      request.environmentId === "vps" ? { _tag: "Failure" } : save(request),
+    );
+    const renderer = await mount();
+    try {
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(state.environment.serverConfig.settings.workModeEnabled).toBe(false);
+      expect(vps.serverConfig.settings.workModeEnabled).toBe(true);
+      expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain("VPS");
+      state.update.mockImplementation(save);
+      state.update.mockClear();
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(state.update).toHaveBeenCalledExactlyOnceWith({
+        environmentId: "vps",
+        input: { patch: { workModeEnabled: false } },
+      });
+      expect(
+        state.environments.every(
+          (target) => target.serverConfig?.settings.workModeEnabled === false,
+        ),
+      ).toBe(true);
+    } finally {
+      await dispose(renderer);
+    }
+  });
+
+  it.each(["offline", "disabled", "loading", "unsupported"])(
+    "updates ready targets while naming an %s target it cannot update",
+    async (kind) => {
+      const unavailable = structuredClone(state.environment);
+      unavailable.environmentId = "unavailable";
+      unavailable.label = "Unavailable server";
+      state.environments.push(unavailable);
+      if (kind === "offline") unavailable.connection.phase = "disconnected";
+      if (kind === "disabled") unavailable.entry.enabled = false;
+      if (kind === "unsupported")
+        unavailable.serverConfig.environment.capabilities.workMode = false;
+      if (kind !== "loading")
+        state.initialConfigs.set(unavailable.environmentId, unavailable.serverConfig);
+      const renderer = await mount();
+      try {
+        await act(async () => renderer.root.findByType("button").props.onClick());
+        expect(state.update).toHaveBeenCalledExactlyOnceWith({
+          environmentId: state.environment.environmentId,
+          input: { patch: { workModeEnabled: true } },
+        });
+        expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain(
+          "Unavailable server",
+        );
+        expect(unavailable.serverConfig.settings.workModeEnabled).toBe(false);
+      } finally {
+        await dispose(renderer);
+      }
+    },
+  );
+
+  it.each(["scope_missing", "signed_out"])(
+    "reports a %s target without writing to it",
+    async (status) => {
+      state.access.mockReturnValue({ status });
+      const renderer = await mount();
+      try {
+        await act(async () => renderer.root.findByType("button").props.onClick());
+        expect(state.update).not.toHaveBeenCalled();
+        expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain(
+          state.environment.label,
+        );
+      } finally {
+        await dispose(renderer);
+      }
+    },
+  );
+
+  it("rejects a success response that does not contain the requested saved value", async () => {
+    state.update.mockResolvedValue({ _tag: "Success", value: { workModeEnabled: false } });
+    const renderer = await mount();
+    try {
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(renderer.root.findByType("button").props["aria-checked"]).toBe(false);
+      expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain(
+        "Could not save",
+      );
+    } finally {
+      await dispose(renderer);
+    }
+  });
+
+  it("retains a failed target when it disconnects before a retry", async () => {
+    state.update.mockRejectedValueOnce(new Error("connection lost"));
+    const renderer = await mount();
+    try {
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      state.environment.connection.phase = "disconnected";
+      const vps = structuredClone(state.environment);
+      vps.environmentId = "vps";
+      vps.label = "VPS";
+      vps.connection.phase = "connected";
+      state.environments.push(vps);
+      state.initialConfigs.set(vps.environmentId, vps.serverConfig);
+      await act(async () => renderer.update(<SidebarWorkModePill />));
+      state.update.mockClear();
+      await act(async () => renderer.root.findByType("button").props.onClick());
+      expect(state.update).not.toHaveBeenCalled();
+      expect(renderer.root.findByProps({ role: "status" }).children.join("")).toContain(
+        state.environment.label,
+      );
+    } finally {
+      await dispose(renderer);
     }
   });
 
