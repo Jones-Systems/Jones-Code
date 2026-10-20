@@ -8342,6 +8342,125 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  const backgroundCompletionCases = [
+    {
+      label: "expected server expiry",
+      command:
+        "/bin/bash -lc 'timeout 600 python3 -m http.server 18763 --bind 127.0.0.1 --directory .t3/pr-media/pr-visual-evidence'",
+      exitCode: 124,
+      wake: false,
+    },
+    {
+      label: "unexpected server failure",
+      command: "timeout 600 python3 -m http.server 18763",
+      exitCode: 1,
+      wake: true,
+    },
+    { label: "timed-out tests", command: "timeout 600 pytest", exitCode: 124, wake: true },
+  ];
+  it.effect.each(backgroundCompletionCases)(
+    "records $label and only wakes for actionable results",
+    (completion) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const command = completion.command;
+          const output =
+            '127.0.0.1 - - [20/Oct/2026 19:36:02] "GET /behavior.mp4 HTTP/1.1" 200 -\n';
+          let completeItem: ((payload: unknown) => Effect.Effect<unknown>) | undefined;
+          const transcript = makeCodexReplayTranscript({
+            scenario: `codex-background-${completion.label.replaceAll(" ", "-")}`,
+            entries: backgroundExecTranscript.entries.slice(0, -1).map((entry) => {
+              if (entry.type !== "emit_inbound") return entry;
+              const frame = entry.frame;
+              if (
+                !Predicate.isObject(frame) ||
+                frame.method !== "item/started" ||
+                !Predicate.isObject(frame.params) ||
+                !Predicate.isObject(frame.params.item) ||
+                frame.params.item.type !== "commandExecution"
+              )
+                return entry;
+              return {
+                ...entry,
+                frame: {
+                  ...frame,
+                  params: {
+                    ...frame.params,
+                    item: {
+                      ...frame.params.item,
+                      command,
+                      commandActions: [{ type: "unknown", command }],
+                    },
+                  },
+                },
+              };
+            }),
+          });
+          const harness = yield* makeCodexReplayHarness(
+            transcript,
+            undefined,
+            undefined,
+            undefined,
+            {
+              onNotification: (method, handler) => {
+                if (method === "item/completed") completeItem = handler;
+              },
+            },
+          );
+          const now = yield* DateTime.now;
+          yield* harness.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make("attempt-temporary-http-server-expiry"),
+              text: BG_PROMPT,
+            }),
+          );
+          yield* awaitUntil(() => harness.terminalEvents().length === 1, "root turn terminal");
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+          if (completeItem === undefined)
+            return yield* Effect.die("Missing item completion handler");
+          yield* completeItem({
+            item: {
+              ...backgroundCommandItem("completed"),
+              command,
+              commandActions: [{ type: "unknown", command }],
+              aggregatedOutput: output,
+              status: "failed",
+              exitCode: completion.exitCode,
+              durationMs: 600_000,
+            },
+            threadId: BG_NATIVE_THREAD,
+            turnId: BG_NATIVE_TURN,
+            completedAtMs: 1782622465500,
+          });
+          yield* awaitUntil(
+            () =>
+              harness.events.some(
+                (event) =>
+                  event.type === "turn_item.updated" &&
+                  event.turnItem.type === "command_execution" &&
+                  event.turnItem.exitCode === completion.exitCode &&
+                  event.turnItem.status === "failed" &&
+                  event.turnItem.output === output,
+              ),
+            "raw server expiry recorded",
+          );
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          assert.lengthOf(harness.continuationRequests, completion.wake ? 1 : 0);
+          if (completion.wake) {
+            assert.equal(harness.continuationRequests[0]?.notification?.outcome, "failed");
+          }
+          assert.lengthOf(harness.terminalEvents(), 1);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
+  );
+
   const backgroundStopCases = [true, false, "still_running", "thread_unloaded"] as const;
   const makeBackgroundStopTranscript = (terminated: (typeof backgroundStopCases)[number]) => {
     const stillRunning = terminated === "still_running";
