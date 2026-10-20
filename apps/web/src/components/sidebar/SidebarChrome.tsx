@@ -28,11 +28,13 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
   statusCounts,
   statusFilter,
   onCycleStatusFilter,
+  onHideWorkingThreads,
 }: {
   isElectron: boolean;
   statusCounts?: ThreadStatusCounts;
   statusFilter?: ThreadStatusFilter;
   onCycleStatusFilter?: () => void;
+  onHideWorkingThreads?: () => void;
 }) {
   const stageLabel = useEnvironmentStageLabel();
   const environmentIdentificationMode = useEnvironmentIdentificationMode();
@@ -67,6 +69,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
             counts={statusCounts ?? { working: 0, input: 0, done: 0 }}
             filter={statusFilter ?? "all"}
             onCycle={onCycleStatusFilter}
+            onHideWorking={onHideWorkingThreads}
           />
         ) : null}
         <SidebarWorkModePill />

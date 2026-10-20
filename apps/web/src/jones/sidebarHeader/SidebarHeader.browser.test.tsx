@@ -28,6 +28,7 @@ it("cycles all statuses with only the selected number highlighted and no underli
         counts={{ working: 1234, input: 56, done: 789 }}
         filter={filter}
         onCycle={() => setFilter(nextThreadStatusFilter(filter))}
+        onHideWorking={() => setFilter("hide-working")}
       />
     );
   }
@@ -50,7 +51,8 @@ it("cycles all statuses with only the selected number highlighted and no underli
     });
     if (selected !== -1 || button.getAttribute("aria-label")?.includes("Showing all threads"))
       await act(async () => {
-        await userEvent.click(button);
+        button.focus();
+        await userEvent.keyboard("{Enter}");
       });
   }
 });

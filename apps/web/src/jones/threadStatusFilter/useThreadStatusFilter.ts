@@ -19,6 +19,7 @@ export function useThreadStatusFilter(
 ) {
   const [statusFilter, setStatusFilter] = useState<ThreadStatusFilter>("all");
   const cycleStatusFilter = () => setStatusFilter(nextThreadStatusFilter);
+  const hideWorkingThreads = () => setStatusFilter("hide-working");
   const selection = useThreadStatusSelection(
     scopedThreads,
     statusFilter,
@@ -26,7 +27,7 @@ export function useThreadStatusFilter(
     now,
     activeThreadKey,
   );
-  return { statusFilter, cycleStatusFilter, ...selection };
+  return { statusFilter, cycleStatusFilter, hideWorkingThreads, ...selection };
 }
 
 export function useThreadStatusSelection(

@@ -114,10 +114,11 @@
       "tests": [
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
-      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
     },
     {
       "id": "provider-order",

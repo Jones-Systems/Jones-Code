@@ -167,11 +167,15 @@
       "tests": [
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx",
+        "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+        "apps/web/src/jones/sidebarHeader/SidebarHeader.browser.test.tsx",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/components/Sidebar.statusFilter.test.tsx apps/web/src/jones/threadStatusFilter/model.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "vp run --filter @t3tools/web test src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx src/jones/sidebarHeader/SidebarHeader.browser.test.tsx",
         "vp run --filter @t3tools/web typecheck"
       ]
     },

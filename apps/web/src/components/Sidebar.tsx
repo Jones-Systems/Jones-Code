@@ -491,6 +491,7 @@ function useSidebarThreads(input: {
   const {
     statusFilter,
     cycleStatusFilter,
+    hideWorkingThreads,
     counts: statusCounts,
     threads: visibleThreads,
   } = useThreadStatusFilter(
@@ -589,6 +590,7 @@ function useSidebarThreads(input: {
     environmentThreads,
     statusFilter,
     cycleStatusFilter,
+    hideWorkingThreads,
     statusCounts,
     workingShelfEnabled,
     searchableThreads: [
@@ -2973,6 +2975,7 @@ export default function Sidebar() {
     environmentThreads,
     statusFilter,
     cycleStatusFilter,
+    hideWorkingThreads,
     statusCounts,
     workingShelfEnabled,
     pinnedThreads,
@@ -4763,6 +4766,7 @@ export default function Sidebar() {
         statusCounts={statusCounts}
         statusFilter={statusFilter}
         onCycleStatusFilter={cycleStatusFilter}
+        onHideWorkingThreads={hideWorkingThreads}
       />
       <SidebarContent
         className="min-h-full"

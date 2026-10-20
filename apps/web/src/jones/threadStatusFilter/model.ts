@@ -5,8 +5,9 @@ import {
   resolveThreadStatusPill,
 } from "../../components/Sidebar.logic";
 
-export type ThreadStatusFilter = "all" | "working" | "input" | "done";
-export type ThreadStatusCounts = Record<Exclude<ThreadStatusFilter, "all">, number>;
+type ThreadStatus = "working" | "input" | "done";
+export type ThreadStatusFilter = "all" | ThreadStatus | "hide-working";
+export type ThreadStatusCounts = Record<ThreadStatus, number>;
 export type StatusThread = Parameters<typeof resolveThreadStatusPill>[0]["thread"];
 
 export function nextThreadStatusFilter(filter: ThreadStatusFilter): ThreadStatusFilter {
@@ -18,6 +19,7 @@ export function nextThreadStatusFilter(filter: ThreadStatusFilter): ThreadStatus
     case "input":
       return "done";
     case "done":
+    case "hide-working":
       return "all";
   }
 }
@@ -26,7 +28,7 @@ export function classifyThreadStatus(
   thread: StatusThread,
   layout: "current" | "legacy",
   isWoke = false,
-): Exclude<ThreadStatusFilter, "all"> | null {
+): ThreadStatus | null {
   const pill = resolveThreadStatusPill({ thread });
   if (layout === "legacy") {
     switch (pill?.label) {
@@ -58,14 +60,16 @@ export function classifyThreadStatus(
 export function selectThreadStatus<T>(
   scopedThreads: ReadonlyArray<T>,
   filter: ThreadStatusFilter,
-  classify: (thread: T) => Exclude<ThreadStatusFilter, "all"> | null,
+  classify: (thread: T) => ThreadStatus | null,
 ): { counts: ThreadStatusCounts; threads: ReadonlyArray<T> } {
   const counts: ThreadStatusCounts = { working: 0, input: 0, done: 0 };
   const selected: T[] = [];
   for (const thread of scopedThreads) {
     const status = classify(thread);
     if (status !== null) counts[status] += 1;
-    if (status === filter) selected.push(thread);
+    if (filter === "hide-working" ? status !== "working" : status === filter) {
+      selected.push(thread);
+    }
   }
   return { counts, threads: filter === "all" ? scopedThreads : selected };
 }
