@@ -1,4 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
+import { OrchestratorMcpDelegateTaskInput } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
@@ -18,6 +20,39 @@ describe("T3 orchestration provider instructions", () => {
       T3_CODE_ORCHESTRATION_INSTRUCTIONS,
       "Do not use `t3_thread_send` on `childThreadId`",
     );
+  });
+
+  it("routes separate-session delegation through delegate_task with valid workspace examples", () => {
+    const instructions = T3_CODE_ORCHESTRATION_INSTRUCTIONS;
+    assert.include(instructions, "runs in its own provider session and backing thread");
+    assert.include(instructions, "including same-provider work such as Claude to Claude");
+    assert.include(instructions, "asked for a separate session");
+    assert.include(
+      instructions,
+      "when you are a Claude agent asked to make subagents, or the child should be a Claude agent, create app-owned `delegate_task` children with a Claude target even when a native Claude subagent tool supports the chosen model",
+    );
+    assert.include(instructions, "For other providers, prefer native subagent tools");
+    assert.include(instructions, "Only when the user asks for a standalone top-level thread");
+    assert.notInclude(instructions, "For independent implementation or a PR stack");
+    // The delegated examples must be inputs delegate_task actually accepts.
+    const examples = [
+      ...instructions.matchAll(
+        /^- (?:New worktree|Existing worktree|Another project): `(\{"task".*\})`$/gm,
+      ),
+    ];
+    assert.lengthOf(examples, 3);
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
+    const decoded = examples.map(([, json]) => decode(JSON.parse(json ?? "")));
+    assert.deepEqual(
+      decoded.map((input) => input.workspaceStrategy?.type),
+      ["worktree", "existing_worktree", "worktree"],
+    );
+    // Only the cross-project example names a project, and it carries its own workspace.
+    assert.deepEqual(
+      decoded.map((input) => input.projectId !== undefined),
+      [false, false, true],
+    );
+    assert.include(instructions, "Another project requires `workspaceStrategy`");
   });
 
   it("documents structured schedules instead of JSON strings", () => {
