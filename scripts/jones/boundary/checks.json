@@ -2,6 +2,25 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-codex-process-termination",
+      "tests": [
+        "packages/effect-codex-app-server/src/client.test.ts",
+        "packages/effect-codex-app-server/src/protocol.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-prompts-access",
       "tests": [
         "apps/web/src/reactCompilerCoverage.test.ts",

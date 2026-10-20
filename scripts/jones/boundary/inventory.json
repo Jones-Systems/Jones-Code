@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "packages/effect-codex-app-server/src/client.ts": "accepted-shared",
+    "packages/effect-codex-app-server/src/replay.ts": "accepted-shared",
+    "packages/effect-codex-app-server/src/client.test.ts": "jones-tests-in-upstream",
     "packages/client-runtime/src/jones/settlementNotifications/model.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/detect.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/inbox.ts": "jones-owned",

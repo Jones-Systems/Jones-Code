@@ -4,6 +4,23 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "codex-process-termination",
+      "tests": [
+        "packages/effect-codex-app-server/src/client.test.ts",
+        "packages/effect-codex-app-server/src/protocol.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts"
+      ],
+      "scope": "Forward protocol termination through both Codex client factories, bound to the exact process generation. Process-exit handling uses existing adapter terminalization for active shared roots, native children, capacity retries and goal holds, then drains the event stream for manager-owned release. Replacement-overlap event filtering and a concurrent goal-timer hold release remain deferred review limitations. No replay or quiet-turn timeout. The shared adapter owns these lifecycle maps; extracting them would duplicate its terminalization machinery. Optional client and replay callbacks preserve existing callers. Jones tests remain in the existing client and adapter harnesses to exercise real transport and scoped producer ownership. The shared session manager holds the removed runtime scope until terminal subscribers finish processing, preserves their original failure cause, and serializes registration with exact-entry removal. This private lifecycle repair preserves generation validation and lets a replacement open while shutdown can interrupt the wait. Existing manager and orchestration harnesses cover ingestion ordering, Stop behavior, runtime recovery and another provider."
+    },
+    {
       "id": "workstreams-interaction-recovery",
       "tests": [
         "packages/client-runtime/src/state/session.test.ts",

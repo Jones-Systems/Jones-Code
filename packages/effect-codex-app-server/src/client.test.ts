@@ -1,8 +1,13 @@
 import * as Exit from "effect/Exit";
+import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
+import * as Queue from "effect/Queue";
+import * as CodexError from "./errors.ts";
+import { makeInMemoryStdio } from "./_internal/stdio.ts";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -124,6 +129,33 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
       ]);
     }),
   );
+  it.effect("reports the actual child exit status through the client callback", () =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const handle = yield* spawner.spawn(
+        ChildProcess.make(process.execPath, [
+          "-e",
+          'process.stdin.once("data", () => process.exit(23))',
+        ]),
+      );
+      const terminated = yield* Deferred.make<CodexError.CodexAppServerError>();
+      const context = yield* Layer.build(
+        CodexClient.layerChildProcess(handle, {
+          onTermination: (error) => Deferred.succeed(terminated, error).pipe(Effect.asVoid),
+        }),
+      );
+      const client = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
+        Effect.provide(context),
+      );
+      const rejected = yield* client.raw.request("synthetic/exit").pipe(Effect.result);
+      const error = yield* Deferred.await(terminated);
+      assert.equal(error._tag, "CodexAppServerProcessExitedError");
+      if (error._tag === "CodexAppServerProcessExitedError") assert.equal(error.code, 23);
+      assert.isTrue(Result.isFailure(rejected));
+      if (Result.isFailure(rejected)) assert.equal(rejected.failure, error);
+    }),
+  );
+
   it.effect("drains child stderr so large diagnostics cannot block protocol responses", () =>
     Effect.gen(function* () {
       const handle = yield* makeHandle({
@@ -156,3 +188,28 @@ it.layer(NodeServices.layer)("effect-codex-app-server client", (it) => {
     }),
   );
 });
+
+it.effect("forwards transport termination to the client owner exactly once", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const observed: Array<CodexError.CodexAppServerError> = [];
+    const error = new CodexError.CodexAppServerProcessExitedError({ code: 7 });
+    const client = yield* CodexClient.make(
+      stdio,
+      {
+        onTermination: (cause) =>
+          Effect.sync(() => {
+            observed.push(cause);
+          }),
+      },
+      Effect.succeed(error),
+    );
+    yield* Queue.end(input);
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    assert.deepEqual(observed, [error]);
+    const rejected = yield* client.raw.request("turn/start", {}).pipe(Effect.result);
+    assert.isTrue(Result.isFailure(rejected));
+    if (Result.isFailure(rejected)) assert.equal(rejected.failure, error);
+    assert.equal(observed.length, 1);
+  }).pipe(Effect.scoped),
+);
