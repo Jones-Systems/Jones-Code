@@ -59,7 +59,7 @@ it("keeps options-only questions answerable without a custom field", () => {
       disabled: false,
       isResponding: false,
     }),
-  ).toMatchObject({ showField: false, primaryDisabled: false, showSkip: false });
+  ).toMatchObject({ showField: false, primaryDisabled: false });
 });
 
 it.each([

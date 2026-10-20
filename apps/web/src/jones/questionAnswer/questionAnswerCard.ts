@@ -36,7 +36,6 @@ export function deriveQuestionAnswerFooterState(input: {
     primaryDisabled:
       fieldDisabled || !progress.canAdvance || (progress.isLastQuestion && !progress.isComplete),
     showBack: progress.questionIndex > 0,
-    showSkip: prompt.dismissible,
     literal: progress.activeQuestion?.initialAnswer !== undefined,
     notice: unavailable
       ? "This question can no longer be answered; stop or restart the run."

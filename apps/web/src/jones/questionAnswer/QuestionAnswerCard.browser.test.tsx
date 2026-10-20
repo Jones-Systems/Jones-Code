@@ -9,6 +9,8 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
+import { ComposerBanner } from "../../components/chat/ComposerBanner";
+import "../../index.css";
 import {
   buildPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
@@ -177,4 +179,50 @@ it("sending the thread message leaves the question and its written answer pendin
   expect(output("answer")).toBe("null");
   expect(output("messages")).toBe('["independent thread draft"]');
   expect(answerField().value).toBe("Keep this answer");
+});
+
+it("aligns the one-line answer and Send with the option content, then caps growth at four lines", async () => {
+  container.style.width = "680px";
+  await act(async () =>
+    root.render(
+      <ComposerBanner.Root>
+        <Harness />
+      </ComposerBanner.Root>,
+    ),
+  );
+  const field = answerField();
+  const style = getComputedStyle(field);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  const inset =
+    Number.parseFloat(style.paddingTop) +
+    Number.parseFloat(style.paddingBottom) +
+    Number.parseFloat(style.borderTopWidth) +
+    Number.parseFloat(style.borderBottomWidth);
+  const optionText = [...container.querySelectorAll("span")].find(
+    (span) => span.textContent === "Incremental",
+  )!;
+  const option = optionText.closest("button")!;
+  const optionStyle = getComputedStyle(option);
+  const initial = field.getBoundingClientRect();
+  const send = button("Send").getBoundingClientRect();
+  expect(initial.height).toBeCloseTo(lineHeight + inset, 0);
+  expect(initial.left).toBeCloseTo(optionText.getBoundingClientRect().left, 0);
+  expect(send.right).toBeCloseTo(
+    option.getBoundingClientRect().right - Number.parseFloat(optionStyle.paddingRight),
+    0,
+  );
+  expect(send.left).toBeGreaterThan(initial.right);
+  expect(send.top).toBeGreaterThanOrEqual(initial.top);
+  expect(send.bottom).toBeLessThanOrEqual(initial.bottom);
+
+  await typeAnswer("One\nTwo");
+  expect(field.getBoundingClientRect().height).toBeCloseTo(2 * lineHeight + inset, 0);
+  await typeAnswer("One\nTwo\nThree\nFour\nFive\nSix");
+  expect(field.getBoundingClientRect().height).toBeCloseTo(4 * lineHeight + inset, 0);
+  expect(field.scrollHeight).toBeGreaterThan(field.clientHeight);
+  field.scrollTop = field.scrollHeight;
+  expect(field.scrollTop).toBeGreaterThan(0);
+  expect(getComputedStyle(field).scrollbarWidth).toBe("none");
+  await typeAnswer("");
+  expect(field.getBoundingClientRect().height).toBeCloseTo(initial.height, 0);
 });

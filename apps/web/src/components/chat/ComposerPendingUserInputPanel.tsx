@@ -341,7 +341,6 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
             }
             onAdvance();
           }}
-          onDismiss={onDismiss}
         />
       </CollapsiblePanel>
     </Collapsible>
