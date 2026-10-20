@@ -4922,7 +4922,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               payload.turnId,
               payload.tokenUsage,
             );
-            const context = yield* awaitActiveTurn(payload.turnId);
+            // Never wait for the turn here: one reader serves every thread on this app-server,
+            // and a resumed conversation can replay usage for a turn that never becomes active.
+            const context = (yield* Ref.get(activeTurns)).get(payload.turnId);
             if (context === undefined) {
               return;
             }

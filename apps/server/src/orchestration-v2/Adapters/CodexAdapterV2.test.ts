@@ -3952,6 +3952,277 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
+  const usageBreakdown = (input: number, cached: number, output: number) => ({
+    totalTokens: input + output,
+    inputTokens: input,
+    cachedInputTokens: cached,
+    outputTokens: output,
+    reasoningOutputTokens: 0,
+  });
+  const usageUpdateEntry = (
+    threadId: string,
+    turnId: string,
+    total: ReturnType<typeof usageBreakdown>,
+    last = total,
+  ): CodexReplay.CodexAppServerReplayEntry => ({
+    type: "emit_inbound",
+    label: "usage",
+    frame: {
+      method: "thread/tokenUsage/updated",
+      params: { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
+    },
+  });
+  const completedTurnEntry = (
+    threadId: string,
+    turnId: string,
+  ): CodexReplay.CodexAppServerReplayEntry => ({
+    type: "emit_inbound",
+    frame: {
+      method: "turn/completed",
+      params: { threadId, turn: makeCodexReplayTurn({ id: turnId, status: "completed" }) },
+    },
+  });
+  const contextUsageReports = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+    events.flatMap((event) =>
+      event.type === "provider_turn.updated" && event.providerTurn.tokenUsage !== undefined
+        ? [event.providerTurn]
+        : [],
+    );
+  const causeTags = (error: unknown) => {
+    const tags: Array<string> = [];
+    let current = error;
+    while (Predicate.hasProperty(current, "cause") && tags.length < 8) {
+      current = current.cause;
+      tags.push(Predicate.hasProperty(current, "_tag") ? String(current._tag) : typeof current);
+    }
+    return tags;
+  };
+
+  // A resumed Codex conversation can replay usage for a turn that never becomes active again.
+  // One stdout reader serves every thread of the session, so that notification must not hold
+  // back the reply a pending start is waiting for.
+  it.effect.each(["sibling", "same-thread"] as const)(
+    "keeps a pending start readable behind replayed usage for a resumed thread (%s)",
+    (target) =>
+      Effect.gen(function* () {
+        const activeThreadId = `replayed-usage-${target}`;
+        const savedThreadId = `replayed-usage-saved-${target}`;
+        const startThreadId = target === "sibling" ? activeThreadId : savedThreadId;
+        const nativeTurnId = "fresh-native-turn";
+        const freshTurn = codexReplayPreamble({
+          nativeThreadId: startThreadId,
+          nativeTurnId,
+          prompt: "Work",
+        });
+        const transcript = makeCodexReplayTranscript({
+          scenario: activeThreadId,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId: activeThreadId,
+              nativeTurnId,
+              prompt: "Work",
+            }).slice(0, 5),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 3,
+                method: "thread/resume",
+                params: {
+                  threadId: savedThreadId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 3,
+                result: { thread: { id: savedThreadId, updatedAt: 1782622440 }, model: "gpt-5.4" },
+              },
+            },
+            ...freshTurn.slice(5, 6).map((entry) => withReplayRequestId(entry, 4)),
+            usageUpdateEntry(
+              savedThreadId,
+              "historical-native-turn",
+              usageBreakdown(1000, 400, 200),
+            ),
+            // Delivering the reply on a clock wake lets the test clock settle everything it
+            // causes before it reaches the 30-second start timeout, provided the reader is free.
+            ...freshTurn
+              .slice(6, 7)
+              .map((entry) => withReplayRequestId(entry, 4))
+              .map((entry) => (entry.type === "emit_inbound" ? { ...entry, afterMs: 1 } : entry)),
+            ...freshTurn.slice(7),
+            target === "sibling"
+              ? usageUpdateEntry(startThreadId, nativeTurnId, usageBreakdown(30, 10, 6))
+              : // The thread-wide total includes the replayed history; only the difference is billed.
+                usageUpdateEntry(
+                  startThreadId,
+                  nativeTurnId,
+                  usageBreakdown(1030, 410, 206),
+                  usageBreakdown(20, 5, 4),
+                ),
+            completedTurnEntry(startThreadId, nativeTurnId),
+          ],
+        });
+        const replyScheduled = yield* Deferred.make<void>();
+        const driver = yield* CodexReplay.makeReplayDriver(transcript, {
+          beforeEmitInbound: (entry) =>
+            entry.label === "turn/start"
+              ? Deferred.succeed(replyScheduled, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+        });
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+          replayClientFactory: makeCodexReplayClientFactory({ transcript, driver }),
+        });
+        const savedThread = {
+          ...harness.providerThread,
+          id: ProviderThreadId.make(savedThreadId),
+          appThreadId: ThreadId.make(savedThreadId),
+          nativeThreadRef: {
+            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+            nativeId: savedThreadId,
+            strength: "strong" as const,
+          },
+        };
+        yield* harness.runtime.resumeThread({ providerThread: savedThread });
+        const startThread = target === "sibling" ? harness.providerThread : savedThread;
+        const attemptId = RunAttemptId.make(`replayed-usage-${target}-attempt`);
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: target === "sibling" ? harness.threadId : savedThread.appThreadId,
+              providerThread: startThread,
+              now: yield* DateTime.now,
+              attemptId,
+              text: "Work",
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(replyScheduled);
+        yield* TestClock.adjust("30 seconds");
+        const started = yield* Fiber.join(start);
+        assert.equal(
+          started._tag,
+          "Success",
+          started._tag === "Failure"
+            ? `the queued start reply was not read before the timeout: ${started.failure.message} (causes ${causeTags(started.failure).join(" > ")})`
+            : undefined,
+        );
+        yield* harness.firstTerminal;
+        assert.deepEqual(yield* Ref.get(driver.state), {
+          cursor: transcript.entries.length,
+          failure: null,
+        });
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId,
+        });
+        assert.deepEqual(
+          contextUsageReports(harness.events).map((turn) => ({
+            id: turn.id,
+            usedTokens: turn.tokenUsage?.usedTokens,
+          })),
+          [{ id: providerTurnId, usedTokens: target === "sibling" ? 36 : 24 }],
+          "only the fresh turn reports context usage",
+        );
+        const completed = harness.events.find(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.id === providerTurnId &&
+            event.providerTurn.status === "completed",
+        );
+        assert.deepEqual(
+          completed?.type === "provider_turn.updated"
+            ? completed.providerTurn.turnTokenUsage
+            : undefined,
+          {
+            usageStatus: "complete",
+            usageScope: "main_agent",
+            hasSubagents: false,
+            inputTokens: 30,
+            cachedInputTokens: 10,
+            outputTokens: 6,
+            reasoningTokens: 0,
+          },
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect("reports context usage that directly follows a start acknowledgement", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "early-context-usage";
+      const nativeTurnId = "early-context-usage-turn";
+      // No item notification separates this usage from the start reply, so nothing else
+      // waits for the new turn before the usage is handled.
+      const transcript = makeCodexReplayTranscript({
+        scenario: nativeThreadId,
+        entries: [
+          ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Work" }),
+          usageUpdateEntry(nativeThreadId, nativeTurnId, usageBreakdown(30, 10, 6)),
+          completedTurnEntry(nativeThreadId, nativeTurnId),
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      const attemptId = RunAttemptId.make("early-context-usage-attempt");
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId,
+          text: "Work",
+        }),
+      );
+      yield* harness.firstTerminal;
+      const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+        driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+        nativeTurnId,
+      });
+      assert.deepEqual(
+        contextUsageReports(harness.events).map((turn) => ({
+          id: turn.id,
+          runAttemptId: turn.runAttemptId,
+          status: turn.status,
+          usedTokens: turn.tokenUsage?.usedTokens,
+          maxTokens: turn.tokenUsage?.maxTokens,
+        })),
+        [
+          {
+            id: providerTurnId,
+            runAttemptId: attemptId,
+            status: "running",
+            usedTokens: 36,
+            maxTokens: 200_000,
+          },
+        ],
+      );
+      const turnUpdateIndex = (predicate: (turn: OrchestrationV2ProviderTurn) => boolean) =>
+        harness.events.findIndex(
+          (event) =>
+            event.type === "provider_turn.updated" &&
+            event.providerTurn.id === providerTurnId &&
+            predicate(event.providerTurn),
+        );
+      assert.isBelow(
+        turnUpdateIndex((turn) => turn.tokenUsage !== undefined),
+        turnUpdateIndex((turn) => turn.status === "completed"),
+        "a running usage report must not follow the completion",
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   const awaitCapacityDelay = (
     harness: { readonly events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> },
     ordinal = 1,
