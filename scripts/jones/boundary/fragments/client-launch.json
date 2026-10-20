@@ -15,6 +15,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/environment/NativeStoreAuthority.ts"
+    },
+    {
       "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
       "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts"
     },
