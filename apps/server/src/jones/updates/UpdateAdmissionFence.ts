@@ -1,6 +1,6 @@
 import { ServerSelfUpdateError } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -94,7 +94,8 @@ const startsProviderWork = (effects: EffectRequests, events: RecordedEvents) =>
  * tasks and their results, scheduled and webhook runs and agents' tools. A queued message is
  * durable, and writes that settle a running attempt record no new provider work; neither is
  * checked. While the fence is open a check reads one reference and never waits, so it
- * serializes nothing.
+ * serializes nothing. A scheduled task's message is held until admission reopens rather than
+ * refused; see `holdScheduledDispatch`.
  *
  * The final check of an automatic installation runs on the SQLite writer after the fence is
  * raised. A transaction admitted just before the fence went up holds the writer, so that check
@@ -112,6 +113,11 @@ export class UpdateAdmissionFence extends Context.Service<
       effects: EffectRequests,
       events?: RecordedEvents,
     ) => Effect.Effect<void, UpdateAdmissionRefused>;
+    /**
+     * Waits until new provider work would be admitted again: the installation released the fence
+     * or is still in its final check. Once the launcher accepts, only this process's exit ends it.
+     */
+    readonly awaitAdmission: Effect.Effect<void>;
     /** Called by each event sink that consults the fence. */
     readonly attach: Effect.Effect<void>;
     /** Whether any event sink consults the fence; automatic installations hold without one. */
@@ -124,6 +130,8 @@ export class UpdateAdmissionFence extends Context.Service<
 
 export const make = Effect.gen(function* () {
   const state = yield* Ref.make<FenceState>({ phase: "open" });
+  /** Completed, and replaced, each time a release reopens admission. */
+  const reopenedSignal = yield* Ref.make(Deferred.makeUnsafe<void>());
   const sinks = yield* Ref.make(0);
   let tickets = 0;
   const refused = (current: FenceState): Option.Option<UpdateAdmissionRefused["phase"]> =>
@@ -153,6 +161,17 @@ export const make = Effect.gen(function* () {
           ),
         )
       : Effect.void;
+  const signalReopened = Ref.getAndSet(reopenedSignal, Deferred.makeUnsafe<void>()).pipe(
+    Effect.flatMap((signal) => Deferred.succeed(signal, undefined)),
+  );
+  const awaitAdmission: Effect.Effect<void> = Effect.gen(function* () {
+    for (;;) {
+      // The signal is read first, so a release between the two reads has already completed it.
+      const signal = yield* Ref.get(reopenedSignal);
+      if (Option.isNone(refused(yield* Ref.get(state)))) return;
+      yield* Deferred.await(signal);
+    }
+  });
   const raise = (mode: AdmissionFenceMode) =>
     Effect.gen(function* () {
       const ticket = ++tickets;
@@ -174,15 +193,23 @@ export const make = Effect.gen(function* () {
         accept: Ref.update(state, (current): FenceState =>
           holds(current) ? { phase: "accepted", ticket } : current,
         ),
-        release: Ref.modify(state, (current): readonly [boolean, FenceState] =>
+        release: Ref.modify(state, (current): readonly [Option.Option<boolean>, FenceState] =>
           holds(current) && (current.phase === "raised" || current.phase === "handing-off")
-            ? [current.refused, { phase: "open" }]
-            : [false, current],
+            ? [Option.some(current.refused), { phase: "open" }]
+            : [Option.none(), current],
+        ).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => Effect.succeed(false),
+              onSome: (refusedWork) => signalReopened.pipe(Effect.as(refusedWork)),
+            }),
+          ),
         ),
       } satisfies AdmissionTicket;
     });
   return UpdateAdmissionFence.of({
     admit,
+    awaitAdmission,
     attach: Ref.update(sinks, (count) => count + 1),
     attached: Ref.get(sinks).pipe(Effect.map((count) => count > 0)),
     raise,
@@ -202,14 +229,27 @@ export function isUpdateAdmissionRefusal(error: unknown): boolean {
 }
 
 /**
- * Whether a failed dispatch was held for an update. The work was not recorded under its command
- * id, so a caller that keeps it, such as an accepted webhook delivery, dispatches it again under
- * the same command id once admission reopens here or on the next server. It is not a failure.
+ * Runs a scheduled task's dispatch, holding it while the fence refuses new provider work instead
+ * of failing it. The scheduler would record a refusal as a failed run and drop an accepted webhook
+ * delivery with it. A held dispatch records nothing: it runs under the same command id once
+ * admission reopens here, and the restart that follows an accepted handoff interrupts it from
+ * outside, which leaves the delivery for the next server to run.
  */
-export const isUpdateAdmissionHold = (cause: Cause.Cause<unknown>): boolean =>
-  cause.reasons.some(
-    (reason) => Cause.isFailReason(reason) && isUpdateAdmissionRefusal(reason.error),
+export const holdScheduledDispatch = <A, E, R>(
+  fence: Option.Option<UpdateAdmissionFence["Service"]>,
+  dispatch: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => {
+  if (Option.isNone(fence)) return dispatch;
+  const attempt: Effect.Effect<A, E, R> = dispatch.pipe(
+    Effect.catchIf(isUpdateAdmissionRefusal, () =>
+      Effect.logInfo("Scheduled task dispatch held while this host hands off to an update").pipe(
+        Effect.andThen(fence.value.awaitAdmission),
+        Effect.andThen(Effect.suspend(() => attempt)),
+      ),
+    ),
   );
+  return attempt;
+};
 
 const withdrawn = (reason: string) =>
   new ServerSelfUpdateError({

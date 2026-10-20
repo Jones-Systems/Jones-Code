@@ -37,6 +37,7 @@
     "apps/server/src/jones/updates/hostWork.test.ts",
     "apps/server/src/jones/updates/UpdateAdmissionFence.ts",
     "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts",
     "apps/web/src/jones/fleetUpdates/followerStatus.ts",
     "apps/web/src/jones/fleetUpdates/followerStatus.test.ts"
   ],
@@ -97,6 +98,10 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
       "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
     },
     {

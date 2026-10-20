@@ -637,7 +637,7 @@ describe("work that is not a turn start yet", () => {
       const next = yield* f.fence.raise("automatic");
       assert.isTrue(yield* next.handOff);
       const held = yield* f.send("prepare later", "defer_start").pipe(Effect.exit);
-      assert.isTrue(Exit.isFailure(held) && Fence.isUpdateAdmissionHold(held.cause));
+      assert.isTrue(Fence.isUpdateAdmissionRefusal(failure(held)));
       assert.lengthOf(yield* f.runs(), 1);
     }).pipe(Effect.provide(orchestration(Fence.layer))),
   );
@@ -656,48 +656,120 @@ describe("work that is not a turn start yet", () => {
 });
 
 describe("a scheduled or webhook dispatch held for an update", () => {
-  it.effect(
-    "is a hold rather than a failure, and the same command is accepted after reopening",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* fixture;
-        const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
-          Effect.provide(
-            ThreadManagementService.layer.pipe(
-              Layer.provide(ServerSettings.layerTest()),
-              Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
-            ),
-          ),
-        );
-        // The scheduler's call for one webhook delivery; its ids derive from the delivery.
-        const delivery = {
-          projectId: ProjectId.make("project:update-admission"),
-          commandId: CommandId.make("scheduled-task:task-1:webhook:delivery-1"),
+  const threadManagement = ThreadManagementService.ThreadManagementService.pipe(
+    Effect.provide(
+      ThreadManagementService.layer.pipe(
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+      ),
+    ),
+  );
+  // The scheduler's call for one webhook delivery; its ids derive from the delivery.
+  const delivery = {
+    projectId: ProjectId.make("project:update-admission"),
+    commandId: CommandId.make("scheduled-task:task-1:webhook:delivery-1"),
+    threadId,
+    messageId: MessageId.make("scheduled-task-message:task-1:webhook:delivery-1"),
+    scheduledTaskId: ScheduledTaskId.make("task-1"),
+    text: "webhook prompt",
+    attachments: [],
+    modelSelection,
+    mode: "queue" as const,
+    createdBy: "agent" as const,
+    creationSource: "mcp" as const,
+  };
+  const settle = Effect.forEach(Array.from({ length: 50 }), () => Effect.yieldNow, {
+    discard: true,
+  });
+
+  it.effect("waits instead of failing and runs under its command id when the fence lifts", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const threads = yield* threadManagement;
+      const ticket = yield* f.fence.raise("automatic");
+      assert.isTrue(yield* ticket.handOff);
+      const sending = yield* threads.sendToThread(delivery).pipe(Effect.forkChild);
+      yield* settle;
+      assert.isUndefined(sending.pollUnsafe());
+      assert.lengthOf(yield* f.runs(), 0);
+      assert.isFalse(yield* threads.hasReceipt(delivery.commandId));
+      // A refused handoff, a cancel or a failure reopens admission without a restart.
+      assert.isTrue(yield* ticket.release);
+      const sent = yield* Fiber.join(sending);
+      assert.strictEqual(sent.delivery, "started");
+      assert.isTrue(yield* threads.hasReceipt(delivery.commandId));
+      assert.deepStrictEqual(yield* f.starts(), [sent.run.id]);
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+
+  it.effect("stays held once the launcher accepts, until the restart interrupts it", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const threads = yield* threadManagement;
+      const ticket = yield* f.fence.raise("manual");
+      assert.isTrue(yield* ticket.handOff);
+      yield* ticket.accept;
+      // The scheduler's run: its dispatch result decides whether the delivery is dropped.
+      let recorded: Exit.Exit<unknown, unknown> | undefined;
+      const run = yield* Effect.exit(threads.sendToThread(delivery)).pipe(
+        Effect.tap((exit) => Effect.sync(() => (recorded = exit))),
+        Effect.forkChild,
+      );
+      yield* settle;
+      assert.isUndefined(run.pollUnsafe());
+      // The restart interrupts the run from outside, so its result is never recorded.
+      yield* Fiber.interrupt(run);
+      assert.isUndefined(recorded);
+      assert.lengthOf(yield* f.runs(), 0);
+      assert.isFalse(yield* threads.hasReceipt(delivery.commandId));
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+
+  it.effect("holds a scheduled launch's first message and prepares its run on reopening", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const threads = yield* threadManagement;
+      const ticket = yield* f.fence.raise("manual");
+      // The launch service dispatches a launched thread's first message like this.
+      const launching = yield* threads
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("scheduled-task:task-1:webhook:delivery-2:initial-message"),
           threadId,
-          messageId: MessageId.make("scheduled-task-message:task-1:webhook:delivery-1"),
+          messageId: MessageId.make("scheduled-task-message:task-1:webhook:delivery-2"),
           scheduledTaskId: ScheduledTaskId.make("task-1"),
           text: "webhook prompt",
           attachments: [],
           modelSelection,
-          mode: "queue" as const,
-          createdBy: "agent" as const,
-          creationSource: "mcp" as const,
-        };
-        const ticket = yield* f.fence.raise("automatic");
-        assert.isTrue(yield* ticket.handOff);
-        const held = yield* threads.sendToThread(delivery).pipe(Effect.exit);
-        assert.isTrue(Exit.isFailure(held));
-        assert.isTrue(Exit.isFailure(held) && Fence.isUpdateAdmissionHold(held.cause));
-        assert.lengthOf(yield* f.runs(), 0);
-        assert.isFalse(yield* threads.hasReceipt(delivery.commandId));
-        // A refused handoff reopens admission; the kept delivery then runs under its command id.
-        assert.isTrue(yield* ticket.release);
-        const sent = yield* threads.sendToThread(delivery);
-        assert.strictEqual(sent.delivery, "started");
-        assert.deepStrictEqual(yield* f.starts(), [sent.run.id]);
-        // An ordinary failure is not a hold.
-        assert.isFalse(Fence.isUpdateAdmissionHold(Cause.fail(new Error("boom"))));
-        assert.isFalse(Fence.isUpdateAdmissionHold(Cause.die(new Error("boom"))));
-      }).pipe(Effect.provide(orchestration(Fence.layer))),
+          dispatchMode: { type: "defer_start", workspaceStrategy: { type: "root" } },
+          createdBy: "agent",
+          creationSource: "mcp",
+        })
+        .pipe(Effect.forkChild);
+      yield* settle;
+      assert.isUndefined(launching.pollUnsafe());
+      assert.lengthOf(yield* f.runs(), 0);
+      assert.isTrue(yield* ticket.release);
+      yield* Fiber.join(launching);
+      assert.deepStrictEqual(
+        (yield* f.runs()).map((run) => run.status),
+        ["preparing"],
+      );
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+
+  it.effect("a person's send is still refused at once, not held", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const threads = yield* threadManagement;
+      const ticket = yield* f.fence.raise("manual");
+      const { scheduledTaskId: _scheduled, ...send } = delivery;
+      const refused = yield* threads
+        .sendToThread({ ...send, commandId: CommandId.make("send:person"), mode: "auto" })
+        .pipe(Effect.exit);
+      assert.isTrue(Fence.isUpdateAdmissionRefusal(failure(refused)));
+      assert.lengthOf(yield* f.runs(), 0);
+      assert.isTrue(yield* ticket.release);
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
   );
 });

@@ -98,28 +98,55 @@ could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
 
+## Admission fence
+
+A process that hands off to an update must not start provider work that the
+stopped process then loses. The event sink checks the
+[fence](../../apps/server/src/jones/updates/UpdateAdmissionFence.ts) inside the
+transaction that records a process-bound effect, or a run that prepares a
+workspace, so every origin passes it; an open fence reads one reference and never
+waits. An installation raises it just before its final quiet check, which runs on
+the SQLite writer: a transaction admitted before the fence rose holds the writer,
+so the check sees its work. Until the launcher accepts, new work withdraws an
+automatic activation and leaves its stage ready; a manual Install refuses it
+instead. From the handoff on, new work is refused with a message to send it again,
+and nothing is recorded, so the same command id is accepted later. A failure,
+refusal or cancellation before acceptance reopens admission and restarts the queued
+runs it held; after an uncertain handoff the launcher's own record decides.
+
+A scheduled task's message is held rather than refused, because the scheduler
+records any dispatch failure as a failed run and drops an accepted webhook delivery
+with it. A held dispatch records nothing. It continues under its command id when
+admission reopens, and the restart after an accepted handoff interrupts it from
+outside, which leaves the delivery's pending record for the next server.
+
 ## Following hosts
 
-An enrolled service host follows the laptop's committed source, which the desktop
-renderer publishes from its own installed source. The host stores it under
-`runtime/jones-fleet`, bound to the enrollment ID, so re-enrolling discards it and
-the host can still install while the laptop sleeps. The ceiling is enforced in
-`JonesUpdater`, the one path behind HTTP check, download, exact download, Install,
-fleet staging and fleet activation; hiding a button is not the control. Until the
-laptop publishes, manual paths hold, while an older laptop's campaign keeps its
-commit proof as the authority.
+An enrolled service host follows the laptop's committed source. The desktop
+renderer relays the repository, commit and tree of the laptop's native active
+install; the host checks that tree against the one the repository records for the
+commit. It stores the report under `runtime/jones-fleet`, bound to the enrollment
+ID, so re-enrolling discards it and the host can still install while the laptop
+sleeps. A source without its tree is not proof: a record written before the laptop
+sent one counts as no report. The ceiling is enforced in `JonesUpdater`, the one
+path behind HTTP check, download, exact download, Install, fleet staging and fleet
+activation; hiding a button is not the control. Until the laptop reports, every
+path holds, including an older laptop's campaign. A host already installed ahead of
+the laptop holds instead of going back.
 
 The host prepares the laptop's source itself and retires any other unaccepted
 stage first. It does not prefetch an uncommitted laptop build: every retirement
 adds a launcher revocation receipt, and the launcher refuses more than 4,096.
-Automatic activation, including a campaign activation from an older laptop, waits
-for 30 minutes without client input, at least 15 minutes since the previous
-automatic activation, and no work a restart would cut. The activation time is
-recorded before dispatch, and admission is checked again in the capture step just
-before the launcher request. A withdrawal there is a refusal before acceptance and
-leaves the stage ready. A pending request answerable by message survives a restart;
-a live or non-resumable approval does not, and holds activation until a provider
-adapter can declare that a pending approval rebinds to its resumed session.
+Campaigns still stage the laptop's next build early on hosts that do not follow,
+but preparing it does not supersede hosts still catching up to the committed
+build; the next commit retires them. Automatic activation, including a campaign
+activation from an older laptop, waits for 30 minutes without client input, at
+least 15 minutes since the previous automatic activation, and no work a restart
+would cut. The activation time is recorded before dispatch, and the final check
+runs under the admission fence. A pending request answerable by message survives a
+restart; a live or non-resumable approval does not, and holds activation until a
+provider adapter can declare that a pending approval rebinds to its resumed
+session.
 
 ## Recovering interrupted threads
 

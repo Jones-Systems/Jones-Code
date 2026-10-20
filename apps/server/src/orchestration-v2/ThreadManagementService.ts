@@ -1,6 +1,7 @@
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { queuedSteerBatchCandidates } from "../jones/orchestration/QueuedSteerBatch.ts";
 import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
+import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   type LegacyGuardRejectionDeleteCommand,
@@ -588,6 +589,7 @@ const make = Effect.gen(function* () {
   const observationSessions = yield* Effect.serviceOption(
     ProviderSessionManager.ProviderSessionManagerV2,
   );
+  const updateAdmission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
   const observeThreadActivity = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const shell = yield* orchestrator.getThreadShell(threadId);
@@ -762,11 +764,16 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) =>
-    ensureCommandTranscripts(command).pipe(
+  const dispatch: ThreadManagementServiceShape["dispatch"] = (command) => {
+    const dispatchOnce = ensureCommandTranscripts(command).pipe(
       Effect.andThen(assertDispatchTargetEnabled(command)),
       Effect.andThen(orchestrator.dispatch(command)),
     );
+    // Jones: a scheduled task's message, sent or launched, waits out an update handoff.
+    return command.type === "message.dispatch" && command.scheduledTaskId !== undefined
+      ? UpdateAdmissionFence.holdScheduledDispatch(updateAdmission, dispatchOnce)
+      : dispatchOnce;
+  };
 
   const getProjectThread: ThreadManagementServiceShape["getProjectThread"] = (input) =>
     getThreadProjection(input.threadId).pipe(

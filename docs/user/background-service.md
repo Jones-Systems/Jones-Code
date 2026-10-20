@@ -148,7 +148,11 @@ coordinate their rollout, and an offline host updates after it reconnects.
 On an enrolled host, Check, Download and Install offer only the laptop's
 installed build, from any client. Install stays off for any other downloaded
 build, including an older one, and a host waits until the laptop has reported
-its build.
+its build. A laptop app too old to report its build cannot release a host:
+update the laptop app, or disable automatic updates for that host to choose its
+builds there. A host already running a newer build than the laptop's waits
+instead of going back. A webhook delivery the host accepts while it hands off to
+an update runs after the restart, or as soon as the installation stops.
 
 The connection row shows each host's progress and any action needed. If the
 connection drops during installation, Jones checks what the host accepted before
