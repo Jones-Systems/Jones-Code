@@ -1,5 +1,6 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as CommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
-import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -40,7 +41,8 @@ import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
 import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 
 const layerStubServices = Layer.mergeAll(
-  SqlitePersistence.layerMemory,
+  NodeSqliteClient.layer({ filename: ":memory:" }),
+  Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
   Layer.mock(EventSink.EventSinkV2)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(ProjectionStore.ProjectionStoreV2)({}),

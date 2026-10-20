@@ -348,8 +348,20 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  // Each thread whose item still waits in the worker queue, and whether any
+  // request it absorbed asked for a refresh. The item removes its entry when it
+  // starts, so an event arriving while it runs queues a follow-up.
+  const queuedThreadRefresh = new Map<ThreadId, boolean>();
+
+  const startRequest = (request: RefreshRequest): RefreshRequest => {
+    if (request.threadId === null) return request;
+    const refresh = queuedThreadRefresh.get(request.threadId);
+    queuedThreadRefresh.delete(request.threadId);
+    return refresh === undefined ? request : { ...request, refresh };
+  };
+
   const worker = yield* makeDrainableWorker((request: RefreshRequest) =>
-    synchronize(request).pipe(
+    Effect.suspend(() => synchronize(startRequest(request))).pipe(
       Effect.catchCauseIf(
         (cause) => !Cause.hasInterruptsOnly(cause),
         (cause) =>
@@ -360,15 +372,28 @@ export const make = Effect.gen(function* () {
     ),
   );
 
+  // A request for a thread whose item still waits joins it, so a turn's
+  // `checkpoint.captured` and terminal `run.updated` queued behind other work
+  // cost one lookup. Recording the entry before the offer, uninterruptibly,
+  // keeps an interrupted event from leaving an entry no queued item will clear.
+  const enqueueThread = (threadId: ThreadId, refresh: boolean) =>
+    Effect.uninterruptible(
+      Effect.suspend(() => {
+        const queued = queuedThreadRefresh.get(threadId);
+        queuedThreadRefresh.set(threadId, queued === true || refresh);
+        return queued === undefined ? worker.enqueue({ threadId, refresh }) : Effect.void;
+      }),
+    );
+
   const processEvent = (event: OrchestrationV2DomainEvent) => {
     switch (event.type) {
       case "thread.created":
       case "thread.unarchived":
       case "thread.metadata-updated":
-        return worker.enqueue({ threadId: event.threadId, refresh: false });
+        return enqueueThread(event.threadId, false);
       case "thread.unsettled":
       case "checkpoint.captured":
-        return worker.enqueue({ threadId: event.threadId, refresh: true });
+        return enqueueThread(event.threadId, true);
       case "run.updated":
         if (
           event.payload.status === "completed" ||
@@ -376,7 +401,7 @@ export const make = Effect.gen(function* () {
           event.payload.status === "cancelled" ||
           event.payload.status === "interrupted"
         ) {
-          return worker.enqueue({ threadId: event.threadId, refresh: true });
+          return enqueueThread(event.threadId, true);
         }
         break;
     }

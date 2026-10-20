@@ -1,3 +1,5 @@
+import { listenForWorkspaceFileDragEnd } from "./workspaceFileDragLifecycle";
+import { makeWorkspaceFileDropHandlers } from "../../components/chat/workspaceFileDrop";
 import { seedUserInputDraftAnswers } from "@t3tools/client-runtime/state/thread-requests";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import {
@@ -24,7 +26,7 @@ import {
   ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { act, useState } from "react";
+import { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
@@ -644,4 +646,108 @@ it("pastes a thread reference into the answer without adding context to the thre
     JSON.stringify({ approach: formatThreadLink(record.threadId, "Related thread") }),
   );
   expect(output("messages")).toBe("[]");
+});
+
+function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: File[]) => void }) {
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    return listenForWorkspaceFileDragEnd(() => setActive(false));
+  }, [active]);
+  const handlers = makeWorkspaceFileDropHandlers({
+    setDragActive: setActive,
+    addFiles: onWorkspaceFiles,
+    addFolders: onWorkspaceFiles,
+  });
+  return (
+    <div {...handlers}>
+      {active && <div data-testid="workspace-drop-overlay">Drop files to attach</div>}
+      <Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />
+    </div>
+  );
+}
+
+it("clears the workspace overlay after a stopped reply drop and attaches only to the reply", async () => {
+  const onWorkspaceFiles = vi.fn();
+  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />));
+  const dataTransfer = new DataTransfer();
+  dataTransfer.items.add(
+    new File(["screenshot contents"], "screenshot.txt", { type: "text/plain" }),
+  );
+  const png = Uint8Array.from(
+    atob(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQkAAAAASUVORK5CYII=",
+    ),
+    (character) => character.charCodeAt(0),
+  );
+  dataTransfer.items.add(new File([png], "screenshot.png", { type: "image/png" }));
+  await act(async () =>
+    answerField().dispatchEvent(
+      new DragEvent("dragenter", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    ),
+  );
+  expect(container.querySelector('[data-testid="workspace-drop-overlay"]')).not.toBeNull();
+  await act(async () =>
+    answerField().dispatchEvent(
+      new DragEvent("drop", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    ),
+  );
+  const key = questionAttachmentDraftId(
+    threadRef.environmentId,
+    threadRef.threadId,
+    "request",
+    "approach",
+  );
+  expect(
+    useComposerDraftStore
+      .getState()
+      .getComposerDraft(key)!
+      .files.map((file) => file.name),
+  ).toEqual(["screenshot.txt"]);
+  await act(async () => {
+    await expect
+      .poll(() =>
+        useComposerDraftStore
+          .getState()
+          .getComposerDraft(key)
+          ?.images.map((image) => image.name),
+      )
+      .toEqual(["screenshot.png"]);
+  });
+  expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.images ?? []).toEqual([]);
+  expect(onWorkspaceFiles).not.toHaveBeenCalled();
+  expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.files ?? []).toEqual([]);
+  expect(container.querySelector('[data-testid="workspace-drop-overlay"]')).toBeNull();
+});
+
+it("clears the workspace overlay on dragend and disposes global listeners", async () => {
+  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
+  const dataTransfer = new DataTransfer();
+  dataTransfer.items.add(new File(["file"], "answer.txt", { type: "text/plain" }));
+  await act(async () =>
+    answerField().dispatchEvent(
+      new DragEvent("dragenter", {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer,
+      }),
+    ),
+  );
+  expect(container.querySelector('[data-testid="workspace-drop-overlay"]')).not.toBeNull();
+  await act(async () => window.dispatchEvent(new Event("dragend")));
+  expect(container.querySelector('[data-testid="workspace-drop-overlay"]')).toBeNull();
+  const clearDrag = vi.fn();
+  const dispose = listenForWorkspaceFileDragEnd(clearDrag);
+  dispose();
+  window.dispatchEvent(new Event("drop"));
+  window.dispatchEvent(new Event("dragend"));
+  expect(clearDrag).not.toHaveBeenCalled();
 });

@@ -189,7 +189,7 @@ function fixture(
       if (endpoint === `${ROOT}/commits/main`) return { sha: CURRENT };
       if (endpoint === `${ROOT}/git/commits/${CURRENT}`)
         return { sha: CURRENT, tree: { sha: TREE }, ...options.commit };
-      if (endpoint === `${ROOT}/compare/${OLD}...${CURRENT}`)
+      if (endpoint === `${ROOT}/compare/${OLD}...${CURRENT}?per_page=1`)
         return { status: "ahead", merge_base_commit: { sha: OLD }, ...options.comparison };
       if (endpoint.includes("/actions/workflows/artifact-cli-linux.yml/runs?"))
         return { workflow_runs: [run] };
@@ -250,9 +250,9 @@ describe("Jones Actions qualification", () => {
         ...f.transport,
         async api(endpoint) {
           if (endpoint === `${ROOT}/commits/main`) return { sha: next };
-          if (endpoint === `${ROOT}/compare/${OLD}...${next}`)
+          if (endpoint === `${ROOT}/compare/${OLD}...${next}?per_page=1`)
             return { status: "ahead", merge_base_commit: { sha: OLD } };
-          if (endpoint === `${ROOT}/compare/${CURRENT}...${next}`)
+          if (endpoint === `${ROOT}/compare/${CURRENT}...${next}?per_page=1`)
             return { status: "ahead", merge_base_commit: { sha: CURRENT } };
           return f.transport.api(endpoint);
         },
@@ -421,6 +421,121 @@ describe("Jones Actions qualification", () => {
         architecture: "x64",
       }),
     ).toEqual({ state: "no-new" });
+  });
+});
+
+describe("Jones Actions ancestry memo", () => {
+  const compareOf = (calls: readonly string[]) =>
+    calls.filter((call) => call.includes("/compare/"));
+
+  it("reads each compare with a one-commit page", async () => {
+    const { client, calls } = fixture();
+    await check(client);
+    expect(compareOf(calls)).toEqual([`${ROOT}/compare/${OLD}...${CURRENT}?per_page=1`]);
+  });
+
+  it("answers a repeated exact pair from memory but re-reads canonical main every check", async () => {
+    const { client, calls } = fixture();
+    expect((await check(client)).state).toBe("available");
+    expect((await check(client)).state).toBe("available");
+    expect(compareOf(calls)).toHaveLength(1);
+    expect(calls.filter((call) => call === `${ROOT}/commits/main`)).toHaveLength(2);
+  });
+
+  it("re-proves main membership for the new main when main advances", async () => {
+    const f = fixture();
+    const next = "d".repeat(40);
+    let main = CURRENT;
+    const compares: string[] = [];
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        ...f.transport,
+        async api(endpoint) {
+          if (endpoint === `${ROOT}/commits/main`) return { sha: main };
+          if (endpoint.includes("/compare/")) {
+            compares.push(endpoint);
+            return endpoint.includes(`...${next}`)
+              ? { status: "diverged", merge_base_commit: { sha: "9".repeat(40) } }
+              : f.transport.api(endpoint);
+          }
+          return f.transport.api(endpoint);
+        },
+      },
+    });
+    expect((await check(client)).state).toBe("available");
+    // Main is rewritten to a commit that no longer contains the installed source.
+    main = next;
+    expect(await check(client)).toMatchObject({ state: "blocked", reason: "unqualified" });
+    expect(compares).toEqual([
+      `${ROOT}/compare/${OLD}...${CURRENT}?per_page=1`,
+      `${ROOT}/compare/${OLD}...${next}?per_page=1`,
+    ]);
+  });
+
+  it("memoizes a parsed negative relation", async () => {
+    const { client, calls } = fixture({ comparison: { status: "diverged" } });
+    for (let round = 0; round < 2; round++)
+      expect(await check(client)).toMatchObject({ state: "blocked", reason: "unqualified" });
+    expect(compareOf(calls)).toHaveLength(1);
+  });
+
+  it("never memoizes a transport failure or an unparsable comparison", async () => {
+    const f = fixture();
+    let failures = 1;
+    const compares: string[] = [];
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        ...f.transport,
+        async api(endpoint) {
+          if (!endpoint.includes("/compare/")) return f.transport.api(endpoint);
+          compares.push(endpoint);
+          if (failures-- > 0) throw new Error("HTTP 502 private detail");
+          return f.transport.api(endpoint);
+        },
+      },
+    });
+    expect(await check(client)).toMatchObject({ state: "blocked", reason: "unavailable" });
+    expect((await check(client)).state).toBe("available");
+    expect(compares).toHaveLength(2);
+
+    const unparsable = fixture({ comparison: { status: "unrelated" } });
+    for (let round = 0; round < 2; round++)
+      expect((await check(unparsable.client)).state).toBe("blocked");
+    expect(compareOf(unparsable.calls)).toHaveLength(2);
+  });
+
+  it("bounds the memo and evicts the oldest exact pair first", async () => {
+    const sha = (index: number) => index.toString(16).padStart(40, "0");
+    let main = sha(1);
+    const compares: string[] = [];
+    const client = new JonesActionsClient({
+      now: () => NOW,
+      transport: {
+        async api(endpoint) {
+          if (endpoint === `${ROOT}/commits/main`) return { sha: main };
+          if (endpoint.includes("/compare/")) {
+            compares.push(endpoint);
+            return { status: "ahead", merge_base_commit: { sha: OLD } };
+          }
+          // No workflow data: the check ends after the ancestry proof.
+          return { workflow_runs: [] };
+        },
+        download: async () => {},
+      },
+    });
+    for (let index = 1; index <= 300; index++) {
+      main = sha(index);
+      await check(client);
+    }
+    expect(compares).toHaveLength(300);
+    main = sha(300);
+    await check(client);
+    expect(compares).toHaveLength(300);
+    main = sha(1);
+    await check(client);
+    expect(compares).toHaveLength(301);
   });
 });
 

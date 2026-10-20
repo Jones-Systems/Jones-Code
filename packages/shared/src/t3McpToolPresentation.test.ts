@@ -128,3 +128,28 @@ describe("resolveT3McpToolPresentation", () => {
     expect(resolveT3McpToolPresentation("t3-code.not_a_real_tool")).toBeNull();
   });
 });
+
+it("resolves keyed launch lookup and fence across provider names", () => {
+  for (const [name, labels, summaryAction] of [
+    [
+      "t3_thread_launch_lookup",
+      ["Look up", "Looking up", "Looked up", "a keyed thread launch"],
+      "thread-read",
+    ],
+    [
+      "t3_thread_launch_fence",
+      ["Resolve", "Resolving", "Resolved", "an unknown thread launch"],
+      "thread-launch-resolve",
+    ],
+  ] as const) {
+    for (const prefix of ["", "mcp__t3-code__", "T3-code."]) {
+      expect(resolveT3McpToolDefinition(`${prefix}${name}`)).toEqual({
+        displayName: `${labels[0]} ${labels[3]}`,
+        labels,
+        icon: "t3-code",
+        summaryAction,
+      });
+    }
+    expect(resolveT3McpToolDefinition(`mcp__another-server__${name}`)).toBeNull();
+  }
+});

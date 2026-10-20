@@ -4,6 +4,33 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "agent-message-header",
+      "tests": [
+        "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+      ],
+      "scope": "Native t3_thread_send composes a Jones-owned sender-title link and server acceptance timestamp into stored text. The small service hook and tool description stay in their accepted shared files. The existing MCP integration harness retains the Jones send/replay case because it owns the real toolkit, durable command receipts, trusted sender attribution and deterministic provider delivery. Pure tests cover title escaping, absent sender/title, Eastern DST, full body preservation and unchanged leading-slash commands. No CLI, launch, delegate, attachment, provider or schema changes."
+    },
+    {
+      "id": "codex-process-termination",
+      "tests": [
+        "packages/effect-codex-app-server/src/client.test.ts",
+        "packages/effect-codex-app-server/src/protocol.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts"
+      ],
+      "scope": "Forward protocol termination through both Codex client factories, bound to the exact process generation. Process-exit handling uses existing adapter terminalization for active shared roots, native children, capacity retries and goal holds, then drains the event stream for manager-owned release. Replacement-overlap event filtering and a concurrent goal-timer hold release remain deferred review limitations. No replay or quiet-turn timeout. The shared adapter owns these lifecycle maps; extracting them would duplicate its terminalization machinery. Optional client and replay callbacks preserve existing callers. Jones tests remain in the existing client and adapter harnesses to exercise real transport and scoped producer ownership. The shared session manager holds the removed runtime scope until terminal subscribers finish processing, preserves their original failure cause, and serializes registration with exact-entry removal. This private lifecycle repair preserves generation validation and lets a replacement open while shutdown can interrupt the wait. Existing manager and orchestration harnesses cover ingestion ordering, Stop behavior, runtime recovery and another provider. The delegated-task status replay keeps its shared process alive through final parent MCP queries; scope cleanup owns disposal after the assertions. The native-fork replay similarly retains its shared process through the live-generation projection assertions and leaves disposal to scope cleanup."
+    },
+    {
       "id": "workstreams-interaction-recovery",
       "tests": [
         "packages/client-runtime/src/state/session.test.ts",
@@ -95,15 +122,20 @@
       "tests": [
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
+        "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx",
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
       ],
-      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
+      "scope": "Current and legacy sidebar headers cycle scoped working, needs-input and unseen-done counts. Two pointer clicks within 250 ms hide working threads while preserving idle rows and count meanings; keyboard activation cycles and rapid third clicks are consumed. Small shared hooks replace the activity toggle and retain selection clearing and draft suppression. Jones adapters consume upstream row classifiers, visit watermarks and snooze metadata without changing their status precedence."
     },
     {
       "id": "provider-order",
-      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
-      "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
+      "tests": [
+        "apps/web/src/jones/settings/providerOrder.test.ts",
+        "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx",
+        "packages/client-runtime/src/state/serverConfigProjection.test.ts"
+      ],
+      "scope": "Settings drag and keyboard reordering moves custom provider instances within their driver while pinning defaults and preserving configuration values. A small panel hook mounts Jones-owned sortable rows. The accepted shared projection edit compares key order while reusing unchanged children; its existing integration tests cover live and reconnect order updates without duplicating projection machinery. Web and desktop share the renderer and persist through the existing settings patch without schema changes."
     },
     {
       "id": "provider-restart-identity",
@@ -175,10 +207,12 @@
       "tests": [
         "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts",
         "packages/client-runtime/src/state/threadExecution.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts"
       ],
-      "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion."
+      "scope": "Landed rebuild #111 distinguishes attributed provider response settlement from checkpoint completion. Same-attempt capacity successors retain original logical-root terminal ownership in the existing shared router; router and real Codex replay tests stay in their upstream harnesses to prove queue release without duplicating orchestration machinery."
     },
     {
       "id": "workstreams",
@@ -282,7 +316,8 @@
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
-        "apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "apps/web/src/jones/composer/composerShortcutRails.test.ts",
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ]
     },
     {
@@ -958,7 +993,7 @@
         "apps/web/src/composer-logic.test.ts",
         "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
       ],
-      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments."
     },
     {
       "id": "compact-sidebar-header",
@@ -1034,6 +1069,58 @@
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx"
       ],
       "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup."
+    },
+    {
+      "id": "client-launch",
+      "tests": [
+        "packages/contracts/src/jones/clientLaunch.test.ts",
+        "apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/McpToolAccess.race.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/client-runtime/src/t3ToolSummary.test.ts",
+        "packages/client-runtime/src/work-log/presentation.test.ts",
+        "packages/provider-acp/src/server/runtimeModel.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
+      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Unkeyed launch and existing access builders remain unchanged."
+    },
+    {
+      "id": "request-economy",
+      "tests": [
+        "apps/server/src/vcs/VcsProcess.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/web/src/components/GitActionsControl.browser.test.tsx",
+        "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
+        "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "packages/shared/src/httpObservability.test.ts"
+      ],
+      "scope": "Foreground chat controls proceed while earlier history loads; unused discovery queries are absent, discovery subprocesses use a bounded pool apart from checkpoint operations, absent Bitbucket credentials avoid HTTP probes, and queued per-thread PR refreshes coalesce without dropping a follow-up after processing begins. Small shared edits reuse the existing scheduler, process pools, hooks and worker instead of duplicating their machinery. Existing command, browser and service harnesses retain integration regressions; the adjacent mobile hook test exercises its upstream owner. Foreground snapshot/history and shell reads use the reader while pending legacy hydration retains the writer; streaming RPC spans carry a stream tag, and WebSocket ticket query values are redacted in tracing."
+    },
+    {
+      "id": "codex-background-expiry",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "scope": "Expected timeout expiry of a simple Python static HTTP server retains native command status, output and exit code while skipping the post-settle continuation. Timed-out tests, compound shell commands, unknown outcomes and unexpected server failures keep their existing notifications. The replay case stays in the upstream Codex adapter test because its scoped replay harness owns completion delivery and background-work release. No wire, persistence or client changes."
     },
     {
       "id": "native-goal-controls",

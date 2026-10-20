@@ -455,13 +455,16 @@ interface PublishRepositoryDialogProps {
   readonly environmentId: ScopedThreadRef["environmentId"] | null;
   readonly threadRef: ScopedThreadRef | null;
   readonly gitCwd: string;
+  readonly prefetchDiscovery: boolean;
 }
 
 function PublishRepositoryDialog(props: PublishRepositoryDialogProps) {
   const openLink = useOpenLink(props.threadRef);
   const navigate = useNavigate();
+  // Discovery spawns provider CLIs on the server, so run it only where publishing is offered.
+  // Prefetching while closed keeps provider readiness known when the dialog opens.
   const sourceControlDiscovery = useEnvironmentQuery(
-    props.environmentId === null
+    props.environmentId === null || !(props.open || props.prefetchDiscovery)
       ? null
       : sourceControlEnvironment.discovery({
           environmentId: props.environmentId,
@@ -2023,6 +2026,7 @@ export default function GitActionsControl({
         environmentId={activeEnvironmentId}
         threadRef={activeThreadRef}
         gitCwd={gitCwd}
+        prefetchDiscovery={canPublishRepository}
       />
 
       <Dialog

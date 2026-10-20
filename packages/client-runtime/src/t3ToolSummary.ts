@@ -122,6 +122,9 @@ export function summarizeT3ToolCalls(
       label = phrase("Sent", "send", object);
       break;
     }
+    case "thread-launch-resolve":
+      label = phrase("Resolved", "resolve", quantity(selected.length, "unknown thread launch"));
+      break;
     case "thread-create": {
       const createdIds: string[] = [];
       const resultsKnown =

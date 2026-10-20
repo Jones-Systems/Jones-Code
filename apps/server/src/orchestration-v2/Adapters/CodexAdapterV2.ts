@@ -156,6 +156,7 @@ import {
 } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { backgroundWorkNotification } from "@t3tools/provider-core/server/notification";
+import { isExpectedCodexBackgroundTermination } from "../../jones/provider/codex/CodexBackgroundCompletion.ts";
 import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
@@ -1335,6 +1336,7 @@ export interface CodexAppServerClientFactoryShape {
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly onTermination?: CodexClient.CodexAppServerClientOptions["onTermination"];
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1487,7 +1489,14 @@ const layerCodexAppServerClientFactoryCommand = (
                   }),
               ),
             );
-            const context = yield* Layer.build(CodexClient.layerChildProcess(handle, options));
+            const context = yield* Layer.build(
+              CodexClient.layerChildProcess(handle, {
+                ...options,
+                ...(input.onTermination === undefined
+                  ? {}
+                  : { onTermination: input.onTermination }),
+              }),
+            );
             return yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
               Effect.provide(context),
             );
@@ -1648,7 +1657,12 @@ export const layerAppServerClientFactory: Layer.Layer<
                   logOutgoing: true,
                   logger: protocolLogger,
                 };
-          const context = yield* Layer.build(CodexClient.layerChildProcess(handle, clientOptions));
+          const context = yield* Layer.build(
+            CodexClient.layerChildProcess(handle, {
+              ...clientOptions,
+              ...(input.onTermination === undefined ? {} : { onTermination: input.onTermination }),
+            }),
+          );
           const actualClient = yield* Effect.service(CodexClient.CodexAppServerClient).pipe(
             Effect.provide(context),
           );
@@ -1808,12 +1822,18 @@ interface CodexRuntimeProducer {
   readonly resolvedRuntime: CodexEffectiveRuntime | undefined;
   readonly bindings: Map<string, OrchestrationV2ProviderThread>;
   readonly pendingReroutes: Map<string, ReadonlyArray<string>>;
+  readonly termination: Deferred.Deferred<CodexErrors.CodexAppServerError>;
   active: boolean;
   physicalProcess?: PhysicalProcessLease;
 }
 
 class CodexProducerContext extends Context.Reference<CodexRuntimeProducer | undefined>(
   "t3/CodexAdapterV2/ProducerContext",
+  { defaultValue: () => undefined },
+) {}
+
+class CodexTerminatingProducer extends Context.Reference<CodexRuntimeProducer | undefined>(
+  "t3/CodexAdapterV2/TerminatingProducer",
   { defaultValue: () => undefined },
 ) {}
 
@@ -1899,6 +1919,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               });
               const generation = yield* reserveGeneration(threadId);
               const producerScope = yield* Scope.make();
+              const termination = yield* Deferred.make<CodexErrors.CodexAppServerError>();
               const opened = yield* restore(
                 Effect.gen(function* () {
                   const resolvedRuntime =
@@ -1916,6 +1937,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     runtimePolicy,
                     settings: resolvedRuntime?.config ?? adapterOptions.settings,
                     environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+                    onTermination: (error) =>
+                      Deferred.succeed(termination, error).pipe(Effect.asVoid),
                   });
                   return {
                     eventProducer: ProviderEventOrigin.makeProviderEventProducer({
@@ -1925,6 +1948,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       runtimeGeneration: generation,
                     }),
                     generation,
+                    termination,
                     client: actualClient,
                     scope: producerScope,
                     resolvedRuntime,
@@ -2107,7 +2131,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           model: input.modelSelection.model,
           now,
         });
-        const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const events = yield* Queue.unbounded<
+          ProviderAdapter.ProviderAdapterV2Event,
+          Cause.Done<void>
+        >();
         const rateLimitSnapshot = yield* Ref.make<CodexRateLimitSnapshot | undefined>(undefined);
         const limitedTurnItems = yield* Ref.make(
           new Map<ProviderThreadId, Extract<OrchestrationV2TurnItem, { type: "error" }>>(),
@@ -2204,6 +2231,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // A replacement may resume the cursor, but cannot replay this attempt.
         const currentCapacityBinding = (request: CapacityRequest) =>
           !capacityScopeClosed &&
+          currentProducer.active &&
           capacityByThread.get(request.state.binding.nativeThreadId) === request &&
           request.input.providerThread.providerSessionId === input.providerSessionId &&
           request.input.providerThread.providerInstanceId === adapterOptions.instanceId &&
@@ -2417,7 +2445,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const producer = (yield* CodexProducerContext) ?? currentProducer;
             if (
               !producer.eventProducer.accepting ||
-              !producer.active ||
+              (!producer.active && (yield* CodexTerminatingProducer) !== producer) ||
               producer !== currentProducer
             )
               return;
@@ -5524,6 +5552,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 if (
                   context.subagent === null &&
                   continuationRequests !== undefined &&
+                  !isExpectedCodexBackgroundTermination(payload.item) &&
                   !(yield* Ref.get(interruptingNativeTurns)).has(payload.turnId)
                 ) {
                   const alreadyOffered = yield* Ref.modify(
@@ -7326,7 +7355,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             let request: CapacityRequest | undefined;
             return Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(turnInput.providerThread);
-              if (hasUnknownNativeStart() || capacityScopeClosed)
+              if (hasUnknownNativeStart() || capacityScopeClosed || !currentProducer.active)
                 return yield* toProtocolError(
                   "Codex has an unconfirmed or closed native session and cannot send another turn.",
                 );
@@ -7807,7 +7836,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           providerSessionId: input.providerSessionId,
           providerSession: session,
           eventOriginMode: "captured",
-          events: Stream.fromEffectRepeat(Queue.take(events)),
+          events: Stream.fromQueue(events),
           canReuseContextUsage: canReuseCodexContextUsage,
           // Known gap: a subagent that Codex resumes later reads as completed
           // (not pending) between turns, so idle release can win the race
@@ -9336,6 +9365,88 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
             }
           });
+        const watchTermination = (producer: CodexRuntimeProducer) =>
+          Deferred.await(producer.termination).pipe(
+            Effect.flatMap((error) =>
+              Effect.gen(function* () {
+                if (!producer.active || producer !== currentProducer) return;
+                producer.active = false;
+                const completedAt = yield* DateTime.now;
+                const failureMessage =
+                  error._tag === "CodexAppServerProcessExitedError"
+                    ? error.message
+                    : `Codex App Server transport terminated (${error._tag}).`;
+                const failure = {
+                  status: "failed" as const,
+                  completedAt,
+                  failureMessage,
+                  failureCode: "codexProcessExited",
+                  evidenceKind: "local_failure" as const,
+                };
+                const requests = [...capacityByThread.values()].filter(
+                  (request) => request.state.binding.runtimeGeneration === producer.generation,
+                );
+                for (const request of requests) {
+                  request.recoveryEnabled = false;
+                  if (request.timer !== undefined) yield* Fiber.interrupt(request.timer);
+                }
+                // Keep terminal evidence on the dead producer until its descendants settle.
+                // Ordinary notifications and new starts are already fenced by active=false.
+                for (const context of (yield* Ref.get(activeTurns)).values()) {
+                  yield* finalizeCodexTurn({
+                    context,
+                    nativeTurnId: context.nativeTurnId,
+                    ...failure,
+                  });
+                }
+                for (const subagent of (yield* Ref.get(subagentThreads)).values()) {
+                  if (isOrchestrationV2WorkActive(subagent.task.status))
+                    yield* emitSubagentTaskUpdate({ subagent, status: "failed", completedAt });
+                }
+                yield* turnTerminalizationPermit.withPermits(1)(
+                  Effect.gen(function* () {
+                    for (const request of requests) {
+                      if (request.logicalContext !== undefined && !request.logicalTerminalEmitted) {
+                        yield* emitOrDeferRootTerminal({
+                          context: request.logicalContext,
+                          nativeTurnId: request.logicalContext.nativeTurnId,
+                          ...failure,
+                        });
+                      }
+                      releaseCapacityRequest(request);
+                    }
+                    for (const [nativeThreadId, hold] of goalHolds) {
+                      goalHolds.delete(nativeThreadId);
+                      yield* emitProviderEvent({
+                        type: "provider_turn.updated",
+                        driver: CODEX_PROVIDER,
+                        threadId: hold.context.projectionThreadId,
+                        providerTurn: { ...hold.completedTurn, status: "failed", completedAt },
+                      });
+                      yield* emitOrDeferRootTerminal({
+                        context: hold.context,
+                        nativeTurnId: hold.context.nativeTurnId,
+                        ...failure,
+                      });
+                      yield* Deferred.succeed(hold.next, undefined);
+                    }
+                    yield* flushReadyRootTerminals();
+                  }),
+                );
+                producer.eventProducer.drain();
+                yield* Scope.close(producer.scope, Exit.void);
+                // The manager awaits subscriber processing before abandoning this generation.
+                yield* Queue.end(events);
+              }).pipe(
+                Effect.provideService(CodexProducerContext, producer),
+                Effect.provideService(CodexTerminatingProducer, producer),
+              ),
+            ),
+            Effect.forkIn(scope),
+            Effect.asVoid,
+          );
+        registrations.push(watchTermination);
+        yield* watchTermination(currentProducer);
         const withProducer = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           Effect.suspend(() =>
             effect.pipe(Effect.provideService(CodexProducerContext, currentProducer)),

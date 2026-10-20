@@ -21,15 +21,22 @@ only of `@@@@@` are hidden from the visible conversation; unexpected replies
 remain visible.
 
 On web and desktop, use **Work** beside the active-thread filter in the sidebar.
-The check mark shows that Work mode is on. The tooltip identifies the primary
-environment being changed. Other connected environments are unaffected.
+The button applies to every connected environment that supports Work mode and has
+loaded its settings. If some are on and others are off, clicking turns Work on
+for all of them. When all are on, clicking turns them all off. The tooltip lists
+each environment's saved state and identifies unavailable environments. Failed
+saves name the affected environments; retrying finishes the same on/off action.
+
+Each server saves its own setting and shares changes with clients connected to
+that server. Offline environments and environments connected later keep their
+saved value; click Work again after connecting them to include them.
 
 On mobile, open **Settings → Environments**, choose an environment, and turn
 **Work mode** on or off in its detail screen. This changes only that environment.
 
 The setting is saved by the environment and survives a client reload. It starts
 off by default. Connect the environment and wait for its settings to load before
-changing it. Servers that do not support Work mode show an unavailable control.
+changing it. Servers that do not support Work mode are listed as unavailable and skipped.
 
 Turn Work mode off with the same control. If saving fails, reconnect to confirm
 the saved state before trying again.

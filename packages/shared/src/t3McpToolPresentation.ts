@@ -16,6 +16,7 @@ export type T3McpToolSummaryAction =
   | "schedule-update"
   | "schedule-delete"
   | "thread-create"
+  | "thread-launch-resolve"
   | "thread-list"
   | "thread-read"
   | "thread-send"
@@ -323,6 +324,14 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     "environment-update",
   ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),
+  t3_thread_launch_lookup: tool(
+    ["Look up", "Looking up", "Looked up", "a keyed thread launch"],
+    "thread-read",
+  ),
+  t3_thread_launch_fence: tool(
+    ["Resolve", "Resolving", "Resolved", "an unknown thread launch"],
+    "thread-launch-resolve",
+  ),
   t3_project_list: tool(["List", "Listing", "Listed", "projects"], "project-list"),
   t3_project_read: tool(["Read", "Reading", "Read", "a project"], "project-read"),
   t3_project_create: tool(["Register", "Registering", "Registered", "a project"], "project-create"),

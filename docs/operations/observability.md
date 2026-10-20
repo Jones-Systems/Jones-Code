@@ -1,8 +1,8 @@
 # Observability
 
-> For maintainers. Using T3 Code? See [docs/user](../user/).
+> For maintainers. Using Jones Code? See [docs/user](../user/).
 
-T3 Code has one server-side observability model:
+Jones Code has one server-side observability model:
 
 - pretty logs go to stdout for humans
 - completed spans go to a local NDJSON trace file
@@ -84,6 +84,51 @@ It reads `T3CODE_TRACE_FILE` if set, else `<home>/userdata/logs/server.trace.ndj
 a copied file, set `T3CODE_TRACE_FILE`. `--since 30m` keeps spans that ended in the last 30
 minutes. The rate is per minute between the first and last span end.
 
+### Separate lifetimes from request latency
+
+A long-lived socket or subscription is not a slow request. The `/ws` upgrade's
+server span is named `GET` and lasts until the socket closes. Streaming RPC
+server spans (methods with `rpc.stream: true`)
+also last for the stream. The `t3_rpc_request_duration` metric includes those
+lifetimes; exclude them before calculating request latency. The stream tag is
+an attribute on server spans, not a new metric label.
+
+Renderer traces arrive as `otlp-span` records from service `t3code-web` through
+`/api/observability/v1/traces` at the primary environment's server, even when the
+request targets another environment. Effect 4.0.5 names client RPC spans by the
+bare method name; streaming methods are lifetimes too. HTTP client spans use
+names such as `GET` and `POST`, so a name alone cannot identify their role. Use
+span kind, parentage and attributes; the Diagnostics page does not currently
+show span kind.
+
+For a foreground delay, identify both the target environment and the server
+receiving the renderer's traces:
+
+- Thread open: cold opens normally use HTTP. Follow renderer
+  `environment.orchestration.threadBoundedSnapshot` to server
+  `http.orchestration.loadThreadSnapshotWindow`; older history uses
+  `environment.orchestration.threadHistoryPage`. Inspect child `db.connection`
+  and `db.lock_wait_ms`. Socket resume and fallback use
+  `ws.orchestrationV2.subscribeThread` and `threadSnapshotThenLive`, which measure
+  setup; `ws.rpc.orchestration.subscribeThread` measures the stream lifetime.
+- Send: pair server `ws.rpc.orchestration.dispatchCommand` with renderer
+  `orchestration.dispatchCommand` by method and time. WebSocket client and server
+  spans do not share a trace. Their elapsed-time difference can include client,
+  network and event-loop delay.
+- Git: checkpoint capture uses `VcsProcess.run`; compare it with
+  `VcsProcess.runUnbounded` to see time outside subprocess execution, including
+  permit wait, `gh` wait and retries. For `GitVcsDriverCore`, compare the enclosing
+  operation with its `runGitCommand` child. Neither difference isolates only
+  semaphore wait.
+- Whole-server pauses: correlate nearby operation spans with
+  `event-loop-stalls.ndjson`, using the interpretation below.
+
+Trace files can contain request URLs and query strings, workspace paths,
+thread identifiers and failure causes. Share only
+fields needed for the investigation, rather than raw files. WebSocket tickets
+are redacted by the shared HTTP observability layer; this does not sanitize
+historical traces or every other sensitive attribute.
+
 ### Metrics
 
 Metrics are not written to a local file.
@@ -142,7 +187,16 @@ There are two useful modes:
 - local-only: stdout + local `server.trace.ndjson`
 - full local observability: stdout + local trace file + OTLP export to Grafana/Tempo/Prometheus
 
-The local trace file is always on. OTLP export is opt-in.
+The local trace file is always on. OTLP export is opt-in. It sends diagnostics
+to a collector for analysis; it does not accelerate requests. Start with local
+diagnostics. Enabling export needs an approved receiver and agreement on the
+data sent, and changing startup configuration requires its own operational scope.
+
+Use the installed Jones build, not `npx t3`: the npm package belongs to upstream
+T3 Code. The current `t3 triage` playbook also targets upstream source and its
+issue tracker, so it is not the Jones investigation route. Use bounded local
+trace summaries and this guide instead; see
+[`triagePrompt.ts`](../../apps/server/src/cli/triagePrompt.ts).
 
 ### Option 1: Local Traces Only
 
@@ -151,15 +205,15 @@ You do not need any extra env vars. Just run the app normally and inspect `serve
 Examples:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 ### Option 2: Run With A Local LGTM Stack
@@ -186,7 +240,7 @@ Default Grafana login:
 
 For endpoint settings and startup precedence, see the
 [user telemetry guide](../user/telemetry.md#export-diagnostics-to-your-own-receiver).
-In a worktree, use `vp run dev` instead of `npx t3` to keep state isolated.
+In a worktree, use `vp run dev` to keep state isolated.
 
 ```bash
 export T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces
@@ -207,19 +261,19 @@ export T3CODE_TRACE_TIMING_ENABLED=true
 CLI:
 
 ```bash
-npx t3
+t3 # Use the verified installed Jones build, which retains this command name.
 ```
 
 Monorepo web/server dev:
 
 ```bash
-node --run dev
+vp run dev
 ```
 
 Monorepo desktop dev:
 
 ```bash
-node --run dev:desktop
+vp run dev:desktop
 ```
 
 Packaged desktop app:
@@ -232,7 +286,7 @@ macOS app bundle example:
 T3CODE_OTLP_TRACES_URL=http://localhost:4318/v1/traces \
 T3CODE_OTLP_METRICS_URL=http://localhost:4318/v1/metrics \
 T3CODE_OTLP_LOGS_URL=http://localhost:4318/v1/logs \
-"/Applications/T3 Code.app/Contents/MacOS/T3 Code"
+"/Applications/Jones Code.app/Contents/MacOS/Jones Code"
 ```
 
 Direct binary example:
@@ -445,7 +499,8 @@ Use traces when the question is:
 
 ### "Why is the UI feeling slow?"
 
-1. Search for slow top-level spans in the trace file or Tempo.
+1. Exclude socket and subscription lifetimes, then inspect foreground spans as
+   described in [Separate lifetimes from request latency](#separate-lifetimes-from-request-latency).
 2. Check child spans for sqlite, git, provider, or terminal work.
 3. Look at the matching duration metrics to see whether the slowness is systemic.
 
@@ -671,7 +726,7 @@ Current high-value span and metric boundaries include:
 ## Heap Snapshots
 
 To see what a long-running server holds in memory, send it `SIGUSR2`. The server writes a V8 heap
-snapshot to its logs dir and logs the path. This works for desktop, `npx t3`, and service installs
+snapshot to its logs dir and logs the path. This works for desktop, a `t3` server started from a terminal, and service installs
 on macOS and Linux. Windows has no `SIGUSR2`.
 
 Send the signal to the server pid in `server-runtime.json`, which sits in the server's state dir

@@ -4,6 +4,7 @@
   "jonesOwnedPaths": [
     "apps/web/src/components/Sidebar.statusFilter.test.tsx",
     "apps/web/src/jones/threadStatusFilter/model.test.ts",
+    "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.browser.test.tsx",
     "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts",
     "apps/web/src/jones/threadStatusFilter/ThreadStatusFilterPill.tsx",
     "apps/web/src/jones/threadStatusFilter/model.ts"

@@ -348,8 +348,30 @@ Pass the task in `message`. Project, model, and modes inherit when omitted;
 workspace does not. `scratch: true` launches without a project, in a folder of
 its own under the environment's Scratch project. For stacked PRs, use the parent branch as `baseRef` with
 `startFromOrigin: false`. The new thread may not run with broader runtime or
-interaction modes than the caller. Launch has no retry key, so inspect existing threads after a failed or lost response before
-launching again. `create_threads` remains the batch option for a shared checkout.
+interaction modes than the caller. Without `clientRequestId`, inspect existing
+threads after a failed or lost response before launching again. `create_threads`
+remains the batch option for a shared checkout.
+
+Set `clientRequestId` to retry one canonical request in the same caller namespace.
+An identical retry replays the original thread and initial message; a changed
+request returns `request_conflict`. Keyed launch requires an explicit project for
+clients outside a thread, disallows `scratch` and attachments, and requires a
+nonempty message for a new worktree. Replay preserves current authorization limits.
+
+### `t3_thread_launch_lookup` and `t3_thread_launch_fence`
+
+After a lost keyed response, lookup reports `launched`, authoritative `no_effect`,
+or `absent`. Absence is not proof that an in-flight request cannot still launch.
+An explicit fence makes an absent key permanently rejected, or reports the launch
+that won the race. A fenced launch returns `launch_fenced` on later attempts.
+Lookup needs read access; fencing needs write access and orchestration capability.
+
+`initialMessage` and `preparation` describe the run bound to the original message,
+not a later run. An identical retry can continue a pending message or unscheduled
+preparation. Rejected messages, deleted threads, and `unknown_effect` preparation
+remain held. `unknown_effect` means preparation recorded progress but no active
+reservation remains; it is never automatically rescheduled. Installation and OAuth
+consent are separate from source availability.
 
 ### `t3_thread_list`
 

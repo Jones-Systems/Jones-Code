@@ -5,9 +5,13 @@
     "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts",
     "apps/server/src/jones/provider/codex/CodexCapacityContinuation.test.ts",
     "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts",
-    "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts"
+    "apps/server/src/jones/provider/codex/CodexLateStartRecovery.test.ts",
+    "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.ts",
+    "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.test.ts"
   ],
   "hookPaths": [
+    "packages/effect-codex-app-server/src/client.ts",
+    "packages/effect-codex-app-server/src/replay.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexCapacityContinuation.ts"
   ],
@@ -20,6 +24,10 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
       "to": "apps/server/src/jones/provider/codex/CodexLateStartRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.ts"
     }
   ]
 }

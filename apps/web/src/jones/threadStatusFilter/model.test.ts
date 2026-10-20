@@ -60,6 +60,21 @@ describe("sidebar status filter", () => {
     expect(nextThreadStatusWakeAt([], now)).toBeNull();
   });
 
+  it.each(["current", "legacy"] as const)(
+    "hides only working threads in %s and returns directly to all",
+    (layout) => {
+      const working = { ...base, runtime: runtime("running") };
+      const input = { ...base, hasPendingUserInput: true };
+      const done = { ...base, latestRun, lastVisitedAt: visited };
+      const idle = { ...base };
+      const roster = [working, input, done, idle];
+      expect(
+        selectThreadStatus(roster, "hide-working", (row) => classifyThreadStatus(row, layout)),
+      ).toEqual({ counts: { working: 1, input: 1, done: 1 }, threads: [input, done, idle] });
+      expect(nextThreadStatusFilter("hide-working")).toBe("all");
+    },
+  );
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];

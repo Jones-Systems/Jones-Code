@@ -26,6 +26,7 @@ export function withoutEnvironmentThemes(config: ServerConfig): ServerConfig {
  * providers, models and skills identical and lets memoized UI skip them.
  * A reconnect snapshot re-sends the whole config the same way.
  * A settings write re-sends the whole settings document for one changed field.
+ * Object key order must also match: providerInstances uses it for display order.
  */
 export function reuseUnchanged<T>(previous: unknown, next: T): T {
   if (Object.is(previous, next)) return next;
@@ -52,7 +53,9 @@ export function reuseUnchanged<T>(previous: unknown, next: T): T {
   const before = previous as Record<string, unknown>;
   const after = next as Record<string, unknown>;
   const keys = Object.keys(after);
-  let same = keys.length === Object.keys(before).length;
+  const beforeKeys = Object.keys(before);
+  let same =
+    keys.length === beforeKeys.length && keys.every((key, index) => key === beforeKeys[index]);
   const merged: Record<string, unknown> = {};
   for (const key of keys) {
     const reused = reuseUnchanged(before[key], after[key]);

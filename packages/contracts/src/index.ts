@@ -108,3 +108,4 @@ export * from "./jones/workstreamsNativeOwner.ts";
 export * from "./jones/queuedSteerBatch.ts";
 
 export * from "./jones/threadGoal.ts";
+export * from "./jones/clientLaunch.ts";

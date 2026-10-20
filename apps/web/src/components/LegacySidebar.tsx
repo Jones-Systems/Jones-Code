@@ -3284,6 +3284,7 @@ export default function LegacySidebar() {
   const {
     statusFilter,
     cycleStatusFilter,
+    hideWorkingThreads,
     counts: statusCounts,
     threads: sidebarThreads,
   } = useThreadStatusFilter(visibleThreads, "legacy", undefined, routeThreadKey);
@@ -3671,6 +3672,7 @@ export default function LegacySidebar() {
         statusCounts={statusCounts}
         statusFilter={statusFilter}
         onCycleStatusFilter={cycleStatusFilter}
+        onHideWorkingThreads={hideWorkingThreads}
       />
 
       <SidebarProjectsContent

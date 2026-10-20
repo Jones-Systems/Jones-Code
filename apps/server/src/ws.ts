@@ -120,6 +120,7 @@ import {
   WsRpcGroup,
 } from "@t3tools/contracts";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -274,6 +275,18 @@ import {
 import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
+
+import type * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
+import type * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import type * as CodexInstallation from "./provider/CodexInstallation.ts";
+import type * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
+import type * as EventSink from "./orchestration-v2/EventSink.ts";
+import type * as VcsProcess from "./vcs/VcsProcess.ts";
+import type { ConfigError } from "effect/Config";
+import type * as HttpClient from "effect/http/HttpClient";
+import type * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
+import type * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -1032,7 +1045,10 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            const shell = yield* threadManagement.getThreadShell(stored.event.threadId);
+            // Events publish after their commit, so the reader already sees the row.
+            const shell = yield* threadManagement
+              .getThreadShell(stored.event.threadId)
+              .pipe(NodeSqliteClient.readOnly);
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1812,13 +1828,12 @@ const layerWsRpc = (
               Effect.forEach(
                 coalesceStoredThreadEvents(Array.from(events)),
                 (stored) =>
-                  threadManagement
-                    .getThreadShell(stored.event.threadId)
-                    .pipe(
-                      Effect.map((shell) =>
-                        archivedShellStreamItemFromThreadShell({ stored, shell }),
-                      ),
+                  threadManagement.getThreadShell(stored.event.threadId).pipe(
+                    NodeSqliteClient.readOnly,
+                    Effect.map((shell) =>
+                      archivedShellStreamItemFromThreadShell({ stored, shell }),
                     ),
+                  ),
                 { concurrency: 8 },
               ),
             ),
@@ -3283,7 +3298,99 @@ export const WS_RPC_SERVER_OPTIONS = {
   disableFatalDefects: true,
 } as const;
 
-export const layer = Layer.unwrap(
+type WsLayerServices =
+  | HttpRouter.HttpRouter
+  | NativeStoreAuthority.NativeStoreAuthority
+  | PreviewAutomationBroker.PreviewAutomationBroker
+  | PullRequestReviewGuideService.PullRequestReviewGuideService
+  | PullRequestService.PullRequestService
+  | ServerBrowser.ServerBrowser
+  | ServerSelfUpdate.ServerSelfUpdate
+  | SqlClient.SqlClient
+  | HttpRouter.Request.From<
+      "Requires",
+      | AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator
+      | AcpRegistrySupport.AcpRegistryCatalog
+      | AgentSessionImporter.AgentSessionImporter
+      | AnalyticsService.AnalyticsService
+      | AntigravityInstallation.AntigravityInstallation
+      | BackgroundPolicy.BackgroundPolicy
+      | CheckpointDiffQuery.CheckpointDiffQuery
+      | ChildProcessSpawner.ChildProcessSpawner
+      | CodexInstallation.CodexInstallation
+      | CommandOutputHub.CommandOutputHub
+      | Crypto.Crypto
+      | DatabaseStorage.DatabaseStorage
+      | DeviceService.DeviceService
+      | DirectEndpoints.DirectEndpoints
+      | EffectOutbox.EffectOutboxV2
+      | EnvironmentAuth.EnvironmentAuth
+      | EnvironmentTheme.EnvironmentThemeService
+      | EventSink.EventSinkV2
+      | ExternalLauncher.ExternalLauncher
+      | FileSystem.FileSystem
+      | GitWorkflowService.GitWorkflowService
+      | HostResources.HostResources
+      | HttpClient.HttpClient
+      | Keybindings.Keybindings
+      | ManagedProjectFolders.ManagedProjectFolders
+      | McpAppRequests.McpAppRequests
+      | ModelManifest.ModelManifest
+      | OrchestrationEventStore.OrchestrationEventStore
+      | Orchestrator.OrchestratorV2
+      | PairingGrantStore.PairingGrantStore
+      | Path.Path
+      | PortScanner.PortDiscovery
+      | PreviewManager.PreviewManager
+      | ProcessDiagnostics.ProcessDiagnostics
+      | ProcessResourceMonitor.ProcessResourceMonitor
+      | ProjectCloneTracker.ProjectCloneTracker
+      | ProjectEnrichmentService.ProjectEnrichmentService
+      | ProjectFaviconResolver.ProjectFaviconResolver
+      | ProjectService.ProjectService
+      | ProjectSetupScriptRunner.ProjectSetupScriptRunner
+      | ProjectStore.ProjectStoreV2
+      | ProviderAuthService.ProviderAuthService
+      | ProviderInstanceRegistry.ProviderInstanceRegistry
+      | ProviderLatestVersions.ProviderLatestVersions
+      | ProviderRegistry.ProviderRegistry
+      | ProviderSessionManager.ProviderSessionManagerV2
+      | PullRequestSyncReactor.PullRequestSyncReactor
+      | RelayClient.RelayClient
+      | RemoteOpenTargets.RemoteOpenTargets
+      | RepositoryIdentityResolver.RepositoryIdentityResolver
+      | ResourceTelemetry.ResourceTelemetry
+      | ReviewService.ReviewService
+      | ScheduledTasks.ScheduledTaskService
+      | SecretRequests.SecretRequests
+      | ServerConfig.ServerConfig
+      | ServerEnvironment.ServerEnvironment
+      | ServerLifecycleEvents.ServerLifecycleEvents
+      | ServerRuntimeStartup.ServerRuntimeStartup
+      | ServerSecretStore.ServerSecretStore
+      | ServerSettings.ServerSettingsService
+      | SessionStore.SessionStore
+      | SourceControlRepositoryService.SourceControlRepositoryService
+      | StorageCleanup.StorageCleanup
+      | TerminalManager.TerminalManager
+      | ThreadLaunchService.ThreadLaunchService
+      | ThreadManagementService.ThreadManagementService
+      | ThreadSearch.ThreadSearch
+      | TokenAccountingService.TokenAccountingService
+      | TraceDiagnostics.TraceDiagnostics
+      | UsageLimitSources.UsageLimitSources
+      | UsageService.UsageService
+      | VcsProcess.VcsProcess
+      | VcsProvisioningService.VcsProvisioningService
+      | VcsStatusBroadcaster.VcsStatusBroadcaster
+      | WorkspaceEntries.WorkspaceEntries
+      | WorkspaceFileSystem.WorkspaceFileSystem
+      | WorkspacePaths.WorkspacePaths
+      | WorktreeSetupTracker.WorktreeSetupTracker
+    >
+  | HttpRouter.Request<"Error", ConfigError>;
+
+const layerWs = Layer.unwrap(
   Effect.gen(function* () {
     const previewAutomationBroker = yield* PreviewAutomationBroker.PreviewAutomationBroker;
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
@@ -3407,3 +3514,5 @@ export const layer = Layer.unwrap(
     );
   }),
 );
+
+export const layer: Layer.Layer<never, never, WsLayerServices> = layerWs;

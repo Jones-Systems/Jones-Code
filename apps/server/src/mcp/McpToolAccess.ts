@@ -193,6 +193,57 @@ export const startsThreads = <P, A, E, R>(
     }),
   );
 
+// Jones hook: spec.jones-client-launch; defer start resolution until after keyed capability checks.
+export interface ThreadStartGate {
+  readonly start: Effect.Effect<StartedModes, OrchestratorMcpFailure>;
+  readonly continueWithin: <A, E, R>(
+    target: {
+      readonly runtimeMode: RuntimeMode;
+      readonly interactionMode: ProviderInteractionMode;
+    },
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | OrchestratorMcpFailure, R>;
+}
+
+export const startsOrContinuesThreads = <P, A, E, R>(
+  modes: (params: P) => {
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+  },
+  handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
+) =>
+  declare((params: P) =>
+    Effect.gen(function* () {
+      const { limits } = yield* writingCaller;
+      const gate: ThreadStartGate = {
+        start: Effect.gen(function* () {
+          const requested = modes(params);
+          return {
+            runtimeMode: yield* resolveRuntimeMode(limits.runtimeMode, requested.runtimeMode),
+            interactionMode: yield* resolveInteractionMode(
+              limits.interactionMode,
+              requested.interactionMode,
+            ),
+          };
+        }),
+        continueWithin: (target, effect) =>
+          Effect.gen(function* () {
+            yield* assertTargetWithinLimits(limits, target);
+            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+            return yield* effect.pipe(
+              Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+              Effect.catch((error) =>
+                Effect.flatMap(Ref.get(refused), (refusal) =>
+                  Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
+                ),
+              ),
+            );
+          }),
+      };
+      return yield* handle(params, gate);
+    }),
+  );
+
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
 
