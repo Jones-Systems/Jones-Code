@@ -121,6 +121,7 @@ export function cancelsSelfSettlement(command: OrchestrationV2ServerCommand): bo
   return [
     "thread.settle",
     "thread.unsettle",
+    "thread.settlement.restore",
     "thread.pin",
     "thread.unpin",
     "thread.snooze",

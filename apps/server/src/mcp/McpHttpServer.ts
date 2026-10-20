@@ -25,6 +25,10 @@ import {
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/handlers.ts";
+import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
+import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -844,6 +848,11 @@ export const OrganizationMetadataRegistrationLive = toolkitRegistration(
   OrganizationMetadataHandlersLive,
 ).pipe(Layer.provide(OrganizationMetadata.layer));
 
+const SettlementRestoreRegistrationLive = toolkitRegistration(
+  SettlementRestoreToolkit,
+  SettlementRestoreHandlersLive,
+).pipe(Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))));
+
 const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
   DecisionSnapshotToolkit,
   DecisionSnapshotToolkitAccess,
@@ -862,6 +871,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 
 export const layer = Layer.mergeAll(
   OrganizationMetadataRegistrationLive,
+  SettlementRestoreRegistrationLive,
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,

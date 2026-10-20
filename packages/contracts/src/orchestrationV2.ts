@@ -1,4 +1,5 @@
 import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
+import { SettlementRestoreCommand } from "./jones/settlementRestore.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
 import { RuntimeIdentityAttestation } from "./jones/providerRuntimeIdentity.ts";
 import {
@@ -2714,6 +2715,7 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     reason: Schema.Literal("user"),
   }),
+  SettlementRestoreCommand,
   Schema.Struct({
     type: Schema.Literal("thread.snooze"),
     commandId: CommandId,

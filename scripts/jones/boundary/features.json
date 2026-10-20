@@ -372,6 +372,15 @@
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     },
     {
+      "id": "settlement-restore",
+      "tests": [
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "packages/contracts/src/jones/settlementRestore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "scope": "Native persistent undo of the latest state-changing settle per thread. EventSink applyStoredEvents captures the target's prior pin, order keys and wake time in a sparse Jones table inside every settle path's commit; a capture failure aborts the settle. The thread.settlement.restore command, decided under the existing dispatch lock, emits one thread.unsettled and records a compare-and-set success marker in the same commit, never reviving watches, requests, runs or sessions. Orchestrator, EventSink, SelfSettlement, McpHttpServer, ServerEnvironment and the contracts unions keep small hooks; exact-ID HTTP inspect and the t3_thread_settlement_restore MCP tool are Jones-owned."
+    },
+    {
       "id": "mcp-pin-placement",
       "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."

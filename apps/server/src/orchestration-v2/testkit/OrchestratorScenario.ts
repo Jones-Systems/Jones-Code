@@ -137,6 +137,7 @@ function commandThreadIds(command: OrchestrationV2Command): ReadonlyArray<Thread
     case "thread.settle":
     case "thread.auto-settle":
     case "thread.unsettle":
+    case "thread.settlement.restore":
     case "thread.snooze":
     case "thread.unsnooze":
     case "thread.auto-settle.set":

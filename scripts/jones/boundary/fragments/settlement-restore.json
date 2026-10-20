@@ -1,0 +1,58 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "settlement-restore",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/settlementRestore/SettlementRestore.ts",
+    "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+    "apps/server/src/jones/settlementRestore/dispatch.ts",
+    "apps/server/src/jones/settlementRestore/http.ts",
+    "apps/server/src/jones/settlementRestore/plan.ts",
+    "apps/server/src/jones/settlementRestore/store.ts",
+    "apps/server/src/jones/mcp/settlementRestore/handlers.ts",
+    "apps/server/src/jones/mcp/settlementRestore/tools.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/settlementRestore.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/settlementRestore.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/settlementRestore/store.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/persistence/JonesTablePresence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/settlementRestore/dispatch.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/settlementRestore/plan.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/settlementRestore/store.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/settlementRestore/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/settlementRestore/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/settlementRestore/SettlementRestore.ts"
+    }
+  ]
+}

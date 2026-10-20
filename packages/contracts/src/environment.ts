@@ -2,6 +2,8 @@ import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
 import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
 export * from "./jones/settlementOrigins.ts";
+import { SettlementRestoreCapability } from "./jones/settlementRestore.ts";
+export * from "./jones/settlementRestore.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -103,6 +105,7 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),
+  settlementRestore: Schema.optionalKey(SettlementRestoreCapability),
   queueDispatch: Schema.optionalKey(QueueDispatchCapability),
   threadCorpus: Schema.optionalKey(ThreadCorpusCapability),
   threadAttention: Schema.optionalKey(ThreadAttentionCapability),

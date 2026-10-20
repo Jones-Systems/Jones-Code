@@ -6,6 +6,7 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   QUEUE_DISPATCH_CAPABILITY,
   SETTLEMENT_ORIGINS_CAPABILITY,
+  SETTLEMENT_RESTORE_CAPABILITY,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -228,6 +229,8 @@ export const make = Effect.gen(function* () {
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       workQueueMetadata: true,
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
+      // Startup refuses to serve until Jones migrations, including the restore table, have run.
+      settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
       currentRuntimeStop: {
         targetRequired: true,
         supportedDrivers: ["codex", "claudeAgent"],

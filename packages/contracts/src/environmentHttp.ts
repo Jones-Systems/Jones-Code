@@ -784,6 +784,7 @@ const {
   EnvironmentHostStatusHttpApi,
   EnvironmentWorkQueueMetadataHttpApi: WorkQueueMetadataHttpApi,
   EnvironmentSettlementOriginsHttpApi: SettlementOriginsHttpApi,
+  EnvironmentSettlementRestoreHttpApi: SettlementRestoreHttpApi,
   EnvironmentConversationLibraryHttpApi: ConversationLibraryHttpApi,
   EnvironmentWorkstreamAppearanceHttpApi,
   EnvironmentWorkstreamsNativeHttpApi,
@@ -989,6 +990,7 @@ export class EnvironmentConversationLibraryHttpApi extends ConversationLibraryHt
 
 export class EnvironmentWorkQueueMetadataHttpApi extends WorkQueueMetadataHttpApi {}
 export class EnvironmentSettlementOriginsHttpApi extends SettlementOriginsHttpApi {}
+export class EnvironmentSettlementRestoreHttpApi extends SettlementRestoreHttpApi {}
 /**
  * Public entry point for webhook tasks. Unauthenticated by design: the token
  * in the path, and an optional body signature, are the credential. The handler
@@ -1020,6 +1022,7 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentHostStatusHttpApi)
   .add(EnvironmentWorkQueueMetadataHttpApi)
   .add(EnvironmentSettlementOriginsHttpApi)
+  .add(EnvironmentSettlementRestoreHttpApi)
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
   .add(EnvironmentMcpOAuthHttpApi)
