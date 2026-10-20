@@ -47,7 +47,7 @@ interface Row {
   readonly status: Intent["status"];
 }
 
-export const canonicalRequest = (value: unknown): string => {
+const canonicalRequest = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalRequest).join(",")}]`;
   if (value !== null && typeof value === "object")
     return `{${Object.entries(value)

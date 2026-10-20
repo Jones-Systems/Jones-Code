@@ -97,12 +97,9 @@ it.effect("a delayed old-session 404 cannot evict the new cached session", () =>
   }),
 );
 
-for (const scenario of [
-  "wrong initialize ID",
-  "wrong protocol version",
-  "notification refused",
-] as const) {
-  it.effect(`does not dispatch a tool after ${scenario}`, () => {
+it.effect.each(["wrong initialize ID", "wrong protocol version", "notification refused"] as const)(
+  "does not dispatch a tool after %s",
+  (scenario) => {
     let toolCalls = 0;
     const http = HttpClient.make((request) =>
       Effect.sync(() => {
@@ -151,8 +148,8 @@ for (const scenario of [
         ),
       ),
     );
-  });
-}
+  },
+);
 
 it.effect("preserves typed refusals in JSON-RPC error.data", () => {
   const http = HttpClient.make((request) =>

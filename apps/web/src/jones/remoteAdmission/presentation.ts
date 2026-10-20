@@ -8,8 +8,8 @@ const string = (value: unknown) => (typeof value === "string" && value.trim() ? 
 export function admissionPresentation(request: RemoteAdmissionRecord) {
   const payload = object(request.envelope.payload);
   const params = object(payload.params);
-  const scope = object(payload.invocation);
-  const client = object(scope.client);
+  const invocationMetadata = new Map(Object.entries(object(payload.invocation)));
+  const sourceMetadata = object(invocationMetadata.get("client"));
   const target = object(payload.target);
   const projects = Array.isArray(target.projects) ? target.projects.map(object) : [];
   const threads = Array.isArray(target.threads) ? target.threads.map(object) : [];
@@ -21,7 +21,7 @@ export function admissionPresentation(request: RemoteAdmissionRecord) {
         : request.envelope.operation === "t3_thread_send"
           ? "Continue a task"
           : "Remote request"),
-    source: string(client.label) ?? "Connected environment",
+    source: string(sourceMetadata.label) ?? "Connected environment",
     message:
       string(params.message) ??
       string(params.prompt) ??

@@ -37,7 +37,11 @@ const Initialization = Schema.Struct({
   capabilities: Schema.Record(Schema.String, Schema.Unknown),
   serverInfo: Schema.Struct({ name: Schema.String, version: Schema.String }),
 });
-const Failure = Schema.Struct({ code: OrchestratorMcpFailure.fields.code, message: Schema.String });
+const Failure = Schema.Struct({
+  code: OrchestratorMcpFailure.fields.code,
+  message: Schema.String,
+  remoteAdmission: OrchestratorMcpFailure.fields.remoteAdmission,
+});
 const decodeJson = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
 const encodeSessionKey = Schema.encodeSync(
   Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String, Schema.String])),
@@ -118,7 +122,7 @@ const readEnvelope = (
     if (envelope.error !== undefined) {
       const refused = decodeFailure(envelope.error.data);
       return yield* refused._tag === "Some"
-        ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
+        ? new OrchestratorMcpFailure(refused.value)
         : new OrchestratorMcpFailure({ code: "invalid_request", message: envelope.error.message });
     }
     return envelope;
@@ -281,7 +285,7 @@ export const make = Effect.gen(function* () {
           ? decodeFailure(result.structuredContent)
           : decodeTextFailure(text);
         return yield* refused._tag === "Some"
-          ? new OrchestratorMcpFailure({ code: refused.value.code, message: refused.value.message })
+          ? new OrchestratorMcpFailure(refused.value)
           : new OrchestratorMcpFailure({
               code: "orchestration_error",
               message: text || "The linked environment refused the call.",

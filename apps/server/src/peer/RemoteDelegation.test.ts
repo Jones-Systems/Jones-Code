@@ -1350,7 +1350,22 @@ it.effect(
           commandId: CommandId.make("command:stop:laptop-parent-lowered"),
         });
 
-        yield* TestClock.adjust(Duration.seconds(5));
+        yield* a.threads
+          .streamStoredEventsFrom({
+            threadId: parentThreadId,
+            afterSequence: 0,
+            eventType: "subagent.updated",
+          })
+          .pipe(
+            Stream.filter(
+              (stored) =>
+                stored.event.type === "subagent.updated" &&
+                stored.event.payload.id === delegated.taskId &&
+                stored.event.payload.remoteChild?.stopCount === 1,
+            ),
+            Stream.runHead,
+            Effect.timeout(Duration.seconds(10)),
+          );
         const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
           (task) => task.id === delegated.taskId,
         )!;
@@ -1367,11 +1382,10 @@ it.effect(
           threadId: parentThreadId,
           runtimeMode: "full-access",
         });
-        yield* TestClock.adjust(Duration.minutes(6));
-        yield* Deferred.await(thread.interruptedOnce);
+        yield* Deferred.await(thread.interruptedOnce).pipe(Effect.timeout(Duration.seconds(10)));
         expect((yield* stoppedThere(a, delegated.taskId))?.remoteChild?.stoppedThere).toBe(true);
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
 );
 
 it.effect("stopping the parent stops its task there", () =>
@@ -1713,120 +1727,118 @@ it.effect("a local task runs in this thread's project", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-for (const verdict of ["pass", "hold"] as const) {
-  it.effect(
-    `authenticated peer admission ${verdict} preserves the reserved task and launches once`,
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const thread = yield* makeBoxThread;
-          let receivingAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
-          let evaluations = 0;
-          const admissionContext = yield* AdmissionIntake.layer.pipe(
-            Layer.provide(
-              RemoteAdmission.layerWithEvaluator(() =>
-                Effect.sync(() => {
-                  evaluations++;
-                  return {
-                    verdict,
-                    category: verdict === "pass" ? "none" : "risky",
-                    reason: "Synthetic peer admission",
-                  };
-                }),
-              ),
-            ),
-            Layer.provide(
-              Layer.mock(EnvironmentAuth.EnvironmentAuth)({
-                listSessions: () =>
-                  receivingAuth === undefined
-                    ? Effect.die("Receiving auth not ready")
-                    : receivingAuth.listSessions(),
+it.effect.each(["pass", "hold"] as const)(
+  "authenticated peer admission %s preserves the reserved task and launches once",
+  (verdict) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        let receivingAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
+        let evaluations = 0;
+        const admissionContext = yield* AdmissionIntake.layer.pipe(
+          Layer.provide(
+            RemoteAdmission.layerWithEvaluator(() =>
+              Effect.sync(() => {
+                evaluations++;
+                return {
+                  verdict,
+                  category: verdict === "pass" ? "none" : "risky",
+                  reason: "Synthetic peer admission",
+                };
               }),
             ),
-            Layer.provide(SqlitePersistence.layerMemory),
-            Layer.fresh,
-            Layer.build,
-          );
-          const intake = Context.get(admissionContext, AdmissionIntake.RemoteAdmissionIntake);
-          yield* intake.updatePolicy({
-            expectedRevision: "initial",
-            enabled: true,
-            modelSelection,
+          ),
+          Layer.provide(
+            Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+              listSessions: () =>
+                receivingAuth === undefined
+                  ? Effect.die("Receiving auth not ready")
+                  : receivingAuth.listSessions(),
+            }),
+          ),
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.fresh,
+          Layer.build,
+        );
+        const intake = Context.get(admissionContext, AdmissionIntake.RemoteAdmissionIntake);
+        yield* intake.updatePolicy({
+          expectedRevision: "initial",
+          enabled: true,
+          modelSelection,
+        });
+        const b = yield* servePeer(
+          box,
+          Layer.merge(
+            boxToolkitLayer(thread),
+            McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
+          ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
+        );
+        receivingAuth = b.auth;
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        if (verdict === "hold") {
+          expect(yield* Ref.get(thread.launched)).toBeNull();
+          const status = yield* a.call("task_status", { taskId: delegated.taskId });
+          expect(status.structuredContent).toMatchObject({
+            status: "running",
+            hasPendingQuestion: true,
+            summary: "Awaiting owner approval in Box.",
           });
-          const b = yield* servePeer(
-            box,
-            Layer.merge(
-              boxToolkitLayer(thread),
-              McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
-            ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
-          );
-          receivingAuth = b.auth;
-          const offers = yield* SubscriptionRef.make<
-            ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-          >([]);
-          const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-          const a = yield* makeLaptop(database, offers);
-          yield* linkTo(a.links, b, "full-access");
-          yield* seedParent(a);
-          const delegated = yield* delegateToBox(a);
-          if (verdict === "hold") {
-            expect(yield* Ref.get(thread.launched)).toBeNull();
-            const status = yield* a.call("task_status", { taskId: delegated.taskId });
-            expect(status.structuredContent).toMatchObject({
-              status: "running",
-              hasPendingQuestion: true,
-              summary: "Awaiting owner approval in Box.",
-            });
-            const projection = yield* a.orchestrator.getThreadProjection(parentThreadId);
-            expect(projection.subagents[0]).toMatchObject({ status: "waiting", result: null });
-            expect(
-              projection.messages.filter((message) =>
-                message.text.includes("Awaiting owner approval in Box."),
-              ),
-            ).toHaveLength(1);
-            const held = (yield* intake.snapshot()).pending[0]!;
-            expect(held.status).toBe("held");
-            yield* intake.decide(
-              { id: held.id, bindingDigest: held.bindingDigest, decision: "approve" },
-              {
-                sessionId: AuthSessionId.make("synthetic-owner"),
-                subject: "one-time-token",
-                method: "browser-session-cookie",
-                scopes: new Set(AuthAdministrativeScopes),
-              },
-            );
-            yield* TestClock.adjust(Duration.seconds(5));
-            yield* a.threads
-              .streamStoredEventsFrom({
-                threadId: parentThreadId,
-                afterSequence: 0,
-                eventType: "subagent.updated",
-              })
-              .pipe(
-                Stream.filter(
-                  (stored) =>
-                    stored.event.type === "subagent.updated" &&
-                    stored.event.payload.id === delegated.taskId &&
-                    stored.event.payload.remoteChild !== undefined,
-                ),
-                Stream.runHead,
-              );
-          }
-          expect(yield* Ref.get(thread.launched)).not.toBeNull();
-          const replayed = yield* delegateToBox(a);
-          expect(replayed.taskId).toBe(delegated.taskId);
-          expect(evaluations).toBe(1);
+          const projection = yield* a.orchestrator.getThreadProjection(parentThreadId);
+          expect(projection.subagents[0]).toMatchObject({ status: "waiting", result: null });
           expect(
-            (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents,
+            projection.messages.filter((message) =>
+              message.text.includes("Awaiting owner approval in Box."),
+            ),
           ).toHaveLength(1);
-          yield* Ref.set(thread.reply, "Approved task result.");
-          yield* Ref.set(thread.status, "completed");
-          yield* Deferred.succeed(thread.finished, undefined);
-          expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
-            status: "completed",
-            result: "Approved task result.",
-          });
-        }),
-      ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-  );
-}
+          const held = (yield* intake.snapshot()).pending[0]!;
+          expect(held.status).toBe("held");
+          yield* intake.decide(
+            { id: held.id, bindingDigest: held.bindingDigest, decision: "approve" },
+            {
+              sessionId: AuthSessionId.make("synthetic-owner"),
+              subject: "one-time-token",
+              method: "browser-session-cookie",
+              scopes: new Set(AuthAdministrativeScopes),
+            },
+          );
+          yield* a.threads
+            .streamStoredEventsFrom({
+              threadId: parentThreadId,
+              afterSequence: 0,
+              eventType: "subagent.updated",
+            })
+            .pipe(
+              Stream.filter(
+                (stored) =>
+                  stored.event.type === "subagent.updated" &&
+                  stored.event.payload.id === delegated.taskId &&
+                  stored.event.payload.remoteChild !== undefined,
+              ),
+              Stream.runHead,
+              Effect.timeout(Duration.seconds(10)),
+            );
+        }
+        expect(yield* Ref.get(thread.launched)).not.toBeNull();
+        const replayed = yield* delegateToBox(a);
+        expect(replayed.taskId).toBe(delegated.taskId);
+        expect(evaluations).toBe(1);
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          1,
+        );
+        yield* Ref.set(thread.reply, "Approved task result.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "Approved task result.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+);

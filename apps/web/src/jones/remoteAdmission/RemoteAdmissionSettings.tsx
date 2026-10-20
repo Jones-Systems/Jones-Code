@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   type EnvironmentId,
   type RemoteAdmissionSnapshot,
@@ -45,10 +45,10 @@ export function RemoteAdmissionSettings({
     selected?.instanceId,
     selected?.model,
   );
-  const refresh = useCallback(async () => {
+  const refresh = async () => {
     const result = await remoteAdmissionRequest(environmentId, { action: "snapshot" });
     if ("pending" in result) setSnapshot(result);
-  }, [environmentId]);
+  };
   useEffect(() => {
     let active = true;
     let initialized = false;

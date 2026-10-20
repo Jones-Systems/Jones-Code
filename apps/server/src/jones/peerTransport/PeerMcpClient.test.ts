@@ -125,32 +125,33 @@ it.effect("reads SSE events separately and ignores notifications and other respo
   ),
 );
 
-for (const [name, envelope] of [
-  [
-    "wrong response ID",
-    { jsonrpc: "2.0", id: "wrong", result: { content: content({ count: 1 }) } },
-  ],
-  ["wrong protocol", { jsonrpc: "1.0", id: 1, result: { content: content({ count: 1 }) } }],
-  [
-    "both result and error",
-    {
+it.effect.each([
+  {
+    name: "wrong response ID",
+    envelope: { jsonrpc: "2.0", id: "wrong", result: { content: content({ count: 1 }) } },
+  },
+  {
+    name: "wrong protocol",
+    envelope: { jsonrpc: "1.0", id: 1, result: { content: content({ count: 1 }) } },
+  },
+  {
+    name: "both result and error",
+    envelope: {
       jsonrpc: "2.0",
       id: 1,
       result: { content: content({ count: 1 }) },
       error: { code: -1, message: "failure" },
     },
-  ],
-  ["missing result and error", { jsonrpc: "2.0", id: 1 }],
-] as const) {
-  it.effect(`rejects ${name}`, () =>
-    Effect.gen(function* () {
-      const client = yield* PeerMcpClient.PeerMcpClient;
-      const result = yield* client.call(input).pipe(Effect.result);
-      expect(result._tag).toBe("Failure");
-      if (result._tag === "Failure") expect(result.failure.code).toBe("orchestration_error");
-    }).pipe(Effect.provide(fixture(() => Response.json(envelope)))),
-  );
-}
+  },
+  { name: "missing result and error", envelope: { jsonrpc: "2.0", id: 1 } },
+] as const)("rejects $name", ({ envelope }) =>
+  Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const result = yield* client.call(input).pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure.code).toBe("orchestration_error");
+  }).pipe(Effect.provide(fixture(() => Response.json(envelope)))),
+);
 
 it.effect("preserves the peer's typed failure from structuredContent", () =>
   Effect.gen(function* () {
@@ -195,3 +196,50 @@ it.effect("disables fetch redirects before sending the bearer", () => {
     Effect.provideService(FetchHttpClient.Fetch, fetch),
   );
 });
+
+it.effect.each(["JSON-RPC", "structuredContent", "text"] as const)(
+  "preserves public remote admission metadata from %s without owner-only details",
+  (encoding) => {
+    const remoteAdmission = {
+      id: "opaque-admission-id",
+      bindingDigest: "a".repeat(64),
+      status: "held",
+    } as const;
+    const refusal = {
+      code: "remote_admission_pending",
+      message: "Waiting for owner input.",
+      remoteAdmission: { ...remoteAdmission, reason: "owner-only nested reason" },
+      reason: "owner-only reason",
+    };
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call(input).pipe(Effect.flip);
+      expect(failure.code).toBe("remote_admission_pending");
+      expect(failure.message).toBe("Waiting for owner input.");
+      expect(failure.remoteAdmission).toEqual(remoteAdmission);
+      expect(failure).not.toHaveProperty("reason");
+      expect(failure.remoteAdmission).not.toHaveProperty("reason");
+    }).pipe(
+      Effect.provide(
+        fixture((body) =>
+          encoding === "JSON-RPC"
+            ? Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                error: { code: -32000, message: "RPC wrapper", data: refusal },
+              })
+            : answer(
+                body.id,
+                encoding === "structuredContent"
+                  ? {
+                      content: [{ type: "text", text: "fallback" }],
+                      structuredContent: refusal,
+                      isError: true,
+                    }
+                  : { content: content(refusal), isError: true },
+              ),
+        ),
+      ),
+    );
+  },
+);
