@@ -106,3 +106,5 @@ export * from "./clientRpcPermissions.ts";
 export * from "./jones/workstreamsNativeOwner.ts";
 
 export * from "./jones/queuedSteerBatch.ts";
+
+export * from "./jones/clientLaunch.ts";
