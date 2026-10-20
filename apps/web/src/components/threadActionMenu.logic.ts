@@ -130,15 +130,7 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
-    ...(state.branch
-      ? [
-          {
-            id: "new-thread-on-branch" as const,
-            label: `New thread on ${state.branch}`,
-            icon: "message-square-plus",
-          },
-        ]
-      : []),
+    { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
     ...(state.supports.pinning
       ? [
           state.isPinned
@@ -153,22 +145,43 @@ export function buildThreadActionMenuItems(
             : { id: "settle" as const, label: "Settle thread", icon: "circle-check" },
         ]
       : []),
-    {
-      id: "stop-thread",
-      label: "Stop thread",
-      icon: "square",
-      // Session liveness is checked by the stop command when selected.
-      disabled: !state.canOperate,
-    },
+    ...(state.supports.titleRegeneration
+      ? [
+          {
+            id: "regenerate-title" as const,
+            label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
+            icon: "refresh-cw",
+            disabled: state.isRegeneratingTitle,
+            separatorBefore: true,
+          },
+        ]
+      : []),
+    ...(state.assignmentItems
+      ? [
+          {
+            id: "assign-thread" as const,
+            label: "Assign thread",
+            icon: "folder",
+            separatorBefore: !state.supports.titleRegeneration,
+            children: state.assignmentItems,
+          },
+        ]
+      : []),
     ...(state.supports.snooze
       ? [
           state.isSnoozed
-            ? { id: "unsnooze" as const, label: "Wake thread", icon: "clock" }
+            ? {
+                id: "unsnooze" as const,
+                label: "Wake thread",
+                icon: "clock",
+                separatorBefore: !state.supports.titleRegeneration && !state.assignmentItems,
+              }
             : {
                 id: "snooze" as const,
                 label: "Snooze",
                 icon: "clock",
                 disabled: !state.canSnoozeNow,
+                separatorBefore: !state.supports.titleRegeneration && !state.assignmentItems,
                 children: [
                   ...state.snoozePresets.map((preset) => ({
                     id: `snooze:${preset.id}` as const,
@@ -179,28 +192,26 @@ export function buildThreadActionMenuItems(
               },
         ]
       : []),
-    ...(state.assignmentItems
+    {
+      id: "stop-thread",
+      label: "Stop thread",
+      icon: "square",
+      // Session liveness is checked by the stop command when selected.
+      disabled: !state.canOperate,
+      separatorBefore:
+        !state.supports.titleRegeneration && !state.assignmentItems && !state.supports.snooze,
+    },
+    ...(state.branch
       ? [
           {
-            id: "assign-thread" as const,
-            label: "Assign thread",
-            icon: "folder",
-            children: state.assignmentItems,
+            id: "new-thread-on-branch" as const,
+            label: `New thread on ${state.branch}`,
+            icon: "message-square-plus",
+            separatorBefore: true,
           },
         ]
       : []),
-    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: true },
-    ...(state.supports.titleRegeneration
-      ? [
-          {
-            id: "regenerate-title" as const,
-            label: state.isRegeneratingTitle ? "Regenerating…" : "Regenerate title",
-            icon: "refresh-cw",
-            disabled: state.isRegeneratingTitle,
-          },
-        ]
-      : []),
-    { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
+    { id: "rename", label: "Rename thread", icon: "pencil", separatorBefore: !state.branch },
     ...(state.projectFilter
       ? [
           {
