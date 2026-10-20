@@ -383,11 +383,14 @@ it.each([false, true])(
   },
 );
 
-it("Skip dismisses only a dismissible question without a thread submit", async () => {
+it("omits Skip and dismisses only through the question header without a thread submit", async () => {
   await act(async () => root.render(<Harness />));
   expect(button("Skip")).toBeUndefined();
   await act(async () => root.render(<Harness dismissible capability="message" />));
-  await act(async () => button("Skip").click());
+  expect(button("Skip")).toBeUndefined();
+  await act(async () =>
+    container.querySelector<HTMLButtonElement>("[data-pending-user-input-dismiss]")!.click(),
+  );
   expect(output("dismissed")).toBe("true");
   expect(output("answer")).toBe("null");
   expect(output("messages")).toBe("[]");
@@ -465,6 +468,78 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
   expect(output("answer")).toBe('{"approach":"Read this file"}');
   expect(output("attachments")).toContain("uploaded-answer");
   expect(output("messages")).toBe("[]");
+});
+
+it("uses the inline paperclip picker for the question while preserving normal attachments", async () => {
+  const normalFile = {
+    type: "file" as const,
+    id: "normal-file",
+    name: "normal.txt",
+    mimeType: "text/plain",
+    sizeBytes: 6,
+    file: new File(["normal"], "normal.txt", { type: "text/plain" }),
+  };
+  const store = useComposerDraftStore.getState();
+  store.addFiles(threadRef, [normalFile], { appendReference: false });
+  try {
+    await act(async () =>
+      root.render(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+    );
+    await typeAnswer("Question response");
+    const picker = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const paperclip = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Attach files to answer"]',
+    )!;
+    const nativePickerClick = vi.spyOn(picker, "click").mockImplementation(() => {});
+    try {
+      await act(async () => paperclip.click());
+      expect(nativePickerClick).toHaveBeenCalledOnce();
+    } finally {
+      nativePickerClick.mockRestore();
+    }
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["answer"], "question.txt", { type: "text/plain" }));
+    await act(async () => {
+      picker.files = transfer.files;
+      picker.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const questionKey = questionAttachmentDraftId(
+      threadRef.environmentId,
+      threadRef.threadId,
+      "request",
+      "approach",
+    );
+    const files = useComposerDraftStore.getState().getComposerDraft(questionKey)!.files;
+    expect(files.map((file) => file.name)).toEqual(["question.txt"]);
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getComposerDraft(threadRef)!
+        .files.map((file) => file.name),
+    ).toEqual(["normal.txt"]);
+    expect(button("Send").disabled).toBe(true);
+    const attachmentId = "uploaded-question-picker";
+    await act(async () =>
+      useAttachmentUploadStore.setState({
+        uploadsByImageId: {
+          [files[0]!.id]: { status: "ready", environmentId: threadRef.environmentId, attachmentId },
+        },
+      }),
+    );
+    await act(async () => button("Send").click());
+    expect(output("attachments")).toContain(attachmentId);
+    expect(output("attachments")).not.toContain("normal-file");
+    expect(output("answer")).toBe('{"approach":"Question response"}');
+    expect(output("messages")).toBe("[]");
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getComposerDraft(threadRef)!
+        .files.map((file) => file.name),
+    ).toEqual(["normal.txt"]);
+  } finally {
+    useComposerDraftStore.getState().clearDraftThread(threadRef);
+  }
 });
 
 it("releases a failed image preparation so the written answer can still be sent", async () => {

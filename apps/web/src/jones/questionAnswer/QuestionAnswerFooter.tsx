@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef } from "react";
-import type { RuntimeRequestId, ScopedThreadRef } from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t3tools/contracts";
+import { PaperclipIcon } from "lucide-react";
 import { Button } from "../../components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ComposerBanner } from "../../components/chat/ComposerBanner";
 import {
   threadContextDropTargetProps,
@@ -16,6 +18,7 @@ import {
   type QuestionAnswerAttachmentCapabilities,
 } from "./questionAnswerCard";
 import { useQuestionAnswerAttachments } from "./useQuestionAnswerAttachments";
+import { observeResize } from "../../lib/observeResize";
 
 export function QuestionAnswerFooter({
   prompt,
@@ -27,7 +30,6 @@ export function QuestionAnswerFooter({
   onChangeCustomAnswer,
   onPrevious,
   onAdvance,
-  onDismiss,
 }: {
   prompt: PendingUserInput;
   progress: PendingUserInputProgress;
@@ -38,10 +40,10 @@ export function QuestionAnswerFooter({
   onChangeCustomAnswer: (questionId: string, value: string) => void;
   onPrevious: () => void;
   onAdvance: () => void;
-  onDismiss: (requestId: RuntimeRequestId) => void;
 }) {
   const state = deriveQuestionAnswerFooterState({ prompt, progress, disabled, isResponding });
   const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   const questionId = progress.activeQuestion?.id ?? "";
   const attachments = useQuestionAnswerAttachments({
@@ -68,15 +70,26 @@ export function QuestionAnswerFooter({
   useLayoutEffect(() => {
     const field = fieldRef.current;
     if (!field || !state.showField) return;
-    field.style.height = "auto";
-    field.style.height =
-      progress.customAnswer.length === 0
-        ? "68px"
-        : `${Math.min(Math.max(field.scrollHeight, 68), 168)}px`;
+    const resize = () => {
+      const style = getComputedStyle(field);
+      const border =
+        Number.parseFloat(style.borderTopWidth) + Number.parseFloat(style.borderBottomWidth);
+      const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      const maxHeight = 4 * Number.parseFloat(style.lineHeight) + padding + border;
+      field.style.height = progress.customAnswer.length === 0 ? "auto" : "0px";
+      field.style.height = `${Math.min(field.scrollHeight + border, maxHeight)}px`;
+    };
+    resize();
+    let width = field.clientWidth;
+    return observeResize(field, () => {
+      if (field.clientWidth === width) return;
+      width = field.clientWidth;
+      resize();
+    });
   }, [progress.customAnswer, state.showField]);
 
   return (
-    <ComposerBanner.Body>
+    <ComposerBanner.Body className="pe-3.5">
       <div
         ref={surfaceRef}
         {...threadContextDropTargetProps()}
@@ -100,46 +113,100 @@ export function QuestionAnswerFooter({
             void attachments.addFiles(Array.from(event.dataTransfer.files));
           else insert(event.dataTransfer.getData("text/plain"));
         }}
-        className="space-y-2 pb-2"
+        className="ms-2.5 space-y-2 pb-2"
       >
-        {state.showField ? (
-          <textarea
-            ref={fieldRef}
-            aria-label="Your answer"
-            placeholder={state.placeholder}
-            value={progress.customAnswer}
-            disabled={state.fieldDisabled}
-            rows={2}
-            className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
-            onChange={(event) => onChangeCustomAnswer(questionId, event.target.value)}
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (!isQuestionAnswerSubmitKey(event.nativeEvent, state.literal)) return;
-              event.preventDefault();
-              if (!state.primaryDisabled) onAdvance();
-            }}
-            onPaste={(event) => {
-              event.stopPropagation();
-              if (state.fieldDisabled) {
-                event.preventDefault();
-                return;
-              }
-              if (event.clipboardData.files.length) {
-                event.preventDefault();
-                void attachments.addFiles(Array.from(event.clipboardData.files));
-                return;
-              }
-              if (state.literal) return;
-              const fragment = readPastedComposerContext(event.clipboardData);
-              if (fragment) {
-                event.preventDefault();
-                insert(
-                  attachments.importClipboard(event.clipboardData.getData("text/plain"), fragment),
-                );
-              }
-            }}
-          />
-        ) : null}
+        <div className="flex items-end gap-2">
+          {state.showField ? (
+            <div className="relative min-w-0 flex-1">
+              <textarea
+                ref={fieldRef}
+                aria-label="Your answer"
+                placeholder={state.placeholder}
+                value={progress.customAnswer}
+                disabled={state.fieldDisabled}
+                rows={1}
+                className="block w-full resize-none overflow-y-auto rounded-md border border-input bg-background py-1.5 ps-3 pe-10 text-sm/5 outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
+                onChange={(event) => onChangeCustomAnswer(questionId, event.target.value)}
+                onKeyDown={(event) => {
+                  event.stopPropagation();
+                  if (!isQuestionAnswerSubmitKey(event.nativeEvent, state.literal)) return;
+                  event.preventDefault();
+                  if (!state.primaryDisabled) onAdvance();
+                }}
+                onPaste={(event) => {
+                  event.stopPropagation();
+                  if (state.fieldDisabled) {
+                    event.preventDefault();
+                    return;
+                  }
+                  if (event.clipboardData.files.length) {
+                    event.preventDefault();
+                    void attachments.addFiles(Array.from(event.clipboardData.files));
+                    return;
+                  }
+                  if (state.literal) return;
+                  const fragment = readPastedComposerContext(event.clipboardData);
+                  if (fragment) {
+                    event.preventDefault();
+                    insert(
+                      attachments.importClipboard(
+                        event.clipboardData.getData("text/plain"),
+                        fragment,
+                      ),
+                    );
+                  }
+                }}
+              />
+              {capabilities.supportsQuestionAttachments ? (
+                <div className="absolute end-0.5 bottom-0.5">
+                  <input
+                    ref={attachmentInputRef}
+                    type="file"
+                    multiple
+                    aria-label="Attach files to answer"
+                    disabled={!attachments.canAttach}
+                    className="hidden"
+                    onChange={(event) => {
+                      const files = Array.from(event.currentTarget.files ?? []);
+                      event.currentTarget.value = "";
+                      void attachments.addFiles(files);
+                    }}
+                  />
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={!attachments.canAttach}
+                          onPointerDown={(event) => event.preventDefault()}
+                          onClick={() => attachmentInputRef.current?.click()}
+                          aria-label="Attach files to answer"
+                        />
+                      }
+                    >
+                      <PaperclipIcon />
+                    </TooltipTrigger>
+                    <TooltipPopup>Attach files to answer</TooltipPopup>
+                  </Tooltip>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="flex-1" />
+          )}
+          <div className="pb-0.5">
+            <Button
+              type="button"
+              size="sm"
+              disabled={state.primaryDisabled || attachments.preparationCount > 0}
+              onClick={onAdvance}
+            >
+              {state.primaryLabel}
+            </Button>
+          </div>
+        </div>
         {attachments.attachments.length > 0 ? (
           <ul className="space-y-1 text-xs" aria-label="Answer attachments">
             {attachments.attachments.map((attachment) => {
@@ -193,66 +260,34 @@ export function QuestionAnswerFooter({
             {state.notice}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          {state.showField && capabilities.supportsQuestionAttachments ? (
-            <label className="relative text-xs text-muted-foreground">
-              <span>Attach files</span>
-              <input
-                type="file"
-                multiple
-                aria-label="Attach files to answer"
-                disabled={!attachments.canAttach}
-                className="absolute inset-0 w-full cursor-pointer opacity-0"
-                onChange={(event) => {
-                  void attachments.addFiles(Array.from(event.currentTarget.files ?? []));
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
-          ) : null}
-          {attachments.attachments.length > 0 || attachments.preparationCount > 0 ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="xs"
-              disabled={disabled || isResponding}
-              onClick={attachments.clear}
-            >
-              Remove all attachments
-            </Button>
-          ) : null}
-          <div className="flex-1" />
-          {state.showBack ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={disabled || isResponding}
-              onClick={onPrevious}
-            >
-              Back
-            </Button>
-          ) : null}
-          {state.showSkip ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={disabled || isResponding}
-              onClick={() => onDismiss(prompt.requestId)}
-            >
-              Skip
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            disabled={state.primaryDisabled || attachments.preparationCount > 0}
-            onClick={onAdvance}
-          >
-            {state.primaryLabel}
-          </Button>
-        </div>
+        {state.showBack ||
+        attachments.attachments.length > 0 ||
+        attachments.preparationCount > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            {state.showBack ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                disabled={disabled || isResponding}
+                onClick={onPrevious}
+              >
+                Back
+              </Button>
+            ) : null}
+            {attachments.attachments.length > 0 || attachments.preparationCount > 0 ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="xs"
+                disabled={disabled || isResponding}
+                onClick={attachments.clear}
+              >
+                Remove all attachments
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </ComposerBanner.Body>
   );
