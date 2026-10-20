@@ -1,7 +1,12 @@
 import { EnvironmentId, type HostStatus, type HostStatusSnapshot } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { fetchHostStatus, hostStatusMetrics, observeHostStatus } from "./hostStatus";
+import {
+  type HostStatusCache,
+  fetchHostStatus,
+  hostStatusMetrics,
+  observeHostStatus,
+} from "./hostStatus";
 import type * as EffectTypes from "effect/Effect";
 import type {
   EnvironmentRegistry as RegistryTypes,
@@ -456,6 +461,85 @@ describe("typed selected-environment gateway request", () => {
       const request = new Request(fetcher.mock.calls[0]?.[0], fetcher.mock.calls[0]?.[1]);
       expect(request.url).toBe("https://remote.example/api/host-status");
       expect(request.credentials).toBe(token ? "same-origin" : "include");
+    },
+  );
+});
+
+describe("retained host-status cache", () => {
+  it("seeds fresh values synchronously, preserves the due time, and expires during a pending refresh", async () => {
+    const cache: HostStatusCache = { snapshot, settledAt: Date.now() };
+    const receive = vi.fn();
+    const request = vi.fn(() => new Promise<HostStatusSnapshot>(() => {}));
+    await vi.advanceTimersByTimeAsync(1_000);
+    const stop = observeHostStatus(new Visibility(), receive, request, cache);
+    expect(receive).toHaveBeenLastCalledWith(snapshot);
+    expect(request).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(cache.snapshot?.hosts[0]).toEqual({ id: "vps", status: "unavailable", reason: "stale" });
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ignores a canceled late result without changing the retained sample or cadence", async () => {
+    const cache: HostStatusCache = { snapshot, settledAt: Date.now() - 10_000 };
+    const original = { ...cache };
+    let resolve!: (value: HostStatusSnapshot) => void;
+    const stop = observeHostStatus(
+      new Visibility(),
+      vi.fn(),
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+      cache,
+    );
+    stop();
+    resolve({ hosts: [] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cache).toEqual(original);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retains an in-flight result completed while hidden and waits until its next due time", async () => {
+    const cache: HostStatusCache = { snapshot: null, settledAt: -Infinity };
+    const visibility = new Visibility();
+    let resolve!: (value: HostStatusSnapshot) => void;
+    const request = vi.fn(
+      () =>
+        new Promise<HostStatusSnapshot>((done) => {
+          resolve = done;
+        }),
+    );
+    const stop = observeHostStatus(visibility, vi.fn(), request, cache);
+    visibility.set("hidden");
+    await vi.advanceTimersByTimeAsync(1_000);
+    resolve(snapshot);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(cache).toEqual({ snapshot, settledAt: Date.now() });
+    visibility.set("visible");
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenCalledTimes(2);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["invalid", "2026-09-29T12:00:01.000Z", "2026-09-29T11:59:30.000Z"])(
+    "rejects a retained invalid, future, or expired source timestamp: %s",
+    (sampledAt) => {
+      const cache: HostStatusCache = {
+        snapshot: { hosts: [{ ...available, sampledAt }] },
+        settledAt: Date.now(),
+      };
+      const receive = vi.fn();
+      const stop = observeHostStatus(new Visibility(), receive, vi.fn(), cache);
+      expect(receive).toHaveBeenLastCalledWith({
+        hosts: [{ id: "vps", status: "unavailable", reason: "stale" }],
+      });
+      stop();
     },
   );
 });
