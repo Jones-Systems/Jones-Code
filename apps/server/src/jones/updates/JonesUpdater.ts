@@ -48,6 +48,30 @@ export interface JonesUpdaterHost {
     | undefined;
 }
 
+/** What one check run produced; the candidate belongs to this run alone. */
+interface JonesCheckRun {
+  readonly state: JonesUpdateState;
+  readonly candidate: JonesActionsCandidate | undefined;
+}
+
+function candidateProvenance(
+  candidate: JonesActionsCandidate,
+): NonNullable<JonesUpdateState["provenance"]> {
+  return {
+    repository: candidate.repository,
+    sourceSha: candidate.source,
+    sourceTree: candidate.tree,
+    workflow: candidate.workflow,
+    runId: candidate.runId,
+    runAttempt: candidate.runAttempt,
+    artifactId: candidate.artifactId,
+    artifactDigest: candidate.artifactDigest,
+    platform: candidate.platform,
+    architecture: candidate.architecture,
+    version: candidate.version,
+  };
+}
+
 export type JonesUpdaterInstallInput = JonesUpdateInstallInput & { readonly operationId?: string };
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
@@ -56,8 +80,8 @@ export class JonesUpdater {
   private revision = 0;
   private busy = false;
   private candidate: JonesActionsCandidate | undefined;
-  /** The candidate returned by the latest check run, never a leftover from an earlier one. */
-  private checked: JonesActionsCandidate | undefined;
+  /** The one check run on this host, keyed by its target (`latest` for the newest main build). */
+  private inflight: { readonly key: string; readonly promise: Promise<JonesCheckRun> } | undefined;
   private readonly listeners = new Set<() => void>();
 
   private readonly host: JonesUpdaterHost;
@@ -162,18 +186,55 @@ export class JonesUpdater {
     });
   }
 
+  /**
+   * Checks for a build. Callers of one target share the running check; a caller of another target
+   * waits for it and then runs its own. A check yields to any other operation on the host.
+   */
   async check(targetSource?: string): Promise<JonesUpdateState> {
+    return (await this.checkRun(targetSource)).state;
+  }
+
+  private async checkRun(targetSource?: string): Promise<JonesCheckRun> {
+    const key = targetSource ?? "latest";
+    for (;;) {
+      const running = this.inflight;
+      if (running === undefined) break;
+      if (running.key === key) return running.promise;
+      await running.promise.catch(() => undefined);
+    }
     if (
       this.busy ||
       this.state.phase === "installing" ||
       this.state.phase === "preparing" ||
       !this.state.capability.check
     )
-      return this.snapshot();
+      return { state: this.snapshot(), candidate: undefined };
+    // Claim the host before the run starts so nothing can interleave with its first publication.
     this.busy = true;
-    this.checked = undefined;
+    let settle!: { resolve: (run: JonesCheckRun) => void; reject: (cause: unknown) => void };
+    const promise = new Promise<JonesCheckRun>((resolve, reject) => (settle = { resolve, reject }));
+    this.inflight = { key, promise };
+    void this.runCheck(targetSource).then(
+      (run) => {
+        this.busy = false;
+        this.inflight = undefined;
+        settle.resolve(run);
+      },
+      (cause: unknown) => {
+        this.busy = false;
+        this.inflight = undefined;
+        settle.reject(cause);
+      },
+    );
+    return promise;
+  }
+
+  /** Runs one check under the busy latch held by `checkRun`; its candidate is returned, not kept. */
+  private async runCheck(targetSource: string | undefined): Promise<JonesCheckRun> {
     const staged = this.state.stagedHandle !== undefined;
-    if (!staged) this.publish({ phase: "checking", message: "Checking qualified main builds…" });
+    // A host that already holds a settled result keeps showing it until this check replaces it.
+    if (!staged && this.state.checkedAt === undefined)
+      this.publish({ phase: "checking", message: "Checking qualified main builds…" });
     try {
       const result = await this.actions.check({
         installedSource: await this.host.installedSource(),
@@ -183,52 +244,41 @@ export class JonesUpdater {
       });
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
-        this.candidate = result.candidate;
-        this.checked = result.candidate;
-        if (staged) return this.publish({ checkedAt });
         const candidate = result.candidate;
-        return this.publish({
-          phase: "available",
-          checkedAt,
-          message: "A qualified main build is ready to download.",
-          provenance: {
-            repository: candidate.repository,
-            sourceSha: candidate.source,
-            sourceTree: candidate.tree,
-            workflow: candidate.workflow,
-            runId: candidate.runId,
-            runAttempt: candidate.runAttempt,
-            artifactId: candidate.artifactId,
-            artifactDigest: candidate.artifactDigest,
-            platform: candidate.platform,
-            architecture: candidate.architecture,
-            version: candidate.version,
-          },
-        });
+        this.candidate = candidate;
+        if (staged) return { state: this.publish({ checkedAt }), candidate };
+        return {
+          state: this.publish({
+            phase: "available",
+            checkedAt,
+            message: "A qualified main build is ready to download.",
+            provenance: candidateProvenance(candidate),
+          }),
+          candidate,
+        };
       }
-      if (staged) return this.publish({ checkedAt });
-      return this.publish({
-        phase: result.state,
-        checkedAt,
-        message:
-          result.state === "blocked"
-            ? result.reason
-            : result.state === "building"
-              ? "A fresh main build is still being qualified."
-              : targetSource === undefined
-                ? "No newer qualified main build."
-                : "This host already runs the requested source.",
-      });
+      if (staged) return { state: this.publish({ checkedAt }), candidate: undefined };
+      return {
+        state: this.publish({
+          phase: result.state,
+          checkedAt,
+          message:
+            result.state === "blocked"
+              ? result.reason
+              : result.state === "building"
+                ? "A fresh main build is still being qualified."
+                : targetSource === undefined
+                  ? "No newer qualified main build."
+                  : "This host already runs the requested source.",
+        }),
+        candidate: undefined,
+      };
     } catch (error) {
-      return staged ? this.publish({ checkedAt: new Date().toISOString() }) : this.fail(error);
-    } finally {
-      this.busy = false;
+      return {
+        state: staged ? this.publish({ checkedAt: new Date().toISOString() }) : this.fail(error),
+        candidate: undefined,
+      };
     }
-  }
-
-  /** Read through a method so the awaited `check()` mutation is not hidden by control-flow narrowing. */
-  private latestChecked(): JonesActionsCandidate | undefined {
-    return this.checked;
   }
 
   /**
@@ -236,32 +286,38 @@ export class JonesUpdater {
    * a different staged source is never replaced, and the same staged source is returned unchanged.
    */
   async stageExact(targetSource: string): Promise<JonesUpdateState> {
-    if (this.state.stagedHandle !== undefined) {
-      const staged = this.state.provenance?.sourceSha;
-      return staged === targetSource
-        ? this.snapshot()
-        : {
-            ...this.snapshot(),
-            phase: "blocked",
-            message:
-              staged === undefined
-                ? "Another source is already staged."
-                : `Another source (${staged.slice(0, 12)}) is already staged and was not replaced.`,
-          };
-    }
-    this.checked = undefined;
-    const state = await this.check(targetSource);
-    // Download only the candidate this check returned for the target; a skipped check or a
-    // candidate left by an earlier latest-main check must not be staged.
-    const candidate = this.latestChecked();
-    if (state.phase !== "available" || candidate?.source !== targetSource)
-      return state.phase === "available" || state.phase === "checking"
+    const settled = this.stagedOutcome(targetSource);
+    if (settled !== undefined) return settled;
+    const run = await this.checkRun(targetSource);
+    // Download only the candidate this run returned for the target; a skipped run, or a build
+    // offered by any other check, must not be staged.
+    const candidate = run.candidate;
+    if (run.state.phase !== "available" || candidate?.source !== targetSource)
+      return run.state.phase === "available" || run.state.phase === "checking"
         ? {
-            ...state,
+            ...run.state,
             message: "The requested source is not available from the current check. Try again.",
           }
-        : state;
-    return this.download({ artifactId: candidate.artifactId, sourceSha: targetSource });
+        : run.state;
+    // Another request may have claimed the host while this one waited for its turn.
+    while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+    return this.stagedOutcome(targetSource) ?? this.stageCandidate(candidate);
+  }
+
+  /** The result of asking for `targetSource` when a build is already staged, otherwise nothing. */
+  private stagedOutcome(targetSource: string): JonesUpdateState | undefined {
+    if (this.state.stagedHandle === undefined) return undefined;
+    const staged = this.state.provenance?.sourceSha;
+    return staged === targetSource
+      ? this.snapshot()
+      : {
+          ...this.snapshot(),
+          phase: "blocked",
+          message:
+            staged === undefined
+              ? "Another source is already staged."
+              : `Another source (${staged.slice(0, 12)}) is already staged and was not replaced.`,
+        };
   }
 
   async download(input: JonesUpdateDownloadInput): Promise<JonesUpdateState> {
@@ -278,6 +334,13 @@ export class JonesUpdater {
         message: "The selected build changed. Check for updates again.",
       });
     }
+    return this.stageCandidate(candidate);
+  }
+
+  /** Downloads and stages exactly `candidate` under the busy latch; the caller has chosen it. */
+  private async stageCandidate(candidate: JonesActionsCandidate): Promise<JonesUpdateState> {
+    if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
+      return this.snapshot();
     this.busy = true;
     this.publish({ phase: "downloading", message: "Downloading the selected main build…" });
     try {
@@ -291,7 +354,7 @@ export class JonesUpdater {
         ...(staged.migrationPlan === undefined ? {} : { migrationPlan: staged.migrationPlan }),
         message: "Downloaded and verified. Install is a separate action.",
         provenance: {
-          ...this.state.provenance!,
+          ...candidateProvenance(candidate),
           version: staged.version,
           payloadSha256: artifact.receipt.sha256,
         },
