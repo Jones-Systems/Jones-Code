@@ -852,3 +852,41 @@ it.effect(
     }).pipe(Effect.provide(harness.layer));
   },
 );
+
+it.effect(
+  "observes preparation ownership while active, after scope release, and in a fresh layer",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      const commandId = CommandId.make("command:reservation-observer");
+      const harness = makeHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(hold)),
+            Effect.as({ status: "no-script" as const }),
+          ),
+      });
+      const observed = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const launches = yield* ThreadLaunch.ThreadLaunchService;
+          assert.isFalse(yield* launches.preparationActive(commandId));
+          yield* launches.launch(
+            launchInput({
+              command: commandId,
+              thread: "thread:reservation-observer",
+              message: "Observe",
+            }),
+          );
+          yield* Deferred.await(entered);
+          assert.isTrue(yield* launches.preparationActive(commandId));
+          return launches;
+        }).pipe(Effect.provide(harness.layer)),
+      );
+      assert.isFalse(yield* observed.preparationActive(commandId));
+      yield* Effect.gen(function* () {
+        const fresh = yield* ThreadLaunch.ThreadLaunchService;
+        assert.isFalse(yield* fresh.preparationActive(commandId));
+      }).pipe(Effect.provide(makeHarness().layer));
+    }),
+);

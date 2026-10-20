@@ -258,6 +258,8 @@ export class ThreadLaunchService extends Context.Service<
       | Orchestrator.OrchestratorV2Error
       | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
+    // Jones hook: read-only observation of the existing preparation reservation.
+    readonly preparationActive: (commandId: CommandId) => Effect.Effect<boolean>;
     readonly prepareRun: (input: ThreadLaunchPreparationInput) => Effect.Effect<void>;
   }
 >()("t3/orchestration-v2/ThreadLaunchService") {}
@@ -2764,6 +2766,9 @@ const make = Effect.gen(function* () {
   };
 
   return ThreadLaunchService.of({
+    // Jones hook: spec.jones-client-launch; reservation ownership stays in this service.
+    preparationActive: (commandId) =>
+      Ref.get(scheduledLaunches).pipe(Effect.map((state) => state.commands.has(commandId))),
     dispatchNativeBootstrap: (submission) =>
       Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
         Option.isSome(nativeBootstrapConfig) && Option.isSome(nativeBootstrapPath)
