@@ -1,3 +1,4 @@
+import { RemoteAdmissionAttention } from "../jones/remoteAdmission/RemoteAdmissionAttention";
 import {
   useThreadStatusFilter,
   useThreadStatusSelection,
@@ -97,6 +98,7 @@ import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import {
   readThreadShell,
+  useDelegatedUnderParent,
   useProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
@@ -1127,10 +1129,12 @@ function useProjectThreads(
     (settings) => settings.sidebarThreadSortOrder,
   );
   const sidebarThreads = useThreadShellsForProjectRefs(project.memberProjectRefs);
+  const delegatedUnderParent = useDelegatedUnderParent();
   const { excludedEnvironmentIds } = useSidebarEnvironmentFilter();
   const scopedThreads = filterSidebarV2VisibleThreads(
     filterSidebarEnvironmentThreads(sidebarThreads, excludedEnvironmentIds),
     null,
+    delegatedUnderParent,
   );
   const { threads: projectThreads } = useThreadStatusSelection(
     scopedThreads,
@@ -3276,10 +3280,12 @@ export default function LegacySidebar() {
   const routeThreadRef = resolveActiveThreadRouteRef(routeTarget, routeDraftThread);
   const routeThreadKey = routeThreadRef ? scopedThreadKey(routeThreadRef) : null;
   const allSidebarThreads = useThreadShells();
+  const delegatedUnderParent = useDelegatedUnderParent();
   const { excludedEnvironmentIds, excludedEnvironmentKey } = useSidebarEnvironmentFilter();
   const visibleThreads = filterSidebarV2VisibleThreads(
     filterSidebarEnvironmentThreads(allSidebarThreads, excludedEnvironmentIds),
     null,
+    delegatedUnderParent,
   );
   const {
     statusFilter,
@@ -3675,6 +3681,7 @@ export default function LegacySidebar() {
         onHideWorkingThreads={hideWorkingThreads}
       />
 
+      <RemoteAdmissionAttention />
       <SidebarProjectsContent
         statusFilter={statusFilter}
         showArm64IntelBuildWarning={showArm64IntelBuildWarning}

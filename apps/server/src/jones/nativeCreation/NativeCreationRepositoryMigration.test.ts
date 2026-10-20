@@ -35,6 +35,10 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 112, name: "ClientLaunchRequests" },
         { migration_id: 114, name: "SelfSettlementProjectItems" },
         { migration_id: 115, name: "ScheduledWebhookPendingRuns" },
+        { migration_id: 116, name: "RemoteAdmission" },
+        { migration_id: 117, name: "RemoteDelegationIntents" },
+        { migration_id: 118, name: "RemoteAdmissionIntegration" },
+        { migration_id: 119, name: "PeerEnvironmentLinks" },
       ],
     );
     assert.deepEqual(

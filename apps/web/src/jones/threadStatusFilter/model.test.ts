@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { makeThreadFixture } from "../../test-fixtures";
 import {
   filterSidebarV2VisibleThreads,
@@ -206,6 +207,7 @@ describe("sidebar status filter", () => {
           relationshipToParent: "subagent",
         },
       }),
+      makeThreadFixture({ ...working, id: ThreadId.make("remote-task") }),
       makeThreadFixture({ ...working, projectId: ProjectId.make("other") }),
       makeThreadFixture({ ...working, environmentId: EnvironmentId.make("excluded") }),
     ];
@@ -215,6 +217,7 @@ describe("sidebar status filter", () => {
         new Set([EnvironmentId.make("excluded")]),
       ),
       new Set([`${environmentId}:${projectId}`]),
+      new Set([threadKey({ environmentId, threadId: ThreadId.make("remote-task") })]),
     );
     for (const filter of ["all", "working", "input", "done"] as const) {
       const selected = selectThreadStatus(scoped, filter, (thread) =>

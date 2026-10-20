@@ -1,4 +1,5 @@
 import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
+import * as WsPeerLinks from "../peer/PeerLinks.ts";
 import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
 import * as WsSecretRequests from "../secrets/SecretRequests.ts";
 import * as WsServerBrowser from "../preview/ServerBrowser.ts";
@@ -520,6 +521,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
   // Unrelated owners are deliberately unavailable; rejection must precede any RPC layer construction.
   const deniedRpcOwners = Layer.mergeAll(
     Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
+    Layer.mock(WsPeerLinks.PeerLinks)({}),
     Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
     Layer.mock(WsSecretRequests.SecretRequests)({}),
     Layer.mock(WsServerBrowser.ServerBrowser)({}),
@@ -1220,8 +1222,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 orchestrator,
                 external,
                 ProjectStore.layer.pipe(Layer.provide(receivingDatabase)),
-                ProjectionStore.layer.pipe(Layer.provide(receivingDatabase)),
                 ApplicationEvents.layer.pipe(Layer.provide(receivingDatabase)),
+              ).pipe(
+                Layer.provideMerge(ProjectionStore.layer.pipe(Layer.provide(receivingDatabase))),
               );
             })
           : Layer.empty;
@@ -1232,6 +1235,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
         const order: string[] = [];
         const rpcOwners = Layer.mergeAll(
           Layer.mock(WsDirectEndpoints.DirectEndpoints)({}),
+          Layer.mock(WsPeerLinks.PeerLinks)({}),
           Layer.mock(WsMcpAppRequests.McpAppRequests)({}),
           Layer.mock(WsSecretRequests.SecretRequests)({}),
           Layer.mock(WsServerBrowser.ServerBrowser)({}),

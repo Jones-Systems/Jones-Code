@@ -218,6 +218,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
+          ...(operation === "evaluateRemoteRequest" ? ["--disallowedTools", "mcp__*"] : []),
           "--disable-slash-commands",
           // Claude refuses this flag next to a managed-mcp.json, which already keeps the
           // user's own MCP servers out.
@@ -320,5 +321,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
   });
 
-  return TextGenerationOperations.fromRunner("ClaudeTextGeneration", runClaudeJson);
+  return TextGenerationOperations.fromRunner("ClaudeTextGeneration", runClaudeJson, {
+    remoteRequestEvaluation: "tool-less",
+  });
 });

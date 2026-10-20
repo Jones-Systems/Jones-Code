@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -192,6 +193,47 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
+  it.effect.each(["pass", "hold", "malformed"] as const)(
+    "evaluates remote requests with tools disabled and preserves %s output",
+    (outcome) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({
+            structured_output: {
+              verdict: outcome === "malformed" ? "pass" : outcome,
+              category: outcome === "pass" ? "none" : "risky",
+              reason: "Synthetic evaluation.",
+            },
+          }),
+          argsMustContain: "--disallowedTools mcp__*",
+          stdinMustContain: "Untrusted request JSON:",
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.result);
+            if (outcome === "malformed") {
+              expect(Result.isFailure(result)).toBe(true);
+              if (Result.isFailure(result)) {
+                expect(result.failure.operation).toBe("evaluateRemoteRequest");
+                expect(result.failure.detail).toContain("invalid structured output");
+              }
+            } else {
+              expect(Result.isSuccess(result)).toBe(true);
+              if (Result.isSuccess(result)) expect(result.success.verdict).toBe(outcome);
+            }
+          }),
+      ),
+  );
+
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
     withFakeClaudeEnv(
       {
