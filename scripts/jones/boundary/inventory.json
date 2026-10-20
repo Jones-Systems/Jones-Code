@@ -1278,7 +1278,9 @@
     "apps/server/src/mcp/McpToolAccess.ts": "hook",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/mcp/toolkits/project/handlers.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/jones/composer/providerShortcutLabelColor.ts": "jones-owned",
+    "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
