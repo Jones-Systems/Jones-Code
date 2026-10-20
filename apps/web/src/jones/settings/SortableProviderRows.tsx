@@ -98,6 +98,8 @@ function EnvironmentProviderRows<Row extends ProviderRow>({
         environmentId,
         input: { patch: { providerInstances: next } },
       });
+      pending.current = false;
+      if (mounted.current) setSaving(false);
       if (!mounted.current) return;
       if (result._tag === "Failure") {
         setOptimistic(null);
@@ -111,7 +113,9 @@ function EnvironmentProviderRows<Row extends ProviderRow>({
         }
       }
     } catch (error) {
+      pending.current = false;
       if (mounted.current) {
+        setSaving(false);
         setOptimistic(null);
         toastManager.add({
           type: "error",
@@ -119,9 +123,6 @@ function EnvironmentProviderRows<Row extends ProviderRow>({
           description: error instanceof Error ? error.message : "The settings update failed.",
         });
       }
-    } finally {
-      pending.current = false;
-      if (mounted.current) setSaving(false);
     }
   };
   return (
