@@ -1127,6 +1127,17 @@
       "scope": "Expected timeout expiry of a simple Python static HTTP server retains native command status, output and exit code while skipping the post-settle continuation. Timed-out tests, compound shell commands, unknown outcomes and unexpected server failures keep their existing notifications. The replay case stays in the upstream Codex adapter test because its scoped replay harness owns completion delivery and background-work release. No wire, persistence or client changes."
     },
     {
+      "id": "watcher-restart-survival",
+      "tests": [
+        "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
+        "apps/server/src/scheduledTasks/webhookRoute.test.ts",
+        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "A webhook delivery is acknowledged only when its relay claim, its accepted log row and a record in Jones migration 115's table keyed by delivery id commit in one transaction; the run is forked after the commit. A failed write, or a database without the table, rolls the claim back and answers 503 with outcome unavailable, so a relay retry runs it instead of being dropped as a duplicate and a direct sender sees a failure. Recorded deliveries stay until their run settles, a run the server stops stays recorded instead of being marked failed, and a scheduler source runs records this server does not own in arrival order once the server activates, retrying on later passes when the records or a task cannot be read. Replays reuse the delivery's command id, so a dispatch that landed is not repeated. Deleted, paused, replaced or retargeted tasks and deliveries past the task's maximum age are not run. Migration 115 follows released 114 because the Jones guard refuses a pending id below a recorded one. Timer schedules, pull request watches and delegated completions already restore from durable rows and projections; the runtime layer case proves a fresh pull request watch reactor reports changes from an outage once and does not restore a stopped watch. That case stays in the upstream runtime layer test because its harness owns the orchestrator and projections, and the 503 mapping is one row in the upstream route test's outcome table. The ScheduledTaskService hook (the acceptance transaction, record, settle, interrupted runs left pending, and the recovery scheduler source) shares the hook path recorded by scheduled-wake-coalescing; the route hook maps the unavailable result."
+    },
+    {
       "id": "native-goal-controls",
       "tests": [
         "apps/server/src/jones/goals/CodexGoalControl.test.ts",
