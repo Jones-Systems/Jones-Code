@@ -1308,7 +1308,8 @@
     "apps/web/src/jones/settings/ProviderOrderControls.tsx": "jones-owned",
     "apps/server/src/jones/mcp/agentMessageHeader.ts": "jones-owned",
     "apps/server/src/jones/mcp/agentMessageHeader.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned"
+    "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned",
+    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

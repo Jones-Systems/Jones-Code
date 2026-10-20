@@ -1,3 +1,4 @@
+import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import {
   INERT_QUESTION_COMPOSER_PROPS,
@@ -1356,8 +1357,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     if (!isWorkspaceFileDragActive) return;
     const clearWorkspaceFileDrag = () => setIsWorkspaceFileDragActive(false);
-    window.addEventListener("dragend", clearWorkspaceFileDrag);
-    return () => window.removeEventListener("dragend", clearWorkspaceFileDrag);
+    return listenForWorkspaceFileDragEnd(clearWorkspaceFileDrag);
   }, [isWorkspaceFileDragActive]);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const isMobileViewport = useMediaQuery("max-sm");
