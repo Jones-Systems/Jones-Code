@@ -1,5 +1,5 @@
 // @effect-diagnostics globalTimers:off globalDate:off
-// Promise boundary is also exercised without an Effect runtime; timeout only bounds subscriptions.
+// Promise boundary is also exercised without an Effect runtime; timers drive subscriptions and installation progress.
 import type {
   JonesUpdateState,
   JonesUpdateDownloadInput,
@@ -31,7 +31,10 @@ export interface JonesUpdaterHost {
     version: string;
     migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
-  readonly install: (request: JonesUpdaterInstallInput) => Promise<void | {
+  readonly install: (
+    request: JonesUpdaterInstallInput,
+    reportStep?: (step: "marking" | "verifying" | "preflight" | "capturing" | "handoff") => void,
+  ) => Promise<void | {
     readonly updateId?: string;
     readonly migrationPlan?: JonesUpdateState["migrationPlan"];
   }>;
@@ -415,6 +418,7 @@ export class JonesUpdater {
   }
 
   async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
+    while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
     if (this.busy || this.state.phase === "installing") return this.snapshot();
     if (!this.state.capability.install)
       return this.publish({
@@ -437,8 +441,25 @@ export class JonesUpdater {
       phase: "preparing",
       message: "Preparing the selected installation…",
     });
+    const started = Date.now();
+    const messages = {
+      marking: "Marking running threads for continuation…",
+      verifying: "Verifying the selected runtime…",
+      preflight: "Checking candidate startup readiness…",
+      capturing: "Capturing planned update continuity…",
+      handoff: "Waiting for the native launcher…",
+    };
+    let currentMessage = "Preparing the selected installation…";
+    const publishElapsed = () =>
+      this.publish({
+        message: `${currentMessage} (${Math.floor((Date.now() - started) / 1000)}s elapsed)`,
+      });
+    const heartbeat = setInterval(publishElapsed, 15_000);
     try {
-      const accepted = await this.host.install(input);
+      const accepted = await this.host.install(input, (step) => {
+        currentMessage = messages[step];
+        publishElapsed();
+      });
       return this.publish({
         phase: "installing",
         ...(accepted?.updateId === undefined ? {} : { updateId: accepted.updateId }),
@@ -448,6 +469,7 @@ export class JonesUpdater {
     } catch (error) {
       return this.fail(error);
     } finally {
+      clearInterval(heartbeat);
       this.busy = false;
     }
   }

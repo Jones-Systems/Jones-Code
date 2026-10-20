@@ -12,6 +12,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -95,6 +96,9 @@ export class ServerSelfUpdate extends Context.Service<
       },
       onHandoffAccepted?: () => Effect.Effect<void>,
       onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
+      reportStep?: (
+        step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+      ) => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -102,6 +106,55 @@ export class ServerSelfUpdate extends Context.Service<
     ) => Effect.Effect<never, ServerSelfUpdateError>;
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
+
+function timedQualifiedStep<A, E, R>(
+  step: string,
+  operationId: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
+  return Effect.gen(function* () {
+    const started = yield* Clock.currentTimeMillis;
+    return yield* effect.pipe(
+      Effect.ensuring(
+        Clock.currentTimeMillis.pipe(
+          Effect.flatMap((completed) =>
+            Effect.logInfo("Qualified installation timing", {
+              operationId,
+              step,
+              durationMs: completed - started,
+            }),
+          ),
+        ),
+      ),
+    );
+  });
+}
+
+/** The deadline owns preparation only; launcher handoff can have an uncertain external effect. */
+export function runQualifiedInstallPhases<A, B, R, R2>(input: {
+  readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
+  readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+}): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const prepared = yield* restore(
+        input.prepare.pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.minutes(20),
+            orElse: () =>
+              Effect.fail(
+                new ServerSelfUpdateError({
+                  reason:
+                    "Installation preparation timed out after 20 minutes; the launcher was not contacted. Retry Install.",
+                }),
+              ),
+          }),
+        ),
+      );
+      return yield* input.handoff(prepared);
+    }),
+  );
+}
 
 export const withRunningThreadContinuation = Effect.fn(
   "cloud.server_self_update.withRunningThreadContinuation",
@@ -215,6 +268,9 @@ export const withRunningThreadContinuation = Effect.fn(
             onPrepared?: (
               staged: StagedQualifiedRuntime,
             ) => Effect.Effect<void, ServerSelfUpdateError>,
+            reportStep?: (
+              step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+            ) => Effect.Effect<void>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
@@ -242,8 +298,14 @@ export const withRunningThreadContinuation = Effect.fn(
                 });
               return yield* clearOnError(
                 Effect.gen(function* () {
-                  continuationThreadIds =
-                    request.continueRunningThreads === true ? yield* input.prepare : [];
+                  if (request.continueRunningThreads === true) {
+                    yield* reportStep?.("marking") ?? Effect.void;
+                    continuationThreadIds = yield* timedQualifiedStep(
+                      "marking",
+                      request.operationId,
+                      input.prepare,
+                    );
+                  }
                   return yield* input.selfUpdate.installQualified!(
                     request,
                     () =>
@@ -251,6 +313,7 @@ export const withRunningThreadContinuation = Effect.fn(
                         handoffAccepted = true;
                       }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
                     onPrepared,
+                    reportStep,
                   );
                 }),
                 () => continuationThreadIds,
@@ -267,7 +330,7 @@ export const withRunningThreadContinuation = Effect.fn(
                   ).pipe(Effect.andThen(Effect.failCause(cause))),
                 ),
               );
-            });
+            }).pipe((effect) => timedQualifiedStep("total", request.operationId, effect));
           },
         }),
     commitDesktopUpdate: (requestId) =>
@@ -612,48 +675,80 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     input,
     onHandoffAccepted = () => Effect.void,
     onPrepared = () => Effect.void,
+    reportStep = () => Effect.void,
   ) =>
-    Effect.gen(function* () {
-      const staged = yield* Effect.tryPromise({
-        try: () =>
-          verifyStagedQualifiedRuntime(
-            serverConfig.baseDir,
-            requireQualifiedLauncher(true),
-            input.stagedHandle,
-            { platform, architecture: arch },
+    runQualifiedInstallPhases({
+      prepare: Effect.gen(function* () {
+        yield* reportStep("verifying");
+        const staged = yield* timedQualifiedStep(
+          "verifying",
+          input.operationId,
+          Effect.tryPromise({
+            try: (signal) =>
+              verifyStagedQualifiedRuntime(
+                serverConfig.baseDir,
+                requireQualifiedLauncher(true),
+                input.stagedHandle,
+                { platform, architecture: arch },
+                { signal },
+              ),
+            catch: (cause) =>
+              failWith(
+                cause instanceof Error ? cause.message : "The staged update binding is invalid.",
+                cause,
+              ),
+          }),
+        );
+        const actualDatabase = yield* Effect.tryPromise({
+          try: () => NodeFSP.realpath(serverConfig.dbPath),
+          catch: (cause) => failWith("Could not bind the running database.", cause),
+        });
+        if (staged.binding.dbPath !== actualDatabase)
+          return yield* failWith("The staged update belongs to a different running database.");
+        yield* reportStep("preflight");
+        yield* timedQualifiedStep(
+          "preflight",
+          input.operationId,
+          validateQualifiedCandidate(
+            NodePath.join(
+              staged.binding.baseDir,
+              "runtime",
+              "versions",
+              staged.receipt.version,
+              "t3",
+            ),
+            staged.binding.dbPath,
+            staged.receipt.version,
           ),
-        catch: (cause) =>
-          failWith(
-            cause instanceof Error ? cause.message : "The staged update binding is invalid.",
-            cause,
-          ),
-      });
-      const actualDatabase = yield* Effect.tryPromise({
-        try: () => NodeFSP.realpath(serverConfig.dbPath),
-        catch: (cause) => failWith("Could not bind the running database.", cause),
-      });
-      if (staged.binding.dbPath !== actualDatabase)
-        return yield* failWith("The staged update belongs to a different running database.");
-      yield* validateQualifiedCandidate(
-        NodePath.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
-        staged.binding.dbPath,
-        staged.receipt.version,
-      );
-      yield* onPrepared(staged);
-      const updateId = yield* Effect.uninterruptible(
-        launcher
-          .requestUpdate({
+        );
+        yield* reportStep("capturing");
+        yield* timedQualifiedStep("capturing", input.operationId, onPrepared(staged));
+        return staged;
+      }),
+      handoff: (staged) =>
+        Effect.gen(function* () {
+          yield* reportStep("handoff");
+          const updateId = yield* timedQualifiedStep(
+            "handoff",
+            input.operationId,
+            launcher
+              .requestUpdate({
+                targetVersion: staged.receipt.version,
+                dbPath: staged.binding.dbPath,
+                stagedHandle: staged.stagedHandle,
+                ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+              })
+              .pipe(
+                Effect.mapError((cause) => failWith(cause.message, cause)),
+                Effect.tap(() => onHandoffAccepted()),
+              ),
+          );
+          return {
             targetVersion: staged.receipt.version,
-            dbPath: staged.binding.dbPath,
-            stagedHandle: staged.stagedHandle,
-            ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
-          })
-          .pipe(
-            Effect.mapError((cause) => failWith(cause.message, cause)),
-            Effect.tap(() => onHandoffAccepted()),
-          ),
-      );
-      return { targetVersion: staged.receipt.version, method: "boot-service" as const, updateId };
+            method: "boot-service" as const,
+            updateId,
+          };
+        }),
     });
 
   return ServerSelfUpdate.of({

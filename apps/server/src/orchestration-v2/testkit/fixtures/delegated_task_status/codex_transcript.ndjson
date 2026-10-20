@@ -38,4 +38,3 @@
 {"type":"emit_inbound","label":"child.queued.item/completed","frame":{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"msg_delegated_task_status_queued","text":"Queued delegated follow-up completed.","phase":"final_answer","memoryCitation":null},"threadId":"019f1000-0000-7000-8000-000000000003","turnId":"019f1000-0000-7000-8000-000000000006"}}}
 {"type":"emit_inbound","label":"child.queued.thread/status/changed","frame":{"method":"thread/status/changed","params":{"threadId":"019f1000-0000-7000-8000-000000000003","status":{"type":"idle"}}}}
 {"type":"emit_inbound","label":"child.queued.turn/completed","frame":{"method":"turn/completed","params":{"threadId":"019f1000-0000-7000-8000-000000000003","turn":{"id":"019f1000-0000-7000-8000-000000000006","items":[],"status":"completed","error":null,"startedAt":1776739472,"completedAt":1776739473,"durationMs":1000}}}}
-{"type":"runtime_exit","status":"success"}

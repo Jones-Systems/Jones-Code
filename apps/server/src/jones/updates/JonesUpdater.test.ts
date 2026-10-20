@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, JonesUpdateState } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type {
@@ -578,4 +578,103 @@ describe("exact-source staging for this host", () => {
       provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
     });
   });
+});
+
+it("waits for an in-flight check before installing and rechecks the selection", async () => {
+  let release!: (value: string) => void;
+  let hold = false;
+  const f = fixture({
+    installedSource: () =>
+      hold
+        ? new Promise<string>((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve("a".repeat(40)),
+  });
+  await f.updater.stageExact(candidate.source);
+  hold = true;
+  const check = f.updater.check();
+  const install = f.updater.install({
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  });
+  expect(f.effects).toEqual(["stage"]);
+  release("a".repeat(40));
+  await check;
+  expect((await install).phase).toBe("installing");
+  expect(f.effects).toEqual(["stage", "install"]);
+});
+
+it.each([false, true])(
+  "publishes ordered install steps and clears its heartbeat on failure=%s",
+  async (fail) => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const messages: string[] = [];
+    const f = fixture({
+      stateChanged: (state) => {
+        if (state.message) messages.push(state.message);
+      },
+      install: async (_input, reportStep) => {
+        for (const step of ["marking", "verifying", "preflight", "capturing", "handoff"] as const)
+          reportStep?.(step);
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        if (fail) throw new Error("synthetic definite rejection");
+      },
+    });
+    try {
+      await f.updater.stageExact(candidate.source);
+      const install = f.updater.install({
+        stagedHandle: "fixed-handle",
+        environmentId: EnvironmentId.make("fixture"),
+        currentVersion: "0.0.0-preview.20261002.1",
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(messages.slice(-6)).toEqual([
+        "Marking running threads for continuation… (0s elapsed)",
+        "Verifying the selected runtime… (0s elapsed)",
+        "Checking candidate startup readiness… (0s elapsed)",
+        "Capturing planned update continuity… (0s elapsed)",
+        "Waiting for the native launcher… (0s elapsed)",
+        "Waiting for the native launcher… (15s elapsed)",
+      ]);
+      finish();
+      expect((await install).phase).toBe(fail ? "blocked" : "installing");
+      const count = messages.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(messages).toHaveLength(count);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish?.();
+      vi.useRealTimers();
+    }
+  },
+);
+
+it("rechecks install guards after the in-flight check settles", async () => {
+  let release!: (value: string) => void;
+  let hold = false;
+  const f = fixture({
+    installedSource: () =>
+      hold
+        ? new Promise<string>((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve("a".repeat(40)),
+  });
+  await f.updater.stageExact(candidate.source);
+  hold = true;
+  const check = f.updater.check();
+  const install = f.updater.install({
+    stagedHandle: "wrong-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+  });
+  release("a".repeat(40));
+  await check;
+  expect((await install).message).toContain("does not match");
+  expect(f.effects).toEqual(["stage"]);
 });
