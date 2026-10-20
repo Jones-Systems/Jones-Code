@@ -175,7 +175,7 @@ const launchStateDependencies = [
   EventSink.EventSinkV2,
   SqlClient.SqlClient,
   ThreadLaunchService.ThreadLaunchService,
-] as const;
+];
 const ThreadLaunchLookupTool = Tool.make("t3_thread_launch_lookup", {
   ...shared,
   parameters: ClientLaunchKey,
