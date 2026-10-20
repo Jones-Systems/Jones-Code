@@ -10,7 +10,8 @@
     "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
     "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
     "apps/web/src/jones/questionAnswer/questionAnswerCard.ts",
-    "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts"
+    "apps/web/src/jones/questionAnswer/useQuestionAnswerAttachments.ts",
+    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts"
   ],
   "hookPaths": ["apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx"],
   "tombstones": [],
@@ -30,6 +31,10 @@
     {
       "from": "apps/mobile/src/state/use-thread-composer-state.ts",
       "to": "apps/mobile/src/jones/questionAnswer/composerDispatch.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts"
     }
   ]
 }

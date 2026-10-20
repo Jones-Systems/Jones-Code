@@ -993,7 +993,7 @@
         "apps/web/src/composer-logic.test.ts",
         "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts"
       ],
-      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change."
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Existing option, collapse, literal-answer, and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. No server, wire, persistence, or runtime activation change. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments."
     },
     {
       "id": "compact-sidebar-header",
