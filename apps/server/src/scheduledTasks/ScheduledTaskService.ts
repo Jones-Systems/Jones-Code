@@ -41,6 +41,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
+import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as Metrics from "../observability/Metrics.ts";
@@ -1328,6 +1329,52 @@ export const layer = Layer.effect(
       });
 
     const serviceScope = yield* Effect.scope;
+    const pendingWebhookRuns = yield* makePendingWebhookRuns;
+
+    const runWebhookDelivery = (task: ScheduledTask, deliveryId: string, prompt: string) =>
+      Effect.gen(function* () {
+        const permit = yield* webhookPermit(task.id);
+        const runOutcome = (outcome: "started" | "skipped" | "failed") =>
+          Effect.all([
+            Effect.annotateCurrentSpan({ "scheduled_task.webhook.run_outcome": outcome }),
+            Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
+          ]);
+        yield* runTask(task, "webhook", { deliveryId, prompt }).pipe(
+          Effect.flatMap((completed) =>
+            completed.lastRunStatus === "failed"
+              ? runOutcome("failed").pipe(
+                  Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
+                )
+              : runOutcome("started"),
+          ),
+          Effect.catchTags({
+            WebhookDeliverySkipped: (skipped) =>
+              runOutcome("skipped").pipe(
+                Effect.andThen(markDeliveryFailed(deliveryId, skipped.reason)),
+              ),
+          }),
+          // The log is readable over RPC, so it gets a fixed reason; the
+          // cause, which can carry request data, stays in the server log.
+          // Jones hook: a run the server stopped is not failed; it stays pending.
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("Webhook dispatch failed", { taskId: task.id, cause }).pipe(
+                  Effect.andThen(runOutcome("failed")),
+                  Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
+                ),
+          ),
+          Effect.andThen(pendingWebhookRuns.settle(deliveryId)),
+          permit.withPermits(1),
+          Effect.withSpan("ScheduledTaskService.runWebhookDelivery", {
+            root: true,
+            attributes: {
+              "scheduled_task.id": task.id,
+              "scheduled_task.webhook.delivery_id": deliveryId,
+            },
+          }),
+        );
+      });
 
     const observeDelivery = (
       request: WebhookTriggerRequest,
@@ -1564,43 +1611,16 @@ export const layer = Layer.effect(
               missing: rendered.missing,
               renderedPrompt: rendered.prompt,
             }).pipe(Effect.onError(() => release));
+            // Jones hook: keep the delivery until its run settles, so a restart can run it.
+            yield* pendingWebhookRuns.record({
+              deliveryId,
+              taskId: task.id,
+              taskCreatedAt: task.createdAt,
+              receivedAt: iso(receivedAt),
+              prompt: rendered.prompt,
+            });
             yield* observe("accepted");
-            const permit = yield* webhookPermit(task.id);
-            const runOutcome = (outcome: "started" | "skipped" | "failed") =>
-              Effect.all([
-                Effect.annotateCurrentSpan({ "scheduled_task.webhook.run_outcome": outcome }),
-                Metrics.increment(Metrics.webhookRunsTotal, { outcome }),
-              ]);
-            yield* runTask(task, "webhook", { deliveryId, prompt: rendered.prompt }).pipe(
-              Effect.flatMap((completed) =>
-                completed.lastRunStatus === "failed"
-                  ? runOutcome("failed").pipe(
-                      Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
-                    )
-                  : runOutcome("started"),
-              ),
-              Effect.catchTags({
-                WebhookDeliverySkipped: (skipped) =>
-                  runOutcome("skipped").pipe(
-                    Effect.andThen(markDeliveryFailed(deliveryId, skipped.reason)),
-                  ),
-              }),
-              // The log is readable over RPC, so it gets a fixed reason; the
-              // cause, which can carry request data, stays in the server log.
-              Effect.catchCause((cause) =>
-                Effect.logWarning("Webhook dispatch failed", { taskId: task.id, cause }).pipe(
-                  Effect.andThen(runOutcome("failed")),
-                  Effect.andThen(markDeliveryFailed(deliveryId, "The run failed to start.")),
-                ),
-              ),
-              permit.withPermits(1),
-              Effect.withSpan("ScheduledTaskService.runWebhookDelivery", {
-                root: true,
-                attributes: {
-                  "scheduled_task.id": task.id,
-                  "scheduled_task.webhook.delivery_id": deliveryId,
-                },
-              }),
+            yield* runWebhookDelivery(task, deliveryId, rendered.prompt).pipe(
               Effect.ensuring(release),
               Effect.forkIn(serviceScope),
             );
@@ -1608,6 +1628,16 @@ export const layer = Layer.effect(
           }),
         );
       });
+
+    // Jones hook: once the server is active, run the webhook deliveries a restart cut off.
+    yield* scheduler.register(
+      "jones-webhook-run-recovery",
+      pendingWebhookRuns.recover({
+        findTask,
+        skip: markDeliveryFailed,
+        run: runWebhookDelivery,
+      }),
+    );
 
     return ScheduledTaskService.of({
       list,

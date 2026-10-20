@@ -1309,7 +1309,11 @@
     "apps/server/src/jones/mcp/agentMessageHeader.ts": "jones-owned",
     "apps/server/src/jones/mcp/agentMessageHeader.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned",
-    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts": "jones-owned"
+    "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/113_JonesScheduledWebhookPendingRuns.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/watcher-restart-survival.json": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1824,6 +1828,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/queuedWake.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts"
     }
   ]
 }

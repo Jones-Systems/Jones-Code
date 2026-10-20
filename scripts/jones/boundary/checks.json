@@ -1900,6 +1900,21 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-watcher-restart-survival",
+      "tests": [
+        "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/scheduledTasks/ apps/server/src/scheduledTasks/ --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/orchestration-v2/runtimeLayer.test.ts -t \"restarted watch reactor\"",
+        "vp test run apps/server/src/jones/persistence/ apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

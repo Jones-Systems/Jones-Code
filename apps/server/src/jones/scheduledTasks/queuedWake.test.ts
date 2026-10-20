@@ -22,8 +22,9 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
     const dependencies = Layer.mergeAll(
       NodeCrypto.layer,
       Layer.mock(Scheduler.Scheduler)({
-        register: <E, R>(_name: string, work: Effect.Effect<void, E, R>) =>
+        register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>
           Effect.gen(function* () {
+            if (name !== "scheduled-tasks") return;
             const context = yield* Effect.context<R>();
             tick = work.pipe(Effect.provideContext(context), Effect.orDie);
           }),

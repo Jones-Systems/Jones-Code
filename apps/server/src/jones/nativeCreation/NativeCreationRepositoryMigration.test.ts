@@ -33,6 +33,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 110, name: "ThreadLookupIndexes" },
         { migration_id: 111, name: "ClientSettlementCommands" },
         { migration_id: 112, name: "ClientLaunchRequests" },
+        { migration_id: 113, name: "ScheduledWebhookPendingRuns" },
       ],
     );
     assert.deepEqual(

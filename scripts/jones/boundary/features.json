@@ -1121,6 +1121,15 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ],
       "scope": "Expected timeout expiry of a simple Python static HTTP server retains native command status, output and exit code while skipping the post-settle continuation. Timed-out tests, compound shell commands, unknown outcomes and unexpected server failures keep their existing notifications. The replay case stays in the upstream Codex adapter test because its scoped replay harness owns completion delivery and background-work release. No wire, persistence or client changes."
+    },
+    {
+      "id": "watcher-restart-survival",
+      "tests": [
+        "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Webhook deliveries acknowledged before their run settles are recorded in Jones migration 113's table keyed by delivery id and run once, in arrival order, after the next server activation; a run the server stops stays pending instead of being marked failed. Replays reuse the delivery's command id, so a dispatch that landed is not repeated. Deleted, paused, replaced or retargeted tasks and deliveries past the task's maximum age are not run. Timer schedules, pull request watches and delegated completions already restore from durable rows and projections; the runtime layer case proves a fresh pull request watch reactor reports changes from an outage once and does not restore a stopped watch. The case stays in the upstream runtime layer test because its harness owns the orchestrator and projections. The ScheduledTaskService hook (record, settle, interrupted runs left pending, and the recovery scheduler source) shares the hook path recorded by scheduled-wake-coalescing."
     }
   ]
 }
