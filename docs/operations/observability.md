@@ -772,7 +772,9 @@ gateway for the app session until its registration is removed, independently of
 the active thread. Disconnects and request failures leave its values unavailable
 without selecting another gateway. Requests use the selected environment's
 existing HTTP authorization; the client does not receive collector URLs or
-tokens or substitute its own machine's resources.
+tokens or substitute its own machine's resources. Header remounts and tab visibility
+changes retain the selected gateway's sample and ten-second polling cadence,
+while source samples still expire after thirty seconds.
 
 A shared parent collector can serve all mapped nodes. Each shared slot requires
 an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.

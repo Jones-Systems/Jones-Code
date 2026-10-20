@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
 import { observeHostStatus } from "../../hostStatus";
 import { TooltipProvider } from "../ui/tooltip";
-import { HostStatusIndicators } from "./HostStatusIndicators";
+import { clearRetainedHostStatus, HostStatusIndicators } from "./HostStatusIndicators";
 
 vi.mock("../../hostStatus", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../hostStatus")>()),
@@ -22,6 +22,8 @@ let resize: () => void;
 let observerDisconnected: boolean;
 
 beforeEach(async () => {
+  clearRetainedHostStatus(EnvironmentId.make("remote-a"));
+  clearRetainedHostStatus(EnvironmentId.make("remote-b"));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   availableWidth = 1000;
   bubbleWidths = [100, 110, 120, 130];
@@ -65,8 +67,11 @@ beforeEach(async () => {
     }
     return originalRect.call(this);
   });
-  vi.mocked(observeHostStatus).mockImplementation((_visibility, listener) => {
-    receive = listener;
+  vi.mocked(observeHostStatus).mockImplementation((_visibility, listener, _request, cache) => {
+    receive = (snapshot) => {
+      if (cache) cache.snapshot = snapshot;
+      listener(snapshot);
+    };
     return () => {};
   });
   container = document.createElement("div");
