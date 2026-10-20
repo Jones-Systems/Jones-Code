@@ -147,6 +147,19 @@ export async function performExactSourceStep({
 type Report = { readonly tone: "error" | "info"; readonly text: string };
 
 /**
+ * Runs `work`, then `release`, whether `work` resolved or threw, so a rejected confirmation or
+ * `readLatest` still clears the click latch. The rejection propagates after `release`. This lives
+ * outside the component because React Compiler cannot compile `try`/`finally` without `catch`.
+ */
+async function releaseAfter(work: () => Promise<void>, release: () => void): Promise<void> {
+  try {
+    await work();
+  } finally {
+    release();
+  }
+}
+
+/**
  * The notice's action toward this app's exact source commit. Download and Install are separate
  * explicit steps; the notice stays mounted through every host transition so progress, refusals
  * and lost responses stay visible instead of the action disappearing.
@@ -175,23 +188,26 @@ export function ExactSourceUpdateAction({
     inFlight.current = true;
     setWorking(step.kind === "install" ? "install" : "download");
     setReport(null);
-    try {
-      const outcome = await performExactSourceStep({
-        environmentId,
-        label,
-        targetSource,
-        step,
-        unresolvedInstall,
-        host,
-      });
-      // An unknown install is explained by the resolver's "reconciling" state until the host moves.
-      if (outcome.kind === "unknown") setUnresolvedInstall(outcome.unresolvedInstall);
-      else if (outcome.kind === "done") setReport({ tone: "info", text: outcome.message });
-      else if (outcome.kind !== "cancelled") setReport({ tone: "error", text: outcome.message });
-    } finally {
-      inFlight.current = false;
-      setWorking(null);
-    }
+    await releaseAfter(
+      async () => {
+        const outcome = await performExactSourceStep({
+          environmentId,
+          label,
+          targetSource,
+          step,
+          unresolvedInstall,
+          host,
+        });
+        // An unknown install is explained by the resolver's "reconciling" state until the host moves.
+        if (outcome.kind === "unknown") setUnresolvedInstall(outcome.unresolvedInstall);
+        else if (outcome.kind === "done") setReport({ tone: "info", text: outcome.message });
+        else if (outcome.kind !== "cancelled") setReport({ tone: "error", text: outcome.message });
+      },
+      () => {
+        inFlight.current = false;
+        setWorking(null);
+      },
+    );
   };
 
   const status =
