@@ -1,6 +1,10 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { ScheduledTaskUpsertInput, type ScheduledTask } from "@t3tools/contracts";
+import {
+  ScheduledTaskUpsertInput,
+  ScheduledTaskWebhookDeliveryId,
+  type ScheduledTask,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -268,7 +272,7 @@ it.effect.each(["jones_scheduled_webhook_pending_runs", "scheduled_task_webhook_
         // The relay's retry is a new delivery, not a duplicate of one that never ran.
         assert.deepEqual(yield* service.triggerWebhook(held), {
           _tag: "accepted",
-          deliveryId: "delivery:relay:held-1",
+          deliveryId: ScheduledTaskWebhookDeliveryId.make("delivery:relay:held-1"),
           outcome: "accepted",
         });
         const launched = yield* Queue.take(launches);
