@@ -68,9 +68,8 @@ export function RemoteAdmissionSettings({
         }
       } catch {
         if (active) setSnapshot(null);
-      } finally {
-        inFlight = false;
       }
+      inFlight = false;
     };
     void read();
     const interval = window.setInterval(() => {
@@ -89,9 +88,8 @@ export function RemoteAdmissionSettings({
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Request could not be completed.");
-    } finally {
-      setBusy(false);
     }
+    setBusy(false);
   };
   if (!snapshot) return null;
   return (

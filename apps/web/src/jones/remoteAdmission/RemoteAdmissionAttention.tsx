@@ -17,9 +17,8 @@ function Attention({ environmentId }: { readonly environmentId: EnvironmentId })
         if (active && "count" in result) setCount(result.count);
       } catch {
         if (active) setCount(0);
-      } finally {
-        inFlight = false;
       }
+      inFlight = false;
     };
     void refresh();
     const interval = window.setInterval(() => {
