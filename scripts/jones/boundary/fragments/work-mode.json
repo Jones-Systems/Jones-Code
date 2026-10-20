@@ -89,6 +89,10 @@
     {
       "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
       "to": "apps/server/src/jones/workMode/Settlement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RestartContinuation.ts",
+      "to": "apps/server/src/jones/provider/workModePrompt.ts"
     }
   ]
 }
