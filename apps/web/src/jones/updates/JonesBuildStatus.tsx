@@ -1,5 +1,7 @@
 import {
   jonesCandidatePresentation,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdatePresentation,
   shortJonesSource,
   type JonesSourceComparison,
@@ -163,6 +165,9 @@ export function JonesBuildStatus({
   const installedBadge =
     installedComparison === null ? null : INSTALLED_COMPARISON[installedComparison];
   const candidateLabel = candidate?.label ?? "Offered";
+  // A host that follows its laptop takes only the laptop's build; the host refuses others too.
+  const followerHold = jonesFollowerHold(state);
+  const followerSummary = jonesFollowerSummary(state);
 
   const builds = hasBuilds ? (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -252,7 +257,12 @@ export function JonesBuildStatus({
           {state.stagedHandle !== undefined ? (
             <Button
               size={styles.button}
-              disabled={busy || !state.capability.install || state.currentVersion === undefined}
+              disabled={
+                busy ||
+                !state.capability.install ||
+                state.currentVersion === undefined ||
+                followerHold !== undefined
+              }
               onClick={() => {
                 if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
                 onRequest({
@@ -270,7 +280,12 @@ export function JonesBuildStatus({
           ) : provenance !== undefined ? (
             <Button
               size={styles.button}
-              disabled={busy || !state.capability.download || state.phase !== "available"}
+              disabled={
+                busy ||
+                !state.capability.download ||
+                state.phase !== "available" ||
+                followerHold !== undefined
+              }
               onClick={() =>
                 onRequest({
                   action: "download",
@@ -287,6 +302,16 @@ export function JonesBuildStatus({
         {freshness !== "fresh" ? (
           <p role="status" className="text-muted-foreground">
             {freshnessMessage}
+          </p>
+        ) : null}
+        {followerSummary !== undefined ? (
+          <p className="text-muted-foreground">
+            {followerSummary}
+            {followerHold !== undefined &&
+            candidate !== undefined &&
+            state.policy?.leaderSource !== null
+              ? ` · ${candidate.label} build is not the laptop's, so it will not install`
+              : ""}
           </p>
         ) : null}
         {actionError ? (

@@ -98,6 +98,29 @@ could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
 
+## Following hosts
+
+An enrolled service host follows the laptop's committed source, which the desktop
+renderer publishes from its own installed source. The host stores it under
+`runtime/jones-fleet`, bound to the enrollment ID, so re-enrolling discards it and
+the host can still install while the laptop sleeps. The ceiling is enforced in
+`JonesUpdater`, the one path behind HTTP check, download, exact download, Install,
+fleet staging and fleet activation; hiding a button is not the control. Until the
+laptop publishes, manual paths hold, while an older laptop's campaign keeps its
+commit proof as the authority.
+
+The host prepares the laptop's source itself and retires any other unaccepted
+stage first. It does not prefetch an uncommitted laptop build: every retirement
+adds a launcher revocation receipt, and the launcher refuses more than 4,096.
+Automatic activation, including a campaign activation from an older laptop, waits
+for 30 minutes without client input, at least 15 minutes since the previous
+automatic activation, and no work a restart would cut. The activation time is
+recorded before dispatch, and admission is checked again in the capture step just
+before the launcher request. A withdrawal there is a refusal before acceptance and
+leaves the stage ready. A pending request answerable by message survives a restart;
+a live or non-resumable approval does not, and holds activation until a provider
+adapter can declare that a pending approval rebinds to its resumed session.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

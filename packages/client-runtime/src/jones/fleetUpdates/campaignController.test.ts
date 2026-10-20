@@ -363,3 +363,72 @@ it("keeps uncertain native acceptance occupying its host while observing it", as
   expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
   expect(f.state().campaigns[1]?.members[0]?.phase).toBe("waiting");
 });
+
+describe("hosts that follow the laptop themselves", () => {
+  const laptopSource = "d".repeat(40);
+  const followerHost = (f: ReturnType<typeof fixture>, leaderSource: string | null) => {
+    const legacy = f.driver.host.getMockImplementation()!;
+    const leaders: string[] = [];
+    f.driver.host.mockImplementation(async (id, request) => {
+      if (request.action === "leader") {
+        leaders.push(request.input.committedSource);
+        leaderSource = request.input.committedSource;
+      }
+      const status = await legacy(id, request);
+      return { ...status, follower: { protocol: 1, leaderSource, state: "preparing" } };
+    });
+    return leaders;
+  };
+
+  it("publishes the laptop's committed source and stops driving campaigns for them", async () => {
+    const f = fixture(true);
+    const leaders = followerHost(f, null);
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    expect(leaders).toEqual([laptopSource]);
+    expect(f.state().campaigns[0]!.members[0]).toMatchObject({ phase: "superseded" });
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("stage");
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("activate");
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    expect(leaders).toEqual([laptopSource]);
+  });
+
+  it("keeps settling an activation the campaign already dispatched", async () => {
+    const f = fixture(true);
+    followerHost(f, laptopSource);
+    f.setState({
+      ...f.state(),
+      campaigns: f.state().campaigns.map((campaign) => ({
+        ...campaign,
+        members: campaign.members.map((member) => ({ ...member, phase: "reconciling" as const })),
+      })),
+    });
+    f.setOperation({
+      input: {
+        operationId,
+        enrollmentId: enrollment.enrollmentId,
+        environmentId,
+        targetSource: source,
+        expectedInstalledSource: installed,
+      },
+      phase: "committed",
+      continueRunningThreads: false,
+      currentVersion: "preview-old",
+      stagedHandle: "server-handle",
+    });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("committed");
+  });
+
+  it("keeps campaigns when the laptop cannot prove its committed source or the host is older", async () => {
+    const unproven = fixture(true);
+    followerHost(unproven, null);
+    await advanceFleetCampaigns({ ...unproven.driver, committedSource: async () => undefined });
+    expect(unproven.operation()?.phase).toBe("pending");
+    const older = fixture(true);
+    await advanceFleetCampaigns({ ...older.driver, committedSource: async () => laptopSource });
+    expect(older.operation()?.phase).toBe("pending");
+    expect(older.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain(
+      "leader",
+    );
+  });
+});

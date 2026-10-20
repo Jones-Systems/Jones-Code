@@ -132,11 +132,23 @@ that initial host setup is still needed. Enrollment does not replace an existing
 system service or take over an upstream T3 Code installation.
 
 Download the offered laptop update, then choose Install. Enrolled hosts follow
-that exact source only after the laptop successfully switches to it. Servers
-may download ahead of time, but a laptop rollback does not authorize their
-installation. Offline hosts wait until they can be reached; another unavailable
-host does not stop the rest of the rollout. Keep the desktop app running to
-coordinate remaining hosts.
+that exact source only after the laptop successfully switches to it, and never
+move past the laptop. A current host learns the laptop's installed build while
+the desktop app is open, downloads it in the background, and installs it by
+itself once no client has had input for 30 minutes and nothing a restart would
+interrupt is running: turns and delegated tasks, queued messages about to start,
+terminal commands, provider background tasks, and approvals waiting in a live
+provider session. Questions that can still be answered by message after a
+restart, held queues and future scheduled tasks do not hold an update. Automatic
+installs are at least 15 minutes apart, and an install stops before it starts if
+someone begins using the host. Because the host remembers the laptop's build,
+it can finish while the laptop sleeps. Older hosts wait for the desktop app to
+coordinate their rollout, and an offline host updates after it reconnects.
+
+On an enrolled host, Check, Download and Install offer only the laptop's
+installed build, from any client. Install stays off for any other downloaded
+build, including an older one, and a host waits until the laptop has reported
+its build.
 
 The connection row shows each host's progress and any action needed. If the
 connection drops during installation, Jones checks what the host accepted before

@@ -9,6 +9,7 @@ import {
   FleetEnrollmentInput,
   FleetHostError,
   FleetHostStatus,
+  FleetLeaderInput,
   FleetOperationId,
   FleetStageInput,
   FleetRetireInput,
@@ -58,6 +59,12 @@ export function makeFleetUpdatesHttpGroup({
       HttpApiEndpoint.post("activate", `${FLEET_UPDATES_HTTP_BASE}/activate`, {
         ...common,
         payload: FleetActivateInput,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.put("leader", `${FLEET_UPDATES_HTTP_BASE}/leader`, {
+        ...common,
+        payload: FleetLeaderInput,
       }).middleware(EnvironmentAuthenticatedAuth),
     );
 }

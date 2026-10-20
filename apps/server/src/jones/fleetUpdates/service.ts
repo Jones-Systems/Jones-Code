@@ -1,23 +1,43 @@
-import type { JonesUpdateInstallInput, JonesUpdateState } from "@t3tools/contracts";
+// @effect-diagnostics nodeBuiltinImport:off
+// A follower mints UUID v4 operation identifiers for its own stages, like the laptop does.
+import type {
+  JonesUpdateInstallInput,
+  JonesUpdatePolicy,
+  JonesUpdateState,
+} from "@t3tools/contracts";
 import {
   FleetHostError,
   type FleetActivateInput,
   type FleetEnrollment,
   type FleetEnrollmentInput,
+  type FleetFollowerStatus,
   type FleetHostOperation,
   type FleetHostStatus,
+  type FleetLeaderInput,
   type FleetStageInput,
   type FleetRetireInput,
 } from "@t3tools/contracts/jones/fleet-updates";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as NodeCrypto from "node:crypto";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../config.ts";
+import { forkParked } from "../../serverActivation.ts";
 import { JonesUpdates } from "../updates/service.ts";
-import { createFleetHostStore, type FleetHostStore } from "./store.ts";
+import {
+  QUIET_INPUT_IDLE_MS,
+  automaticActivationDecision,
+  type AutomaticActivationDecision,
+} from "../updates/followerPolicy.ts";
+import { makeFleetQuietSignals, type FleetQuietSignals } from "./quietSignals.ts";
+import { createFleetHostStore, type FleetFollowerRecord, type FleetHostStore } from "./store.ts";
 
 type NativeBinding = {
   readonly environmentId: string;
@@ -38,6 +58,7 @@ export interface FleetHostUpdater {
       readonly operationId: string;
       readonly targetSource: string;
       readonly expectedInstalledSource: string;
+      readonly admit?: () => Promise<string | undefined>;
     },
   ) => Effect.Effect<JonesUpdateState>;
   readonly retireStagedOperation: (
@@ -50,6 +71,7 @@ export interface FleetHostUpdater {
     readonly updateId?: string;
     readonly reason?: string;
   }>;
+  readonly refreshPolicy: Effect.Effect<JonesUpdatePolicy | undefined>;
 }
 
 export class FleetUpdates extends Context.Service<
@@ -64,8 +86,16 @@ export class FleetUpdates extends Context.Service<
     readonly activate: (
       input: FleetActivateInput,
     ) => Effect.Effect<FleetHostStatus, FleetHostError>;
+    /** Records the laptop's committed source; a following host prepares and installs it itself. */
+    readonly leader: (input: FleetLeaderInput) => Effect.Effect<FleetHostStatus, FleetHostError>;
+    /** One pass of the following host's own updater; the layer runs it every minute. */
+    readonly follow: Effect.Effect<void>;
   }
 >()("t3/jones/fleetUpdates/service/FleetUpdates") {}
+
+/** A failed preparation is retried after this long, unless the laptop's source changes. */
+export const FOLLOWER_STAGE_RETRY_MS = 15 * 60_000;
+const FOLLOWER_PASS_INTERVAL = "60 seconds";
 
 const fail = (reason: FleetHostError["reason"], message: string) =>
   new FleetHostError({ reason, message });
@@ -98,17 +128,43 @@ const nativeMatches = (operation: FleetHostOperation, binding: NativeBinding | u
   binding.expectedInstalledSource === operation.input.expectedInstalledSource &&
   binding.targetSource === operation.input.targetSource &&
   binding.stagedHandle === operation.stagedHandle;
+const emptyFollower: FleetFollowerRecord = {
+  schema: 1,
+  leader: null,
+  operation: null,
+  lastAutomaticActivationAt: null,
+};
+const epoch = (iso: string | null | undefined) =>
+  iso === null || iso === undefined
+    ? null
+    : Option.match(DateTime.make(iso), {
+        onNone: () => null,
+        onSome: DateTime.toEpochMillis,
+      });
+const isoAt = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
 
 export const makeFleetUpdates = (options: {
   readonly environmentId: FleetHostStatus["environmentId"];
   readonly serviceMode: boolean;
   readonly store: FleetHostStore;
   readonly updates: FleetHostUpdater;
+  readonly quiet: FleetQuietSignals;
+  readonly operationId?: () => string;
+  /** Offered when the follower should run its next pass now. */
+  readonly wakeups?: Queue.Queue<void>;
 }) =>
   Effect.gen(function* () {
-    const { environmentId, store, updates } = options;
+    const { environmentId, store, updates, quiet } = options;
+    const newOperationId = options.operationId ?? (() => NodeCrypto.randomUUID());
     const gate = yield* Semaphore.make(1);
+    const wakeups = options.wakeups ?? (yield* Queue.sliding<void>(1));
+    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
     const activeNative = new Set<string>();
+    /** The follower's latest evaluation; status reads never repeat its work. */
+    let followerView: FleetFollowerStatus | undefined;
+    const stageAttempts = new Map<string, number>();
+    /** One retirement identity per foreign stage, so a retry repeats the same launcher binding. */
+    const retirements = new Map<string, { readonly operationId: string; readonly at: number }>();
     const requireEnrollment = (input: { environmentId: string; enrollmentId: string }) =>
       Effect.gen(function* () {
         if (input.environmentId !== environmentId)
@@ -181,11 +237,36 @@ export const makeFleetUpdates = (options: {
           ...(native.reason === undefined ? {} : { reason: native.reason }),
         });
       });
+    /** The current follower view, or a first one built from the durable record alone. */
+    const followerStatus = (enrollment: FleetEnrollment | null) =>
+      Effect.gen(function* () {
+        if (
+          !options.serviceMode ||
+          enrollment === null ||
+          !enrollment.enabled ||
+          enrollment.environmentId !== environmentId
+        )
+          return undefined;
+        if (followerView !== undefined) return followerView;
+        const leader = (yield* storage(store.readFollower))?.leader;
+        const leaderSource =
+          leader?.enrollmentId === enrollment.enrollmentId ? leader.committedSource : null;
+        return {
+          protocol: 1,
+          leaderSource,
+          state: leaderSource === null ? "waiting-for-leader" : "preparing",
+          reason:
+            leaderSource === null
+              ? "Waiting for the laptop to report its installed build."
+              : "Checking the laptop's installed build.",
+        } satisfies FleetFollowerStatus;
+      });
     const status = (operationId?: string) =>
       Effect.gen(function* () {
         const enrollment = yield* storage(store.readEnrollment);
         const operation =
           operationId === undefined ? null : yield* storage(() => store.readOperation(operationId));
+        const follower = yield* followerStatus(enrollment);
         return {
           operationProtocol:
             options.serviceMode && updates.fleetOperationsSupported ? (1 as const) : null,
@@ -193,6 +274,7 @@ export const makeFleetUpdates = (options: {
           enrollment,
           operation: operation === null ? null : yield* reconcile(operation),
           update: yield* updates.state(),
+          ...(follower === undefined ? {} : { follower }),
         } satisfies FleetHostStatus;
       });
     const enroll = (input: FleetEnrollmentInput) =>
@@ -214,7 +296,7 @@ export const makeFleetUpdates = (options: {
             "This host needs explicit source-qualified service setup before enrollment.",
           );
         }
-        yield* storage(() =>
+        const saved = yield* storage(() =>
           store.editEnrollment((old) => {
             if (old !== null && sameEnrollment(old, input.enrollment)) return old;
             if ((old?.enrollmentId ?? null) !== input.expectedEnrollmentId)
@@ -222,6 +304,10 @@ export const makeFleetUpdates = (options: {
             return input.enrollment;
           }),
         );
+        if (followerView !== undefined && saved.enrollmentId !== input.expectedEnrollmentId)
+          followerView = undefined;
+        yield* updates.refreshPolicy;
+        yield* Queue.offer(wakeups, undefined);
         return yield* status();
       });
     const stage = (input: FleetStageInput) =>
@@ -361,6 +447,87 @@ export const makeFleetUpdates = (options: {
         });
         return yield* status(input.operationId);
       });
+    /**
+     * Whether an automatic activation may start. The durable work snapshot is read only once the
+     * cheap signals allow it. Admission just before the handoff ignores spacing, which the
+     * activation itself has just recorded.
+     */
+    const quietDecision = (lastAutomaticActivationAt: number | null) =>
+      Effect.gen(function* () {
+        const base = {
+          now: yield* Clock.currentTimeMillis,
+          lastInputAt: yield* quiet.lastInputAt,
+          runningTerminals: yield* quiet.runningTerminals,
+          lastAutomaticActivationAt,
+        };
+        const cheap = automaticActivationDecision(base);
+        if (cheap.ready || cheap.blockers.length > 0 || cheap.notBefore !== undefined) return cheap;
+        return automaticActivationDecision({ ...base, work: yield* quiet.work });
+      });
+    const admit = () =>
+      runPromise(
+        quietDecision(null).pipe(
+          Effect.map((decision) => (decision.ready ? undefined : decision.reason)),
+        ),
+      );
+    /** Holds an automatic activation until a quiet window, or records it before dispatch. */
+    const claimAutomaticActivation = Effect.gen(function* () {
+      const record = yield* storage(store.readFollower);
+      const decision = yield* quietDecision(epoch(record?.lastAutomaticActivationAt));
+      if (!decision.ready) return decision;
+      const now = isoAt(yield* Clock.currentTimeMillis);
+      yield* storage(() =>
+        store.editFollower((old) => ({
+          ...(old ?? emptyFollower),
+          lastAutomaticActivationAt: now,
+        })),
+      );
+      return decision;
+    });
+    /** Dispatches one staged operation. The caller has already admitted it. */
+    const dispatch = (selectedOperation: FleetHostOperation) =>
+      Effect.gen(function* () {
+        const operationId = selectedOperation.input.operationId;
+        let operation = yield* save({ ...selectedOperation, phase: "dispatching" });
+        if (operation.phase !== "dispatching") return;
+        const selected = operation;
+        // Status reads remain available while preparation runs, but cannot turn the
+        // reservation-before-state interval of this invocation into a terminal result.
+        activeNative.add(operationId);
+        const result = yield* updates
+          .installForOperation({
+            operationId,
+            environmentId,
+            currentVersion: selected.currentVersion,
+            stagedHandle: selected.stagedHandle!,
+            targetSource: selected.input.targetSource,
+            expectedInstalledSource: selected.input.expectedInstalledSource,
+            continueRunningThreads: selected.continueRunningThreads,
+            admit,
+          })
+          .pipe(Effect.ensuring(Effect.sync(() => activeNative.delete(operationId))));
+        operation = yield* reconcile(selected);
+        // A withdrawn activation leaves the stage ready, like a refusal before acceptance.
+        if (
+          operation.phase === "dispatching" &&
+          ["blocked", "error", "staged"].includes(result.phase)
+        ) {
+          const current = yield* updates.state();
+          const bindingStillValid =
+            current?.environmentId === environmentId &&
+            current.currentVersion === selected.currentVersion &&
+            current.installedSource?.sha === selected.input.expectedInstalledSource &&
+            current.stagedHandle === selected.stagedHandle &&
+            current.provenance?.sourceSha === selected.input.targetSource;
+          yield* save({
+            ...operation,
+            phase: bindingStillValid ? "install-blocked" : "blocked",
+            reason:
+              result.message ??
+              "The launcher refused preparation before native acceptance. Refresh the selected host before retrying.",
+          });
+        }
+      });
     const activate = (input: FleetActivateInput) =>
       Effect.gen(function* () {
         const enrollment = yield* requireEnrollment(input);
@@ -384,48 +551,262 @@ export const makeFleetUpdates = (options: {
           );
         if (operation.stagedHandle === undefined)
           return yield* fail("binding", "The selected operation has no staged artifact.");
-        operation = yield* save({ ...operation, phase: "dispatching" });
-        if (operation.phase !== "dispatching") return yield* status(input.operationId);
-        const selected = operation;
-        // Status reads remain available while preparation runs, but cannot turn the
-        // reservation-before-state interval of this invocation into a terminal result.
-        activeNative.add(input.operationId);
-        const result = yield* updates
-          .installForOperation({
-            operationId: input.operationId,
-            environmentId,
-            currentVersion: selected.currentVersion,
-            stagedHandle: selected.stagedHandle!,
-            targetSource: selected.input.targetSource,
-            expectedInstalledSource: selected.input.expectedInstalledSource,
-            continueRunningThreads: selected.continueRunningThreads,
-          })
-          .pipe(Effect.ensuring(Effect.sync(() => activeNative.delete(input.operationId))));
-        operation = yield* reconcile(selected);
-        if (operation.phase === "dispatching" && ["blocked", "error"].includes(result.phase)) {
-          const current = yield* updates.state();
-          const bindingStillValid =
-            current?.environmentId === environmentId &&
-            current.currentVersion === selected.currentVersion &&
-            current.installedSource?.sha === selected.input.expectedInstalledSource &&
-            current.stagedHandle === selected.stagedHandle &&
-            current.provenance?.sourceSha === selected.input.targetSource;
-          yield* save({
-            ...operation,
-            phase: bindingStillValid ? "install-blocked" : "blocked",
-            reason:
-              result.message ??
-              "The launcher refused preparation before native acceptance. Refresh the selected host before retrying.",
-          });
+        // The laptop's campaigns activate without a person at this host, so they wait for the
+        // same quiet window as the host's own automatic updates.
+        const decision = yield* claimAutomaticActivation;
+        if (!decision.ready) {
+          yield* save({ ...operation, phase: "install-blocked", reason: decision.reason });
+          return yield* status(input.operationId);
         }
+        yield* dispatch(operation);
         return yield* status(input.operationId);
       });
+    const leader = (input: FleetLeaderInput) =>
+      Effect.gen(function* () {
+        yield* requireEnrollment(input);
+        if (!options.serviceMode)
+          return yield* fail("binding", "Only a service host follows a laptop.");
+        const current = yield* storage(store.readFollower);
+        if (
+          current?.leader?.enrollmentId !== input.enrollmentId ||
+          current.leader.committedSource !== input.committedSource
+        ) {
+          const publishedAt = isoAt(yield* Clock.currentTimeMillis);
+          yield* storage(() =>
+            store.editFollower((old) => ({
+              ...(old ?? emptyFollower),
+              leader: {
+                enrollmentId: input.enrollmentId,
+                committedSource: input.committedSource,
+                publishedAt,
+              },
+            })),
+          );
+          followerView = undefined;
+          yield* updates.refreshPolicy;
+          yield* Queue.offer(wakeups, undefined);
+        }
+        return yield* status();
+      });
+
+    const quietView = (decision: AutomaticActivationDecision, now: number) => ({
+      inputIdleMs: decision.inputIdleMs,
+      requiredInputIdleMs: QUIET_INPUT_IDLE_MS,
+      blockers: decision.blockers,
+      evaluatedAt: isoAt(now),
+    });
+    /**
+     * One pass of a following host: catch up to exactly the laptop's committed source. A different
+     * unaccepted stage is retired first (latest wins). Preparation is automatic; activation waits
+     * for a quiet window and keeps automatic activations apart.
+     */
+    const followOnce = Effect.gen(function* () {
+      const enrollment = yield* storage(store.readEnrollment);
+      if (
+        !options.serviceMode ||
+        enrollment === null ||
+        !enrollment.enabled ||
+        enrollment.environmentId !== environmentId
+      ) {
+        followerView = undefined;
+        return;
+      }
+      yield* updates.refreshPolicy;
+      const record = (yield* storage(store.readFollower)) ?? emptyFollower;
+      const leaderRecord =
+        record.leader?.enrollmentId === enrollment.enrollmentId ? record.leader : null;
+      const base = {
+        protocol: 1 as const,
+        leaderSource: leaderRecord?.committedSource ?? null,
+        ...(leaderRecord === null ? {} : { leaderPublishedAt: leaderRecord.publishedAt }),
+      };
+      const show = (view: Omit<FleetFollowerStatus, keyof typeof base>) => {
+        followerView = { ...base, ...view };
+      };
+      if (!updates.fleetOperationsSupported)
+        return show({
+          state: "unavailable",
+          reason: "This host's launcher cannot run automatic updates.",
+        });
+      if (leaderRecord === null)
+        return show({
+          state: "waiting-for-leader",
+          reason: "Waiting for the laptop to report its installed build.",
+        });
+      const target = leaderRecord.committedSource;
+      const update = yield* updates.state();
+      const installed = update?.installedSource?.sha;
+      if (
+        update === null ||
+        update.environmentId !== environmentId ||
+        update.currentVersion === undefined ||
+        installed === undefined
+      )
+        return show({ state: "unavailable", reason: "This host's installed build is unknown." });
+
+      const own = record.operation;
+      let operation =
+        own === null ? null : yield* storage(() => store.readOperation(own.operationId));
+      if (operation !== null) operation = yield* reconcile(operation);
+      if (operation !== null && ["dispatching", "pending"].includes(operation.phase))
+        return show({
+          state: "activating",
+          operationId: operation.input.operationId,
+          reason: "Installing the laptop's build.",
+        });
+      if (operation?.phase === "reconciling")
+        return show({
+          state: "reconciling",
+          operationId: operation.input.operationId,
+          reason: operation.reason ?? "The last automatic update needs reconciliation.",
+        });
+      if (installed === target) return show({ state: "current" });
+      if (update.phase === "preparing" || update.phase === "installing")
+        return show({ state: "activating", reason: "An installation is already running." });
+
+      const intended =
+        operation !== null &&
+        operation.input.enrollmentId === enrollment.enrollmentId &&
+        operation.input.targetSource === target &&
+        operation.input.expectedInstalledSource === installed &&
+        operation.continueRunningThreads === enrollment.continueRunningThreads &&
+        !["blocked", "superseded"].includes(operation.phase)
+          ? operation
+          : null;
+      if (intended !== null && ["rolled-back", "committed"].includes(intended.phase))
+        return show({
+          state: "prepare-blocked",
+          operationId: intended.input.operationId,
+          reason:
+            intended.phase === "rolled-back"
+              ? "The laptop's build rolled back on this host. It waits for another laptop build or a manual Install."
+              : (intended.reason ?? "The last automatic update for this build did not complete."),
+        });
+
+      // Latest wins: an unaccepted stage of any other source gives way to the laptop's build.
+      const now = yield* Clock.currentTimeMillis;
+      const stagedSource = update.provenance?.sourceSha;
+      if (update.stagedHandle !== undefined && stagedSource !== target) {
+        if (stagedSource === undefined)
+          return show({ state: "prepare-blocked", reason: "Another staged build has no source." });
+        const previous = retirements.get(update.stagedHandle);
+        if (previous !== undefined && now < previous.at + FOLLOWER_STAGE_RETRY_MS)
+          return show({
+            state: "prepare-blocked",
+            reason: "Another staged build could not be retired yet.",
+            notBefore: isoAt(previous.at + FOLLOWER_STAGE_RETRY_MS),
+          });
+        const retirement = { operationId: previous?.operationId ?? newOperationId(), at: now };
+        retirements.set(update.stagedHandle, retirement);
+        const retired = yield* updates.retireStagedOperation({
+          operationId: retirement.operationId,
+          environmentId,
+          currentVersion: update.currentVersion,
+          expectedInstalledSource: installed,
+          targetSource: stagedSource,
+          stagedHandle: update.stagedHandle,
+        });
+        if (!retired.retired)
+          return show({
+            state: "prepare-blocked",
+            reason: retired.reason ?? "Another staged build could not be retired.",
+            notBefore: isoAt(now + FOLLOWER_STAGE_RETRY_MS),
+          });
+        retirements.delete(update.stagedHandle);
+      }
+
+      const input: FleetStageInput = {
+        operationId: intended?.input.operationId ?? newOperationId(),
+        enrollmentId: enrollment.enrollmentId,
+        environmentId,
+        targetSource: target,
+        expectedInstalledSource: installed,
+      };
+      if (intended === null)
+        yield* storage(() =>
+          store.editFollower((old) => ({
+            ...(old ?? emptyFollower),
+            operation: {
+              operationId: input.operationId,
+              targetSource: target,
+              expectedInstalledSource: installed,
+            },
+          })),
+        );
+      if (intended === null || ["staging", "stage-blocked"].includes(intended.phase)) {
+        const attempted = stageAttempts.get(target);
+        if (
+          intended?.phase === "stage-blocked" &&
+          attempted !== undefined &&
+          now < attempted + FOLLOWER_STAGE_RETRY_MS
+        )
+          return show({
+            state: "prepare-blocked",
+            operationId: input.operationId,
+            reason: intended.reason ?? "The laptop's build could not be prepared.",
+            notBefore: isoAt(attempted + FOLLOWER_STAGE_RETRY_MS),
+          });
+        stageAttempts.set(target, now);
+        show({ state: "preparing", operationId: input.operationId });
+        const staged = yield* stage(input).pipe(Effect.result);
+        if (staged._tag === "Failure")
+          return show({
+            state: "prepare-blocked",
+            operationId: input.operationId,
+            reason: staged.failure.message,
+          });
+        operation = staged.success.operation;
+      } else {
+        operation = intended;
+      }
+      if (operation === null || !["staged", "install-blocked"].includes(operation.phase))
+        return show({
+          state: "prepare-blocked",
+          operationId: input.operationId,
+          reason: operation?.reason ?? "The laptop's build could not be prepared.",
+        });
+
+      const decision = yield* claimAutomaticActivation;
+      if (!decision.ready)
+        return show({
+          state: "waiting-for-quiet",
+          operationId: input.operationId,
+          reason: decision.reason,
+          quiet: quietView(decision, now),
+          ...(decision.notBefore === undefined ? {} : { notBefore: isoAt(decision.notBefore) }),
+        });
+      show({
+        state: "activating",
+        operationId: input.operationId,
+        quiet: quietView(decision, now),
+      });
+      yield* dispatch(operation);
+      const settled = yield* storage(() => store.readOperation(input.operationId));
+      if (settled?.phase === "install-blocked")
+        show({
+          state: "waiting-for-quiet",
+          operationId: input.operationId,
+          reason: settled.reason ?? "The automatic update was withdrawn before it started.",
+        });
+    });
+    const follow = gate
+      .withPermits(1)(followOnce)
+      .pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            if (followerView !== undefined)
+              followerView = { ...followerView, state: "unavailable", reason: error.message };
+          }),
+        ),
+      );
     return FleetUpdates.of({
       status,
       enroll: (input) => gate.withPermits(1)(enroll(input)),
       stage: (input) => gate.withPermits(1)(stage(input)),
       retire: (input) => gate.withPermits(1)(retire(input)),
       activate: (input) => gate.withPermits(1)(activate(input)),
+      leader,
+      follow,
     });
   });
 
@@ -435,11 +816,25 @@ export const layer = Layer.effect(
     const config = yield* ServerConfig;
     const environment = yield* ServerEnvironment;
     const updates = yield* JonesUpdates;
-    return yield* makeFleetUpdates({
+    const serviceMode = config.mode !== "desktop";
+    const wakeups = yield* Queue.sliding<void>(1);
+    const fleet = yield* makeFleetUpdates({
+      wakeups,
       environmentId: yield* environment.getEnvironmentId,
-      serviceMode: config.mode !== "desktop",
+      serviceMode,
       store: createFleetHostStore(config.baseDir),
       updates,
+      quiet: yield* makeFleetQuietSignals,
     });
+    if (serviceMode && updates.fleetOperationsSupported)
+      yield* forkParked(
+        fleet.follow.pipe(
+          Effect.andThen(
+            Effect.raceFirst(Effect.sleep(FOLLOWER_PASS_INTERVAL), Queue.take(wakeups)),
+          ),
+          Effect.forever,
+        ),
+      );
+    return fleet;
   }),
 );

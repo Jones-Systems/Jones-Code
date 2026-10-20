@@ -3,6 +3,7 @@
 import {
   ThreadId,
   EnvironmentId,
+  type JonesUpdatePolicy,
   type JonesUpdateState,
   type JonesUpdateDownloadInput,
   type JonesUpdateExactInput,
@@ -41,6 +42,8 @@ import {
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
+import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
+import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
@@ -68,12 +71,19 @@ export class JonesUpdates extends Context.Service<
         readonly operationId: string;
         readonly targetSource: string;
         readonly expectedInstalledSource: string;
+        /** Rechecked just before the launcher handoff; a reason withdraws the activation. */
+        readonly admit?: () => Promise<string | undefined>;
       },
     ) => Effect.Effect<JonesUpdateState>;
     readonly retireStagedOperation: (
       input: JonesStagedRetirementInput,
     ) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
     readonly reconcileOperation: (operationId: string) => Effect.Effect<OperationReconciliation>;
+    /**
+     * Rereads this host's fleet enrollment and its laptop's published source, and applies them to
+     * every update entrypoint. A host that selects its own builds has no policy.
+     */
+    readonly refreshPolicy: Effect.Effect<JonesUpdatePolicy | undefined>;
   }
 >()("t3/jones/updates/service/JonesUpdates") {}
 
@@ -117,6 +127,7 @@ export const layer = Layer.effect(
             tree: runtimeReceipt.sourceTree,
           };
     const unsupportedOperations = {
+      refreshPolicy: Effect.succeed(undefined),
       retireStagedOperation: () =>
         Effect.succeed({
           retired: false,
@@ -556,21 +567,25 @@ export const layer = Layer.effect(
                         reason: "Planned update continuity is not configured.",
                       }),
                     )
-                  : startup
-                      .capturePlannedUpdate({
-                        operationId,
-                        binding: operationBinding(staged),
-                        continueRunningThreads: input.continueRunningThreads === true,
-                      })
-                      .pipe(
-                        Effect.mapError(
-                          (cause) =>
-                            new ServerSelfUpdateError({
-                              reason: "Could not capture planned update continuity.",
-                              cause,
-                            }),
-                        ),
+                  : admitted(input.admit).pipe(
+                      Effect.andThen(
+                        startup
+                          .capturePlannedUpdate({
+                            operationId,
+                            binding: operationBinding(staged),
+                            continueRunningThreads: input.continueRunningThreads === true,
+                          })
+                          .pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ServerSelfUpdateError({
+                                  reason: "Could not capture planned update continuity.",
+                                  cause,
+                                }),
+                            ),
+                          ),
                       ),
+                    ),
             (step) => Effect.sync(() => reportStep?.(step)),
           ),
         );
@@ -582,6 +597,39 @@ export const layer = Layer.effect(
         };
       },
     });
+    const fleetStore = createFleetHostStore(config.baseDir);
+    const readPolicy = async (): Promise<JonesUpdatePolicy | undefined> => {
+      const enrollment = await fleetStore.readEnrollment();
+      if (enrollment === null || !enrollment.enabled || enrollment.environmentId !== environmentId)
+        return undefined;
+      const leader = (await fleetStore.readFollower())?.leader;
+      return {
+        role: "follower",
+        leaderSource:
+          leader !== null && leader !== undefined && leader.enrollmentId === enrollment.enrollmentId
+            ? leader.committedSource
+            : null,
+      };
+    };
+    const refreshPolicy = Effect.tryPromise(readPolicy).pipe(
+      Effect.map((policy) => updater.setPolicy(policy).policy),
+      // An unreadable enrollment may be a follower's, so the host holds until it can read it.
+      Effect.catch((cause) =>
+        Effect.logWarning("Fleet enrollment is unreadable; Jones updates hold until it reads.", {
+          cause: cause.cause instanceof Error ? cause.cause.message : String(cause.cause),
+        }).pipe(
+          Effect.andThen(
+            Effect.sync(
+              () =>
+                updater.setPolicy(
+                  updater.snapshot().policy ?? { role: "follower", leaderSource: null },
+                ).policy,
+            ),
+          ),
+        ),
+      ),
+    );
+    yield* refreshPolicy;
     publishCapability(updater.snapshot());
     yield* Effect.promise(() => capabilityWrites.catch(() => {}));
     yield* Effect.sleep("15 seconds").pipe(
@@ -627,9 +675,10 @@ export const layer = Layer.effect(
           return blocked(
             "The installed source, staged source, or operation-capable launcher changed.",
           );
-        return yield* Effect.promise(() => updater.install(input));
+        return yield* Effect.promise(() => updater.install({ ...input, origin: "fleet" }));
       });
     return JonesUpdates.of({
+      refreshPolicy,
       retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
       fleetOperationsSupported:
         launcher.managed &&
@@ -641,7 +690,7 @@ export const layer = Layer.effect(
         isUpdateOperationId(input.operationId) &&
         launcher.qualifiedOperations === true &&
         launcher.qualifiedRetirement === true
-          ? Effect.promise(() => updater.stageExact(input.targetSource))
+          ? Effect.promise(() => updater.stageExact(input.targetSource, "fleet"))
           : Effect.succeed(
               blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
             ),
@@ -672,13 +721,32 @@ export const layer = Layer.effect(
       download: (input) => Effect.promise(() => updater.download(input)),
       downloadExact: (input) =>
         updater.snapshot().capability.download
-          ? Effect.promise(() => updater.stageExact(input.targetSource))
+          ? Effect.promise(() => updater.stageExact(input.targetSource, "manual"))
           : Effect.succeed({
               ...updater.snapshot(),
               phase: "blocked" as const,
               message: "Exact-source download is unavailable on this host.",
             }),
-      install: (input) => Effect.promise(() => updater.install(input)),
+      install: (input) => Effect.promise(() => updater.install({ ...input, origin: "manual" })),
     });
   }),
 );
+
+/** Fails before the launcher is asked when an automatic activation is no longer admitted. */
+function admitted(admit: (() => Promise<string | undefined>) | undefined) {
+  if (admit === undefined) return Effect.void;
+  return Effect.promise(() =>
+    admit().catch(() => "Running work on this host could not be read."),
+  ).pipe(
+    Effect.flatMap((reason) =>
+      reason === undefined
+        ? Effect.void
+        : Effect.fail(
+            new ServerSelfUpdateError({
+              reason: `The automatic update was withdrawn: ${reason}`,
+              cause: new AutomaticActivationWithdrawn(reason),
+            }),
+          ),
+    ),
+  );
+}

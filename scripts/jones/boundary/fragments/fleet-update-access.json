@@ -29,7 +29,14 @@
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
-    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx"
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
+    "apps/server/src/jones/fleetUpdates/quietSignals.ts",
+    "apps/server/src/jones/updates/followerPolicy.ts",
+    "apps/server/src/jones/updates/followerPolicy.test.ts",
+    "apps/server/src/jones/updates/hostWork.ts",
+    "apps/server/src/jones/updates/hostWork.test.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.test.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],

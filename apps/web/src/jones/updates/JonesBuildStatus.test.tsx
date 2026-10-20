@@ -238,3 +238,30 @@ describe("Jones build status", () => {
     expect(container.textContent).toBe("Update status is waiting for a connection.");
   });
 });
+
+describe("a host that follows its laptop", () => {
+  const staged = (sourceSha: string, leaderSource: string | null) =>
+    ({
+      ...available,
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: { ...available.provenance!, sourceSha },
+      policy: { role: "follower", leaderSource },
+    }) as JonesUpdateState;
+
+  it("offers Install only for the laptop's installed build", async () => {
+    await render({ state: staged(offeredSha, offeredSha) });
+    expect(buttonNamed("Install").disabled).toBe(false);
+    expect(container.textContent).toContain("Follows its laptop · takes only source 0368cbb");
+
+    await render({ state: staged(offeredSha, installedSha) });
+    expect(buttonNamed("Install").disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "Downloaded build is not the laptop's, so it will not install",
+    );
+
+    await render({ state: staged(offeredSha, null) });
+    expect(buttonNamed("Install").disabled).toBe(true);
+    expect(container.textContent).toContain("waiting for the laptop's installed build");
+  });
+});

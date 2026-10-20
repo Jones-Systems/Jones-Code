@@ -61,12 +61,71 @@ export const FleetHostOperation = Schema.Struct({
   reason: Schema.optionalKey(Schema.String),
 });
 export type FleetHostOperation = typeof FleetHostOperation.Type;
+/** The laptop's committed source, published to a host enrolled to follow it. */
+export const FleetLeaderInput = Schema.Struct({
+  enrollmentId: FleetOperationId,
+  environmentId: EnvironmentId,
+  committedSource: FleetSourceSha,
+});
+export type FleetLeaderInput = typeof FleetLeaderInput.Type;
+
+/** Work that a restart would cut or lose, so an automatic activation waits for it. */
+export const FleetFollowerBlocker = Schema.Struct({
+  kind: Schema.Literals([
+    "terminal",
+    "run",
+    "queued-run",
+    "process-effect",
+    "background-task",
+    "approval",
+    "tool-call",
+    "unknown",
+  ]),
+  count: Schema.Number,
+});
+export type FleetFollowerBlocker = typeof FleetFollowerBlocker.Type;
+
+/**
+ * A host that follows the laptop prepares and activates the laptop's committed source itself.
+ * Activation waits for a quiet window: no recent input from any client and no work a restart
+ * would cut. Older hosts omit this and are driven by the laptop's campaigns.
+ */
+export const FleetFollowerStatus = Schema.Struct({
+  protocol: Schema.Literal(1),
+  leaderSource: Schema.NullOr(FleetSourceSha),
+  leaderPublishedAt: Schema.optionalKey(Schema.String),
+  state: Schema.Literals([
+    "unavailable",
+    "waiting-for-leader",
+    "current",
+    "preparing",
+    "prepare-blocked",
+    "waiting-for-quiet",
+    "activating",
+    "reconciling",
+  ]),
+  reason: Schema.optionalKey(Schema.String),
+  quiet: Schema.optionalKey(
+    Schema.Struct({
+      inputIdleMs: Schema.Number,
+      requiredInputIdleMs: Schema.Number,
+      blockers: Schema.Array(FleetFollowerBlocker),
+      evaluatedAt: Schema.String,
+    }),
+  ),
+  /** The earliest time the next automatic activation may start. */
+  notBefore: Schema.optionalKey(Schema.String),
+  operationId: Schema.optionalKey(FleetOperationId),
+});
+export type FleetFollowerStatus = typeof FleetFollowerStatus.Type;
+
 export const FleetHostStatus = Schema.Struct({
   operationProtocol: Schema.NullOr(Schema.Literal(1)),
   environmentId: EnvironmentId,
   enrollment: Schema.NullOr(FleetEnrollment),
   operation: Schema.NullOr(FleetHostOperation),
   update: Schema.NullOr(JonesUpdateState),
+  follower: Schema.optionalKey(FleetFollowerStatus),
 });
 export type FleetHostStatus = typeof FleetHostStatus.Type;
 

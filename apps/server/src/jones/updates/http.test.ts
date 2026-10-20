@@ -159,6 +159,7 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     });
   const service = Layer.succeed(JonesUpdates.JonesUpdates, {
     fleetOperationsSupported: false,
+    refreshPolicy: Effect.succeed(undefined),
     retireStagedOperation: () => Effect.succeed({ retired: false }),
     state: (after) => record("state", after),
     check: record("check"),

@@ -7,6 +7,7 @@ import type {
   JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesUpdaterHost } from "./JonesUpdater.ts";
+import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
 const candidate: JonesActionsCandidate = {
   schema: 1,
@@ -677,4 +678,122 @@ it("rechecks install guards after the in-flight check settles", async () => {
   await check;
   expect((await install).message).toContain("does not match");
   expect(f.effects).toEqual(["stage"]);
+});
+
+describe("follower policy on the host updater", () => {
+  const environmentId = EnvironmentId.make("fixture");
+  const currentVersion = "0.0.0-preview.20261002.1";
+  const leader = candidate.source;
+  const other = "f".repeat(40);
+  function follower(overrides: Partial<JonesUpdaterHost> = {}) {
+    const checks: Array<string | undefined> = [];
+    const installs: string[] = [];
+    let offered = candidate;
+    const updater = new JonesUpdater(
+      {
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          environmentId,
+          currentVersion,
+          capability: { check: true, download: true, install: true },
+        },
+        installedSource: async () => "a".repeat(40),
+        platform: "linux",
+        architecture: "x64",
+        cacheRoot: "fixture",
+        stage: async () => ({ stagedHandle: "fixed-handle", version: offered.version }),
+        install: async (request) => {
+          installs.push(request.stagedHandle);
+        },
+        ...overrides,
+      },
+      {
+        check: async (input): Promise<JonesActionsCheckResult> => {
+          checks.push(input.targetSource);
+          return { state: "available", candidate: offered };
+        },
+        stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
+      },
+    );
+    return {
+      updater,
+      checks,
+      installs,
+      offer: (source: string) => {
+        offered = { ...candidate, source, artifactId: candidate.artifactId + 1 };
+      },
+    };
+  }
+  const install = { stagedHandle: "fixed-handle", environmentId, currentVersion };
+
+  it("holds every manual path until the laptop reports its installed build", async () => {
+    const f = follower();
+    await f.updater.check();
+    expect(f.updater.snapshot().phase).toBe("available");
+    const held = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(held).toMatchObject({ phase: "no-new", policy: { leaderSource: null } });
+    expect(held.provenance).toBeUndefined();
+    expect((await f.updater.check()).message).toContain("Waiting for the laptop");
+    expect(f.checks).toEqual([undefined]);
+    const download = await f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: leader,
+    });
+    expect(download.phase).toBe("blocked");
+    expect(f.updater.snapshot().phase).toBe("no-new");
+    expect((await f.updater.stageExact(leader, "manual")).phase).toBe("blocked");
+    // An older laptop's campaign keeps its commit proof as the authority.
+    expect((await f.updater.stageExact(leader, "fleet")).stagedHandle).toBe("fixed-handle");
+    expect((await f.updater.install(install)).message).toContain("waits for the laptop");
+    expect(f.installs).toEqual([]);
+  });
+
+  it("offers, stages and installs only the laptop's committed source", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    await f.updater.check();
+    expect(f.checks).toEqual([leader]);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(leader);
+    expect((await f.updater.stageExact(other, "fleet")).message).toContain("bbbbbbb");
+    expect((await f.updater.stageExact(other, "manual")).message).toContain("bbbbbbb");
+    expect((await f.updater.stageExact(leader, "manual")).stagedHandle).toBe("fixed-handle");
+    expect((await f.updater.install(install)).phase).toBe("installing");
+    expect(f.installs).toEqual(["fixed-handle"]);
+  });
+
+  it("refuses a staged build that is not the laptop's current build, even an older one", async () => {
+    const f = follower();
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy({ role: "follower", leaderSource: other });
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+    for (const origin of ["manual", "fleet"] as const) {
+      const refused = await f.updater.install({ ...install, origin });
+      expect(refused).toMatchObject({ phase: "blocked" });
+      expect(refused.message).toContain("fffffff");
+    }
+    expect(f.installs).toEqual([]);
+    expect(f.updater.snapshot().phase).toBe("staged");
+  });
+
+  it("keeps the stage ready when an automatic activation is withdrawn before the handoff", async () => {
+    let withdraw = true;
+    const f = follower({
+      install: async () => {
+        if (!withdraw) return;
+        withdraw = false;
+        throw new Error("launcher not contacted", {
+          cause: new AutomaticActivationWithdrawn("Input arrived."),
+        });
+      },
+    });
+    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    await f.updater.stageExact(leader);
+    const withdrawn = await f.updater.install({ ...install, origin: "fleet" });
+    expect(withdrawn).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+    expect(withdrawn.message).toContain("Input arrived.");
+    expect(withdrawn.outcome).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("installing");
+  });
 });

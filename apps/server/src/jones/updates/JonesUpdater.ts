@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off globalDate:off
 // Promise boundary is also exercised without an Effect runtime; timers drive subscriptions and installation progress.
 import type {
+  JonesUpdatePolicy,
   JonesUpdateState,
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
@@ -10,6 +11,11 @@ import {
   type JonesActionsCandidate,
   type JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
+import {
+  findActivationWithdrawal,
+  followerTargetRefusal,
+  type FollowerOrigin,
+} from "./followerPolicy.ts";
 
 export interface JonesStagedRetirementInput {
   readonly operationId: string;
@@ -75,7 +81,18 @@ function candidateProvenance(
   };
 }
 
-export type JonesUpdaterInstallInput = JonesUpdateInstallInput & { readonly operationId?: string };
+export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
+  readonly operationId?: string;
+  /** Who asked: a person on this host, or a fleet operation. Defaults to manual. */
+  readonly origin?: FollowerOrigin;
+  /**
+   * Checked again just before the launcher handoff; a reason withdraws an automatic activation
+   * while it can still be refused, leaving the staged build ready.
+   */
+  readonly admit?: () => Promise<string | undefined>;
+};
+
+const FOLLOWER_WAITING = "Waiting for the laptop to report its installed build.";
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
 export class JonesUpdater {
@@ -129,6 +146,43 @@ export class JonesUpdater {
           }),
       revision: this.revision,
     };
+  }
+
+  /**
+   * Sets which builds this host may take. A follower stops offering any build other than its
+   * laptop's; a staged build stays visible (and refused) until it is retired or replaced.
+   */
+  setPolicy(policy: JonesUpdatePolicy | undefined): JonesUpdateState {
+    const current = this.state.policy;
+    if (current?.role === policy?.role && current?.leaderSource === policy?.leaderSource)
+      return this.snapshot();
+    const { policy: _previous, ...rest } = this.state;
+    this.state = policy === undefined ? rest : { ...rest, policy };
+    const offeredOther =
+      policy !== undefined &&
+      this.state.stagedHandle === undefined &&
+      this.state.phase === "available" &&
+      this.state.provenance?.sourceSha !== (policy.leaderSource ?? undefined);
+    if (offeredOther) {
+      const { provenance: _provenance, ...withoutOffer } = this.state;
+      this.state = withoutOffer;
+      this.candidate = undefined;
+    }
+    const idle =
+      this.state.stagedHandle === undefined &&
+      !this.busy &&
+      !["preparing", "installing"].includes(this.state.phase);
+    return this.publish(
+      offeredOther || (idle && policy?.leaderSource === null)
+        ? {
+            phase: "no-new",
+            message:
+              policy?.leaderSource === null
+                ? FOLLOWER_WAITING
+                : "The laptop's installed build changed. Checking for it…",
+          }
+        : {},
+    );
   }
 
   private clearOutcome(): void {
@@ -194,6 +248,12 @@ export class JonesUpdater {
    * waits for it and then runs its own. A check yields to any other operation on the host.
    */
   async check(targetSource?: string): Promise<JonesUpdateState> {
+    const policy = this.state.policy;
+    if (targetSource === undefined && policy !== undefined) {
+      // A follower never asks for the newest main build; it checks for its laptop's build.
+      if (policy.leaderSource === null) return { ...this.snapshot(), message: FOLLOWER_WAITING };
+      return (await this.checkRun(policy.leaderSource)).state;
+    }
     return (await this.checkRun(targetSource)).state;
   }
 
@@ -272,7 +332,9 @@ export class JonesUpdater {
                 ? "A fresh main build is still being qualified."
                 : targetSource === undefined
                   ? "No newer qualified main build."
-                  : "This host already runs the requested source.",
+                  : targetSource === this.state.policy?.leaderSource
+                    ? "This host runs the laptop's installed build."
+                    : "This host already runs the requested source.",
         }),
         candidate: undefined,
       };
@@ -288,7 +350,12 @@ export class JonesUpdater {
    * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
    * a different staged source is never replaced, and the same staged source is returned unchanged.
    */
-  async stageExact(targetSource: string): Promise<JonesUpdateState> {
+  async stageExact(
+    targetSource: string,
+    origin: FollowerOrigin = "fleet",
+  ): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(this.state.policy, targetSource, origin);
+    if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     const settled = this.stagedOutcome(targetSource);
     if (settled !== undefined) return settled;
     const run = await this.checkRun(targetSource);
@@ -324,6 +391,8 @@ export class JonesUpdater {
   }
 
   async download(input: JonesUpdateDownloadInput): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(this.state.policy, input.sourceSha, "manual");
+    if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return this.snapshot();
     const candidate = this.candidate;
@@ -435,6 +504,12 @@ export class JonesUpdater {
         message: "Install does not match this staged build and running environment.",
       });
     }
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      this.state.provenance?.sourceSha,
+      input.origin ?? "manual",
+    );
+    if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     this.busy = true;
     this.clearOutcome();
     this.publish({
@@ -467,6 +542,12 @@ export class JonesUpdater {
         message: "The native launcher accepted the installation.",
       });
     } catch (error) {
+      const withdrawn = findActivationWithdrawal(error);
+      if (withdrawn !== undefined)
+        return this.publish({
+          phase: "staged",
+          message: `The automatic update was withdrawn before the launcher accepted it: ${withdrawn.message}`,
+        });
       return this.fail(error);
     } finally {
       clearInterval(heartbeat);
