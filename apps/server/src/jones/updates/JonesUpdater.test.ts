@@ -685,6 +685,8 @@ describe("follower policy on the host updater", () => {
   const currentVersion = "0.0.0-preview.20261002.1";
   const leader = candidate.source;
   const other = "f".repeat(40);
+  const following = (leaderSource: string) =>
+    ({ role: "follower", leaderSource, leaderTree: candidate.tree }) as const;
   function follower(overrides: Partial<JonesUpdaterHost> = {}) {
     const checks: Array<string | undefined> = [];
     const installs: string[] = [];
@@ -743,30 +745,64 @@ describe("follower policy on the host updater", () => {
     });
     expect(download.phase).toBe("blocked");
     expect(f.updater.snapshot().phase).toBe("no-new");
-    expect((await f.updater.stageExact(leader, "manual")).phase).toBe("blocked");
-    // An older laptop's campaign keeps its commit proof as the authority.
-    expect((await f.updater.stageExact(leader, "fleet")).stagedHandle).toBe("fixed-handle");
-    expect((await f.updater.install(install)).message).toContain("waits for the laptop");
+    // A campaign from an older laptop app carries no source proof the host can verify.
+    const campaign = await f.updater.stageExact(leader);
+    expect(campaign.phase).toBe("blocked");
+    expect(campaign.message).toContain("predates following");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("blocked");
     expect(f.installs).toEqual([]);
+  });
+
+  it("holds a leader record that predates source trees until the laptop reports again", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    expect((await f.updater.check(leader)).phase).toBe("blocked");
+    expect((await f.updater.stageExact(leader)).phase).toBe("blocked");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
   });
 
   it("offers, stages and installs only the laptop's committed source", async () => {
     const f = follower();
-    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    f.updater.setPolicy(following(leader));
     await f.updater.check();
     expect(f.checks).toEqual([leader]);
     expect(f.updater.snapshot().provenance?.sourceSha).toBe(leader);
-    expect((await f.updater.stageExact(other, "fleet")).message).toContain("bbbbbbb");
-    expect((await f.updater.stageExact(other, "manual")).message).toContain("bbbbbbb");
-    expect((await f.updater.stageExact(leader, "manual")).stagedHandle).toBe("fixed-handle");
+    expect((await f.updater.stageExact(other)).message).toContain("bbbbbbb");
+    expect((await f.updater.stageExact(leader)).stagedHandle).toBe("fixed-handle");
     expect((await f.updater.install(install)).phase).toBe("installing");
     expect(f.installs).toEqual(["fixed-handle"]);
+  });
+
+  it("does not offer or stage the laptop's commit when the repository records another tree", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({ phase: "blocked" });
+    expect(checked.message).toContain("source tree");
+    expect(checked.provenance).toBeUndefined();
+    const staged = await f.updater.stageExact(leader);
+    expect(staged.phase).toBe("blocked");
+    expect(staged.message).toContain("source tree");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect(f.installs).toEqual([]);
+  });
+
+  it("refuses a staged build whose tree the laptop's report no longer matches", async () => {
+    const f = follower();
+    f.updater.setPolicy(following(leader));
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const refused = await f.updater.install(install);
+    expect(refused).toMatchObject({ phase: "blocked" });
+    expect(refused.message).toContain("source tree");
+    expect(f.installs).toEqual([]);
   });
 
   it("refuses a staged build that is not the laptop's current build, even an older one", async () => {
     const f = follower();
     await f.updater.stageExact(leader);
-    f.updater.setPolicy({ role: "follower", leaderSource: other });
+    f.updater.setPolicy(following(other));
     expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
     for (const origin of ["manual", "fleet"] as const) {
       const refused = await f.updater.install({ ...install, origin });
@@ -788,7 +824,7 @@ describe("follower policy on the host updater", () => {
         });
       },
     });
-    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    f.updater.setPolicy(following(leader));
     await f.updater.stageExact(leader);
     const withdrawn = await f.updater.install({ ...install, origin: "fleet" });
     expect(withdrawn).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });

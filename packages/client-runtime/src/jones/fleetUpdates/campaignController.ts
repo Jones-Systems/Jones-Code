@@ -18,10 +18,17 @@ export interface FleetCampaignDriver {
   ) => Promise<FleetHostStatus>;
   readonly cancelled: () => boolean;
   /**
-   * The laptop's committed source, when its own update state proves it. A host that follows the
-   * laptop is told this source and updates itself; without it, campaigns drive every host.
+   * The laptop's committed source, read from its native active install. A host that follows the
+   * laptop is told this source and its tree, checks the tree against the repository and updates
+   * itself; without it, campaigns drive every host.
    */
-  readonly committedSource?: () => Promise<string | undefined>;
+  readonly committedSource?: () => Promise<FleetCommittedSource | undefined>;
+}
+
+export interface FleetCommittedSource {
+  readonly repository: string;
+  readonly sha: string;
+  readonly tree: string;
 }
 const finished = new Set<FleetMemberPhase>([
   "current",
@@ -285,8 +292,15 @@ async function publishCommittedSource(
   state: FleetDesktopState,
 ): Promise<ReadonlySet<EnvironmentId>> {
   const followers = new Set<EnvironmentId>();
-  const source = await driver.committedSource?.().catch(() => undefined);
-  if (source === undefined || !/^[a-f0-9]{40}$/.test(source)) return followers;
+  const committed = await driver.committedSource?.().catch(() => undefined);
+  if (
+    committed === undefined ||
+    committed.repository !== "Jones-Systems/Jones-Code" ||
+    !/^[a-f0-9]{40}$/.test(committed.sha) ||
+    !/^[a-f0-9]{40}$/.test(committed.tree)
+  )
+    return followers;
+  const source = committed.sha;
   await Promise.all(
     state.enrollments
       .filter((enrollment) => enrollment.enabled)
@@ -306,7 +320,9 @@ async function publishCommittedSource(
               input: {
                 enrollmentId: enrollment.enrollmentId,
                 environmentId: enrollment.environmentId,
+                repository: "Jones-Systems/Jones-Code",
                 committedSource: source,
+                committedTree: committed.tree,
               },
             });
           followers.add(enrollment.environmentId);

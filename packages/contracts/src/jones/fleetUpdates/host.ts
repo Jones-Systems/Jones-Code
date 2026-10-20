@@ -61,11 +61,17 @@ export const FleetHostOperation = Schema.Struct({
   reason: Schema.optionalKey(Schema.String),
 });
 export type FleetHostOperation = typeof FleetHostOperation.Type;
-/** The laptop's committed source, published to a host enrolled to follow it. */
+/**
+ * The laptop's committed source, published to a host enrolled to follow it. The laptop sends the
+ * provenance of its native active install; the host stages it only when the repository's record of
+ * that commit has the same tree.
+ */
 export const FleetLeaderInput = Schema.Struct({
   enrollmentId: FleetOperationId,
   environmentId: EnvironmentId,
+  repository: Schema.Literal("Jones-Systems/Jones-Code"),
   committedSource: FleetSourceSha,
+  committedTree: FleetSourceSha,
 });
 export type FleetLeaderInput = typeof FleetLeaderInput.Type;
 

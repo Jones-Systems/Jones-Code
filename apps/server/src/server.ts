@@ -775,7 +775,8 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(workstreamNativeAuthorityLayerLive),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(layerServerSelfUpdate),
-  Layer.provide(FleetUpdates.layer),
+  // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+  Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
   Layer.provide(layerJonesUpdates),
   Layer.provide(layerCommandReadiness),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),

@@ -31,6 +31,7 @@ import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { ServerConfig } from "../../config.ts";
 import { forkParked } from "../../serverActivation.ts";
 import { JonesUpdates } from "../updates/service.ts";
+import { JonesSourceRelation } from "../updates/sourceRelation.ts";
 import {
   QUIET_INPUT_IDLE_MS,
   automaticActivationDecision,
@@ -142,6 +143,12 @@ const epoch = (iso: string | null | undefined) =>
         onSome: DateTime.toEpochMillis,
       });
 const isoAt = (millis: number) => DateTime.formatIso(DateTime.makeUnsafe(millis));
+/** The laptop's report for `enrollment`; one recorded without its tree is not provenance. */
+const leaderFor = (record: FleetFollowerRecord | null, enrollment: FleetEnrollment) =>
+  record?.leader?.enrollmentId === enrollment.enrollmentId &&
+  record.leader.committedTree !== undefined
+    ? record.leader
+    : null;
 
 export const makeFleetUpdates = (options: {
   readonly environmentId: FleetHostStatus["environmentId"];
@@ -149,6 +156,8 @@ export const makeFleetUpdates = (options: {
   readonly store: FleetHostStore;
   readonly updates: FleetHostUpdater;
   readonly quiet: FleetQuietSignals;
+  /** Ancestry of two commits; without it the staging check alone refuses a downgrade. */
+  readonly relation?: JonesSourceRelation["Service"]["relation"];
   readonly operationId?: () => string;
   /** Offered when the follower should run its next pass now. */
   readonly wakeups?: Queue.Queue<void>;
@@ -248,9 +257,8 @@ export const makeFleetUpdates = (options: {
         )
           return undefined;
         if (followerView !== undefined) return followerView;
-        const leader = (yield* storage(store.readFollower))?.leader;
         const leaderSource =
-          leader?.enrollmentId === enrollment.enrollmentId ? leader.committedSource : null;
+          leaderFor(yield* storage(store.readFollower), enrollment)?.committedSource ?? null;
         return {
           protocol: 1,
           leaderSource,
@@ -569,7 +577,8 @@ export const makeFleetUpdates = (options: {
         const current = yield* storage(store.readFollower);
         if (
           current?.leader?.enrollmentId !== input.enrollmentId ||
-          current.leader.committedSource !== input.committedSource
+          current.leader.committedSource !== input.committedSource ||
+          current.leader.committedTree !== input.committedTree
         ) {
           const publishedAt = isoAt(yield* Clock.currentTimeMillis);
           yield* storage(() =>
@@ -578,6 +587,7 @@ export const makeFleetUpdates = (options: {
               leader: {
                 enrollmentId: input.enrollmentId,
                 committedSource: input.committedSource,
+                committedTree: input.committedTree,
                 publishedAt,
               },
             })),
@@ -613,8 +623,7 @@ export const makeFleetUpdates = (options: {
       }
       yield* updates.refreshPolicy;
       const record = (yield* storage(store.readFollower)) ?? emptyFollower;
-      const leaderRecord =
-        record.leader?.enrollmentId === enrollment.enrollmentId ? record.leader : null;
+      const leaderRecord = leaderFor(record, enrollment);
       const base = {
         protocol: 1 as const,
         leaderSource: leaderRecord?.committedSource ?? null,
@@ -663,6 +672,17 @@ export const makeFleetUpdates = (options: {
       if (installed === target) return show({ state: "current" });
       if (update.phase === "preparing" || update.phase === "installing")
         return show({ state: "activating", reason: "An installation is already running." });
+      // A host installed ahead of the laptop never goes back. Without a proven relation the
+      // staging check refuses a target that does not descend from the installed source.
+      if (
+        options.relation !== undefined &&
+        (yield* options.relation({ base: target, head: installed })).relation === "ahead"
+      )
+        return show({
+          state: "waiting-for-leader",
+          reason:
+            "This host already runs a newer build than the laptop's and does not go back. It updates once the laptop reports a newer build.",
+        });
 
       const intended =
         operation !== null &&
@@ -816,6 +836,7 @@ export const layer = Layer.effect(
     const config = yield* ServerConfig;
     const environment = yield* ServerEnvironment;
     const updates = yield* JonesUpdates;
+    const sourceRelation = yield* JonesSourceRelation;
     const serviceMode = config.mode !== "desktop";
     const wakeups = yield* Queue.sliding<void>(1);
     const fleet = yield* makeFleetUpdates({
@@ -825,6 +846,7 @@ export const layer = Layer.effect(
       store: createFleetHostStore(config.baseDir),
       updates,
       quiet: yield* makeFleetQuietSignals,
+      relation: sourceRelation.relation,
     });
     if (serviceMode && updates.fleetOperationsSupported)
       yield* forkParked(

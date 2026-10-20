@@ -1,4 +1,5 @@
 import { ServerSelfUpdateError } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -70,18 +71,30 @@ type FenceState =
   | { readonly phase: "accepted"; readonly ticket: number };
 
 type EffectRequests = ReadonlyArray<{ readonly request: { readonly type: string } }>;
+type RecordedEvents = ReadonlyArray<{ readonly type: string; readonly payload?: unknown }>;
 
 const processBound = new Set<string>(PROCESS_BOUND_EFFECT_TYPES);
-const startsProviderWork = (effects: EffectRequests) =>
-  effects.some((effect) => processBound.has(effect.request.type));
+/**
+ * A process-bound effect, or a run created to prepare its workspace first. That run has no
+ * effect yet: this process provisions its worktree and then starts it.
+ */
+const startsProviderWork = (effects: EffectRequests, events: RecordedEvents) =>
+  effects.some((effect) => processBound.has(effect.request.type)) ||
+  events.some(
+    (event) =>
+      event.type === "run.created" &&
+      (event.payload as { readonly status?: unknown } | undefined)?.status === "preparing",
+  );
 
 /**
  * Keeps new provider work out of a process that is handing off to an update. The event sink
  * checks it inside the transaction that records a process-bound effect (a turn start, steer or
- * approval reply), for commands and for the orchestrator's own writes, so every origin passes
- * it: sends, queued runs, delegated tasks and their results, scheduled runs and agents' tools.
- * Writes that settle a running attempt record no new provider work and are not checked. While
- * the fence is open a check reads one reference and never waits, so it serializes nothing.
+ * approval reply) or creates a run that prepares a workspace, for commands and for the
+ * orchestrator's own writes, so every origin passes it: sends, launches, queued runs, delegated
+ * tasks and their results, scheduled and webhook runs and agents' tools. A queued message is
+ * durable, and writes that settle a running attempt record no new provider work; neither is
+ * checked. While the fence is open a check reads one reference and never waits, so it
+ * serializes nothing.
  *
  * The final check of an automatic installation runs on the SQLite writer after the fence is
  * raised. A transaction admitted just before the fence went up holds the writer, so that check
@@ -91,10 +104,14 @@ export class UpdateAdmissionFence extends Context.Service<
   UpdateAdmissionFence,
   {
     /**
-     * Admits a write recording `effects`. It is refused while an installation holds the fence,
-     * and withdraws an automatic installation that has not yet handed off.
+     * Admits a write recording `effects` and `events`. New provider work is refused while an
+     * installation holds the fence, and withdraws an automatic installation that has not yet
+     * handed off.
      */
-    readonly admit: (effects: EffectRequests) => Effect.Effect<void, UpdateAdmissionRefused>;
+    readonly admit: (
+      effects: EffectRequests,
+      events?: RecordedEvents,
+    ) => Effect.Effect<void, UpdateAdmissionRefused>;
     /** Called by each event sink that consults the fence. */
     readonly attach: Effect.Effect<void>;
     /** Whether any event sink consults the fence; automatic installations hold without one. */
@@ -125,8 +142,8 @@ export const make = Effect.gen(function* () {
       : current.phase === "handing-off"
         ? { ...current, refused: true }
         : current;
-  const admit = (effects: EffectRequests) =>
-    startsProviderWork(effects)
+  const admit = (effects: EffectRequests, events: RecordedEvents = []) =>
+    startsProviderWork(effects, events)
       ? Ref.modify(state, (current) => [refused(current), note(current)] as const).pipe(
           Effect.flatMap(
             Option.match({
@@ -183,6 +200,16 @@ export function isUpdateAdmissionRefusal(error: unknown): boolean {
   }
   return false;
 }
+
+/**
+ * Whether a failed dispatch was held for an update. The work was not recorded under its command
+ * id, so a caller that keeps it, such as an accepted webhook delivery, dispatches it again under
+ * the same command id once admission reopens here or on the next server. It is not a failure.
+ */
+export const isUpdateAdmissionHold = (cause: Cause.Cause<unknown>): boolean =>
+  cause.reasons.some(
+    (reason) => Cause.isFailReason(reason) && isUpdateAdmissionRefusal(reason.error),
+  );
 
 const withdrawn = (reason: string) =>
   new ServerSelfUpdateError({

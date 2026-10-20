@@ -642,13 +642,17 @@ export const layer = Layer.effect(
       if (enrollment === null || !enrollment.enabled || enrollment.environmentId !== environmentId)
         return undefined;
       const leader = (await fleetStore.readFollower())?.leader;
-      return {
-        role: "follower",
-        leaderSource:
-          leader !== null && leader !== undefined && leader.enrollmentId === enrollment.enrollmentId
-            ? leader.committedSource
-            : null,
-      };
+      // A leader recorded without its tree is not provenance; the host waits for a new report.
+      return leader !== null &&
+        leader !== undefined &&
+        leader.enrollmentId === enrollment.enrollmentId &&
+        leader.committedTree !== undefined
+        ? {
+            role: "follower",
+            leaderSource: leader.committedSource,
+            leaderTree: leader.committedTree,
+          }
+        : { role: "follower", leaderSource: null };
     };
     const refreshPolicy = Effect.tryPromise(readPolicy).pipe(
       Effect.map((policy) => updater.setPolicy(policy).policy),
@@ -729,7 +733,7 @@ export const layer = Layer.effect(
         isUpdateOperationId(input.operationId) &&
         launcher.qualifiedOperations === true &&
         launcher.qualifiedRetirement === true
-          ? Effect.promise(() => updater.stageExact(input.targetSource, "fleet"))
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
           : Effect.succeed(
               blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
             ),
@@ -760,7 +764,7 @@ export const layer = Layer.effect(
       download: (input) => Effect.promise(() => updater.download(input)),
       downloadExact: (input) =>
         updater.snapshot().capability.download
-          ? Effect.promise(() => updater.stageExact(input.targetSource, "manual"))
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
           : Effect.succeed({
               ...updater.snapshot(),
               phase: "blocked" as const,

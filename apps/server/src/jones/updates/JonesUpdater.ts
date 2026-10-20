@@ -154,7 +154,11 @@ export class JonesUpdater {
    */
   setPolicy(policy: JonesUpdatePolicy | undefined): JonesUpdateState {
     const current = this.state.policy;
-    if (current?.role === policy?.role && current?.leaderSource === policy?.leaderSource)
+    if (
+      current?.role === policy?.role &&
+      current?.leaderSource === policy?.leaderSource &&
+      current?.leaderTree === policy?.leaderTree
+    )
       return this.snapshot();
     const { policy: _previous, ...rest } = this.state;
     this.state = policy === undefined ? rest : { ...rest, policy };
@@ -308,6 +312,17 @@ export class JonesUpdater {
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
         const candidate = result.candidate;
+        // A follower offers only its laptop's build, with the tree the repository records for it.
+        const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
+        if (refusal !== undefined) {
+          this.candidate = undefined;
+          return {
+            state: this.publish(
+              staged ? { checkedAt } : { phase: "blocked", checkedAt, message: refusal },
+            ),
+            candidate: undefined,
+          };
+        }
         this.candidate = candidate;
         if (staged) return { state: this.publish({ checkedAt }), candidate };
         return {
@@ -350,11 +365,8 @@ export class JonesUpdater {
    * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
    * a different staged source is never replaced, and the same staged source is returned unchanged.
    */
-  async stageExact(
-    targetSource: string,
-    origin: FollowerOrigin = "fleet",
-  ): Promise<JonesUpdateState> {
-    const refusal = followerTargetRefusal(this.state.policy, targetSource, origin);
+  async stageExact(targetSource: string): Promise<JonesUpdateState> {
+    const refusal = followerTargetRefusal(this.state.policy, targetSource);
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     const settled = this.stagedOutcome(targetSource);
     if (settled !== undefined) return settled;
@@ -391,7 +403,11 @@ export class JonesUpdater {
   }
 
   async download(input: JonesUpdateDownloadInput): Promise<JonesUpdateState> {
-    const refusal = followerTargetRefusal(this.state.policy, input.sourceSha, "manual");
+    const refusal = followerTargetRefusal(
+      this.state.policy,
+      input.sourceSha,
+      this.candidate?.source === input.sourceSha ? this.candidate.tree : undefined,
+    );
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return this.snapshot();
@@ -504,10 +520,11 @@ export class JonesUpdater {
         message: "Install does not match this staged build and running environment.",
       });
     }
+    // A manual Install skips the quiet window and spacing, never this check.
     const refusal = followerTargetRefusal(
       this.state.policy,
       this.state.provenance?.sourceSha,
-      input.origin ?? "manual",
+      this.state.provenance?.sourceTree,
     );
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     this.busy = true;

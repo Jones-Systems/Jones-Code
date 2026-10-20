@@ -6,6 +6,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ScheduledTaskId,
   ServerSelfUpdateError,
   ThreadId,
   type OrchestrationV2Run,
@@ -20,12 +21,15 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
+import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import { userFacingDispatchErrorMessage } from "../../orchestration-v2/UserFacingErrors.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 import { findActivationWithdrawal } from "./followerPolicy.ts";
 import { readHostWork } from "./hostWork.ts";
 import * as Fence from "./UpdateAdmissionFence.ts";
@@ -463,7 +467,7 @@ const fixture = Effect.gen(function* () {
     createdBy: "user",
     creationSource: "web",
   });
-  const send = (text: string, type: "start_immediately" | "queue_after_active") =>
+  const send = (text: string, type: "start_immediately" | "queue_after_active" | "defer_start") =>
     orchestrator.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make(`send:${text}`),
@@ -604,7 +608,7 @@ describe("update admission through the event sink", () => {
             const held = (yield* f.runs()).find((run) => run.id === queued!.id);
             duringHandoff = held?.status;
             return false;
-          }),
+          }).pipe(Effect.orDie),
         }),
       }).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(exit));
@@ -615,5 +619,85 @@ describe("update admission through the event sink", () => {
       );
       assert.sameMembers([...(yield* f.starts())], [active!.id, queued!.id]);
     }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+});
+
+describe("work that is not a turn start yet", () => {
+  it.effect("a launch's preparing run trips an automatic update and is refused at handoff", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const ticket = yield* f.fence.raise("automatic");
+      yield* f.send("prepare", "defer_start");
+      const [preparing] = yield* f.runs();
+      assert.strictEqual(preparing?.status, "preparing");
+      assert.isFalse(yield* ticket.handOff);
+      assert.isFalse(yield* ticket.release);
+      // Behind a preparing run another launch message would only queue, which is durable.
+      yield* f.finish(preparing!);
+      const next = yield* f.fence.raise("automatic");
+      assert.isTrue(yield* next.handOff);
+      const held = yield* f.send("prepare later", "defer_start").pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(held) && Fence.isUpdateAdmissionHold(held.cause));
+      assert.lengthOf(yield* f.runs(), 1);
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+
+  it.effect("a queued message behind a running turn is durable and is not fenced", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.send("active", "start_immediately");
+      const ticket = yield* f.fence.raise("automatic");
+      assert.isTrue(yield* ticket.handOff);
+      yield* f.send("behind", "queue_after_active");
+      assert.strictEqual((yield* f.runs())[1]?.status, "queued");
+      assert.isFalse(yield* ticket.release);
+    }).pipe(Effect.provide(orchestration(Fence.layer))),
+  );
+});
+
+describe("a scheduled or webhook dispatch held for an update", () => {
+  it.effect(
+    "is a hold rather than a failure, and the same command is accepted after reopening",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const threads = yield* ThreadManagementService.ThreadManagementService.pipe(
+          Effect.provide(
+            ThreadManagementService.layer.pipe(
+              Layer.provide(ServerSettings.layerTest()),
+              Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(database))),
+            ),
+          ),
+        );
+        // The scheduler's call for one webhook delivery; its ids derive from the delivery.
+        const delivery = {
+          projectId: ProjectId.make("project:update-admission"),
+          commandId: CommandId.make("scheduled-task:task-1:webhook:delivery-1"),
+          threadId,
+          messageId: MessageId.make("scheduled-task-message:task-1:webhook:delivery-1"),
+          scheduledTaskId: ScheduledTaskId.make("task-1"),
+          text: "webhook prompt",
+          attachments: [],
+          modelSelection,
+          mode: "queue" as const,
+          createdBy: "agent" as const,
+          creationSource: "mcp" as const,
+        };
+        const ticket = yield* f.fence.raise("automatic");
+        assert.isTrue(yield* ticket.handOff);
+        const held = yield* threads.sendToThread(delivery).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(held));
+        assert.isTrue(Exit.isFailure(held) && Fence.isUpdateAdmissionHold(held.cause));
+        assert.lengthOf(yield* f.runs(), 0);
+        assert.isFalse(yield* threads.hasReceipt(delivery.commandId));
+        // A refused handoff reopens admission; the kept delivery then runs under its command id.
+        assert.isTrue(yield* ticket.release);
+        const sent = yield* threads.sendToThread(delivery);
+        assert.strictEqual(sent.delivery, "started");
+        assert.deepStrictEqual(yield* f.starts(), [sent.run.id]);
+        // An ordinary failure is not a hold.
+        assert.isFalse(Fence.isUpdateAdmissionHold(Cause.fail(new Error("boom"))));
+        assert.isFalse(Fence.isUpdateAdmissionHold(Cause.die(new Error("boom"))));
+      }).pipe(Effect.provide(orchestration(Fence.layer))),
   );
 });

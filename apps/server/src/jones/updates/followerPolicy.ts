@@ -176,21 +176,24 @@ export type FollowerOrigin = "manual" | "fleet";
 
 /**
  * Why a follower may not prepare or install `target`, or undefined when it may. A host without a
- * policy chooses its own builds. Until the laptop publishes a committed source, only an enrolled
- * laptop campaign (whose commit proof is the authority on older laptops) may stage or install.
+ * policy chooses its own builds. Every entrypoint applies it, a laptop campaign included: an older
+ * laptop's commit proof stays in its own journal and never reaches the host, so until the laptop
+ * publishes its committed source the host holds.
  */
 export function followerTargetRefusal(
   policy: JonesUpdatePolicy | undefined,
   target: string | undefined,
-  origin: FollowerOrigin,
+  /** The target commit's tree as the repository records it, once a check has read it. */
+  tree?: string,
 ): string | undefined {
   if (policy === undefined) return undefined;
-  if (policy.leaderSource === null)
-    return origin === "fleet"
-      ? undefined
-      : "This host follows its laptop and waits for the laptop to report its installed build.";
-  if (target === policy.leaderSource) return undefined;
-  return `This host follows its laptop and installs only the laptop's installed source ${policy.leaderSource.slice(0, 7)}.`;
+  if (policy.leaderSource === null || policy.leaderTree === undefined)
+    return "This host follows its laptop and waits for the laptop to report its installed build. A laptop app that predates following cannot report it; update the laptop app, or turn off fleet updates for this host to choose builds here.";
+  if (target !== policy.leaderSource)
+    return `This host follows its laptop and installs only the laptop's installed source ${policy.leaderSource.slice(0, 7)}.`;
+  if (tree !== undefined && tree !== policy.leaderTree)
+    return "The laptop reported a source tree that the repository does not record for that commit, so this host does not install it.";
+  return undefined;
 }
 
 /** Ends an automatic activation before the launcher accepts it; the stage stays ready. */

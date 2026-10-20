@@ -771,7 +771,7 @@ const layerBase: Layer.Layer<
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(committed);
-          if (Option.isSome(admission)) yield* admission.value.admit(input.effects);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.linkEffects({
@@ -1168,7 +1168,7 @@ const layerBase: Layer.Layer<
             );
           }
           yield* applyStoredEvents(storedEvents);
-          if (Option.isSome(admission)) yield* admission.value.admit(input.effects);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,

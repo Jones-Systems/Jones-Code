@@ -25,11 +25,9 @@ export function FleetController() {
           },
           host: fleetHost,
           cancelled: () => cancelled,
-          committedSource: async () => {
-            const installed = (await window.desktopBridge?.getUpdateState())?.jones
-              ?.installedSource;
-            return installed?.repository === "Jones-Systems/Jones-Code" ? installed.sha : undefined;
-          },
+          // The native active install's provenance; the renderer only relays it.
+          committedSource: async () =>
+            (await window.desktopBridge?.getUpdateState())?.jones?.installedSource,
         });
         if (!cancelled) await refreshFleetDesktopState();
       } catch {
