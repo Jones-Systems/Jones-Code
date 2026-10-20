@@ -1243,13 +1243,7 @@
     "apps/web/src/components/voiceReview/",
     "apps/web/src/components/workQueue/",
     "packages/client-runtime/src/conversations/",
-    "scripts/jones/",
-    "apps/web/src/jones/updates/installedSourceComparison.ts",
-    "apps/web/src/jones/updates/installedSourceComparison.test.ts",
-    "apps/server/src/jones/updates/sourceRelation.ts",
-    "apps/server/src/jones/updates/sourceRelation.test.ts",
-    "apps/web/src/jones/updates/installedSourceObservation.ts",
-    "apps/web/src/jones/updates/installedSourceObservation.test.ts"
+    "scripts/jones/"
   ],
   "tombstones": [
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx",
