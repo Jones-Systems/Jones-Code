@@ -120,6 +120,8 @@ export interface ThreadLaunchInitialMessage {
 }
 
 export interface ThreadLaunchInput {
+  // Jones hook: keyed retries hold prior progress under preparation ownership.
+  readonly holdPreparationAfterProgress?: true;
   readonly commandId: CommandId;
   /** Server-owned compatibility input; public launch schemas do not decode it. */
   readonly preparationReleaseCommandId?: CommandId;
@@ -258,6 +260,8 @@ export class ThreadLaunchService extends Context.Service<
       | Orchestrator.OrchestratorV2Error
       | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
+    // Jones hook: read-only observation of the existing preparation reservation.
+    readonly preparationActive: (commandId: CommandId) => Effect.Effect<boolean>;
     readonly prepareRun: (input: ThreadLaunchPreparationInput) => Effect.Effect<void>;
   }
 >()("t3/orchestration-v2/ThreadLaunchService") {}
@@ -2627,6 +2631,19 @@ const make = Effect.gen(function* () {
                       Effect.mapError(mapError(input, "update-thread", threadId)),
                     );
               if (preparationStillRequired) {
+                // Jones hook: inspect durable progress only while owning this reservation.
+                if (input.holdPreparationAfterProgress && runId !== null) {
+                  for (const suffix of [":progress:worktree", ":progress:setup"]) {
+                    const progress = yield* readReceipt(
+                      input,
+                      CommandId.make(`${input.commandId}${suffix}`),
+                    );
+                    if (Option.isSome(progress) && progress.value.status === "accepted") {
+                      yield* releasePreparation(input.commandId);
+                      return;
+                    }
+                  }
+                }
                 yield* schedulePreparation(
                   {
                     ...input,
@@ -2764,6 +2781,9 @@ const make = Effect.gen(function* () {
   };
 
   return ThreadLaunchService.of({
+    // Jones hook: spec.jones-client-launch; reservation ownership stays in this service.
+    preparationActive: (commandId) =>
+      Ref.get(scheduledLaunches).pipe(Effect.map((state) => state.commands.has(commandId))),
     dispatchNativeBootstrap: (submission) =>
       Effect.flatMap(EnvironmentAuthenticatedPrincipal, (principal) =>
         Option.isSome(nativeBootstrapConfig) && Option.isSome(nativeBootstrapPath)

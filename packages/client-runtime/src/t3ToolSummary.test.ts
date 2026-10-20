@@ -340,3 +340,22 @@ describe("summarizeT3ToolCalls", () => {
     });
   });
 });
+
+it("summarizes launch resolution without claiming thread creation", () => {
+  expect(
+    summarizeT3ToolCalls("thread-launch-resolve", [
+      completed({ clientRequestId: "key" }, { state: "no_effect" }),
+    ]),
+  ).toEqual({
+    label: "Resolved 1 unknown thread launch",
+    failedCount: 0,
+  });
+  expect(
+    summarizeT3ToolCalls("thread-launch-resolve", [
+      { input: { clientRequestId: "key" }, output: undefined, outcome: "failed" },
+    ]),
+  ).toEqual({
+    label: "Tried to resolve 1 unknown thread launch",
+    failedCount: 1,
+  });
+});

@@ -1,3 +1,4 @@
+import * as ClientLaunch from "../../../jones/mcp/clientLaunch/ClientLaunchService.ts";
 import { MessageId, ThreadId, OrchestratorMcpFailure, ProjectId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -51,10 +52,22 @@ const access = Effect.gen(function* () {
   return yield* Project.ProjectService;
 });
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
-  t3_thread_launch: McpToolAccess.startsThreads(
+  // Jones hook: keyed launch owns replay while unkeyed launch keeps its original body.
+  t3_thread_launch: McpToolAccess.startsOrContinuesThreads(
     (input) => input,
-    (input, { runtimeMode, interactionMode }) =>
+    (input, gate) =>
       Effect.gen(function* () {
+        if (input.clientRequestId !== undefined) {
+          const caller = yield* readCaller();
+          const modes = yield* gate.start;
+          return yield* ClientLaunch.launch(
+            { ...input, clientRequestId: input.clientRequestId },
+            caller,
+            modes,
+            gate,
+          );
+        }
+        const { runtimeMode, interactionMode } = yield* gate.start;
         const context = yield* readCaller();
         const { caller } = context;
         const commandId = yield* newCommandId();
@@ -181,6 +194,19 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           status: run?.status ?? null,
         };
       }),
+  ),
+  // Jones hook: capability checks precede every launch-state read or fence write.
+  t3_thread_launch_lookup: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const caller = yield* readCaller();
+      return yield* ClientLaunch.lookup(caller.scope.requestNamespace, input.clientRequestId);
+    }),
+  ),
+  t3_thread_launch_fence: McpToolAccess.writesWithCapability((input) =>
+    Effect.gen(function* () {
+      const caller = yield* readCaller();
+      return yield* ClientLaunch.fence(caller.scope.requestNamespace, input.clientRequestId);
+    }),
   ),
   t3_project_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
