@@ -17,6 +17,7 @@ import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "../../components/settings/itemRows";
 import { compactJonesVersionText } from "./buildVersion";
+import type { JonesInstalledComparison } from "./installedSourceComparison";
 import {
   DETAIL_PANEL_CLASSNAME,
   DetailItem,
@@ -73,6 +74,42 @@ const COMPARISON = {
   },
 } as const;
 
+const INSTALLED_COMPARISON = {
+  matches: {
+    label: "Matches",
+    variant: "success",
+    detail: "Installed from the same source commit as this laptop.",
+  },
+  older: {
+    label: "Older",
+    variant: "warning",
+    detail: "Installed from an older source commit than this laptop.",
+  },
+  newer: {
+    label: "Newer",
+    variant: "info",
+    detail: "Installed from a newer source commit than this laptop.",
+  },
+  different: {
+    label: "Different source",
+    variant: "warning",
+    detail:
+      "Installed from a different source commit than this laptop. Which is newer is not known.",
+  },
+  diverged: {
+    label: "Diverged",
+    variant: "warning",
+    detail:
+      "Installed from a source commit that has diverged from this laptop's; neither contains the other.",
+  },
+  unavailable: {
+    label: null,
+    variant: "outline",
+    detail:
+      "Not compared. Comparing needs the full installed source commit of both this host and this laptop.",
+  },
+} as const;
+
 /**
  * Presentation of one host's Jones main builds. Installed and offered builds share one line;
  * exact versions, commits and the update record stay one disclosure away.
@@ -83,6 +120,7 @@ export function JonesBuildStatus({
   freshness,
   freshnessMessage,
   comparison = null,
+  installedComparison = null,
   pending = false,
   actionError = null,
   layout = "inline",
@@ -94,6 +132,8 @@ export function JonesBuildStatus({
   readonly freshnessMessage?: string | undefined;
   /** Set when this host's build is compared with this laptop's installed source. */
   readonly comparison?: JonesSourceComparison | null;
+  /** Set when this host's installed source is compared with this laptop's installed source. */
+  readonly installedComparison?: JonesInstalledComparison | null;
   readonly pending?: boolean;
   readonly actionError?: string | null;
   readonly layout?: JonesBuildStatusLayout;
@@ -120,6 +160,9 @@ export function JonesBuildStatus({
       : `${compactJonesVersionText(outcome.fromVersion)} → ${compactJonesVersionText(outcome.targetVersion)}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
   const hasBuilds = state.currentVersion !== undefined || candidate !== undefined;
   const badge = comparison === null ? null : COMPARISON[comparison];
+  const installedBadge =
+    installedComparison === null ? null : INSTALLED_COMPARISON[installedComparison];
+  const candidateLabel = candidate?.label ?? "Offered";
 
   const builds = hasBuilds ? (
     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -132,6 +175,14 @@ export function JonesBuildStatus({
             sourceSha={state.installedSource?.sha}
           />
         </span>
+      ) : null}
+      {state.currentVersion !== undefined && installedBadge?.label ? (
+        <SourceBadge
+          subject="Installed"
+          label={installedBadge.label}
+          variant={installedBadge.variant}
+          detail={installedBadge.detail}
+        />
       ) : null}
       {state.currentVersion !== undefined && candidate !== undefined ? (
         <ArrowRightIcon aria-hidden className="size-3 shrink-0 text-muted-foreground/70" />
@@ -155,12 +206,12 @@ export function JonesBuildStatus({
         </span>
       ) : null}
       {badge?.label ? (
-        <Tooltip>
-          <TooltipTrigger render={<Badge variant={badge.variant} size="sm" />}>
-            {badge.label}
-          </TooltipTrigger>
-          <TooltipPopup side="top">{badge.detail}</TooltipPopup>
-        </Tooltip>
+        <SourceBadge
+          subject={candidateLabel}
+          label={badge.label}
+          variant={badge.variant}
+          detail={`${candidateLabel}: ${badge.detail}`}
+        />
       ) : null}
     </div>
   ) : null;
@@ -288,7 +339,12 @@ export function JonesBuildStatus({
                   </DetailItem>
                 </>
               ) : null}
-              {badge !== null ? <DetailItem label="This laptop">{badge.detail}</DetailItem> : null}
+              {installedBadge !== null ? (
+                <DetailItem label="Installed vs this laptop">{installedBadge.detail}</DetailItem>
+              ) : null}
+              {badge !== null ? (
+                <DetailItem label={`${candidateLabel} vs this laptop`}>{badge.detail}</DetailItem>
+              ) : null}
               {state.updateId !== undefined ? (
                 <DetailItem label="Update">
                   <CopyableValue label="update ID" value={state.updateId} />
@@ -313,5 +369,28 @@ export function JonesBuildStatus({
         ) : null}
       </div>
     </div>
+  );
+}
+
+/** A source-comparison badge whose spoken name says which build is compared with this laptop. */
+function SourceBadge({
+  subject,
+  label,
+  variant,
+  detail,
+}: {
+  readonly subject: string;
+  readonly label: string;
+  readonly variant: "success" | "warning" | "info" | "outline";
+  readonly detail: string;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<Badge variant={variant} size="sm" />}>
+        <span className="sr-only">{subject} compared with this laptop: </span>
+        {label}
+      </TooltipTrigger>
+      <TooltipPopup side="top">{detail}</TooltipPopup>
+    </Tooltip>
   );
 }

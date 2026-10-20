@@ -1222,7 +1222,15 @@
     "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx": "jones-owned",
     "apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx": "jones-owned",
     "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx": "jones-owned",
-    "docs/user/updating.md": "accepted-shared"
+    "docs/user/updating.md": "accepted-shared",
+    "apps/web/src/jones/updates/installedSourceComparison.ts": "jones-owned",
+    "apps/web/src/jones/updates/installedSourceComparison.test.ts": "jones-owned",
+    "packages/contracts/src/jones/jonesSourceRelation.ts": "jones-owned",
+    "packages/contracts/src/jones/jonesSourceRelation.test.ts": "jones-owned",
+    "apps/server/src/jones/updates/sourceRelation.ts": "jones-owned",
+    "apps/server/src/jones/updates/sourceRelation.test.ts": "jones-owned",
+    "apps/web/src/jones/updates/installedSourceObservation.ts": "jones-owned",
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1729,6 +1737,10 @@
     {
       "from": "apps/mobile/src/state/use-thread-composer-state.ts",
       "to": "apps/mobile/src/jones/questionAnswer/composerDispatch.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/sourceRelation.ts"
     }
   ]
 }

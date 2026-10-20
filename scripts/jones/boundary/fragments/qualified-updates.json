@@ -98,7 +98,13 @@
     "apps/web/src/jones/updates/ExactSourceUpdateAction.tsx",
     "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
     "apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx",
-    "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx"
+    "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx",
+    "apps/web/src/jones/updates/installedSourceComparison.ts",
+    "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+    "apps/server/src/jones/updates/sourceRelation.ts",
+    "apps/server/src/jones/updates/sourceRelation.test.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -438,6 +444,10 @@
     {
       "from": "apps/server/src/cloud/selfUpdate.ts",
       "to": "apps/server/src/jones/cloud/ownedScratch.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/sourceRelation.ts"
     }
   ]
 }

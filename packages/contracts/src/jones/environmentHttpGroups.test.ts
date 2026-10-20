@@ -88,6 +88,7 @@ describe("Jones environment HTTP registration", () => {
       ["submit", "POST", "/api/workstreams/commands"],
       ["prepareNative", "POST", "/api/jones-updates/prepare-native"],
       ["state", "GET", "/api/jones-updates"],
+      ["sourceRelation", "GET", "/api/jones-updates/source-relation"],
       ["check", "POST", "/api/jones-updates/check"],
       ["download", "POST", "/api/jones-updates/download"],
       ["downloadExact", "POST", "/api/jones-updates/download-exact"],
