@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/server/src/jones/mcp/agentMessageHeader.ts": "jones-owned",
+    "apps/server/src/jones/mcp/agentMessageHeader.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/model.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/detect.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/inbox.ts": "jones-owned",

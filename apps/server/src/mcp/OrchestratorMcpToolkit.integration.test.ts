@@ -38,6 +38,7 @@ import {
   ThreadMetadataMcpUpdateResult,
   TurnItemId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -2387,20 +2388,38 @@ describe("orchestrator MCP toolkit", () => {
               creationSource: "mcp",
             });
 
+            yield* invoke("t3_thread_update", {
+              action: "rename",
+              title: "MCP [sender] <one> & two",
+              clientRequestId: "rename-before-ordinary-loop-send",
+            });
+            const sendClock = yield* Clock.Clock;
+            const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
+            const clockAt = (millis: number): Clock.Clock => ({
+              currentTimeMillisUnsafe: () => millis,
+              currentTimeMillis: Effect.succeed(millis),
+              currentTimeNanosUnsafe: () => BigInt(millis) * 1_000_000n,
+              currentTimeNanos: Effect.succeed(BigInt(millis) * 1_000_000n),
+              monotonicTimeNanosUnsafe: () => sendClock.monotonicTimeNanosUnsafe(),
+              monotonicTimeNanos: sendClock.monotonicTimeNanos,
+              sleep: (duration) => sendClock.sleep(duration),
+            });
             const ordinaryLoopPrompt = "Run an ordinary thread loop iteration.";
             const sendCall = yield* invoke("t3_thread_send", {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
-            });
+            }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt)));
             const sent = yield* decodeThreadSendResult(sendCall.structuredContent).pipe(
               Effect.orDie,
             );
             const sentSource = yield* orchestrator.getThreadProjection(emptyThread.threadId);
-            expect(
-              sentSource.messages.find((message) => message.id === sent.messageId),
-            ).toMatchObject({
+            const sentMessage = sentSource.messages.find(
+              (message) => message.id === sent.messageId,
+            );
+            expect(sentMessage).toMatchObject({
               senderThreadId: parentThreadId,
+              text: `**T3M** · From [MCP \\[sender\\] &lt;one&gt; &amp; two](t3-thread://v1/${parentThreadId}) · Sent: 2026-10-20 10:50:00 EDT\n\n${ordinaryLoopPrompt}`,
             });
             expect(
               sentSource.turnItems.find(
@@ -2423,18 +2442,31 @@ describe("orchestrator MCP toolkit", () => {
               status: "completed",
               timedOut: false,
             });
+            yield* invoke("t3_thread_update", {
+              action: "rename",
+              title: "Renamed sender after send",
+              clientRequestId: "rename-after-ordinary-loop-send",
+            });
             const repeatedSendCall = yield* invoke("t3_thread_send", {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
-            });
+            }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt + 86_400_000)));
             const repeatedSend = yield* decodeThreadSendResult(
               repeatedSendCall.structuredContent,
             ).pipe(Effect.orDie);
             expect(repeatedSend.runId).toBe(sent.runId);
+            expect(repeatedSend.messageId).toBe(sent.messageId);
+            const replayedSource = yield* orchestrator.getThreadProjection(emptyThread.threadId);
+            expect(replayedSource.runs).toHaveLength(1);
+            expect(replayedSource.messages.filter((message) => message.role === "user")).toEqual([
+              sentMessage,
+            ]);
             expect(
-              (yield* orchestrator.getThreadProjection(emptyThread.threadId)).runs,
-            ).toHaveLength(1);
+              (yield* Ref.get(capturedTurns))
+                .filter((turn) => turn.threadId === emptyThread.threadId)
+                .map((turn) => turn.text),
+            ).toEqual([sentMessage?.text]);
 
             const activeThreadCall = yield* invoke("create_threads", {
               threads: [{ prompt: cancellationPrompt, title: "Managed active thread" }],
@@ -3766,8 +3798,53 @@ describe("orchestrator MCP toolkit", () => {
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-task-status");
         const rawTranscript = yield* readDelegatedTaskStatusTranscript();
+        const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
+        const liveClock = yield* Clock.Clock;
+        const clockAt = (millis: number): Clock.Clock => ({
+          currentTimeMillisUnsafe: () => millis,
+          currentTimeMillis: Effect.succeed(millis),
+          currentTimeNanosUnsafe: () => BigInt(millis) * 1_000_000n,
+          currentTimeNanos: Effect.succeed(BigInt(millis) * 1_000_000n),
+          monotonicTimeNanosUnsafe: () => liveClock.monotonicTimeNanosUnsafe(),
+          monotonicTimeNanos: liveClock.monotonicTimeNanos,
+          sleep: (duration) => liveClock.sleep(duration),
+        });
+        const replayHeader = `**T3M** · From [MCP replay parent](t3-thread://v1/${parentThreadId}) · Sent: 2026-10-20 10:50:`;
+        const decodeRecord = Schema.decodeUnknownEffect(
+          Schema.Record(Schema.String, Schema.Unknown),
+        );
+        const entries = yield* Effect.forEach(rawTranscript.entries, (entry) =>
+          Effect.gen(function* () {
+            if (entry.type !== "expect_outbound") return entry;
+            const body =
+              entry.label === "child.running.turn/start"
+                ? cancellationPrompt
+                : entry.label === "child.queued.turn/start"
+                  ? queuedFollowupPrompt
+                  : undefined;
+            if (body === undefined) return entry;
+            const frame = yield* decodeRecord(entry.frame);
+            const params = yield* decodeRecord(frame.params);
+            expect(params.input).toEqual([{ text: body, type: "text" }]);
+            return {
+              ...entry,
+              frame: {
+                ...frame,
+                params: {
+                  ...params,
+                  input: [
+                    {
+                      text: `${replayHeader}${entry.label === "child.queued.turn/start" ? "01" : "00"} EDT\n\n${body}`,
+                      type: "text",
+                    },
+                  ],
+                },
+              },
+            };
+          }),
+        );
         const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
-          materializeReplayTranscriptWorkspace(rawTranscript, cwd),
+          materializeReplayTranscriptWorkspace({ ...rawTranscript, entries }, cwd),
         );
         const layerOrchestrator = ProviderReplayHarness.layerProviderReplay(
           {
@@ -3951,7 +4028,7 @@ describe("orchestrator MCP toolkit", () => {
             threadId: delegated.childThreadId,
             message: cancellationPrompt,
             clientRequestId: "delegated-child-replay-running-1",
-          });
+          }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt)));
           const runningFollowup = yield* decodeThreadSendResult(
             runningFollowupCall.structuredContent,
           ).pipe(Effect.orDie);
@@ -3980,7 +4057,7 @@ describe("orchestrator MCP toolkit", () => {
             message: queuedFollowupPrompt,
             mode: "queue",
             clientRequestId: "delegated-child-replay-queued-1",
-          });
+          }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt + 1_000)));
           const queuedFollowup = yield* decodeThreadSendResult(
             queuedFollowupCall.structuredContent,
           ).pipe(Effect.orDie);

@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-agent-message-header",
+      "tests": [
+        "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/agentMessageHeader.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/mcp/agentMessageHeader.ts apps/server/src/jones/mcp/agentMessageHeader.test.ts apps/server/src/mcp/OrchestratorMcpService.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-prompts-access",
       "tests": [
         "apps/web/src/reactCompilerCoverage.test.ts",
