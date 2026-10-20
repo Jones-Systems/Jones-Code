@@ -1122,6 +1122,25 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
       ],
       "scope": "Expected timeout expiry of a simple Python static HTTP server retains native command status, output and exit code while skipping the post-settle continuation. Timed-out tests, compound shell commands, unknown outcomes and unexpected server failures keep their existing notifications. The replay case stays in the upstream Codex adapter test because its scoped replay harness owns completion delivery and background-work release. No wire, persistence or client changes."
+    },
+    {
+      "id": "native-goal-controls",
+      "tests": [
+        "apps/server/src/jones/goals/CodexGoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
+        "packages/contracts/src/jones/threadGoal.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderGoalState.test.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts"
+      ],
+      "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement."
     }
   ]
 }

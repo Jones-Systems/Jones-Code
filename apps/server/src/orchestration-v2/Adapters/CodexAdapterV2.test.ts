@@ -14370,6 +14370,215 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],
       );
 
+    it.effect("direct goal pause finishes the current turn without interrupting", () =>
+      Effect.gen(function* () {
+        const outbound: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "direct-goal-pause",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "goal-current",
+                prompt: "Work",
+              }),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-current",
+                goal: codexGoal("active", 10),
+              }),
+              ...request(
+                4,
+                "thread/goal/get",
+                { threadId: nativeThreadId },
+                { goal: codexGoal("active", 10) },
+              ),
+              ...request(
+                5,
+                "thread/goal/set",
+                { threadId: nativeThreadId, status: "paused" },
+                { goal: codexGoal("paused", 10) },
+              ),
+              ...request(
+                6,
+                "thread/goal/get",
+                { threadId: nativeThreadId },
+                { goal: codexGoal("paused", 10) },
+              ),
+              capacityCompletionEntry(nativeThreadId, "goal-current", "completed"),
+            ],
+          }),
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              outbound.push(method);
+            }),
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "Work"));
+        assert.isFunction(
+          harness.runtime.controlGoal,
+          "active goal controls must bypass the message queue",
+        );
+        const result = yield* harness.runtime.controlGoal!({
+          providerThread: harness.providerThread,
+          action: "pause",
+          revalidate: Effect.succeed(true),
+        });
+        assert.equal(result.outcome, "applied");
+        assert.equal(result.goal?.status, "paused");
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.notInclude(outbound, "turn/interrupt");
+        assert.equal(outbound.filter((method) => method === "turn/start").length, 1);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("direct goal clear finishes the current turn without interrupting", () =>
+      Effect.gen(function* () {
+        const outbound: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "direct-goal-clear",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "goal-current",
+                prompt: "Work",
+              }),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-current",
+                goal: codexGoal("active", 10),
+              }),
+              ...request(
+                4,
+                "thread/goal/get",
+                { threadId: nativeThreadId },
+                { goal: codexGoal("active", 10) },
+              ),
+              ...request(5, "thread/goal/clear", { threadId: nativeThreadId }, { goal: null }),
+              ...request(6, "thread/goal/get", { threadId: nativeThreadId }, { goal: null }),
+              capacityCompletionEntry(nativeThreadId, "goal-current", "completed"),
+            ],
+          }),
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              outbound.push(method);
+            }),
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "Work"));
+        assert.isFunction(
+          harness.runtime.controlGoal,
+          "active goal controls must bypass the message queue",
+        );
+        const result = yield* harness.runtime.controlGoal!({
+          providerThread: harness.providerThread,
+          action: "clear",
+          revalidate: Effect.succeed(true),
+        });
+        assert.equal(result.outcome, "applied");
+        assert.equal(result.goal, null);
+        yield* harness.firstTerminal;
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.notInclude(outbound, "turn/interrupt");
+        assert.equal(outbound.filter((method) => method === "turn/start").length, 1);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect("direct goal replacement preserves the active run and native usage", () =>
+      Effect.gen(function* () {
+        const updated = { ...codexGoal("active", 42), objective: "Full accepted objective" };
+        const outbound: Array<string> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: "direct-goal-replace",
+            entries: [
+              ...codexReplayPreamble({
+                nativeThreadId,
+                nativeTurnId: "goal-current",
+                prompt: "Work",
+              }),
+              notification("goal active", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-current",
+                goal: codexGoal("active", 42),
+              }),
+              ...request(
+                4,
+                "thread/goal/get",
+                { threadId: nativeThreadId },
+                { goal: codexGoal("active", 42) },
+              ),
+              ...request(
+                5,
+                "thread/goal/set",
+                { threadId: nativeThreadId, objective: updated.objective },
+                { goal: updated },
+              ),
+              ...request(6, "thread/goal/get", { threadId: nativeThreadId }, { goal: updated }),
+              notification("goal completed", "thread/goal/updated", {
+                threadId: nativeThreadId,
+                turnId: "goal-current",
+                goal: { ...updated, status: "complete" },
+              }),
+              capacityCompletionEntry(nativeThreadId, "goal-current", "completed"),
+            ],
+          }),
+          undefined,
+          (method) =>
+            Effect.sync(() => {
+              outbound.push(method);
+            }),
+        );
+        yield* harness.runtime.startTurn(yield* goalTurnInput(harness, "Work"));
+        const stale = yield* harness.runtime.controlGoal!({
+          providerThread: {
+            ...harness.providerThread,
+            runtimeIdentity: {
+              ...harness.providerThread.runtimeIdentity!,
+              runtimeGeneration: "retired-generation",
+            },
+          },
+          action: "replace",
+          objective: updated.objective,
+          revalidate: Effect.succeed(true),
+        });
+        assert.equal(stale.outcome, "stale");
+        assert.notInclude(outbound, "thread/goal/set");
+        const result = yield* harness.runtime.controlGoal!({
+          providerThread: harness.providerThread,
+          action: "replace",
+          objective: updated.objective,
+          revalidate: Effect.succeed(true),
+        });
+        assert.equal(result.outcome, "applied");
+        assert.equal(result.goal?.status, "active");
+        assert.equal(result.goal?.tokensUsed, 42);
+        assert.equal(result.goal?.timeUsedSeconds, 3);
+        assert.equal(result.goal?.objective, updated.objective);
+        yield* harness.firstTerminal;
+        assert.equal(outbound.filter((method) => method === "turn/start").length, 1);
+        assert.notInclude(outbound, "thread/goal/clear");
+        assert.notInclude(outbound, "turn/interrupt");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
     it.effect("fails an outstanding goal hold on producer termination", () =>
       Effect.gen(function* () {
         let opened:
