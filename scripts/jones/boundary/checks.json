@@ -192,8 +192,18 @@
     },
     {
       "id": "jones-provider-order",
-      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
-      "commands": ["vp test run apps/web/src/jones/settings/providerOrder.test.ts"]
+      "tests": [
+        "apps/web/src/jones/settings/providerOrder.test.ts",
+        "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx",
+        "packages/client-runtime/src/state/serverConfigProjection.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/settings/providerOrder.test.ts packages/client-runtime/src/state/serverConfigProjection.test.ts",
+        "cd apps/web && vp test run --project browser src/jones/settings/SortableProviderRows.browser.test.tsx",
+        "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'compiles apps/web/src/jones/settings/SortableProviderRows.tsx'",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck"
+      ]
     },
     {
       "id": "jones-provider-restart-identity",

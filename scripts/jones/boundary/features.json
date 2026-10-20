@@ -129,8 +129,12 @@
     },
     {
       "id": "provider-order",
-      "tests": ["apps/web/src/jones/settings/providerOrder.test.ts"],
-      "scope": "Settings reorder custom provider instances within their driver while pinning default slots and preserving configuration values and other-driver positions. The small editor hook renders Jones-owned controls; web and desktop share the renderer, and the existing environment settings patch persists order without schema changes."
+      "tests": [
+        "apps/web/src/jones/settings/providerOrder.test.ts",
+        "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx",
+        "packages/client-runtime/src/state/serverConfigProjection.test.ts"
+      ],
+      "scope": "Settings drag and keyboard reordering moves custom provider instances within their driver while pinning defaults and preserving configuration values. A small panel hook mounts Jones-owned sortable rows. The accepted shared projection edit compares key order while reusing unchanged children; its existing integration tests cover live and reconnect order updates without duplicating projection machinery. Web and desktop share the renderer and persist through the existing settings patch without schema changes."
     },
     {
       "id": "provider-restart-identity",
