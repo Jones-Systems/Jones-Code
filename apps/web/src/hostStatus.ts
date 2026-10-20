@@ -93,63 +93,85 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
   } as const;
 }
 
+export interface HostStatusCache {
+  snapshot: HostStatusSnapshot | null;
+  settledAt: number;
+}
+
 export function observeHostStatus(
   visibility: Pick<Document, "visibilityState" | "addEventListener" | "removeEventListener">,
   receive: (snapshot: HostStatusSnapshot | null) => void,
   request: (signal: AbortSignal) => Promise<HostStatusSnapshot>,
+  cache: HostStatusCache = { snapshot: null, settledAt: -Infinity },
 ) {
   let disposed = false;
   let pending = false;
   const abort = new AbortController();
+  let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let expiryTimer: ReturnType<typeof setTimeout> | undefined;
   const clearExpiry = () => {
     clearTimeout(expiryTimer);
     expiryTimer = undefined;
   };
-  const publish = (snapshot: HostStatusSnapshot) => {
+  const publish = (snapshot: HostStatusSnapshot | null) => {
     clearExpiry();
+    if (snapshot === null) {
+      cache.snapshot = null;
+      receive(null);
+      return;
+    }
     const now = Date.now();
     const hosts = snapshot.hosts.map((host) => freshHostStatus(host, now));
-    receive({ ...snapshot, hosts });
+    cache.snapshot = { ...snapshot, hosts };
+    receive(cache.snapshot);
     const deadlines = hosts.flatMap((host) =>
       host.status === "available" ? [Date.parse(host.sampledAt) + HOST_STATUS_MAX_AGE_MS] : [],
     );
     if (deadlines.length > 0) {
       expiryTimer = setTimeout(
         () => {
-          if (!disposed && visibility.visibilityState === "visible")
-            publish({ ...snapshot, hosts });
+          if (!disposed) publish({ ...snapshot, hosts });
         },
         Math.min(...deadlines) - now,
       );
     }
+  };
+  const schedule = () => {
+    clearTimeout(pollTimer);
+    if (disposed || pending || visibility.visibilityState !== "visible") return;
+    const delay = cache.settledAt + 10_000 - Date.now();
+    if (delay <= 0) void refresh();
+    else pollTimer = setTimeout(() => void refresh(), delay);
   };
   const refresh = async () => {
     if (disposed || pending || visibility.visibilityState !== "visible") return;
     pending = true;
     try {
       const snapshot = await request(abort.signal);
-      if (!disposed && visibility.visibilityState === "visible") publish(snapshot);
+      if (!disposed) {
+        cache.settledAt = Date.now();
+        publish(snapshot);
+      }
     } catch {
       if (!disposed) {
-        clearExpiry();
-        receive(null);
+        cache.settledAt = Date.now();
+        publish(null);
       }
     } finally {
       pending = false;
+      schedule();
     }
   };
   const onVisibility = () => {
-    clearExpiry();
-    receive(null);
-    void refresh();
+    publish(cache.snapshot);
+    schedule();
   };
-  const timer = setInterval(() => void refresh(), 10_000);
   visibility.addEventListener("visibilitychange", onVisibility);
-  void refresh();
+  publish(cache.snapshot);
+  schedule();
   return () => {
     disposed = true;
-    clearInterval(timer);
+    clearTimeout(pollTimer);
     clearExpiry();
     visibility.removeEventListener("visibilitychange", onVisibility);
     abort.abort();

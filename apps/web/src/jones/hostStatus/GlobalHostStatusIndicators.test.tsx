@@ -126,7 +126,7 @@ it("keeps the global VPS source across local, remote, and local thread navigatio
   expect(vi.getTimerCount()).toBe(0);
   await render();
   expect(requests(local)).toHaveLength(1);
-  expect(requests(remote)).toHaveLength(4);
+  expect(requests(remote)).toHaveLength(3);
   expect(vps()?.textContent).toBe("VPS · 23% · 4");
 });
 
@@ -270,4 +270,66 @@ it("requires the VPS slot and does not continue discovery after cancellation", a
     discoverGlobalHostStatusSource(connections, abort.signal, request),
   ).rejects.toThrow();
   expect(request).not.toHaveBeenCalled();
+});
+
+it("retains fresh values across a true remount without a redundant request and expires while pending", async () => {
+  await render();
+  const count = fetchStatus.mock.calls.length;
+  fetchStatus.mockImplementation(() => new Promise(() => {}));
+  await advance(1_000);
+  await act(async () => root.render(null));
+  await render();
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  expect(fetchStatus).toHaveBeenCalledTimes(count);
+  await advance(9_000);
+  expect(fetchStatus).toHaveBeenCalledTimes(count + 1);
+  await advance(19_999);
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  await advance(1);
+  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(vps()?.getAttribute("aria-label")).toContain("stale");
+});
+
+it("retains values and cadence across hide/show and revalidates stale values on resume", async () => {
+  await render();
+  const count = fetchStatus.mock.calls.length;
+  await act(async () => {
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  await advance(1_000);
+  await act(async () => {
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  expect(fetchStatus).toHaveBeenCalledTimes(count);
+  await act(async () => {
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await advance(30_000);
+  expect(fetchStatus).toHaveBeenCalledTimes(count);
+  fetchStatus.mockImplementation(() => new Promise(() => {}));
+  await act(async () => {
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  expect(vps()?.textContent).toBe("VPS · — · —");
+  expect(fetchStatus).toHaveBeenCalledTimes(count + 1);
+});
+
+it("clears the retained sample when its gateway is removed and re-added", async () => {
+  await render();
+  await act(async () => root.render(null));
+  connections.environmentIds = [];
+  connections.connectedEnvironmentIds = [];
+  await render();
+  expect(vps()).toBeNull();
+  connections.environmentIds = [remote];
+  connections.connectedEnvironmentIds = [remote];
+  fetchStatus.mockResolvedValueOnce(available(41)).mockImplementation(() => new Promise(() => {}));
+  await render();
+  expect(vps()?.textContent).toBe("VPS · — · —");
 });
