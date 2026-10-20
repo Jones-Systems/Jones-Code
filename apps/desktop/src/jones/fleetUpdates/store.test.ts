@@ -65,6 +65,7 @@ async function createTwoHostCampaign(
   const host = vi.fn<FleetCampaignDriver["host"]>(async (environmentId, request) => {
     if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
     if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
+    if (request.action === "leader") throw new Error("This campaign publishes no laptop build.");
     const selectedEnrollment =
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
     const operationId =
