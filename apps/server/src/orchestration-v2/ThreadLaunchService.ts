@@ -1154,6 +1154,7 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId | null,
+    observeExistingSetup = false,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
@@ -1618,6 +1619,9 @@ const make = Effect.gen(function* () {
               projectCwd: project.workspaceRoot,
               worktreePath: cwd,
               ...(legacyPreparation === undefined ? {} : { legacyPreparation }),
+              // Jones: an app-owned delegated child's existing-worktree setup is
+              // observed without the setup tracker, so release waits for a
+              // synchronous script and Stop can close the script's terminal.
               ...(tracked
                 ? {
                     observeCompletion: {
@@ -1625,7 +1629,9 @@ const make = Effect.gen(function* () {
                         setupTracker.appendTail(threadId, "setup-script", line),
                     },
                   }
-                : {}),
+                : observeExistingSetup
+                  ? { observeCompletion: {} }
+                  : {}),
               project: {
                 id: project.id,
                 workspaceRoot: project.workspaceRoot,
@@ -2044,16 +2050,23 @@ const make = Effect.gen(function* () {
     runId: RunId | null,
   ) {
     const prepareWithInterruption = Effect.gen(function* () {
-      const prepare = prepareInBackground(input, threadId, runId);
+      // Jones: an app-owned delegated child's existing worktree has its setup
+      // observed and is also prepared under Stop, so task_cancel closes its
+      // setup terminal. The checkout is not removed: this launch did not
+      // create it. Other existing-worktree and root launches are unchanged.
+      const appOwnedExisting =
+        runId !== null &&
+        input.workspaceStrategy.type === "existing_worktree" &&
+        input.reusedWorktree === undefined &&
+        (yield* isAppOwnedDelegatedChild(input, threadId));
+      const prepare = prepareInBackground(input, threadId, runId, appOwnedExisting);
       if (runId === null) return yield* prepare;
-      if (input.workspaceStrategy.type !== "worktree" && input.reusedWorktree === undefined) {
-        // Jones: an app-owned delegated child's existing worktree is also
-        // prepared under Stop, so task_cancel closes its setup terminal. The
-        // checkout is not removed: this launch did not create it. Other
-        // existing-worktree and root launches are unchanged.
-        if (input.workspaceStrategy.type !== "existing_worktree") return yield* prepare;
-        if (!(yield* isAppOwnedDelegatedChild(input, threadId))) return yield* prepare;
-      }
+      if (
+        input.workspaceStrategy.type !== "worktree" &&
+        input.reusedWorktree === undefined &&
+        !appOwnedExisting
+      )
+        return yield* prepare;
       const afterSequence = yield* threads
         .getThreadEventSequence(threadId)
         .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));

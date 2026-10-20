@@ -1682,7 +1682,7 @@
       "commands": [
         "vp test run packages/contracts/src/jones/delegatedTaskWorkspace.test.ts packages/contracts/src/orchestratorMcp.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
         "vp test run apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts --maxWorkers=1",
-        "vp test run apps/server/src/orchestration-v2/ThreadLaunchService.test.ts -t \"delegated worktrees|cancels tracked setup|existing-worktree launch finish setup after Stop\" --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/ThreadLaunchService.test.ts -t \"delegated worktrees|cancels tracked setup|top-level existing-worktree setup running in the background after Stop\" --maxWorkers=1",
         "vp test run apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts --maxWorkers=1",
         "vp test run apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter t3 --concurrency-limit 1 typecheck",
