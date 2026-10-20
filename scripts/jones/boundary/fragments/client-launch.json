@@ -1,0 +1,30 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "client-launch",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts",
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts",
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+    "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/mcp/toolkits/project/handlers.ts",
+    "apps/server/src/mcp/McpToolAccess.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
+      "to": "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/clientLaunch.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/project/tools.ts",
+      "to": "packages/contracts/src/jones/clientLaunch.ts"
+    }
+  ]
+}
