@@ -108,10 +108,69 @@ async function cloneDarwinFile(source: string, target: string): Promise<void> {
 }
 
 // Copying a synthetic 8 GiB file on ext4, fs.copyFile's single kernel stream ran at about
-// 380 MiB/s and four concurrent 8 MiB positioned copies at about 760 MiB/s. Four matches
-// libuv's default thread pool; clone-capable filesystems never reach this fallback.
+// 380 MiB/s and four concurrent 8 MiB positioned copies at about 760 MiB/s.
+// Keep that ceiling; clone-capable filesystems never reach this fallback.
 const COPY_CHUNK_BYTES = 8 * 1024 * 1024;
 const COPY_CONCURRENCY = 4;
+
+function copyConcurrencyCap(): number {
+  try {
+    const available = NodeOS.availableParallelism();
+    return Number.isSafeInteger(available) && available >= 1
+      ? Math.min(COPY_CONCURRENCY, available)
+      : COPY_CONCURRENCY;
+  } catch {
+    return COPY_CONCURRENCY;
+  }
+}
+
+function sampleCopyConcurrency(cap: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const selected = new Promise<number>((resolve) => {
+    try {
+      const before = NodeOS.cpus();
+      // @effect-diagnostics-next-line globalTimers:off - The detached launcher must use Node built-ins and cannot load Effect.
+      timer = setTimeout(() => {
+        try {
+          const after = NodeOS.cpus();
+          if (before.length === 0 || before.length !== after.length) {
+            resolve(cap);
+            return;
+          }
+          let busy = 0;
+          let idle = 0;
+          for (const [index, cpu] of after.entries()) {
+            for (const field of ["user", "nice", "sys", "irq", "idle"] as const) {
+              const start = before[index]!.times[field];
+              const end = cpu.times[field];
+              const delta = end - start;
+              if (!Number.isFinite(start) || start < 0 || !Number.isFinite(delta) || delta < 0) {
+                resolve(cap);
+                return;
+              }
+              if (field === "idle") idle += delta;
+              else busy += delta;
+            }
+          }
+          const total = busy + idle;
+          if (!Number.isFinite(total) || total <= 0) {
+            resolve(cap);
+            return;
+          }
+          // Host CPU times are advisory, not cgroup-local usage. The baseline is already running.
+          const idleCores = (1 - busy / total) * after.length;
+          resolve(Math.min(cap, Math.max(1, 1 + Math.floor(idleCores))));
+        } catch {
+          resolve(cap);
+        }
+      }, 100);
+      timer.unref();
+    } catch {
+      resolve(cap);
+    }
+  });
+  return { selected, cancel: () => clearTimeout(timer) };
+}
 
 /** Linux full-copy fallback with fs.copyFile's EXCL, mode and failed-target cleanup; callers fsync. */
 async function copyFileConcurrently(source: string, target: string): Promise<void> {
@@ -141,8 +200,21 @@ async function copyFileConcurrently(source: string, target: string): Promise<voi
         failures.push(cause);
       }
     };
+    const baseline = copyChunks();
+    const loops = [baseline];
+    const cap = Math.min(copyConcurrencyCap(), Math.ceil(size / COPY_CHUNK_BYTES));
+    if (cap > 1) {
+      const sample = sampleCopyConcurrency(cap);
+      try {
+        const selected = await Promise.race([sample.selected, baseline.then(() => 1)]);
+        for (let worker = 1; worker < selected && failures.length === 0 && next < size; worker++)
+          loops.push(copyChunks());
+      } finally {
+        sample.cancel();
+      }
+    }
     // Every chunk settles before the handle closes, so no write lands after cleanup.
-    await Promise.all(Array.from({ length: COPY_CONCURRENCY }, copyChunks));
+    await Promise.all(loops);
     if (failures.length === 0)
       await output.chmod(mode & 0o7777).catch((cause: unknown) => failures.push(cause));
     await output.close().catch((cause: unknown) => failures.push(cause));
