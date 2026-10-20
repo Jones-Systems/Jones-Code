@@ -163,6 +163,7 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     state: (after) => record("state", after),
     check: record("check"),
     download: (input) => record("download", input),
+    downloadExact: (input) => record("downloadExact", input),
     prepareNative: (input) => record("prepareNative", input),
     install: (input) => record("install", input),
     stageExact: (input) => record("stageExact", input),
@@ -204,6 +205,7 @@ describe("qualified update HTTP authority and decoding", () => {
     const app = fixture(["orchestration:read", "orchestration:operate"]);
     try {
       const download = { artifactId: 101, sourceSha: "a".repeat(40) };
+      const downloadExact = { targetSource: "b".repeat(40) };
       const install = {
         stagedHandle: app.state.stagedHandle,
         environmentId: app.state.environmentId,
@@ -218,6 +220,7 @@ describe("qualified update HTTP authority and decoding", () => {
       };
       for (const [action, input] of [
         ["download", download],
+        ["download-exact", downloadExact],
         ["install", install],
         ["prepare-native", preparation],
       ] as const) {
@@ -234,6 +237,7 @@ describe("qualified update HTTP authority and decoding", () => {
       }
       expect(app.calls).toEqual([
         { action: "download", input: download },
+        { action: "downloadExact", input: downloadExact },
         { action: "install", input: install },
         { action: "prepareNative", input: preparation },
       ]);
@@ -265,6 +269,17 @@ describe("qualified update HTTP authority and decoding", () => {
         }),
       );
       expect(preparation.status).toBe(400);
+      // A version string or abbreviated commit never selects an exact source.
+      for (const targetSource of ["0.1.0-preview.20261019.1.1", "b".repeat(12), "B".repeat(40)]) {
+        const exact = await app.handler(
+          new Request("http://fixture/api/jones-updates/download-exact", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ targetSource }),
+          }),
+        );
+        expect(exact.status).toBe(400);
+      }
       expect(app.calls).toEqual([]);
     } finally {
       await app.dispose();
@@ -279,7 +294,7 @@ describe("qualified update HTTP authority and decoding", () => {
         environmentId: app.state.environmentId,
         currentVersion: app.state.currentVersion,
       };
-      for (const action of ["check", "download", "prepare-native", "install"]) {
+      for (const action of ["check", "download", "download-exact", "prepare-native", "install"]) {
         const response = await app.handler(
           new Request(`http://fixture/api/jones-updates/${action}`, {
             method: "POST",
@@ -287,9 +302,11 @@ describe("qualified update HTTP authority and decoding", () => {
             body: JSON.stringify(
               action === "download"
                 ? { artifactId: 101, sourceSha: "a".repeat(40) }
-                : action === "prepare-native"
-                  ? { ...input, stagedHandle: "b".repeat(64), transactionId: "c".repeat(64) }
-                  : input,
+                : action === "download-exact"
+                  ? { targetSource: "a".repeat(40) }
+                  : action === "prepare-native"
+                    ? { ...input, stagedHandle: "b".repeat(64), transactionId: "c".repeat(64) }
+                    : input,
             ),
           }),
         );

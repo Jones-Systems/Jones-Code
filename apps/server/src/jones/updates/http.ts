@@ -58,6 +58,13 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
             return yield* updates.download(payload);
           }),
         )
+        .handle("downloadExact", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.downloadExact(payload);
+          }),
+        )
         .handle("install", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);

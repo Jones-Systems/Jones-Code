@@ -92,6 +92,13 @@
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+    "apps/server/src/jones/cloud/ownedScratch.ts",
+    "apps/server/src/jones/cloud/ownedScratch.test.ts",
+    "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.tsx",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+    "apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx",
+    "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx",
     "apps/web/src/jones/updates/installedSourceComparison.ts",
     "apps/web/src/jones/updates/installedSourceComparison.test.ts",
     "apps/server/src/jones/updates/sourceRelation.ts",
@@ -433,6 +440,10 @@
     {
       "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
       "to": "scripts/jones/updates/native-fixture-support.mjs"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/cloud/ownedScratch.ts"
     },
     {
       "from": "apps/server/src/server.ts",

@@ -12,6 +12,7 @@ import {
 } from "./importedHistory.ts";
 import {
   JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
   JonesNativePrepareInput,
   JonesUpdateInstallInput,
   JonesUpdateState,
@@ -473,6 +474,14 @@ export const makeJonesHttpGroups = ({
       HttpApiEndpoint.post("download", "/api/jones-updates/download", {
         headers: OptionalBearerHeaders,
         payload: JonesUpdateDownloadInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("downloadExact", "/api/jones-updates/download-exact", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateExactInput,
         success: JonesUpdateState,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),

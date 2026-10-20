@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   type JonesUpdateState,
   type JonesUpdateDownloadInput,
+  type JonesUpdateExactInput,
   type JonesUpdateInstallInput,
   type JonesNativePrepareInput,
   ServerSelfUpdateError,
@@ -55,6 +56,8 @@ export class JonesUpdates extends Context.Service<
     readonly prepareNative: (input: JonesNativePrepareInput) => Effect.Effect<JonesUpdateState>;
     readonly download: (input: JonesUpdateDownloadInput) => Effect.Effect<JonesUpdateState>;
     readonly install: (input: JonesUpdateInstallInput) => Effect.Effect<JonesUpdateState>;
+    /** Stages the build of one exact source for this host's own operator; no fleet operation. */
+    readonly downloadExact: (input: JonesUpdateExactInput) => Effect.Effect<JonesUpdateState>;
     readonly stageExact: (input: {
       readonly targetSource: string;
       readonly operationId: string;
@@ -139,6 +142,7 @@ export const layer = Layer.effect(
         check: unavailable,
         prepareNative: () => unavailable,
         download: () => unavailable,
+        downloadExact: () => unavailable,
         install: () => unavailable,
       });
     }
@@ -313,6 +317,9 @@ export const layer = Layer.effect(
               ),
         check: action({ action: "check" }),
         download: (input) => action({ action: "download", ...input }),
+        // The desktop host owns its updater; its state never advertises exactSource.
+        downloadExact: () =>
+          Effect.succeed(blocked("Exact-source download is unavailable for the desktop updater.")),
         install: (input) =>
           Effect.suspend(() => {
             if (installPending)
@@ -650,6 +657,14 @@ export const layer = Layer.effect(
         }),
       check: Effect.promise(() => updater.check()),
       download: (input) => Effect.promise(() => updater.download(input)),
+      downloadExact: (input) =>
+        updater.snapshot().capability.download
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
+          : Effect.succeed({
+              ...updater.snapshot(),
+              phase: "blocked" as const,
+              message: "Exact-source download is unavailable on this host.",
+            }),
       install: (input) => Effect.promise(() => updater.install(input)),
     });
   }),

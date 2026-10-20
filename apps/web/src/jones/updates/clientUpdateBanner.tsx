@@ -1,12 +1,14 @@
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 import { InfoIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { ComposerBannerStackItem } from "../../components/chat/ComposerBannerStack";
 import {
   dismissVersionMismatch,
   isVersionMismatchDismissed,
   resolveServerConfigClientUpdateNotice,
 } from "../../versionSkew";
+import type { ExactSourceTarget } from "./ExactSourceUpdateAction";
+import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 
 interface NoticeEnvironment {
   readonly environmentId: EnvironmentId;
@@ -18,12 +20,19 @@ export interface ClientUpdateBannerInput {
   readonly activeEnvironment: NoticeEnvironment | null | undefined;
   readonly automaticEnvironment: boolean;
   readonly eligibleEnvironments: readonly NoticeEnvironment[];
+  /** Renders the exact-source action of a preview-source notice; fixtures inject a synthetic host. */
+  readonly renderExactSourceAction?: (target: ExactSourceTarget) => ReactNode;
 }
+
+const renderProductionAction = (target: ExactSourceTarget) => (
+  <ProductionExactSourceUpdateAction {...target} />
+);
 
 export function useClientUpdateBanners({
   activeEnvironment,
   automaticEnvironment,
   eligibleEnvironments,
+  renderExactSourceAction = renderProductionAction,
 }: ClientUpdateBannerInput): ComposerBannerStackItem[] {
   const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   const environments = automaticEnvironment
@@ -59,6 +68,16 @@ export function useClientUpdateBanners({
             {notice.serverSourceSha ? ` (${notice.serverSourceSha.slice(0, 12)})` : ""}.
           </span>
         ),
+        // The target is always this app's own source; a newer-server notice has no exact action.
+        ...(notice.kind === "preview-source-difference" && notice.clientSourceSha
+          ? {
+              actions: renderExactSourceAction({
+                environmentId: environment.environmentId,
+                label: environment.label,
+                targetSource: notice.clientSourceSha,
+              }),
+            }
+          : {}),
         dismissLabel: "Dismiss client version notice",
         onDismiss: () => {
           dismissVersionMismatch(key);
