@@ -71,6 +71,15 @@ refused rather than running half-upgraded:
 
 Update the side the notice names, then reconnect.
 
+For Jones preview builds, **Different preview sources** means the app and server
+were built from different source revisions. Its update action targets the build
+running in your app, even if a newer desktop update has already downloaded.
+Mac and Linux build version numbers can differ while their source matches.
+Download the matching server build, then confirm installation when you are ready
+for that server to restart. A build staged from another source is not installed
+from this notice. Offline, unsupported, or newer servers show why the action is
+unavailable; the notice does not substitute the latest build.
+
 ## Update a connected server
 
 The offered action depends on how the server runs:

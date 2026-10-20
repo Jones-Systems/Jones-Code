@@ -56,6 +56,8 @@ export class JonesUpdater {
   private revision = 0;
   private busy = false;
   private candidate: JonesActionsCandidate | undefined;
+  /** The candidate returned by the latest check run, never a leftover from an earlier one. */
+  private checked: JonesActionsCandidate | undefined;
   private readonly listeners = new Set<() => void>();
 
   private readonly host: JonesUpdaterHost;
@@ -169,6 +171,7 @@ export class JonesUpdater {
     )
       return this.snapshot();
     this.busy = true;
+    this.checked = undefined;
     const staged = this.state.stagedHandle !== undefined;
     if (!staged) this.publish({ phase: "checking", message: "Checking qualified main builds…" });
     try {
@@ -181,6 +184,7 @@ export class JonesUpdater {
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
         this.candidate = result.candidate;
+        this.checked = result.candidate;
         if (staged) return this.publish({ checkedAt });
         const candidate = result.candidate;
         return this.publish({
@@ -211,7 +215,9 @@ export class JonesUpdater {
             ? result.reason
             : result.state === "building"
               ? "A fresh main build is still being qualified."
-              : "No newer qualified main build.",
+              : targetSource === undefined
+                ? "No newer qualified main build."
+                : "This host already runs the requested source.",
       });
     } catch (error) {
       return staged ? this.publish({ checkedAt: new Date().toISOString() }) : this.fail(error);
@@ -220,16 +226,36 @@ export class JonesUpdater {
     }
   }
 
+  /**
+   * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
+   * a different staged source is never replaced, and the same staged source is returned unchanged.
+   */
   async stageExact(targetSource: string): Promise<JonesUpdateState> {
     if (this.state.stagedHandle !== undefined) {
-      return this.state.provenance?.sourceSha === targetSource
+      const staged = this.state.provenance?.sourceSha;
+      return staged === targetSource
         ? this.snapshot()
-        : { ...this.snapshot(), phase: "blocked", message: "Another source is already staged." };
+        : {
+            ...this.snapshot(),
+            phase: "blocked",
+            message:
+              staged === undefined
+                ? "Another source is already staged."
+                : `Another source (${staged.slice(0, 12)}) is already staged and was not replaced.`,
+          };
     }
-    await this.check(targetSource);
-    const candidate = this.candidate;
-    if (this.state.phase !== "available" || candidate?.source !== targetSource)
-      return this.snapshot();
+    this.checked = undefined;
+    const state = await this.check(targetSource);
+    // Download only the candidate this check returned for the target; a skipped check or a
+    // candidate left by an earlier latest-main check must not be staged.
+    const candidate = this.checked;
+    if (state.phase !== "available" || candidate?.source !== targetSource)
+      return state.phase === "available" || state.phase === "checking"
+        ? {
+            ...state,
+            message: "The requested source is not available from the current check. Try again.",
+          }
+        : state;
     return this.download({ artifactId: candidate.artifactId, sourceSha: targetSource });
   }
 

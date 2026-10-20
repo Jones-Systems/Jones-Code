@@ -3,7 +3,12 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthenticatedAuth, EnvironmentHttpApi } from "../environmentHttp.ts";
 import v2Conformance from "../../contracts/workstreams-registration-context/v2/fixtures/conformance.json" with { type: "json" };
-import { JonesNativePrepareInput, JonesUpdateInstallInput } from "./jonesUpdates.ts";
+import {
+  JonesNativePrepareInput,
+  JonesUpdateCapability,
+  JonesUpdateExactInput,
+  JonesUpdateInstallInput,
+} from "./jonesUpdates.ts";
 
 // The public API metadata is also consumed by independently upgraded clients.
 // Keep the Jones routes and authentication identity stable through relocation.
@@ -85,6 +90,7 @@ describe("Jones environment HTTP registration", () => {
       ["state", "GET", "/api/jones-updates"],
       ["check", "POST", "/api/jones-updates/check"],
       ["download", "POST", "/api/jones-updates/download"],
+      ["downloadExact", "POST", "/api/jones-updates/download-exact"],
       ["install", "POST", "/api/jones-updates/install"],
       ["ownerOperations", "POST", "/api/workstreams/native/owner/v1/operations"],
       ["context", "GET", "/api/workstreams/native/v1/context"],
@@ -113,6 +119,20 @@ it("requires an explicit native attempt without changing ordinary install reques
     transactionId: "b".repeat(64),
   });
   expect(Schema.decodeUnknownSync(JonesUpdateInstallInput)(base)).toEqual(base);
+});
+
+it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
+  const decode = Schema.decodeUnknownSync(JonesUpdateExactInput);
+  const targetSource = "a".repeat(40);
+  expect(decode({ targetSource })).toEqual({ targetSource });
+  for (const invalid of ["a".repeat(39), "A".repeat(40), "a".repeat(41), "0.1.0-preview.1", ""])
+    expect(() => decode({ targetSource: invalid })).toThrow();
+  expect(() => decode({})).toThrow();
+  const legacy = { check: true, download: true, install: false };
+  expect(Schema.decodeUnknownSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
+  expect(Schema.decodeUnknownSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual(
+    { ...legacy, exactSource: true },
+  );
 });
 
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {

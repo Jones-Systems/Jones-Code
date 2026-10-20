@@ -20,6 +20,7 @@ import { SidebarUpdatePill } from "../../../components/sidebar/SidebarUpdatePill
 import { ConfirmDialogHost } from "../../../components/ConfirmDialogHost";
 import { ToastProvider, AnchoredToastProvider } from "../../../components/ui/toast";
 import { TooltipProvider } from "../../../components/ui/tooltip";
+import { ExactSourcePreview, useSyntheticExactSource } from "./exact-source-fixture";
 import type { InstallPreviewFixture } from "./install-preview-bridge";
 
 function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }) {
@@ -55,6 +56,8 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
   const [automatic, setAutomatic] = useState(false);
   const [pair, setPair] = useState<NoticePair>("different");
   const [mount, setMount] = useState(1);
+  // Notices here cover selection and dismissal; their actions run against a synthetic host.
+  const { renderExactSourceAction } = useSyntheticExactSource();
   // Both synthetic sources differ from the client and share their displayed abbreviation.
   const differentSource = (APP_SOURCE_SHA?.startsWith("a") ? "b" : "a").repeat(39) + "b";
   const source =
@@ -156,6 +159,7 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
         activeEnvironment={environments.find((environment) => environment.label === selected)}
         automaticEnvironment={automatic}
         eligibleEnvironments={environments.slice(0, 2)}
+        renderExactSourceAction={renderExactSourceAction}
       />
     </section>
   );
@@ -165,6 +169,7 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
   const stored = useSyncExternalStore(fixture.subscribe, fixture.read, fixture.read);
   const [failure, setFailure] = useState<string | null>(null);
   const [showClientNotices, setShowClientNotices] = useState(false);
+  const [showExactSource, setShowExactSource] = useState(false);
   const control = (action: () => void) => {
     try {
       action();
@@ -303,6 +308,18 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                 onClick={() => setShowClientNotices(true)}
               >
                 Open client notice fixture
+              </button>
+            )}
+            {showExactSource ? (
+              <ExactSourcePreview runId={stored.runId} />
+            ) : (
+              <button
+                type="button"
+                className="rounded border px-2 py-1 text-xs"
+                data-testid="show-exact-source"
+                onClick={() => setShowExactSource(true)}
+              >
+                Open exact-source action fixture
               </button>
             )}
           </main>

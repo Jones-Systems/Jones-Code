@@ -41,6 +41,7 @@ import {
 } from "../jones/cloud/qualifiedRuntime.ts";
 import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts";
 import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
+import { withOwnedScratch } from "../jones/cloud/ownedScratch.ts";
 
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
@@ -550,49 +551,63 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           recursive: true,
           mode: 0o700,
         });
-        const scratch = await NodeFSP.mkdtemp(
-          NodePath.join(binding.baseDir, "runtime", ".jones-extract-"),
-        );
-        try {
-          if (staged.candidate.platform === "darwin") {
-            await extractQualifiedDarwinRuntime({
-              artifact: staged,
-              destination: scratch,
-              baseDir: binding.baseDir,
-              run: async (command) => {
-                const result = await runPromise(
-                  runner.run({ ...command, timeout: Duration.minutes(5) }),
+        // Scratch removal can fail after the stage is durable; the stage then stands and the
+        // leftover is reported below instead of failing a valid Download.
+        return await withOwnedScratch(
+          NodePath.join(binding.baseDir, "runtime"),
+          ".jones-extract-",
+          async (scratch) => {
+            if (staged.candidate.platform === "darwin") {
+              await extractQualifiedDarwinRuntime({
+                artifact: staged,
+                destination: scratch,
+                baseDir: binding.baseDir,
+                run: async (command) => {
+                  const result = await runPromise(
+                    runner.run({ ...command, timeout: Duration.minutes(5) }),
+                  );
+                  return { code: result.code ?? 1, stdout: result.stdout };
+                },
+              });
+            } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
+            await validateJonesStagedArtifact(
+              NodePath.dirname(staged.payloadPath),
+              staged.candidate,
+            );
+            let migrationPlan: MigrationPlan | undefined;
+            const qualifiedStage = await stageQualifiedRuntime({
+              artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
+              binding,
+              host: { platform, architecture: arch },
+              validate: async (entryPath) => {
+                // Darwin Download inspects app metadata and ASAR; it never launches
+                // an unsigned candidate against the owner's native service home.
+                if (staged.candidate.platform === "darwin") return;
+                migrationPlan = await runPromise(
+                  validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
                 );
-                return { code: result.code ?? 1, stdout: result.stdout };
               },
             });
-          } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
-          await validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), staged.candidate);
-          let migrationPlan: MigrationPlan | undefined;
-          const qualifiedStage = await stageQualifiedRuntime({
-            artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
-            binding,
-            host: { platform, architecture: arch },
-            validate: async (entryPath) => {
-              // Darwin Download inspects app metadata and ASAR; it never launches
-              // an unsigned candidate against the owner's native service home.
-              if (staged.candidate.platform === "darwin") return;
-              migrationPlan = await runPromise(
-                validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
-              );
-            },
-          });
-          return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
-        } finally {
-          await NodeFSP.rm(scratch, { recursive: true, force: true });
-        }
+            return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
+          },
+        );
       },
       catch: (cause) =>
         failWith(
           cause instanceof Error ? cause.message : "Could not stage the qualified Jones runtime.",
           cause,
         ),
-    });
+    }).pipe(
+      Effect.tap(({ leftover }) =>
+        leftover === undefined
+          ? Effect.void
+          : Effect.logWarning("Qualified staging left its scratch directory in place.", {
+              path: leftover.path,
+              cause: leftover.cause instanceof Error ? leftover.cause.message : leftover.cause,
+            }),
+      ),
+      Effect.map(({ value }) => value),
+    );
   const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
     input,
     onHandoffAccepted = () => Effect.void,

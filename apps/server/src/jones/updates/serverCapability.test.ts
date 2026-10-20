@@ -62,16 +62,20 @@ describe("qualified server update capability", () => {
 
   it("requires every staging guard while retaining checks", () => {
     for (const missing of ["qualifiedStaging", "hasCurrentVersion", "hasStage"] as const) {
-      expect(qualifiedServerCapability({ ...ready, [missing]: false })).toMatchObject({
+      const capability = qualifiedServerCapability({ ...ready, [missing]: false });
+      expect(capability).toMatchObject({
         check: true,
         download: false,
         reason: "bootstrap-required",
       });
+      // Exact-source selection is advertised only together with the staging it reuses.
+      expect(capability).not.toHaveProperty("exactSource");
     }
     expect(qualifiedServerCapability(ready)).toEqual({
       check: true,
       download: true,
       install: true,
+      exactSource: true,
     });
   });
 
@@ -86,6 +90,7 @@ describe("qualified server update capability", () => {
         check: true,
         download: true,
         install: false,
+        exactSource: true,
         reason: "bootstrap-required",
       });
     }

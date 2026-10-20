@@ -79,9 +79,16 @@
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/versionSkew.test.ts",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx"
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/http.test.ts",
+        "apps/server/src/jones/updates/serverCapability.test.ts",
+        "apps/server/src/jones/updates/desktopInstall.test.ts"
       ],
-      "scope": "Passive client guidance for ordered newer server versions and neutral unequal Jones preview sources. Full source identities scope per-environment dismissals; active and automatic eligible environments share the web/desktop renderer. ChatView adds only the notice hook and stack entries; versionSkew adapter tests stay shared to prove branded config forwarding. No server update action, source ancestry inference, connection block, or mobile version comparison. Synthetic renderer fixture exercises the production hook and stack with isolated descriptors."
+      "scope": "Client guidance for unequal Jones preview sources includes an explicit download and confirmed install toward the full source baked into the running client. Exact-source capability and endpoint preserve legacy offered-build fallback only for a matching source. Stale, disconnected, unprivileged and mismatched staged states refuse actions. Existing source-scoped dismissal remains. Synthetic production-controller fixtures and browser interactions cover download, confirmation, refusal and lost-response reconciliation; no mobile comparison or native host installation is claimed."
     },
     {
       "id": "thread-status-filter",
@@ -796,9 +803,11 @@
         "apps/server/src/entrypoint.test.ts",
         "scripts/jones/updates/native-fixture-support.node-test.mjs",
         "apps/server/src/jones/cloud/capturedProcess.test.ts",
-        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
+        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+        "apps/server/src/jones/cloud/ownedScratch.test.ts",
+        "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts"
       ],
-      "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held."
+      "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held. Owned extraction scratch uses the Electron-aware raw bundle filesystem; cleanup diagnostics preserve successful durable staging and primary failures. Native Electron ASAR coverage complements plain Node lifecycle tests."
     },
     {
       "id": "server-shard-weights",

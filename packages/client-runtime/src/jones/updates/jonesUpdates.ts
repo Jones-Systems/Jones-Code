@@ -1,7 +1,9 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateProvenance,
   JonesUpdateState,
   JonesUpdateDownloadInput,
+  JonesUpdateExactInput,
   JonesUpdateInstallInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import * as Schema from "effect/Schema";
@@ -29,9 +31,11 @@ export class JonesUpdateDisconnectedError extends Schema.TaggedError<JonesUpdate
   {},
 ) {}
 
-type JonesAction =
+export type JonesAction =
   | { action: "check" }
   | { action: "download"; input: JonesUpdateDownloadInput }
+  /** Hosts that predate exact selection answer 404; callers gate this on `capability.exactSource`. */
+  | { action: "downloadExact"; input: JonesUpdateExactInput }
   | { action: "install"; input: JonesUpdateInstallInput };
 
 const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
@@ -64,6 +68,8 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
           return client.check({ headers });
         case "download":
           return client.download({ headers, payload: input.input });
+        case "downloadExact":
+          return client.downloadExact({ headers, payload: input.input });
         case "install":
           return client.install({ headers, payload: input.input });
       }
@@ -316,4 +322,168 @@ export function compareJonesSource(
   )
     return "unavailable";
   return installed.sha === candidate.sourceSha ? "matches" : "different";
+}
+
+/** What one host can do toward this app's exact source commit. */
+export type JonesExactSourceStep =
+  | { readonly kind: "download-exact"; readonly targetSource: string }
+  | { readonly kind: "download"; readonly input: JonesUpdateDownloadInput }
+  | { readonly kind: "install"; readonly input: JonesUpdateInstallInput };
+
+export type JonesExactSourceUnavailable =
+  | "invalid-target"
+  | "waiting"
+  | "unsupported"
+  | "no-permission"
+  | "already-installed"
+  | "busy"
+  | "reconciling"
+  | "staged-other"
+  | "offered-other"
+  | "unavailable";
+
+export type JonesExactSourceDecision =
+  | { readonly status: "ready"; readonly step: JonesExactSourceStep }
+  | {
+      readonly status: "unavailable";
+      readonly reason: JonesExactSourceUnavailable;
+      readonly message: string;
+    };
+
+export interface JonesExactSourceInput {
+  readonly environmentId: EnvironmentId;
+  readonly observation: JonesUpdateObservation;
+  /** The running app's own source commit. Never a desktop-staged, offered or latest build. */
+  readonly targetSource: string | undefined;
+  readonly canOperate: boolean;
+  /** An install request whose response was lost; it blocks re-submission until the host moves on. */
+  readonly unresolvedInstall?:
+    | {
+        readonly stagedHandle: string;
+        readonly revision: number | undefined;
+      }
+    | undefined;
+}
+
+const unavailable = (
+  reason: JonesExactSourceUnavailable,
+  message: string,
+): JonesExactSourceDecision => ({ status: "unavailable", reason, message });
+
+function capabilityRefusal(state: JonesUpdateState, what: "download" | "install") {
+  return state.capability.reason === "bootstrap-required"
+    ? "Installing needs a qualified launcher on this host first."
+    : `This host cannot ${what} updates right now.`;
+}
+
+/**
+ * Chooses the one next step that moves a host toward this app's exact source, or says why none
+ * exists. Sources compare as full commits: platform artifacts of one commit carry different
+ * versions, and equal versions can hide different commits. Hosts that cannot select a source
+ * may only download an offer that already is the target.
+ */
+export function resolveJonesExactSourceAction(
+  input: JonesExactSourceInput,
+): JonesExactSourceDecision {
+  const { observation, targetSource } = input;
+  if (targetSource === undefined || !FULL_SOURCE_COMMIT.test(targetSource))
+    return unavailable("invalid-target", "This app does not report a full source commit.");
+  const state = observation.state;
+  if (observation.freshness === "unsupported" || (observation.freshness === "fresh" && !state))
+    return unavailable("unsupported", "This host does not support Jones updates.");
+  if (observation.freshness !== "fresh" || state === null)
+    return unavailable(
+      "waiting",
+      observation.message ?? "Waiting for this host's current update status.",
+    );
+  if (!input.canOperate)
+    return unavailable("no-permission", "Your session on this host cannot change updates.");
+  const short = shortJonesSource(targetSource);
+  if (state.installedSource?.sha === targetSource)
+    return unavailable("already-installed", `This host already runs source ${short}.`);
+  if (jonesUpdatePresentation(state).busy)
+    return unavailable("busy", jonesUpdatePresentation(state).message);
+  const pending = input.unresolvedInstall;
+  if (
+    pending !== undefined &&
+    state.stagedHandle === pending.stagedHandle &&
+    state.revision === pending.revision
+  )
+    return unavailable(
+      "reconciling",
+      "The install request was sent but its outcome is unknown. Waiting for the host to report it; it will not be sent again.",
+    );
+  const provenance = state.provenance;
+  if (state.stagedHandle !== undefined) {
+    if (provenance === undefined)
+      return unavailable(
+        "staged-other",
+        "This host has a downloaded update with no reported source, so it will not be installed from this notice.",
+      );
+    if (provenance.sourceSha !== targetSource)
+      return unavailable(
+        "staged-other",
+        `This host already has source ${shortJonesSource(provenance.sourceSha)} downloaded. It will not be installed from this notice.`,
+      );
+    if (!state.capability.install || state.currentVersion === undefined)
+      return unavailable("unavailable", capabilityRefusal(state, "install"));
+    return {
+      status: "ready",
+      step: {
+        kind: "install",
+        input: {
+          stagedHandle: state.stagedHandle,
+          environmentId: input.environmentId,
+          currentVersion: state.currentVersion,
+        },
+      },
+    };
+  }
+  if (!state.capability.download)
+    return unavailable("unavailable", capabilityRefusal(state, "download"));
+  if (state.capability.exactSource === true)
+    return { status: "ready", step: { kind: "download-exact", targetSource } };
+  if (
+    provenance !== undefined &&
+    state.phase === "available" &&
+    provenance.sourceSha === targetSource
+  )
+    return {
+      status: "ready",
+      step: {
+        kind: "download",
+        input: { artifactId: provenance.artifactId, sourceSha: provenance.sourceSha },
+      },
+    };
+  return unavailable(
+    "offered-other",
+    provenance !== undefined && state.phase === "available"
+      ? `This host offers source ${shortJonesSource(provenance.sourceSha)} and cannot download a specific source. Update the host from its own settings.`
+      : `This host cannot download a specific source (${short}). Update the host from its own settings.`,
+  );
+}
+
+/**
+ * Judges a completed exact-source request. A host that stages another commit than the target
+ * is a refusal for this notice even when the host itself reports success.
+ */
+export function jonesExactSourceResultError(
+  step: JonesExactSourceStep,
+  result: AtomCommandResult<JonesUpdateState | null, unknown>,
+  targetSource: string,
+): string | null {
+  const failure = jonesUpdateActionError(result);
+  if (failure !== null || result._tag !== "Success" || step.kind === "install") return failure;
+  const state = result.value;
+  if (state === null) return failure;
+  if (
+    state.stagedHandle !== undefined &&
+    state.provenance !== undefined &&
+    state.provenance.sourceSha !== targetSource
+  )
+    return `The host reports source ${shortJonesSource(state.provenance.sourceSha)} downloaded, not ${shortJonesSource(targetSource)}. It will not be installed from this notice.`;
+  // Accepted work is under way or done; any other phase means the host did not take the download.
+  return ["downloading", "verifying", "staged"].includes(state.phase)
+    ? null
+    : (state.message ?? `The host did not start the download (${state.phase}).`);
 }

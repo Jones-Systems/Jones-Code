@@ -9,6 +9,10 @@ const branding = vi.hoisted(() => ({
   APP_SOURCE_SHA: "a".repeat(40),
 }));
 vi.mock("../../branding", () => branding);
+// The production action binds live connection atoms; its controller is tested on its own.
+vi.mock("./ProductionExactSourceUpdateAction", () => ({
+  ProductionExactSourceUpdateAction: () => null,
+}));
 
 let tree: ReactTestRenderer | undefined;
 const environment = (id: string, sha = "b".repeat(40), version = branding.APP_VERSION) => ({
@@ -64,7 +68,7 @@ afterEach(() => {
 });
 
 describe("client notice environment lifecycle", () => {
-  it("selects active or every eligible automatic environment and never mounts update actions", () => {
+  it("selects active or every eligible automatic environment", () => {
     const active = environment("Active");
     const eligible = [environment("Eligible"), environment("Equal", "a".repeat(40))];
     render({
@@ -94,6 +98,54 @@ describe("client notice environment lifecycle", () => {
       eligibleEnvironments: eligible,
     });
     expect(tree!.toJSON()).toBeNull();
+  });
+
+  it("targets this app's own full source, and only for a preview source difference", () => {
+    const targets: unknown[] = [];
+    const props = (active: ReturnType<typeof environment>): ClientUpdateBannerInput => ({
+      activeEnvironment: active,
+      automaticEnvironment: false,
+      eligibleEnvironments: [],
+      renderExactSourceAction: (target) => {
+        targets.push(target);
+        return <button>{`Download ${target.targetSource.slice(0, 7)}`}</button>;
+      },
+    });
+    render(props(environment("Mini", "b".repeat(40))));
+    expect(targets.length).toBeGreaterThan(0);
+    expect(targets.at(-1)).toEqual({
+      environmentId: "Mini",
+      label: "Mini",
+      targetSource: branding.APP_SOURCE_SHA,
+    });
+    expect(tree!.root.findAllByType("button").map((b) => b.children.join(""))).toEqual([
+      "Download aaaaaaa",
+      "Dismiss client version notice",
+    ]);
+    // A newer stable server, equal sources and a missing source never offer a download.
+    targets.length = 0;
+    for (const quiet of [
+      environment("Stable", "c".repeat(40), "0.0.46"),
+      environment("Equal", branding.APP_SOURCE_SHA),
+    ])
+      render(props(quiet));
+    expect(targets).toEqual([]);
+    expect(output()).not.toContain("Download");
+  });
+
+  it("dismisses a notice together with its action and leaves other notices' actions", () => {
+    const props = (ids: string[]): ClientUpdateBannerInput => ({
+      activeEnvironment: null,
+      automaticEnvironment: true,
+      eligibleEnvironments: ids.map((id) => environment(id)),
+      renderExactSourceAction: (target) => <span>{`action ${target.label}`}</span>,
+    });
+    render(props(["One", "Two"]));
+    expect(output()).toContain("action One");
+    expect(output()).toContain("action Two");
+    act(() => tree!.root.findAllByType("button")[0]!.props.onClick());
+    expect(output()).not.toContain("action One");
+    expect(output()).toContain("action Two");
   });
 
   it("dismisses exact environment and full source pair across switches and remounts", () => {
