@@ -15,10 +15,11 @@
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
         "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts",
-        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts"
       ],
       "commands": [
-        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1"
+        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts --maxWorkers=1"
       ]
     },
     {
