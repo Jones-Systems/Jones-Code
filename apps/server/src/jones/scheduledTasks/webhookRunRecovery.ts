@@ -7,7 +7,7 @@ import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 
 const TABLE = "jones_scheduled_webhook_pending_runs";
 
-export const restartedPastMaxAgeReason =
+const restartedPastMaxAgeReason =
   "The server restarted before this delivery ran, and it is now older than the task's maximum age.";
 
 /**
@@ -33,7 +33,7 @@ interface PendingWebhookRunRow {
   readonly prompt: string;
 }
 
-export function pastMaxDeliveryAge(
+function pastMaxDeliveryAge(
   task: Pick<ScheduledTask, "schedule">,
   receivedAt: string,
   now: DateTime.DateTime,
