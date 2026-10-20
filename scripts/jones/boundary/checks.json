@@ -17,6 +17,27 @@
       ]
     },
     {
+      "id": "jones-codex-process-termination",
+      "tests": [
+        "packages/effect-codex-app-server/src/client.test.ts",
+        "packages/effect-codex-app-server/src/protocol.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-prompts-access",
       "tests": [
         "apps/web/src/reactCompilerCoverage.test.ts",
@@ -227,6 +248,20 @@
       ]
     },
     {
+      "id": "jones-codex-capacity-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t 'capacity|native goals' --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
+      ]
+    },
+    {
       "id": "jones-provider-origin",
       "tests": [
         "apps/server/src/jones/orchestration/ProviderEventOrigin.test.ts",
@@ -411,10 +446,11 @@
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
-        "apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "apps/web/src/jones/composer/composerShortcutRails.test.ts",
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ]
     },
     {
@@ -1812,6 +1848,30 @@
         "vp run --filter @t3tools/client-runtime test src/t3ToolSummary.test.ts src/work-log/presentation.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/provider-acp test src/server/runtimeModel.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --concurrency-limit 1 typecheck"
+      ]
+    },
+    {
+      "id": "jones-request-economy",
+      "tests": [
+        "apps/server/src/vcs/VcsProcess.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "packages/client-runtime/src/state/threadCommands.test.ts",
+        "apps/web/src/components/GitActionsControl.browser.test.tsx",
+        "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
+        "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
+        "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "packages/shared/src/httpObservability.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/vcs/VcsProcess.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/observability/RpcInstrumentation.test.ts packages/shared/src/httpObservability.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/GitActionsControl.browser.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/mobile test src/state/use-selected-thread-git-state.test.tsx --maxWorkers=1",
+        "vp run test:perf:v2-wire",
+        "vp test run apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/legacy/LegacyV1ThreadImporter.test.ts apps/server/src/jones/orchestration/shellFanout.test.ts apps/server/src/orchestration-v2/ThreadSearch.test.ts apps/server/src/orchestration-v2/legacy/LegacyV1Cutover.integration.test.ts apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts apps/server/src/orchestration-v2/http.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --filter @t3tools/source-control-bitbucket --filter @t3tools/shared --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]

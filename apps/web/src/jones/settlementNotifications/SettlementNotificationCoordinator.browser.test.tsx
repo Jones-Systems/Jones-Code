@@ -1,3 +1,5 @@
+import "~/index.css";
+import { page } from "vite-plus/test/browser";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -210,6 +212,67 @@ afterEach(async () => {
 });
 
 describe("persistent settlement notification", () => {
+  it.each([375, 1280])("keeps 45 settled threads in one scroll area at %ipx", async (width) => {
+    await page.viewport(width, 800);
+    const entries = Array.from({ length: 45 }, (_, index) => ({
+      ...entry(`thread-${index}`),
+      title: index === 0 ? "x".repeat(200) : `Settled thread ${index}`,
+    }));
+    storage.clear();
+    await publish(entries);
+    await render();
+    await act(async () => button("Show settled threads").click());
+    const first = button(entries[0]!.title);
+    const list = first.closest("ul")!;
+    const content = list.parentElement!;
+    const elements = [content, ...content.querySelectorAll<HTMLElement>("*")];
+    const scrollers = elements.filter(
+      (node) =>
+        /auto|scroll/.test(getComputedStyle(node).overflowY) &&
+        node.scrollHeight > node.clientHeight + 1,
+    );
+    expect(scrollers).toHaveLength(1);
+    for (const node of elements.filter((node) => node.clientWidth > 0)) {
+      expect(node.scrollWidth).toBeLessThanOrEqual(node.clientWidth + 1);
+    }
+    const scroller = scrollers[0]!;
+    scroller.scrollTop = scroller.scrollHeight;
+    const last = list.lastElementChild!.querySelector("button")!;
+    const lastEntry = entries.find((entry) => entry.title === last.textContent)!;
+    expect(last.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      scroller.getBoundingClientRect().bottom + 1,
+    );
+    expect(last.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      scroller.getBoundingClientRect().top - 1,
+    );
+    await act(async () => last.click());
+    expect(state.navigate).toHaveBeenLastCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: lastEntry.environmentId, threadId: lastEntry.threadId },
+    });
+    expect(notices()).toHaveLength(1);
+    await act(async () => button("Dismiss notification").click());
+    await expect.poll(() => state.controller!.getSnapshot().visible).toHaveLength(0);
+  });
+
+  it.each([375, 1280])("wraps a single unbroken settled title at %ipx", async (width) => {
+    await page.viewport(width, 800);
+    const longEntry = { ...entry("long"), title: "x".repeat(200) };
+    storage.clear();
+    await publish([longEntry]);
+    await render();
+    const title = button(longEntry.title);
+    const description = title.closest('[data-slot="toast-description"]')!;
+    for (const node of [description, ...description.querySelectorAll<HTMLElement>("*")]) {
+      if (node.clientWidth > 0) {
+        expect(node.scrollWidth).toBeLessThanOrEqual(node.clientWidth + 1);
+      }
+    }
+    expect(title.getBoundingClientRect().height).toBeGreaterThan(
+      Number.parseFloat(getComputedStyle(title).lineHeight),
+    );
+  });
+
   it("keeps one toast through StrictMode, title navigation and an expanded aggregate update", async () => {
     const add = vi.spyOn(toastManager, "add");
     await render();

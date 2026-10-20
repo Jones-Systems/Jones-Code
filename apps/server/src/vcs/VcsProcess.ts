@@ -59,7 +59,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const VCS_PROCESS_CONCURRENCY = 8;
+const DISCOVERY_PROCESS_CONCURRENCY = 4;
 const GITHUB_PROCESS_CONCURRENCY = 4;
+const DISCOVERY_OPERATION_PREFIX = "source-control.discovery.";
 
 export const CHECKPOINT_CAPTURE_OPERATION = "GitVcsDriver.checkpoints.captureCheckpoint";
 
@@ -166,6 +168,7 @@ export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
   const hostPlatform = yield* HostProcess.Platform;
   const vcsProcesses = yield* Semaphore.make(VCS_PROCESS_CONCURRENCY);
+  const discoveryProcesses = yield* Semaphore.make(DISCOVERY_PROCESS_CONCURRENCY);
   const githubProcesses = yield* Semaphore.make(GITHUB_PROCESS_CONCURRENCY);
 
   const runUnbounded = Effect.fn("VcsProcess.runUnbounded")(function* (input: VcsProcessInput) {
@@ -256,7 +259,13 @@ export const make = Effect.gen(function* () {
   });
 
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
-    const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
+    // Clients start discovery on mount and reconnect, and each probe may wait out
+    // its timeout. Its own pool keeps a burst from holding the permits that
+    // checkpoint and status commands need.
+    const pool = input.operation.startsWith(DISCOVERY_OPERATION_PREFIX)
+      ? discoveryProcesses
+      : vcsProcesses;
+    const bounded = pool.withPermits(1)(runUnbounded(input));
     if (
       input.command === "git" &&
       input.operation === CHECKPOINT_CAPTURE_OPERATION &&

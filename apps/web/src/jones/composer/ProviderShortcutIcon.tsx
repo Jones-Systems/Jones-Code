@@ -2,11 +2,12 @@ import { useId } from "react";
 import { providerInstanceInitials } from "@t3tools/client-runtime/state/provider-instance-display";
 import type { ProviderInstanceEntry } from "../../providerInstances";
 import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon";
+import { providerShortcutLabelColor } from "./providerShortcutLabelColor";
 
 export function ProviderShortcutIcon({
   entry,
 }: {
-  entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor">;
+  entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor" | "snapshot">;
 }) {
   const labelId = useId();
   const initials = Array.from(providerInstanceInitials(entry.displayName));
@@ -61,7 +62,7 @@ export function ProviderShortcutIcon({
           strokeWidth={6.25}
           strokeLinejoin="round"
         />
-        <use href={`#${labelId}`} className="fill-white" />
+        <use href={`#${labelId}`} fill={providerShortcutLabelColor(entry.snapshot.usageLimits)} />
       </svg>
     </span>
   );

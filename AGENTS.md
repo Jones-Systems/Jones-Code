@@ -85,7 +85,8 @@ Jones-owned tables keyed by upstream IDs, without references to upstream tables.
   [provider constraints](docs/internals/providers.md).
   Requested configuration is not observed identity; absent evidence stays
   unknown or unavailable.
-- For connection, retry, authentication renewal, subscription, or cache changes,
+- For connection, request scheduling, concurrency limits, retry, authentication
+  renewal, subscription, or cache changes,
   read [connection runtime](docs/internals/connection-runtime.md). Preserve one
   transport retry owner and distinguish transport health from data freshness.
 - Before adding server code, read

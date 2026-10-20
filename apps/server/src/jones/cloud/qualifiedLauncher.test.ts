@@ -552,6 +552,12 @@ it("commits a qualified trial and retains the resume guard after snapshot cleanu
     assert.equal(state.update?.status, "committed");
     assert.equal(state.update?.startupReceipt?.startupGateProtocol, 1);
     await assertRecoveryPayloadRemoved(base, state.update!.id);
+    const timing = await readQualifiedBackupReceipt(base, state.update!.id);
+    assert.isNumber(timing?.copyMs);
+    assert.isNumber(timing?.syncMs);
+    assert.isAtLeast(timing!.copyMs!, 0);
+    assert.isAtLeast(timing!.syncMs!, 0);
+    assert.isAtMost(timing!.copyMs! + timing!.syncMs!, timing!.durationMs);
     assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "after");
     await NodeFSP.access(NodePath.join(base, "runtime", "versions", baseline, "t3"));
     const reservation = qualifiedResumeReservationPath(state.update!.startupReceipt!);
@@ -646,7 +652,25 @@ it("rejects insufficient copy capacity before accepting Install or stopping the 
     undefined,
     {
       backupAdapter: {
-        availableBytes: async () => 0,
+        availableBytes: async (directory) => {
+          const userdata = NodePath.resolve(directory, "../../userdata");
+          let bytes = 0;
+          for (const name of [
+            "statev2.sqlite",
+            "statev2.sqlite-wal",
+            "statev2.sqlite-shm",
+            ...QUALIFIED_STARTUP_STATE_FILES,
+          ]) {
+            bytes += await NodeFSP.stat(NodePath.join(userdata, name)).then(
+              (stat) => stat.size,
+              (cause) => {
+                if (cause.code === "ENOENT") return 0;
+                throw cause;
+              },
+            );
+          }
+          return 2 * bytes + Math.ceil(0.05 * bytes) + 1024 * 1024 - 1;
+        },
         copyFile: async () => {
           throw Object.assign(new Error("synthetic unsupported clone"), { code: "ENOTSUP" });
         },

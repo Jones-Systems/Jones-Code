@@ -26,6 +26,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -251,9 +252,7 @@ interface LiveSessionEntry {
   readonly supportsMultipleProviderThreads: boolean;
   readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly exposedRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
-  readonly eventSubscribers: Ref.Ref<
-    ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-  >;
+  readonly eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>;
   readonly requestEventPermit: Semaphore.Semaphore;
   readonly scope: Scope.Closeable;
   readonly idleGeneration: number;
@@ -276,6 +275,11 @@ type ProviderSessionEventSignal =
       readonly type: "failure";
       readonly cause: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
     };
+
+interface ProviderSessionEventSubscriber {
+  readonly queue: Queue.Queue<ProviderSessionEventSignal, Cause.Done>;
+  readonly settled: Deferred.Deferred<void>;
+}
 
 export interface ProviderSessionManagerV2LayerOptions {
   readonly idleTimeoutMs?: number;
@@ -844,14 +848,12 @@ export const layerWithOptions = (
             );
 
       const publishToSubscribers = (
-        subscribers: Ref.Ref<
-          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-        >,
+        subscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>,
         signal: ProviderSessionEventSignal,
       ) =>
         Ref.get(subscribers).pipe(
           Effect.flatMap((current) =>
-            Effect.forEach(current.values(), (queue) => Queue.offer(queue, signal), {
+            Effect.forEach(current.values(), ({ queue }) => Queue.offer(queue, signal), {
               discard: true,
             }),
           ),
@@ -867,7 +869,7 @@ export const layerWithOptions = (
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
           yield* Effect.forEach(
             subscribers.values(),
-            (queue) =>
+            ({ queue }) =>
               Queue.offer(queue, {
                 type: "failure",
                 cause: Cause.fail(error),
@@ -884,7 +886,7 @@ export const layerWithOptions = (
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
           yield* Effect.forEach(
             subscribers.values(),
-            (queue) => Queue.clear(queue).pipe(Effect.andThen(Queue.interrupt(queue))),
+            ({ queue }) => Queue.clear(queue).pipe(Effect.andThen(Queue.interrupt(queue))),
             { discard: true },
           );
         });
@@ -894,7 +896,7 @@ export const layerWithOptions = (
       const endSubscribers = (entry: LiveSessionEntry) =>
         Effect.gen(function* () {
           const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-          yield* Effect.forEach(subscribers.values(), (queue) => Queue.end(queue), {
+          yield* Effect.forEach(subscribers.values(), ({ queue }) => Queue.end(queue), {
             discard: true,
           });
         });
@@ -1324,6 +1326,7 @@ export const layerWithOptions = (
         readonly onlyIfIdleGeneration?: number;
         readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
         readonly gracefulSubscribers?: boolean;
+        readonly subscriberFailure?: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
       }) =>
         Effect.acquireUseRelease(
           removeLiveEntry(input),
@@ -1342,7 +1345,22 @@ export const layerWithOptions = (
                   if (input.cancelIdleFiber !== false) {
                     yield* cancelIdleFiber(entry.idleFiber);
                   }
-                  if (input.gracefulSubscribers === true) {
+                  if (input.reason === "runtime_error" && input.subscriberFailure !== undefined) {
+                    const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
+                    yield* Effect.forEach(
+                      subscribers.values(),
+                      ({ queue }) =>
+                        Queue.offer(queue, { type: "failure", cause: input.subscriberFailure! }),
+                      { discard: true },
+                    );
+                    // Queue delivery is not ingestion. Wait for subscribers to exit processing
+                    // before closing this runtime scope; layer shutdown can interrupt the wait.
+                    yield* Effect.forEach(
+                      subscribers.values(),
+                      ({ settled }) => Deferred.await(settled),
+                      { concurrency: "unbounded", discard: true },
+                    );
+                  } else if (input.gracefulSubscribers === true) {
                     yield* endSubscribers(entry);
                   } else if (input.reason === "server_shutdown") {
                     yield* interruptSubscribers(entry);
@@ -1364,7 +1382,17 @@ export const layerWithOptions = (
                     releasedAt,
                   };
                   const recorded = yield* Effect.exit(
-                    writeReleaseRecords({ ...records, replaced: false }),
+                    input.subscriberFailure === undefined
+                      ? writeReleaseRecords({ ...records, replaced: false })
+                      : sessionOpen.withLock(
+                          input.providerSessionId,
+                          Effect.gen(function* () {
+                            const replaced = (yield* Ref.get(sessions)).has(
+                              sessionKey(input.providerSessionId),
+                            );
+                            yield* writeReleaseRecords({ ...records, replaced });
+                          }),
+                        ),
                   );
                   if (Exit.isFailure(recorded)) {
                     yield* retryReleaseRecords(records);
@@ -2086,52 +2114,68 @@ export const layerWithOptions = (
 
       const makeEventSubscription = (
         runtime: ProviderAdapterV2SessionRuntime,
-        subscribers: Ref.Ref<
-          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-        >,
+        subscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>,
+        requestEventPermit: Semaphore.Semaphore,
       ): Effect.Effect<ProviderAdapter.ProviderAdapterV2EventSubscription> =>
-        Effect.gen(function* () {
-          const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
-          const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
-          yield* Ref.update(subscribers, (current) => {
-            const updated = new Map(current);
-            updated.set(subscriberId, queue);
-            return updated;
-          });
-          const close = Ref.modify(subscribers, (current) => {
-            if (!current.has(subscriberId)) {
-              return [false, current] as const;
-            }
-            const updated = new Map(current);
-            updated.delete(subscriberId);
-            return [true, updated] as const;
-          }).pipe(
-            Effect.flatMap((removed) =>
-              removed
-                ? Queue.clear(queue).pipe(Effect.andThen(Queue.end(queue)), Effect.asVoid)
-                : Effect.void,
-            ),
-          );
-          const events = Stream.fromQueue(queue).pipe(
-            Stream.mapEffect((signal) =>
-              signal.type === "event"
-                ? Effect.succeed(signal.event)
-                : Effect.failCause(signal.cause),
-            ),
-            Stream.filterEffect((event) => validateProviderEvent(runtime, event)),
-            Stream.ensuring(close),
-          );
-          return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
-        });
+        requestEventPermit.withPermits(1)(
+          Effect.gen(function* () {
+            const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+            if (current?.runtime !== runtime)
+              return {
+                events: Stream.fail(
+                  new ProviderAdapter.ProviderAdapterEventStreamError({
+                    driver: runtime.driver,
+                    providerSessionId: runtime.providerSessionId,
+                    cause: "Provider session is no longer live.",
+                  }),
+                ),
+                close: Effect.void,
+              };
+            const settled = yield* Deferred.make<void>();
+            const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
+            const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
+            yield* Ref.update(subscribers, (current) => {
+              const updated = new Map(current);
+              updated.set(subscriberId, { queue, settled });
+              return updated;
+            });
+            const close = Ref.modify(subscribers, (current) => {
+              if (!current.has(subscriberId)) {
+                return [false, current] as const;
+              }
+              const updated = new Map(current);
+              updated.delete(subscriberId);
+              return [true, updated] as const;
+            }).pipe(
+              Effect.andThen(Queue.clear(queue)),
+              Effect.andThen(Queue.end(queue)),
+              Effect.asVoid,
+              Effect.ensuring(Deferred.succeed(settled, undefined)),
+            );
+            const events = Stream.fromQueue(queue).pipe(
+              Stream.mapEffect((signal) =>
+                signal.type === "event"
+                  ? Effect.succeed(signal.event)
+                  : Effect.failCause(signal.cause),
+              ),
+              Stream.filterEffect((event) => validateProviderEvent(runtime, event)),
+              Stream.ensuring(close),
+            );
+            return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
+          }),
+        );
 
       const decorateRuntime = (
         runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
-        eventSubscribers: Ref.Ref<
-          ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-        >,
+        eventSubscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>,
+        requestEventPermit: Semaphore.Semaphore,
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
-        const subscribeEvents = makeEventSubscription(runtime, eventSubscribers);
+        const subscribeEvents = makeEventSubscription(
+          runtime,
+          eventSubscribers,
+          requestEventPermit,
+        );
         // Every provider's turn operations pass through here, so this is where they are
         // counted. Only turn starts are timed: until the provider accepts the turn.
         const turnMetrics = (operation: string, model?: string) =>
@@ -2465,15 +2509,12 @@ export const layerWithOptions = (
                         cause: "Provider event stream ended unexpectedly.",
                       }),
                     );
-              yield* publishToSubscribers(entry.eventSubscribers, {
-                type: "failure",
-                cause,
-              });
-              yield* Ref.set(entry.eventSubscribers, new Map());
               yield* releaseEntry({
                 providerSessionId: entry.runtime.providerSessionId,
+                onlyIfRuntime: entry.runtime,
                 reason: "runtime_error",
                 detail: Cause.pretty(cause),
+                subscriberFailure: cause,
               }).pipe(logReleaseFailure(entry.runtime.providerSessionId));
             }),
           ),
@@ -2928,9 +2969,10 @@ export const layerWithOptions = (
                   }),
                 );
               const eventSubscribers = yield* Ref.make<
-                ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
+                ReadonlyMap<number, ProviderSessionEventSubscriber>
               >(new Map());
-              const exposedRuntime = decorateRuntime(runtime, eventSubscribers);
+              const requestEventPermit = yield* Semaphore.make(1);
+              const exposedRuntime = decorateRuntime(runtime, eventSubscribers, requestEventPermit);
               const now = yield* Clock.currentTimeMillis;
               const entry: LiveSessionEntry = {
                 attachedThreadIds: new Set([input.threadId]),
@@ -2945,7 +2987,7 @@ export const layerWithOptions = (
                 runtime,
                 exposedRuntime,
                 eventSubscribers,
-                requestEventPermit: yield* Semaphore.make(1),
+                requestEventPermit,
                 scope: sessionScope,
                 idleGeneration: 0,
                 busyTurns: new Set(),

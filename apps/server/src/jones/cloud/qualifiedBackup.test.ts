@@ -467,3 +467,58 @@ it("retains the Node forced-clone primitive on non-Darwin hosts", async () => {
     }
   });
 });
+
+it("reserves the exact copy rollback buffer and trial headroom before stopping", async () => {
+  await fixture(async (base, database) => {
+    await NodeFSP.writeFile(`${database}-wal`, "wal");
+    await NodeFSP.writeFile(NodePath.join(base, "userdata", "settings.json"), "{}");
+    const bytes = 20;
+    const required = 2 * bytes + Math.ceil(0.05 * bytes) + 1024 * 1024;
+    const adapter: QualifiedBackupAdapter = {
+      copyFile: async () => {
+        throw unsupported();
+      },
+      availableBytes: async () => required - 1,
+    };
+    await NodeAssert.rejects(
+      preflightQualifiedBackup(base, database, adapter),
+      /recovery-capacity:/,
+    );
+    assert.deepEqual(
+      await preflightQualifiedBackup(base, database, {
+        ...adapter,
+        availableBytes: async () => required,
+      }),
+      { method: "copy", bytes },
+    );
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+  });
+});
+
+it("reads protocol-one receipts with or without optional copy and sync durations", async () => {
+  await fixture(async (base) => {
+    const legacy = {
+      protocol: 1 as const,
+      updateId: "legacy",
+      method: "copy" as const,
+      bytes: 15,
+      startedAt: "2026-10-10T12:00:00.000Z",
+      completedAt: "2026-10-10T12:00:00.015Z",
+      durationMs: 15,
+    };
+    for (const receipt of [legacy, { ...legacy, updateId: "timed", copyMs: 8, syncMs: 4 }]) {
+      const directory = NodePath.join(base, "runtime", "db-backup", receipt.updateId);
+      await NodeFSP.mkdir(directory, { recursive: true });
+      await writeQualifiedBackupReceipt(directory, receipt);
+      assert.deepEqual(await readQualifiedBackupReceipt(base, receipt.updateId), receipt);
+    }
+    const receiptPath = NodePath.join(base, "runtime", "db-backup", "timed", "backup-receipt.json");
+    for (const durations of [{ copyMs: -1 }, { syncMs: "bad" }, { copyMs: null }]) {
+      await NodeFSP.writeFile(
+        receiptPath,
+        JSON.stringify({ ...legacy, updateId: "timed", ...durations }),
+      );
+      await NodeAssert.rejects(readQualifiedBackupReceipt(base, "timed"), /receipt is invalid/);
+    }
+  });
+});

@@ -14,6 +14,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as Layer from "effect/Layer";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
@@ -96,11 +97,16 @@ export const layer = Layer.effect(
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
+    const receiptStarted = yield* Clock.currentTimeMillis;
     const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
           readQualifiedRuntimeReceipt(config.baseDir, version, { platform, architecture }),
         ).pipe(Effect.catch(() => Effect.succeed(undefined)))
       : undefined;
+    yield* Effect.logInfo("Qualified startup timing", {
+      step: "receipt",
+      durationMs: (yield* Clock.currentTimeMillis) - receiptStarted,
+    });
     const nativeReceipt = runtimeReceipt?.version === version;
     const installedSource =
       !nativeReceipt || runtimeReceipt === undefined
@@ -385,6 +391,7 @@ export const layer = Layer.effect(
       (platform === "darwin" && architecture === "arm64");
     const terminal = launcher.qualifiedStartupOutcome;
     let restoreFailure: string | undefined;
+    const restoreStarted = yield* Clock.currentTimeMillis;
     const restored = yield* Effect.tryPromise({
       try: () =>
         restoreStagedSelection(config.baseDir, launcher.currentVersion ?? packageJson.version),
@@ -399,6 +406,10 @@ export const layer = Layer.effect(
         onSuccess: (selection) => selection,
       }),
     );
+    yield* Effect.logInfo("Qualified startup timing", {
+      step: "staged-restore",
+      durationMs: (yield* Clock.currentTimeMillis) - restoreStarted,
+    });
     const recovery =
       terminal === undefined
         ? undefined
@@ -500,6 +511,7 @@ export const layer = Layer.effect(
       architecture: architecture === "arm64" ? "arm64" : "x64",
       cacheRoot: NodePath.join(config.baseDir, "runtime", "jones-actions"),
       installedSource: async () =>
+        runtimeReceipt?.sourceSha ??
         (
           await readQualifiedRuntimeReceipt(
             config.baseDir,
@@ -525,7 +537,7 @@ export const layer = Layer.effect(
         if (!result.retired)
           throw new Error(result.reason ?? "Native stage retirement remains held.");
       },
-      install: async (input) => {
+      install: async (input, reportStep) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
         const operationId =
@@ -559,6 +571,7 @@ export const layer = Layer.effect(
                             }),
                         ),
                       ),
+            (step) => Effect.sync(() => reportStep?.(step)),
           ),
         );
         return {

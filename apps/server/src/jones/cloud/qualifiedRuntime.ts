@@ -283,7 +283,9 @@ export async function qualifiedPayloadDigest(
   directory: string,
   platform: "linux" | "darwin" = "linux",
   workflow?: QualifiedRuntimeArtifact["workflow"],
+  options?: { readonly signal?: AbortSignal },
 ): Promise<string> {
+  options?.signal?.throwIfAborted();
   const fs = bundleFileSystem().promises;
   const root = await fs.realpath(directory);
   const rootStat = await fs.lstat(directory);
@@ -293,6 +295,7 @@ export async function qualifiedPayloadDigest(
   let count = 0;
   let total = 0;
   const visit = async (relative: string): Promise<void> => {
+    options?.signal?.throwIfAborted();
     const absolute = NodePath.join(root, relative);
     const stat = await fs.lstat(absolute);
     if (++count > 100_000)
@@ -317,7 +320,11 @@ export async function qualifiedPayloadDigest(
         NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
       );
       try {
-        for await (const bytes of handle.createReadStream()) hash.update(bytes);
+        for await (const bytes of handle.createReadStream()) {
+          options?.signal?.throwIfAborted();
+          hash.update(bytes);
+        }
+        options?.signal?.throwIfAborted();
       } finally {
         await handle.close();
       }
@@ -328,6 +335,7 @@ export async function qualifiedPayloadDigest(
   };
   const roots = (await fs.readdir(root)).sort();
   for (const name of roots) {
+    options?.signal?.throwIfAborted();
     if (
       name === QUALIFIED_RUNTIME_RECEIPT ||
       name === ".install-complete" ||
@@ -344,7 +352,9 @@ export async function qualifiedPayloadDigest(
       return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
     await visit(name);
   }
+  options?.signal?.throwIfAborted();
   const entry = await fs.lstat(NodePath.join(root, "t3"));
+  options?.signal?.throwIfAborted();
   if (!entry.isFile() || (entry.mode & 0o111) === 0)
     return blocked("invalid-artifact", "Runtime payload has no executable.");
   return digest.digest("hex");
@@ -357,7 +367,9 @@ export async function readQualifiedRuntimeReceipt(
     platform: process.platform,
     architecture: process.arch,
   },
+  options?: { readonly signal?: AbortSignal },
 ): Promise<QualifiedRuntimeReceipt> {
+  options?.signal?.throwIfAborted();
   if (!VERSION.test(version))
     return blocked(
       "bootstrap-required",
@@ -368,6 +380,7 @@ export async function readQualifiedRuntimeReceipt(
       NodePath.join(runtimeDirectory(baseDir, version), QUALIFIED_RUNTIME_RECEIPT),
     ).catch(() => undefined),
   );
+  options?.signal?.throwIfAborted();
   if (receipt === undefined || receipt.version !== version)
     return blocked(
       "bootstrap-required",
@@ -380,6 +393,7 @@ export async function readQualifiedRuntimeReceipt(
       runtimeDirectory(baseDir, version),
       receipt.platform,
       receipt.workflow,
+      options,
     )) !== receipt.payloadSha256
   )
     return blocked("integrity-mismatch", "Qualified runtime payload changed.");
@@ -390,7 +404,9 @@ export async function currentQualifiedRuntimeBinding(
   baseDir: string,
   activeVersion: string,
   host?: { readonly platform: string; readonly architecture: string },
+  options?: { readonly signal?: AbortSignal },
 ): Promise<QualifiedRuntimeBinding> {
+  options?.signal?.throwIfAborted();
   const resolvedBase = await NodeFSP.realpath(baseDir);
   const dbPath = NodePath.join(resolvedBase, "userdata", "statev2.sqlite");
   const database = await NodeFSP.lstat(dbPath);
@@ -412,7 +428,7 @@ export async function currentQualifiedRuntimeBinding(
   ).trim();
   if (environmentId === "")
     return blocked("binding-mismatch", "Native environment identity is missing.");
-  const receipt = await readQualifiedRuntimeReceipt(resolvedBase, activeVersion, host);
+  const receipt = await readQualifiedRuntimeReceipt(resolvedBase, activeVersion, host, options);
   return {
     baseDir: resolvedBase,
     dbPath,
@@ -530,17 +546,19 @@ export async function verifyStagedQualifiedRuntime(
   activeVersion: string,
   handle: string,
   host?: { readonly platform: string; readonly architecture: string },
+  options?: { readonly signal?: AbortSignal },
 ): Promise<StagedQualifiedRuntime> {
+  options?.signal?.throwIfAborted();
   const staged = decodeStagedQualifiedRuntime(await readRegularJson(stagedPath(baseDir, handle)));
   if (staged === undefined)
     return blocked("invalid-artifact", "Staged handle has no valid durable receipt.");
-  const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host);
+  const current = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host, options);
   if (JSON.stringify(current) !== JSON.stringify(staged.binding))
     return blocked(
       "binding-mismatch",
       "The staged handle belongs to a different home, database, environment or active source.",
     );
-  const receipt = await readQualifiedRuntimeReceipt(baseDir, staged.receipt.version, host);
+  const receipt = await readQualifiedRuntimeReceipt(baseDir, staged.receipt.version, host, options);
   if (JSON.stringify(receipt) !== JSON.stringify(staged.receipt))
     return blocked("integrity-mismatch", "Staged receipt does not match the qualified runtime.");
   return staged;
