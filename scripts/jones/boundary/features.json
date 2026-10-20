@@ -1113,6 +1113,14 @@
         "packages/shared/src/httpObservability.test.ts"
       ],
       "scope": "Foreground chat controls proceed while earlier history loads; unused discovery queries are absent, discovery subprocesses use a bounded pool apart from checkpoint operations, absent Bitbucket credentials avoid HTTP probes, and queued per-thread PR refreshes coalesce without dropping a follow-up after processing begins. Small shared edits reuse the existing scheduler, process pools, hooks and worker instead of duplicating their machinery. Existing command, browser and service harnesses retain integration regressions; the adjacent mobile hook test exercises its upstream owner. Foreground snapshot/history and shell reads use the reader while pending legacy hydration retains the writer; streaming RPC spans carry a stream tag, and WebSocket ticket query values are redacted in tracing."
+    },
+    {
+      "id": "codex-background-expiry",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexBackgroundCompletion.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+      ],
+      "scope": "Expected timeout expiry of a simple Python static HTTP server retains native command status, output and exit code while skipping the post-settle continuation. Timed-out tests, compound shell commands, unknown outcomes and unexpected server failures keep their existing notifications. The replay case stays in the upstream Codex adapter test because its scoped replay harness owns completion delivery and background-work release. No wire, persistence or client changes."
     }
   ]
 }

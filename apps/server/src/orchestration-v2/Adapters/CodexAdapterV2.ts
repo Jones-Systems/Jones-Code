@@ -155,6 +155,7 @@ import {
 } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import { backgroundWorkNotification } from "@t3tools/provider-core/server/notification";
+import { isExpectedCodexBackgroundTermination } from "../../jones/provider/codex/CodexBackgroundCompletion.ts";
 import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
@@ -5550,6 +5551,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 if (
                   context.subagent === null &&
                   continuationRequests !== undefined &&
+                  !isExpectedCodexBackgroundTermination(payload.item) &&
                   !(yield* Ref.get(interruptingNativeTurns)).has(payload.turnId)
                 ) {
                   const alreadyOffered = yield* Ref.modify(
