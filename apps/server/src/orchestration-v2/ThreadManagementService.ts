@@ -44,6 +44,7 @@ import {
   type TurnItemId,
 } from "@t3tools/contracts";
 import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
@@ -690,9 +691,12 @@ const make = Effect.gen(function* () {
       Effect.andThen(orchestrator.getCheckpointContext(threadId)),
     );
 
+  // Snapshots, windows and history pages read on the reader so thread opens do
+  // not queue behind ingestion commits. Hydration can write, so it stays outside
+  // the read-only scope; inside an open write transaction reads stay on the writer.
   const getThreadSnapshot: ThreadManagementServiceShape["getThreadSnapshot"] = (threadId) =>
     ensureProjectionTranscript(threadId).pipe(
-      Effect.andThen(orchestrator.getThreadSnapshot(threadId)),
+      Effect.andThen(orchestrator.getThreadSnapshot(threadId).pipe(NodeSqliteClient.readOnly)),
     );
   const getThreadTranscript = Effect.fn("orchestrationV2.threadManagement.getThreadTranscript")(
     function* (threadId: ThreadId) {
@@ -725,7 +729,9 @@ const make = Effect.gen(function* () {
     options,
   ) =>
     ensureProjectionTranscript(threadId).pipe(
-      Effect.andThen(orchestrator.getThreadSnapshotWindow(threadId, options)),
+      Effect.andThen(
+        orchestrator.getThreadSnapshotWindow(threadId, options).pipe(NodeSqliteClient.readOnly),
+      ),
     );
 
   const assertDispatchTargetEnabled = (command: OrchestrationV2ServerCommand) => {
@@ -1311,7 +1317,9 @@ const make = Effect.gen(function* () {
     getThreadHistoryPage: (threadId, cursor, throughEntryId, conversationOnly) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(
-          orchestrator.getThreadHistoryPage(threadId, cursor, throughEntryId, conversationOnly),
+          orchestrator
+            .getThreadHistoryPage(threadId, cursor, throughEntryId, conversationOnly)
+            .pipe(NodeSqliteClient.readOnly),
         ),
       ),
     ...(orchestrator.dispatchLegacyFailureDelete === undefined
