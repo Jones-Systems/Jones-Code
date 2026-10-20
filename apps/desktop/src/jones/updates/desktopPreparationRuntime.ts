@@ -10,13 +10,9 @@ import type { JonesDesktopUpdateOptions } from "./JonesDesktopUpdates.ts";
 import { createJonesStagingWorker, forkJonesStagingChild } from "./stagingWorkerClient.ts";
 
 /** Built beside the main bundle from `jonesStagingWorker.ts`. */
-export const JONES_STAGING_WORKER_FILE = NodePath.join(
-  "jones",
-  "updates",
-  "jonesStagingWorker.cjs",
-);
+const JONES_STAGING_WORKER_FILE = NodePath.join("jones", "updates", "jonesStagingWorker.cjs");
 /** Jones-owned: the upstream desktop settings writer drops keys it does not know. */
-export const JONES_DESKTOP_UPDATES_SETTINGS_FILE = "jones-desktop-updates.json";
+const JONES_DESKTOP_UPDATES_SETTINGS_FILE = "jones-desktop-updates.json";
 
 /**
  * Wires the desktop's single preparation process into its updater: every download, startup
