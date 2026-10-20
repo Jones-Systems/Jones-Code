@@ -4,6 +4,8 @@ import {
   EventId,
   ProjectId,
   ProviderInstanceId,
+  ProviderSessionId,
+  RunId,
   ThreadId,
   type OrchestrationV2AppThread,
 } from "@t3tools/contracts";
@@ -313,4 +315,117 @@ it.effect("an unavailable Jones table is conservative and cannot block client di
       "unknown",
     );
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "binds project items to the exact self-settlement command and ignores cancelled or foreign associations",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* SettlementOrigins.SettlementOrigins;
+      const sink = yield* EventSink.EventSinkV2;
+      const sql = yield* SqlClient.SqlClient;
+      for (const kind of ["matching", "cancelled", "foreign-thread", "wrong-command"] as const) {
+        const thread = yield* createThread(`project-items-${kind}`);
+        const commandId = CommandId.make(`project-items-${kind}-request`);
+        const intent = {
+          commandId,
+          runId: RunId.make("run"),
+          mcpCredentialId: "credential",
+          providerSessionId: ProviderSessionId.make("session"),
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        };
+        const projectRemaining = ["Remaining project work", "A second item"];
+        yield* sink.commitCommand({
+          commandId,
+          threadId: thread.id,
+          commandType: "thread.metadata.update",
+          acceptedAt: settledAt,
+          effects: [],
+          events: [
+            {
+              id: EventId.make(`${commandId}-intent`),
+              type: "thread.metadata-updated",
+              threadId: thread.id,
+              occurredAt: settledAt,
+              payload: { ...thread, selfSettlement: intent },
+            },
+          ],
+          selfSettlementProjectRemaining: {
+            commandId,
+            threadId: thread.id,
+            items: projectRemaining,
+          },
+        });
+        if (kind === "foreign-thread")
+          yield* sql`UPDATE jones_self_settlement_project_items SET thread_id = 'another-thread' WHERE command_id = ${commandId}`;
+        yield* writeSettlement(
+          { ...thread, selfSettlement: kind === "cancelled" ? null : intent },
+          CommandId.make(kind === "wrong-command" ? "unrelated-settlement" : `${commandId}:settle`),
+        );
+        const result = (yield* service.resolve({ items: [{ threadId: thread.id, settledAtMs }] }))
+          .items[0]!;
+        assert.equal(result.origin, "other");
+        assert.deepEqual(
+          result.projectRemaining,
+          kind === "matching" ? projectRemaining : undefined,
+        );
+      }
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "missing project-item storage rejects supplied data but leaves old acceptance and lookup usable",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const sink = yield* EventSink.EventSinkV2;
+      const service = yield* SettlementOrigins.SettlementOrigins;
+      const thread = yield* createThread("missing-project-items");
+      yield* sql`DROP TABLE jones_self_settlement_project_items`;
+      const commandId = CommandId.make("missing-project-items-request");
+      const input = {
+        commandId,
+        threadId: thread.id,
+        commandType: "thread.metadata.update",
+        acceptedAt: settledAt,
+        effects: [],
+        events: [
+          {
+            id: EventId.make("missing-project-items-intent"),
+            type: "thread.metadata-updated" as const,
+            threadId: thread.id,
+            occurredAt: settledAt,
+            payload: thread,
+          },
+        ],
+      };
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            sink.commitCommand({
+              ...input,
+              selfSettlementProjectRemaining: {
+                commandId,
+                threadId: thread.id,
+                items: ["Pending work"],
+              },
+            }),
+          ),
+        ),
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_command_receipts WHERE command_id = ${commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_events WHERE command_id = ${commandId}`,
+        0,
+      );
+      yield* sink.commitCommand(input);
+      yield* writeSettlement(thread, CommandId.make("missing-project-items-settled"));
+      assert.deepEqual(
+        (yield* service.resolve({ items: [{ threadId: thread.id, settledAtMs }] })).items,
+        [{ threadId: thread.id, settledAtMs, origin: "other" }],
+      );
+    }).pipe(Effect.provide(testLayer)),
 );

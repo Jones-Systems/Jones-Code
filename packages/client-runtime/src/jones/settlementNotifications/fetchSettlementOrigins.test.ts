@@ -55,6 +55,7 @@ it.effect("batches at 100, keeps identity order and selects each environment's a
         items: body.items.map((item) => ({
           ...item,
           origin: item.settledAtMs % 2 ? "other" : "client",
+          ...(item.settledAtMs === 101 ? { projectRemaining: ["Follow-up project work"] } : {}),
         })),
       });
     });
@@ -64,7 +65,12 @@ it.effect("batches at 100, keeps identity order and selects each environment's a
         signer,
         items: items(201),
       }).pipe(Effect.provide(layer));
-      expect(result).toEqual(items(201).map((item) => (item.settledAtMs % 2 ? "other" : "client")));
+      expect(result).toEqual(
+        items(201).map((item) => ({
+          origin: item.settledAtMs % 2 ? "other" : "client",
+          ...(item.settledAtMs === 101 ? { projectRemaining: ["Follow-up project work"] } : {}),
+        })),
+      );
     }
     expect(calls.map((call) => call.items.length)).toEqual([100, 100, 1, 100, 100, 1]);
     expect(calls.map((call) => call.url)).toEqual(
@@ -114,7 +120,7 @@ it.effect("keeps cookie credentials and leaves unsupported or failed transport r
         }),
       ),
     );
-    expect(result).toEqual(["unknown"]);
+    expect(result).toEqual([{ origin: "unknown" }]);
     for (const reply of [
       async () => new Response("Not found", { status: 404 }),
       async () => {
@@ -187,7 +193,7 @@ it.effect(
             }),
           ),
         );
-        expect(result).toEqual(["client"]);
+        expect(result).toEqual([{ origin: "client" }]);
       }
     }),
 );
@@ -233,7 +239,7 @@ it.effect(
       yield* SubscriptionRef.set(session, Option.some(makeSession(otherEnv, true)));
       expect((yield* query.pipe(Effect.result))._tag).toBe("Failure");
       yield* SubscriptionRef.set(session, Option.some(makeSession(env, true)));
-      expect(yield* query).toEqual(["client"]);
+      expect(yield* query).toEqual([{ origin: "client" }]);
       expect(requests).toBe(1);
       yield* SubscriptionRef.set(prepared, Option.some(connection(otherEnv)));
       expect((yield* query.pipe(Effect.result))._tag).toBe("Failure");

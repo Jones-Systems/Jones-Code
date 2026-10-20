@@ -15,9 +15,11 @@ function compareText(a: string, b: string): number {
 // as commutative. A confirmed shell observation refreshes labels after merging.
 function compareEntry(a: SettlementEntry, b: SettlementEntry): number {
   return (
+    Number((a.projectRemaining?.length ?? 0) > 0) - Number((b.projectRemaining?.length ?? 0) > 0) ||
     a.detectedAtMs - b.detectedAtMs ||
     compareText(a.title, b.title) ||
-    Number(a.threadGone) - Number(b.threadGone)
+    Number(a.threadGone) - Number(b.threadGone) ||
+    compareText(JSON.stringify(a.projectRemaining ?? []), JSON.stringify(b.projectRemaining ?? []))
   );
 }
 

@@ -1,10 +1,12 @@
 import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
 import { observeEnvironment } from "./detect.ts";
 import { addArrivals, dismiss, mergeInbox, refreshThreads, visibleEntries } from "./inbox.ts";
 import {
+  SettlementOriginDetails,
   BASELINE_DEBOUNCE_MS,
   decodeSettlementBaseline,
   decodeSettlementInbox,
@@ -32,6 +34,8 @@ export interface SettlementNotificationSnapshot {
   readonly visible: readonly SettlementEntry[];
   readonly persistence: "loading" | "ok" | "degraded";
 }
+
+const isOriginDetails = Schema.is(SettlementOriginDetails);
 
 export function createSettlementNotificationController(deps: {
   store: SettlementNotificationStore;
@@ -87,7 +91,8 @@ export function createSettlementNotificationController(deps: {
           entry.id === previous.id &&
           entry.title === previous.title &&
           entry.threadGone === previous.threadGone &&
-          entry.detectedAtMs === previous.detectedAtMs
+          entry.detectedAtMs === previous.detectedAtMs &&
+          JSON.stringify(entry.projectRemaining) === JSON.stringify(previous.projectRemaining)
         );
       });
     if (sameVisible && persistence === snapshot.persistence) return;
@@ -236,10 +241,28 @@ export function createSettlementNotificationController(deps: {
         origins.length === arrivals.length &&
         arrivals.every((_, index) => {
           const origin = origins[index];
-          return origin === "client" || origin === "other" || origin === "unknown";
+          return (
+            origin === "client" ||
+            origin === "other" ||
+            origin === "unknown" ||
+            isOriginDetails(origin)
+          );
         });
       const retained = valid
-        ? arrivals.filter((_, index) => origins[index] !== "client")
+        ? arrivals.flatMap((arrival, index) => {
+            const result = origins[index];
+            const details = typeof result === "string" ? { origin: result } : result;
+            return details.origin === "client"
+              ? []
+              : [
+                  {
+                    ...arrival,
+                    ...(details.projectRemaining === undefined
+                      ? {}
+                      : { projectRemaining: details.projectRemaining }),
+                  },
+                ];
+          })
         : arrivals;
       updateInbox(refreshConfirmed(addArrivals(inbox, retained, detectedAtMs)));
       const remaining = (pendingClassifications.get(environmentId) ?? 1) - 1;

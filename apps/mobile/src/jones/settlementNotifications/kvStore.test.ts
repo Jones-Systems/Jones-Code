@@ -1,4 +1,8 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import {
+  decodeSettlementInbox,
+  encodeSettlementInbox,
+} from "@t3tools/client-runtime/jones/settlement-notifications";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createSettlementKvStore } from "./kvStore";
@@ -50,13 +54,31 @@ describe("mobile settlement SQLite adapter", () => {
   it("retains exact inbox and separate environment baselines across adapter recreation", async () => {
     const fixture = storageFixture();
     const first = createSettlementKvStore(fixture.storage);
-    const inbox = JSON.stringify({ version: 1, entries: [], acknowledged: ["a:1", "b:2"] });
+    const inbox = encodeSettlementInbox({
+      version: 1,
+      entries: [
+        {
+          id: `${environmentA}:thread:100`,
+          environmentId: environmentA,
+          threadId: ThreadId.make("thread"),
+          title: "Settled thread",
+          settledAtMs: 100,
+          detectedAtMs: 100,
+          threadGone: false,
+          projectRemaining: ["Build the follow-up", "Review <b> as plain text"],
+        },
+      ],
+      acknowledged: ["a:1", "b:2"],
+    });
     await first.saveInbox(inbox);
     await first.saveBaseline(environmentA, '{"snapshotSequence":10}');
     await first.saveBaseline(environmentB, '{"snapshotSequence":20}');
 
     const restarted = createSettlementKvStore(fixture.storage);
     expect(await restarted.loadInbox()).toBe(inbox);
+    expect(
+      decodeSettlementInbox((await restarted.loadInbox())!).entries[0]?.projectRemaining,
+    ).toEqual(["Build the follow-up", "Review <b> as plain text"]);
     expect(await restarted.loadBaseline(environmentA)).toBe('{"snapshotSequence":10}');
     expect(await restarted.loadBaseline(environmentB)).toBe('{"snapshotSequence":20}');
     expect(await restarted.listBaselineEnvironmentIds()).toEqual([environmentA, environmentB]);

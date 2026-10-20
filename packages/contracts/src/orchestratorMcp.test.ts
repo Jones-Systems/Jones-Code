@@ -189,6 +189,32 @@ describe("self settlement contracts", () => {
       expect(() => decode(input)).toThrow();
     }
   });
+  it("preserves bounded plain-text project remainder items", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadSettleInput);
+    const projectRemaining = [
+      "Ship the follow-up",
+      "Review <script> as plain text",
+      "é".repeat(1024),
+    ];
+    expect(decode({ clientRequestId: "finish-items", projectRemaining })).toEqual({
+      clientRequestId: "finish-items",
+      projectRemaining,
+    });
+    for (const items of [
+      [""],
+      ["   "],
+      ["two\nlines"],
+      ["tab\there"],
+      ["é".repeat(1025)],
+      Array(65).fill("work"),
+    ]) {
+      expect(() => decode({ clientRequestId: "finish-items", projectRemaining: items })).toThrow();
+    }
+    expect(
+      decode({ clientRequestId: "finish-items", projectRemaining: Array(64).fill("work") })
+        .projectRemaining,
+    ).toHaveLength(64);
+  });
   it("reports accepted intent bound to the original run rather than completed settlement", () => {
     const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadSettleResult);
     const receipt = {
