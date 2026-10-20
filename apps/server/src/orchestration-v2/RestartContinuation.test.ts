@@ -1041,6 +1041,29 @@ it.effect("does not continue a cut /compact or /logout turn", () =>
   }),
 );
 
+it.effect.each([
+  { createdBy: "system", creationSource: "server", continues: false },
+  { createdBy: "user", creationSource: "web", continues: true },
+])("handles a cut sentinel turn from $createdBy without resuming Work", (origin) =>
+  Effect.gen(function* () {
+    const messageId = MessageId.make("work-mode:restart-refresh");
+    const texts = yield* continuationTexts({
+      ...cutMidTurn({ userMessageId: messageId }),
+      messages: [
+        {
+          id: messageId,
+          role: "user",
+          text: "@@@@@",
+          attachments: [],
+          createdBy: origin.createdBy,
+          creationSource: origin.creationSource,
+        },
+      ],
+    } as unknown as OrchestrationV2ThreadProjection);
+    assert.deepEqual(texts, origin.continues ? ["Continue where you left off."] : []);
+  }),
+);
+
 it.effect("tells a turn cut mid-way about the background work it lost", () =>
   Effect.gen(function* () {
     const texts = yield* continuationTexts(

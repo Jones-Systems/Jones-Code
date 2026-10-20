@@ -342,6 +342,7 @@
         "apps/server/src/jones/workMode/WorkMode.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
         "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
         "apps/web/src/jones/workMode/SidebarWorkModePill.test.tsx",
@@ -349,7 +350,7 @@
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control."
     },
     {
       "id": "persistent-host-connections",
