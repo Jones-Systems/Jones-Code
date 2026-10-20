@@ -610,7 +610,9 @@
         "scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
         "scripts/jones/updates/native-fixture-support.node-test.mjs",
         "apps/server/src/jones/cloud/capturedProcess.test.ts",
-        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
+        "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+        "packages/contracts/src/jones/jonesSourceRelation.test.ts",
+        "apps/server/src/jones/updates/sourceRelation.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -625,7 +627,8 @@
         "vp test run apps/desktop/src/jones/updates/jonesColdDarwinLayout.test.ts",
         "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/updates/native-fixture-support.node-test.mjs",
-        "vp test run apps/server/src/jones/cloud/capturedProcess.test.ts apps/server/src/jones/cloud/stoppedServerOwnership.test.ts --maxWorkers=1"
+        "vp test run apps/server/src/jones/cloud/capturedProcess.test.ts apps/server/src/jones/cloud/stoppedServerOwnership.test.ts --maxWorkers=1",
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -740,13 +743,16 @@
         "packages/client-runtime/src/state/serverTokenAccounting.test.ts",
         "packages/client-runtime/src/state/serverUsage.test.ts",
         "apps/web/src/components/ServerUpdateAction.browser.test.tsx",
-        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+        "apps/web/src/jones/updates/installedSourceObservation.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.browser.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "vp run --filter @t3tools/mobile typecheck"
+        "vp run --filter @t3tools/mobile typecheck",
+        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.test.tsx src/jones/updates/installedSourceComparison.test.ts src/jones/updates/installedSourceObservation.test.ts src/jones/fleetUpdates/sourceCurrency.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

@@ -20,6 +20,7 @@ import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
 import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
+import { JonesSourceRelation, JonesSourceRelationQuery } from "./jonesSourceRelation.ts";
 import {
   VoiceReviewRecentList,
   VoiceReviewDiagnostics,
@@ -449,6 +450,15 @@ export const makeJonesHttpGroups = ({
         query: Schema.Struct({ after: Schema.optionalKey(Schema.NumberFromString) }),
         headers: OptionalBearerHeaders,
         success: Schema.NullOr(JonesUpdateState),
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      // A read of public ancestry between two exact commits; it never stages or installs.
+      HttpApiEndpoint.get("sourceRelation", "/api/jones-updates/source-relation", {
+        query: JonesSourceRelationQuery,
+        headers: OptionalBearerHeaders,
+        success: JonesSourceRelation,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )

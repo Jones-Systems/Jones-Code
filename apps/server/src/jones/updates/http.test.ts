@@ -31,6 +31,7 @@ import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { jonesUpdatesHttpApiLayer } from "./http.ts";
 import * as JonesUpdates from "./service.ts";
+import * as SourceRelation from "./sourceRelation.ts";
 
 class JonesUpdatesTestApi extends HttpApi.make("environment").add(
   EnvironmentHttpApi.groups.jonesUpdates,
@@ -100,7 +101,16 @@ it.layer(NodeServices.layer)("Jones update Release compatibility", (it) => {
           ),
         );
         const routes = HttpApiBuilder.layer(JonesUpdatesTestApi).pipe(
-          Layer.provide(jonesUpdatesHttpApiLayer),
+          Layer.provide(
+            jonesUpdatesHttpApiLayer.pipe(
+              Layer.provide(
+                Layer.succeed(
+                  SourceRelation.JonesSourceRelation,
+                  unusedService<SourceRelation.JonesSourceRelation["Service"]>(),
+                ),
+              ),
+            ),
+          ),
           Layer.provide(AuthHttp.layerAuthenticatedAuth),
           Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
           Layer.provide(updates),
@@ -159,6 +169,18 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     installForOperation: (input) => record("installForOperation", input),
     reconcileOperation: (operationId) => Effect.succeed({ state: "absent" as const, operationId }),
   });
+  const relation = Layer.succeed(SourceRelation.JonesSourceRelation, {
+    relation: (pair) =>
+      Effect.sync(() => {
+        calls.push({ action: "sourceRelation", input: pair });
+        return {
+          repository: "Jones-Systems/Jones-Code" as const,
+          ...pair,
+          relation: "ahead" as const,
+          observedAt: "2026-10-20T00:00:00.000Z",
+        };
+      }),
+  });
   const auth = Layer.succeed(EnvironmentAuthenticatedAuth, (effect) =>
     effect.pipe(
       Effect.provideService(EnvironmentAuthenticatedPrincipal, {
@@ -170,7 +192,7 @@ function fixture(scopes: ReadonlyArray<AuthEnvironmentScope>) {
     ),
   );
   const routes = HttpApiBuilder.layer(JonesUpdatesTestApi).pipe(
-    Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(service))),
+    Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(Layer.mergeAll(service, relation)))),
     Layer.provide(auth),
     Layer.provide(HttpServer.layerServices),
   );
@@ -279,6 +301,62 @@ describe("qualified update HTTP authority and decoding", () => {
       expect(app.calls).toEqual([{ action: "state", input: 2 }]);
     } finally {
       await app.dispose();
+    }
+  });
+
+  test("serves exact-pair source relation with read scope only and no-store", async () => {
+    const base = "a".repeat(40),
+      head = "b".repeat(40);
+    const app = fixture(["orchestration:read"]);
+    try {
+      const response = await app.handler(
+        new Request(`http://fixture/api/jones-updates/source-relation?base=${base}&head=${head}`),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toEqual({
+        repository: "Jones-Systems/Jones-Code",
+        base,
+        head,
+        relation: "ahead",
+        observedAt: "2026-10-20T00:00:00.000Z",
+      });
+      expect(app.calls).toEqual([{ action: "sourceRelation", input: { base, head } }]);
+    } finally {
+      await app.dispose();
+    }
+  });
+
+  test("rejects malformed or unauthorized source relation reads before calling the service", async () => {
+    const base = "a".repeat(40);
+    const app = fixture(["orchestration:read"]);
+    try {
+      for (const query of [
+        `base=${base}`,
+        `base=${base}&head=${base.slice(0, 7)}`,
+        `base=${base}&head=${"B".repeat(40)}`,
+        `base=${base}&head=repos%2Fother%2Frepo`,
+      ]) {
+        const response = await app.handler(
+          new Request(`http://fixture/api/jones-updates/source-relation?${query}`),
+        );
+        expect(response.status).toBe(400);
+      }
+      expect(app.calls).toEqual([]);
+    } finally {
+      await app.dispose();
+    }
+    const unscoped = fixture([]);
+    try {
+      const response = await unscoped.handler(
+        new Request(
+          `http://fixture/api/jones-updates/source-relation?base=${base}&head=${"b".repeat(40)}`,
+        ),
+      );
+      expect(response.status).toBe(403);
+      expect(unscoped.calls).toEqual([]);
+    } finally {
+      await unscoped.dispose();
     }
   });
 });

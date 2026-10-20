@@ -18,6 +18,7 @@ import {
   type FleetHostReadiness,
 } from "../../fleetUpdates/FleetEnrollmentStatus";
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
+import type { JonesInstalledComparison } from "../installedSourceComparison";
 
 // Synthetic presentation-only states: no connection, bridge, host request, or installation.
 const repository = "Jones-Systems/Jones-Code";
@@ -64,6 +65,8 @@ interface Scenario {
     readonly freshness: "loading" | "fresh" | "stale" | "unsupported";
     readonly freshnessMessage?: string;
     readonly comparison?: "matches" | "different" | "unavailable";
+    /** Set directly so every label shows; nothing here orders sources. */
+    readonly installedComparison?: JonesInstalledComparison;
     readonly actionError?: string;
   };
   readonly fleet: {
@@ -93,6 +96,24 @@ function scenarios(): readonly Scenario[] {
       fleet: { enrolled: false, readiness: "unavailable" },
     },
     {
+      key: "installed-older",
+      label: "Mac mini",
+      kind: "server",
+      subtitle: "SSH mjones@mac-mini · Connected",
+      routes: [{ label: "SSH", address: "mjones@mac-mini", inUse: true }],
+      build: {
+        state: state(id("installed-older"), {
+          phase: "available",
+          message: "A newer main build is available.",
+          provenance: offered,
+        }),
+        freshness: "fresh",
+        comparison: "matches",
+        installedComparison: "older",
+      },
+      fleet: { enrolled: false, readiness: "qualified" },
+    },
+    {
       key: "downloading",
       label: "VPS",
       kind: "cloud",
@@ -113,6 +134,7 @@ function scenarios(): readonly Scenario[] {
         }),
         freshness: "fresh",
         comparison: "different",
+        installedComparison: "newer",
       },
       fleet: { enrolled: false, readiness: "setup-required" },
     },
@@ -134,6 +156,7 @@ function scenarios(): readonly Scenario[] {
         }),
         freshness: "fresh",
         comparison: "matches",
+        installedComparison: "different",
       },
       fleet: { enrolled: false, readiness: "qualified" },
     },
@@ -153,6 +176,7 @@ function scenarios(): readonly Scenario[] {
         }),
         freshness: "fresh",
         comparison: "unavailable",
+        installedComparison: "matches",
       },
       fleet: {
         enrolled: true,
@@ -180,6 +204,7 @@ function scenarios(): readonly Scenario[] {
         freshness: "stale",
         freshnessMessage: "Update status is temporarily unavailable; retrying.",
         actionError: "The update request failed. Check the connection and try again.",
+        installedComparison: "unavailable",
       },
       fleet: {
         enrolled: true,
@@ -366,6 +391,7 @@ function ScenarioRow({
               freshness={scenario.build.freshness}
               freshnessMessage={scenario.build.freshnessMessage}
               comparison={scenario.build.comparison ?? null}
+              installedComparison={scenario.build.installedComparison ?? null}
               actionError={scenario.build.actionError ?? null}
               onRequest={(request: JonesBuildRequest) => onRequest(scenario.label, request)}
             />
@@ -435,6 +461,11 @@ function FixtureScreen() {
                 Production update views with synthetic states. No connection, desktop bridge, host
                 request, enrollment, or installation. Routes and Permissions open static copies of
                 those panels with synthetic routes and grants; their controls do nothing.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Each row sets its installed and offered comparison badges directly so every label
+                shows. Nothing here orders sources or shows that a host reports them; the synthetic
+                commits are not consistent across rows.
               </p>
             </header>
             <section aria-label="This machine">

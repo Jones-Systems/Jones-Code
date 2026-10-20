@@ -108,6 +108,8 @@ export type JonesActionsCheckResult =
       readonly retryAfterMs: number;
     };
 
+export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
+
 /** Adapters own authentication and redirect following; neither enters the updater model. */
 export interface JonesActionsTransport {
   api(endpoint: string): Promise<unknown>;
@@ -126,6 +128,11 @@ function rows(value: unknown, key: string): Array<Record<string, unknown>> {
 }
 function positive(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0)
+    throw new JonesActionsError("unqualified");
+  return value;
+}
+function count(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
     throw new JonesActionsError("unqualified");
   return value;
 }
@@ -399,6 +406,40 @@ export class JonesActionsClient {
         : { state: "blocked", reason: "unavailable", retryAfterMs: 240000 };
     } catch (error) {
       return { state: "blocked", reason: safeTransportError(error).reason, retryAfterMs: 240000 };
+    }
+  }
+
+  /**
+   * Ancestry of two exact commits in the fixed repository: "ahead" when `base` is an ancestor of
+   * `head`, "behind" for the reverse. It says nothing about main membership or channel order.
+   * Throws a sanitized `JonesActionsError` when GitHub cannot prove one relation for this pair.
+   */
+  async relation(base: string, head: string): Promise<JonesSourceRelationKind> {
+    if (source(base) === source(head)) return "identical";
+    try {
+      const comparison = record(
+        await this.transport.api(`${API_ROOT}/compare/${base}...${head}?per_page=1`),
+      );
+      const mergeBase = source(record(comparison.merge_base_commit).sha);
+      const aheadBy = count(comparison.ahead_by),
+        behindBy = count(comparison.behind_by);
+      if (source(record(comparison.base_commit).sha) !== base)
+        throw new JonesActionsError("unqualified");
+      if (comparison.status === "ahead" && mergeBase === base && aheadBy > 0 && behindBy === 0)
+        return "ahead";
+      if (comparison.status === "behind" && mergeBase === head && behindBy > 0 && aheadBy === 0)
+        return "behind";
+      if (
+        comparison.status === "diverged" &&
+        mergeBase !== base &&
+        mergeBase !== head &&
+        aheadBy > 0 &&
+        behindBy > 0
+      )
+        return "diverged";
+      throw new JonesActionsError("unqualified");
+    } catch (error) {
+      throw safeTransportError(error);
     }
   }
 

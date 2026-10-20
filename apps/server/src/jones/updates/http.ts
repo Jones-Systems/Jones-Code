@@ -9,6 +9,7 @@ import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { requireEnvironmentScope } from "../../auth/http.ts";
 import { JonesUpdates } from "./service.ts";
+import * as SourceRelation from "./sourceRelation.ts";
 
 const noStore = HttpEffect.appendPreResponseHandler((_request, response) =>
   Effect.succeed(HttpServerResponse.setHeader(response, "cache-control", "no-store")),
@@ -20,6 +21,7 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const updates = yield* JonesUpdates;
+      const sourceRelation = yield* SourceRelation.JonesSourceRelation;
       return handlers
         .handle("prepareNative", ({ payload }) =>
           Effect.gen(function* () {
@@ -33,6 +35,13 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);
             yield* noStore;
             return yield* updates.state(query.after);
+          }),
+        )
+        .handle("sourceRelation", ({ query }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+            yield* noStore;
+            return yield* sourceRelation.relation(query);
           }),
         )
         .handle("check", () =>

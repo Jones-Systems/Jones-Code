@@ -688,3 +688,97 @@ describe("Jones artifact metadata envelope", () => {
     await expectIntegrity(malform(bytes) ?? bytes);
   });
 });
+
+describe("JonesActionsClient.relation", () => {
+  const BASE = "1".repeat(40),
+    HEAD = "2".repeat(40),
+    MERGE = "3".repeat(40);
+  function compare(response: unknown) {
+    const endpoints: string[] = [];
+    const client = new JonesActionsClient({
+      transport: {
+        api: async (endpoint) => {
+          endpoints.push(endpoint);
+          if (response instanceof Error) throw response;
+          return response;
+        },
+        download: async () => {
+          throw new Error("relation must never download");
+        },
+      },
+    });
+    return { client, endpoints };
+  }
+  const github = (overrides: Record<string, unknown>) => ({
+    status: "ahead",
+    ahead_by: 3,
+    behind_by: 0,
+    base_commit: { sha: BASE },
+    merge_base_commit: { sha: BASE },
+    ...overrides,
+  });
+
+  it("reads one compare of the exact pair from the fixed repository", async () => {
+    const { client, endpoints } = compare(github({}));
+    expect(await client.relation(BASE, HEAD)).toBe("ahead");
+    expect(endpoints).toEqual([`${ROOT}/compare/${BASE}...${HEAD}?per_page=1`]);
+  });
+
+  it.each([
+    [
+      "behind",
+      github({ status: "behind", ahead_by: 0, behind_by: 2, merge_base_commit: { sha: HEAD } }),
+    ],
+    [
+      "diverged",
+      github({ status: "diverged", ahead_by: 1, behind_by: 2, merge_base_commit: { sha: MERGE } }),
+    ],
+  ])("accepts %s only with its merge-base binding", async (relation, response) => {
+    expect(await compare(response).client.relation(BASE, HEAD)).toBe(relation);
+  });
+
+  it("answers identical for one commit without reading GitHub", async () => {
+    const { client, endpoints } = compare(new Error("must not be called"));
+    expect(await client.relation(BASE, BASE)).toBe("identical");
+    expect(endpoints).toEqual([]);
+  });
+
+  it.each([
+    ["ahead without base as merge base", github({ merge_base_commit: { sha: MERGE } })],
+    ["behind without head as merge base", github({ status: "behind", ahead_by: 0, behind_by: 2 })],
+    [
+      "diverged sharing an endpoint",
+      github({ status: "diverged", ahead_by: 1, behind_by: 2, merge_base_commit: { sha: HEAD } }),
+    ],
+    ["ahead with inconsistent counts", github({ behind_by: 1 })],
+    ["identical for distinct commits", github({ status: "identical", ahead_by: 0 })],
+    ["unknown status", github({ status: "unrelated" })],
+    ["another base commit", github({ base_commit: { sha: MERGE } })],
+    ["abbreviated merge base", github({ merge_base_commit: { sha: BASE.slice(0, 7) } })],
+    ["negative count", github({ ahead_by: -1 })],
+    ["missing merge base", github({ merge_base_commit: null })],
+    ["non-object response", ["ahead"]],
+  ])("refuses %s", async (_label, response) => {
+    await expect(compare(response).client.relation(BASE, HEAD)).rejects.toMatchObject({
+      reason: "unqualified",
+    });
+  });
+
+  it("refuses abbreviated or non-hex input before any request", async () => {
+    const { client, endpoints } = compare(github({}));
+    await expect(client.relation(BASE.slice(0, 7), HEAD)).rejects.toBeInstanceOf(JonesActionsError);
+    await expect(client.relation(BASE, `${HEAD.slice(1)}/`)).rejects.toBeInstanceOf(
+      JonesActionsError,
+    );
+    expect(endpoints).toEqual([]);
+  });
+
+  it("sanitizes transport failures and keeps gh classifications", async () => {
+    await expect(
+      compare(new Error("HTTP 404 with private detail")).client.relation(BASE, HEAD),
+    ).rejects.toEqual(new JonesActionsError("unavailable"));
+    await expect(
+      compare(new JonesActionsError("authentication-required")).client.relation(BASE, HEAD),
+    ).rejects.toMatchObject({ reason: "authentication-required" });
+  });
+});

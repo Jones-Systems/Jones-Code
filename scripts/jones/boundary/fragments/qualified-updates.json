@@ -91,7 +91,13 @@
     "apps/server/src/jones/cloud/capturedProcess.ts",
     "apps/server/src/jones/cloud/capturedProcess.test.ts",
     "apps/server/src/jones/cloud/stoppedServerOwnership.ts",
-    "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts"
+    "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
+    "apps/web/src/jones/updates/installedSourceComparison.ts",
+    "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+    "apps/server/src/jones/updates/sourceRelation.ts",
+    "apps/server/src/jones/updates/sourceRelation.test.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.ts",
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -427,6 +433,10 @@
     {
       "from": "apps/desktop/src/backend/DesktopBackendManager.test.ts",
       "to": "scripts/jones/updates/native-fixture-support.mjs"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/sourceRelation.ts"
     }
   ]
 }

@@ -67,6 +67,11 @@ async function render(props: Partial<Parameters<typeof JonesBuildStatus>[0]> = {
 }
 const buttonNamed = (name: string) =>
   [...container.querySelectorAll("button")].find((node) => node.textContent === name)!;
+const badges = () => [
+  ...container.querySelectorAll<HTMLElement>('span[data-slot="tooltip-trigger"]:has(> .sr-only)'),
+];
+const precedes = (first: Node, second: Node) =>
+  (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
 describe("Jones build status", () => {
   it("shows both builds compactly and keeps exact identities one disclosure away", async () => {
@@ -100,6 +105,110 @@ describe("Jones build status", () => {
       action: "download",
       input: { artifactId: 1, sourceSha: offeredSha },
     });
+  });
+
+  it("places the installed comparison before the arrow, apart from the candidate badge", async () => {
+    const onRequest = await render({ installedComparison: "older", comparison: "matches" });
+    const [installed, offered] = badges();
+    expect(badges()).toHaveLength(2);
+    expect(installed!.textContent).toBe("Installed compared with this laptop: Older");
+    expect(offered!.textContent).toBe("Available compared with this laptop: Matches laptop");
+    const installedVersion = container.querySelector(
+      '[aria-label="Copy installed version 0.0.45-preview.20261013.38343490676.1"]',
+    )!;
+    const arrow = container.querySelector("svg.lucide-arrow-right")!;
+    const offeredVersion = container.querySelector(
+      '[aria-label="Copy available version 0.0.45-preview.20261016.38974945620.1"]',
+    )!;
+    expect(precedes(installedVersion, installed!)).toBe(true);
+    expect(precedes(installed!, arrow)).toBe(true);
+    expect(precedes(arrow, offeredVersion)).toBe(true);
+    expect(precedes(offeredVersion, offered!)).toBe(true);
+
+    await act(async () => buttonNamed("Details").click());
+    const opened = container.textContent!;
+    expect(opened).toContain(
+      "Installed vs this laptopInstalled from an older source commit than this laptop.",
+    );
+    expect(opened).toContain(
+      "Available vs this laptopBuilt from the source commit installed on this laptop.",
+    );
+
+    await act(async () => buttonNamed("Download").click());
+    expect(onRequest).toHaveBeenCalledWith({
+      action: "download",
+      input: { artifactId: 1, sourceSha: offeredSha },
+    });
+  });
+
+  it("labels each installed comparison with its own tone", async () => {
+    const expected = [
+      ["matches", "Matches", "success"],
+      ["older", "Older", "warning"],
+      ["newer", "Newer", "info"],
+      ["different", "Different source", "warning"],
+      ["diverged", "Diverged", "warning"],
+    ] as const;
+    for (const [installedComparison, label, tone] of expected) {
+      await render({ installedComparison, comparison: null });
+      expect(badges()).toHaveLength(1);
+      expect(badges()[0]!.textContent).toBe(`Installed compared with this laptop: ${label}`);
+      expect(badges()[0]!.className).toContain(`text-${tone}-foreground`);
+    }
+  });
+
+  it("explains an uncompared installed source in Details without a badge", async () => {
+    await render({ installedComparison: "unavailable", comparison: "different" });
+    expect(badges().map((badge) => badge.textContent)).toEqual([
+      "Available compared with this laptop: Different source",
+    ]);
+    await act(async () => buttonNamed("Details").click());
+    expect(container.textContent).toContain(
+      "Installed vs this laptopNot compared. Comparing needs the full installed source commit of both this host and this laptop.",
+    );
+
+    await render({ comparison: null });
+    expect(badges()).toHaveLength(0);
+    expect(container.textContent).not.toContain("vs this laptop");
+  });
+
+  it("keeps Install routing and names the downloaded build in its comparison", async () => {
+    const staged = {
+      ...available,
+      phase: "staged",
+      stagedHandle: "staged-synthetic",
+    } as unknown as JonesUpdateState;
+    const onRequest = await render({
+      state: staged,
+      installedComparison: "newer",
+      comparison: "different",
+    });
+    expect(badges().map((badge) => badge.textContent)).toEqual([
+      "Installed compared with this laptop: Newer",
+      "Downloaded compared with this laptop: Different source",
+    ]);
+    await act(async () => buttonNamed("Details").click());
+    expect(container.textContent).toContain("Downloaded vs this laptopBuilt from a different");
+    await act(async () => buttonNamed("Install").click());
+    expect(onRequest).toHaveBeenCalledWith({
+      action: "install",
+      input: {
+        stagedHandle: "staged-synthetic",
+        environmentId,
+        currentVersion: available.currentVersion,
+      },
+    });
+
+    await render({
+      state: staged,
+      freshness: "stale",
+      freshnessMessage: "Update status is temporarily unavailable; retrying.",
+      installedComparison: "unavailable",
+      comparison: "unavailable",
+    });
+    expect(badges()).toHaveLength(0);
+    expect(container.textContent).toContain("Update status is temporarily unavailable; retrying.");
+    expect(buttonNamed("Install").disabled).toBe(true);
   });
 
   it("keeps a failed install outcome and stale status visible without opening details", async () => {
