@@ -179,6 +179,19 @@ const seedProjection = (source: OrchestrationV2ThreadProjection, prefix: string)
         completedAt: now,
       })),
       messages: value.messages.map((message) => ({ ...message, createdAt: now, updatedAt: now })),
+      providerTurns: value.providerTurns.map((turn) => ({
+        ...turn,
+        tokenUsage:
+          turn.tokenUsage === undefined
+            ? undefined
+            : {
+                ...turn.tokenUsage,
+                updatedAt:
+                  Date.parse(turn.tokenUsage.updatedAt) === 0
+                    ? DateTime.formatIso(now)
+                    : turn.tokenUsage.updatedAt,
+              },
+      })),
     });
     const value = at(source);
     const events: ReadonlyArray<OrchestrationV2DomainEvent> = [
@@ -233,12 +246,16 @@ const seed = seedProjection(workModeFixture(), "seed");
 function completeLatestRun<E = never, R = never>(
   checkpoint = false,
   beforeCheckpoint?: () => Effect.Effect<unknown, E, R>,
+  withUsage = true,
 ) {
   return Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const projection = yield* projections.getThreadProjection(fixture.thread.id);
     const run = projection.runs.toSorted((a, b) => b.ordinal - a.ordinal)[0]!;
     const owner = projection.providerThreads.find((thread) => thread.id === run.providerThreadId)!;
+    const existingTurn = projection.providerTurns.find(
+      (turn) => turn.runAttemptId === run.activeAttemptId,
+    );
     const now = yield* DateTime.now;
     yield* projections.apply({
       id: EventId.make(`complete:${run.id}`),
@@ -259,7 +276,7 @@ function completeLatestRun<E = never, R = never>(
       occurredAt: now,
       payload: {
         ...fixture.providerTurns[0]!,
-        id: ProviderTurnId.make(`turn:${run.id}`),
+        id: existingTurn?.id ?? ProviderTurnId.make(`turn:${run.id}`),
         providerThreadId: owner.id,
         nodeId: run.rootNodeId!,
         runAttemptId: run.activeAttemptId,
@@ -267,6 +284,9 @@ function completeLatestRun<E = never, R = never>(
         status: "completed",
         startedAt: now,
         completedAt: now,
+        tokenUsage: withUsage
+          ? { usedTokens: 1, inputTokens: 1, updatedAt: DateTime.formatIso(now) }
+          : undefined,
       },
     });
     yield* projections.apply({
@@ -343,12 +363,38 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("regular activity resets sweep timing and disabling stops later sweeps", () =>
+it.effect("real provider usage resets sweep timing and disabling stops later sweeps", () =>
   Effect.gen(function* () {
     const threadId = yield* seed;
     const workMode = yield* WorkMode.WorkMode;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const settings = yield* ServerSettings.ServerSettingsService;
+    yield* workMode.sweep;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    yield* completeLatestRun();
+    yield* TestClock.adjust(1);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+    yield* completeLatestRun();
+    yield* settings.updateSettings({ workModeEnabled: false });
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+    yield* settings.updateSettings({ workModeEnabled: true });
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 3);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a message update without model usage does not postpone a due refresh", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* workMode.sweep;
     yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
     const now = yield* DateTime.now;
     yield* projections.apply({
@@ -365,16 +411,137 @@ it.effect("regular activity resets sweep timing and disabling stops later sweeps
     });
     yield* TestClock.adjust(1);
     yield* workMode.sweep;
-    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
-    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS - 1);
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([
+  { ageMs: 90 * 60_000, expectedRuns: 2 },
+  { ageMs: 90 * 60_000 + 1, expectedRuns: 1 },
+])("initial age $ageMs milliseconds permits $expectedRuns total runs", ({ ageMs, expectedRuns }) =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    yield* TestClock.adjust(ageMs);
+    yield* WorkMode.WorkMode.pipe(Effect.flatMap((service) => service.sweep));
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, expectedRuns);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("run completion forty minutes after usage does not postpone the model deadline", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust("40 minutes");
+    const now = yield* DateTime.now;
+    const projection = yield* projections.getThreadProjection(threadId);
+    yield* projections.apply({
+      id: EventId.make("late-run-completion"),
+      type: "run.updated",
+      threadId,
+      occurredAt: now,
+      payload: { ...projection.runs[0]!, completedAt: now },
+    });
+    const workMode = yield* WorkMode.WorkMode;
+    yield* workMode.sweep;
+    yield* TestClock.adjust("15 minutes");
     yield* workMode.sweep;
     assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("an established successful Work chain remains eligible beyond ninety minutes", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
     yield* completeLatestRun();
-    yield* settings.updateSettings({ workModeEnabled: false });
+    yield* TestClock.adjust("91 minutes");
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 3);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("missing provider usage never admits a refresh", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seedProjection(
+      {
+        ...fixture,
+        providerTurns: fixture.providerTurns.map((turn) => ({ ...turn, tokenUsage: undefined })),
+      },
+      "missing-usage",
+    );
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    for (let round = 0; round < 3; round++) {
+      yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+      yield* workMode.sweep;
+      yield* workMode.sweep;
+    }
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("a usage-less Work completion does not create a five-second retry loop", () =>
+  Effect.gen(function* () {
+    const threadId = yield* seed;
+    const workMode = yield* WorkMode.WorkMode;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
+    yield* workMode.sweep;
+    yield* completeLatestRun(false, undefined, false);
+    yield* TestClock.adjust("5 seconds");
+    yield* workMode.sweep;
+    assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
     yield* TestClock.adjust(WORK_MODE_INTERVAL_MS);
     yield* workMode.sweep;
     assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 2);
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect.each([{ withUsage: true }, { withUsage: false }])(
+  "caches timing records between ticks with provider usage=$withUsage",
+  ({ withUsage }) =>
+    Effect.gen(function* () {
+      const threadId = yield* seedProjection(
+        {
+          ...fixture,
+          providerTurns: fixture.providerTurns.map((turn) => ({
+            ...turn,
+            tokenUsage: withUsage ? turn.tokenUsage : undefined,
+          })),
+        },
+        "cached-timing",
+      );
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      let reads = 0;
+      const getThreadRecords: ProjectionStore.ProjectionStoreV2["Service"]["getThreadRecords"] = (
+        ...args
+      ) => {
+        reads++;
+        return projections.getThreadRecords(...args);
+      };
+      const observed = Layer.succeed(ProjectionStore.ProjectionStoreV2, {
+        ...projections,
+        getThreadRecords,
+      });
+      const workMode = yield* WorkMode.WorkMode.pipe(
+        Effect.provide(Layer.fresh(WorkMode.layer).pipe(Layer.provide(observed))),
+      );
+      yield* workMode.sweep;
+      yield* TestClock.adjust("5 seconds");
+      yield* workMode.sweep;
+      assert.equal(reads, 1);
+      yield* settings.updateSettings({ workModeEnabled: false });
+      yield* workMode.sweep;
+      yield* settings.updateSettings({ workModeEnabled: true });
+      yield* workMode.sweep;
+      assert.equal(reads, 2);
+      assert.lengthOf((yield* projections.getThreadProjection(threadId)).runs, 1);
+    }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect(

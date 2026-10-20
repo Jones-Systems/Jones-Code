@@ -350,7 +350,7 @@
         "packages/shared/src/jones/workMode.test.ts",
         "packages/shared/src/serverSettings.test.ts"
       ],
-      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control."
+      "scope": "Work-mode settings and capability, provider prompt guards, server admission and idle retention, keep-warm exclusion from inactivity settlement, sidebar status, and shared hidden keep-warm activity filtering across web and mobile. Focused tests cover policy/service behavior, provider/session integration, contracts and shared presentation helpers. Timing uses persisted inference counters from the current root provider conversation, skips first refreshes older than 90 minutes, and preserves established 55-minute cadence. Sweep timing is cached per shell generation; residency uses the real clock. Restart continuation reuses the Jones keep-warm identity guard so interrupted refreshes never resume ordinary work. The existing upstream restart harness retains this regression to exercise real continuation dispatch and the ordinary-user control."
     },
     {
       "id": "persistent-host-connections",

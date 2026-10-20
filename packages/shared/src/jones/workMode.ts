@@ -1,5 +1,6 @@
 export const WORK_MODE_SENTINEL = "@@@@@";
 export const WORK_MODE_INTERVAL_MS = 55 * 60 * 1000;
+export const WORK_MODE_INITIAL_MAX_IDLE_MS = 90 * 60 * 1000;
 export const WORK_MODE_INSTRUCTIONS =
   "When the user input is exactly @@@@@, respond with only @@@@@. Do not use tools, take any other action, or continue further work for that input.";
 
