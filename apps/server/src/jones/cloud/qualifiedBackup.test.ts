@@ -468,6 +468,71 @@ it("retains the Node forced-clone primitive on non-Darwin hosts", async () => {
   });
 });
 
+it("copies a Linux fallback in concurrent chunks and removes a partial copy after a failed write", async () => {
+  await fixture(async (base, database) => {
+    const chunk = 8 * 1024 * 1024;
+    const contents = NodeCrypto.randomBytes(2 * chunk + chunk / 2 + 3);
+    await NodeFSP.writeFile(database, contents);
+    await NodeFSP.chmod(database, 0o640);
+    const empty = NodePath.join(base, "userdata", "empty");
+    await NodeFSP.writeFile(empty, "");
+    const failed = NodePath.join(base, "failed");
+    const space = Object.assign(new Error("synthetic full disk"), { code: "ENOSPC" });
+    let failedWrites = 0;
+    const originalOpen = NodeFSP.open;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const clone = vi
+      .spyOn(NodeFSP, "copyFile")
+      .mockImplementation(async (_source, _target, flags) => {
+        assert.equal(
+          flags,
+          NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE_FORCE,
+        );
+        throw unsupported();
+      });
+    // The second chunk's write to the "failed" target reports a full disk.
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] !== failed) return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "write")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              if (position !== chunk) return target.write(buffer, offset, length, position);
+              failedWrites += 1;
+              throw space;
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    try {
+      const copied = NodePath.join(base, "copied");
+      assert.deepEqual(await copyQualifiedBackupFile(database, copied), {
+        method: "copy",
+        bytes: contents.length,
+      });
+      assert.isTrue((await NodeFSP.readFile(copied)).equals(contents));
+      assert.equal((await NodeFSP.stat(copied)).mode & 0o777, 0o640);
+      assert.equal(clone.mock.calls.length, 1);
+      await copyQualifiedBackupFile(empty, NodePath.join(base, "empty-copy"));
+      assert.equal((await NodeFSP.stat(NodePath.join(base, "empty-copy"))).size, 0);
+
+      await NodeAssert.rejects(
+        copyQualifiedBackupFile(database, failed),
+        (cause) => cause === space,
+      );
+      assert.equal(failedWrites, 1);
+      await NodeAssert.rejects(NodeFSP.lstat(failed), { code: "ENOENT" });
+    } finally {
+      open.mockRestore();
+      clone.mockRestore();
+      platform.mockRestore();
+    }
+  });
+});
+
 it("reserves the exact copy rollback buffer and trial headroom before stopping", async () => {
   await fixture(async (base, database) => {
     await NodeFSP.writeFile(`${database}-wal`, "wal");
