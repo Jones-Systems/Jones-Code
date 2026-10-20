@@ -59,7 +59,13 @@ export function observeEnvironment(
       continue;
     }
     threadTitles.set(thread.id, thread.title);
-    if (prev === null || lowerSequence || settledAtMs === null) continue;
+    if (
+      prev === null ||
+      lowerSequence ||
+      settledAtMs === null ||
+      thread.lineage.relationshipToParent === "subagent"
+    )
+      continue;
     const known = Object.hasOwn(prev.threads, thread.id);
     if (
       known
