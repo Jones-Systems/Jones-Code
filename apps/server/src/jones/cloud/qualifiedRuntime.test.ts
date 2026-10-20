@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
@@ -402,6 +403,91 @@ it("qualifies a manual Mac CLI layout only with its CLI workflow receipt", async
     await NodeAssert.rejects(
       qualifiedPayloadDigest(payload, "darwin", ".github/workflows/artifact-desktop-mac.yml"),
       /unexpected root/,
+    );
+  });
+});
+
+it("aborts digest work without changing the default digest format", async () => {
+  await fixture(async (_base, payload) => {
+    const expected = "4e64a35abb1beb78d6a649a9fc06f586e186486c28bac6079d6756075811916b";
+    assert.equal(await qualifiedPayloadDigest(payload), expected);
+    assert.equal(await qualifiedPayloadDigest(payload, "linux", undefined, {}), expected);
+    const controller = new AbortController();
+    const reason = new Error("synthetic digest cancellation");
+    controller.abort(reason);
+    await NodeAssert.rejects(
+      qualifiedPayloadDigest(payload, "linux", undefined, { signal: controller.signal }),
+      (cause) => cause === reason,
+    );
+  });
+});
+
+it("closes the digest file after cancellation between chunks", async () => {
+  await fixture(async (_base, payload) => {
+    const controller = new AbortController();
+    const reason = new Error("synthetic chunk cancellation");
+    const fs = bundleFileSystem().promises;
+    const open = fs.open.bind(fs);
+    let closed = false;
+    let chunks = 0;
+    const spy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      const handle = await open(...args);
+      const close = handle.close.bind(handle);
+      vi.spyOn(handle, "close").mockImplementation(async () => {
+        closed = true;
+        await close();
+      });
+      vi.spyOn(handle, "createReadStream").mockImplementation(
+        () =>
+          ({
+            async *[Symbol.asyncIterator]() {
+              chunks += 1;
+              yield Buffer.from("first");
+              controller.abort(reason);
+              chunks += 1;
+              yield Buffer.from("second");
+              chunks += 1;
+              yield Buffer.from("unreachable");
+            },
+          }) as ReturnType<typeof handle.createReadStream>,
+      );
+      return handle;
+    });
+    try {
+      await NodeAssert.rejects(
+        qualifiedPayloadDigest(payload, "linux", undefined, { signal: controller.signal }),
+        (cause) => cause === reason,
+      );
+      assert.equal(chunks, 2);
+      assert.equal(closed, true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+it("propagates install cancellation through receipt, current binding and staged verification", async () => {
+  await fixture(async (base, _payload, artifact) => {
+    const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+    const staged = await stageQualifiedRuntime({
+      artifact,
+      binding,
+      host: fixtureHost,
+      validate: async () => {},
+    });
+    const controller = new AbortController();
+    const reason = new Error("synthetic install cancellation");
+    controller.abort(reason);
+    const options = { signal: controller.signal };
+    for (const operation of [
+      () => readQualifiedRuntimeReceipt(base, baseline, fixtureHost, options),
+      () => currentQualifiedRuntimeBinding(base, baseline, fixtureHost, options),
+      () => verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost, options),
+    ])
+      await NodeAssert.rejects(operation(), (cause) => cause === reason);
+    assert.deepEqual(
+      await verifyStagedQualifiedRuntime(base, baseline, staged.stagedHandle, fixtureHost),
+      staged,
     );
   });
 });
