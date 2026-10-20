@@ -1,0 +1,20 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "delegated-task-workspace",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts",
+    "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/delegatedTaskWorkspace.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts"
+    }
+  ]
+}

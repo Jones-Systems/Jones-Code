@@ -6898,6 +6898,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Parent node ${command.parentNodeId} is not part of active run ${parentRun.id}.`,
         });
       }
+      // Jones: a delegated child may run in another project. It cannot share the
+      // parent's checkout there, so it must be bound to that project's workspace,
+      // and the project must still exist when the child is created.
+      const childProjectId = command.projectId ?? parentProjection.thread.projectId;
+      if (childProjectId !== parentProjection.thread.projectId) {
+        if (command.workspaceStrategy === undefined) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Delegated task in project ${childProjectId} requires a workspace strategy.`,
+          });
+        }
+        const childProject = yield* projects.get(childProjectId).pipe(mapDispatchError(command));
+        if (Option.isNone(childProject) || childProject.value.deletedAt !== null) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: `Project ${childProjectId} is not available for a delegated task.`,
+          });
+        }
+      }
 
       const targetAdapter = yield* providerAdapters.get(command.modelSelection.instanceId).pipe(
         Effect.mapError(
@@ -6942,6 +6963,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           createdBy: command.createdBy,
           creationSource: command.creationSource,
         }),
+        projectId: childProjectId,
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
         ...(command.workspaceStrategy === undefined ? {} : { branch: null, worktreePath: null }),

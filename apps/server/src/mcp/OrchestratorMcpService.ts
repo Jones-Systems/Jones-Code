@@ -101,6 +101,7 @@ import {
 } from "./McpInvocationContext.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 const MAX_WAIT_TIMEOUT_MS = 60 * 60 * 1_000;
@@ -1188,6 +1189,8 @@ const make = Effect.gen(function* () {
      * one checked for a receipt.
      */
     readonly skipProjectEnablementFilter?: boolean;
+    /** Project whose enablement applies; defaults to the parent's (Jones cross-project delegation). */
+    readonly projectId?: ProjectId;
   }): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const requestedInstanceId = input.target?.providerInstanceId;
@@ -1221,7 +1224,7 @@ const make = Effect.gen(function* () {
           const enabledForProject =
             input.skipProjectEnablementFilter === true ||
             (yield* threadManagement.isProviderInstanceEnabledForProject({
-              projectId: input.parent.thread.projectId,
+              projectId: input.projectId ?? input.parent.thread.projectId,
               instanceId: candidate.instanceId,
             }));
           if (enabledForProject) {
@@ -1991,10 +1994,19 @@ const make = Effect.gen(function* () {
           operation: "delegate-task",
         });
         const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+        // Jones hook: the child's project (this thread's unless projectId names
+        // another, which requires workspaceStrategy) selects provider enablement.
+        const childProject = yield* DelegatedTaskWorkspace.resolveDelegatedTaskProject({
+          request: input,
+          parentProjectId: parent.thread.projectId,
+          isRetryOfAcceptedDelegation,
+          loadProject: requireProject,
+        });
         const target = yield* resolveTargetRechecking({
           parent,
           target: input.target,
           providers,
+          projectId: childProject.projectId,
           skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
         });
         const runtimeMode = yield* resolveRuntimeMode(
@@ -2006,7 +2018,16 @@ const make = Effect.gen(function* () {
           parent.thread.interactionMode,
           input.interactionMode,
         );
-        let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
+        // Jones hook: an explicit workspaceStrategy (exclusive with isolation)
+        // binds the child's checkout; it remains a subagent of this thread.
+        let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined =
+          yield* DelegatedTaskWorkspace.resolveExplicitDelegatedTaskWorkspace({
+            request: input,
+            isRetryOfAcceptedDelegation,
+            project: requireProject(childProject.projectId),
+            git: gitDriver,
+            launches: threadLaunch,
+          });
         if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
           const project = yield* requireProject(parent.thread.projectId);
           const base = yield* gitDriver
@@ -2039,6 +2060,9 @@ const make = Effect.gen(function* () {
             runtimeMode,
             interactionMode,
             ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+            ...(childProject.commandProjectId === undefined
+              ? {}
+              : { projectId: childProject.commandProjectId }),
             // Async delegations wake the parent on every child terminal; wait
             // delegations deliver through the blocking tool call, so a wake is
             // only needed if the parent settled first (timeout, disconnect).

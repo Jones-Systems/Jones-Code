@@ -3469,6 +3469,64 @@ it.effect("cancels tracked setup before provider work is released", () =>
   }),
 );
 
+// Only an app-owned delegated child's existing worktree is prepared under Stop
+// (DelegatedTaskWorkspace.test.ts covers that); a top-level launch is unchanged.
+it.effect("lets a top-level existing-worktree launch finish setup after Stop", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>();
+    const allowSetup = yield* Deferred.make<void>();
+    const setupReturned = yield* Deferred.make<void>();
+    const harness = makeHarness({
+      runSetup: () =>
+        Effect.succeed({
+          status: "started" as const,
+          async: false,
+          scriptId: "setup",
+          scriptName: "Setup",
+          scriptCommand: "vp install",
+          terminalId: "setup",
+          cwd: "/repo-worktrees/existing",
+          completion: Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(allowSetup)),
+            Effect.andThen(Deferred.succeed(setupReturned, undefined)),
+            Effect.as({ exitCode: 0, durationMs: 1 }),
+          ),
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const launched = yield* launches.launch(
+        launchInput({
+          command: "command:launch:existing-worktree-stop",
+          thread: "thread:launch:existing-worktree-stop",
+          message: "Start",
+          workspace: {
+            type: "existing_worktree",
+            worktreePath: "/repo-worktrees/existing",
+            branch: "feature/existing",
+          },
+        }),
+      );
+      yield* Deferred.await(entered);
+      yield* threads.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("command:stop:existing-worktree-stop"),
+        threadId: launched.threadId,
+      });
+      assert.equal(
+        (yield* threads.getThreadProjection(launched.threadId)).runs[0]?.status,
+        "interrupted",
+      );
+      // Setup is not interrupted: it returns once allowed, and its terminal stays open.
+      yield* Deferred.succeed(allowSetup, undefined);
+      yield* Deferred.await(setupReturned);
+      assert.equal(harness.closeTerminal.mock.calls.length, 0);
+      assert.equal(harness.removeWorktree.mock.calls.length, 0);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);
+
 it.effect.each([0, 1])("releases an async setup before its completion with exit %s", (exitCode) =>
   Effect.gen(function* () {
     const completion = yield* Deferred.make<{ exitCode: number | null; durationMs: number }>();
