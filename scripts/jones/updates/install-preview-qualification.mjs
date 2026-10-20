@@ -1377,9 +1377,6 @@ function rendererSteps(origin, sourceSha, runId) {
 
   // Exact-source action: the production notice and controller against a scripted synthetic host.
   // Targets are always the running app's own source; the desktop bridge is never involved.
-  begin("available", "exact-source");
-  wait("available");
-  control("show-exact-source");
   const shortSource = sourceSha.slice(0, 7);
   const banners = '[data-testid="exact-banners"]';
   const exactButton = (name) => `${banners} >> role=button[name="${name}"]`;
@@ -1394,6 +1391,21 @@ function rendererSteps(origin, sourceSha, runId) {
     );
   const exactState = (text) => steps.push({ action: "wait", text });
   const exactReset = (scenario) => control(`exact-scenario-${scenario}`);
+  const noBridge = () =>
+    check(
+      "The exact-source notice never used the desktop update bridge",
+      `s.calls.every(c => c.action !== 'downloadUpdate' && c.action !== 'installUpdate')`,
+    );
+  // The production controller keeps its action report (and any lost-response hold) while it stays
+  // mounted, so each independent case loads a fresh fixture page with its own run id and mounts
+  // the exact-source fixture itself; only the scripted host scenario is chosen inside the case.
+  const exactCase = (suffix, scenario = "exact") => {
+    begin("available", `exact-${suffix}`);
+    wait("available");
+    control("show-exact-source");
+    if (scenario !== "exact") exactReset(scenario);
+  };
+  exactCase("source");
   exactState("Exact-source notices: 1");
   exactState(`Download ${shortSource}`);
   capture("exact-source-download-offer", [
@@ -1425,7 +1437,10 @@ function rendererSteps(origin, sourceSha, runId) {
   ]);
   click(exactButton(`Install ${shortSource}`));
   confirm();
-  exactState("Synthetic install accepted; waiting for the launcher outcome.");
+  // The production presentation replaces the host message while the phase is "installing"
+  // (jonesUpdatePresentation), so the fixture's own accepted-install message is never rendered.
+  exactState("Installing — server restarting. Waiting for the launcher outcome.");
+  noExactButton("No second install is offered while the host installs");
   exactCallsAre(
     "Installation binds the staged handle of the matching source",
     "[c.action, c.input.stagedHandle ?? c.input.targetSource]",
@@ -1437,8 +1452,9 @@ function rendererSteps(origin, sourceSha, runId) {
   control("exact-commit-install");
   exactState("Exact-source notices: 0");
   capture("exact-source-committed", ["Exact-source notices: 0"], [`Install ${shortSource}`]);
+  noBridge();
 
-  exactReset("exact");
+  exactCase("lost-install");
   exactState("Exact-source notices: 1");
   click(exactButton(`Download ${shortSource}`));
   control("exact-complete-download");
@@ -1452,40 +1468,56 @@ function rendererSteps(origin, sourceSha, runId) {
   control("exact-report-state");
   exactState(`Install ${shortSource}`);
   exactCallsAre("Reconciling never resent the install", "c.action", ["downloadExact", "install"]);
+  noBridge();
 
-  exactReset("exact");
+  exactCase("wrong-source");
+  exactState("Exact-source notices: 1");
   control("exact-next-download-wrong-source");
   click(exactButton(`Download ${shortSource}`));
   exactState("will not be installed from this notice");
   noExactButton("A host that stages another source is refused");
   capture("exact-source-wrong-source", ["will not be installed from this notice"]);
+  noBridge();
 
-  exactReset("exact");
+  exactCase("refusal");
+  exactState("Exact-source notices: 1");
   control("exact-next-download-refuse");
   click(exactButton(`Download ${shortSource}`));
   exactState("Synthetic refusal: this app's build is not newer than the host's.");
   capture("exact-source-refusal", ["is not newer than the host's"]);
+  noBridge();
 
-  exactReset("staged-other");
+  exactCase("staged-other", "staged-other");
   exactState("It will not be installed from this notice.");
   noExactButton("Another staged source offers no action");
   capture("exact-source-staged-other", ["already has source", "downloaded"]);
-  exactReset("legacy-mismatch");
+  noBridge();
+
+  exactCase("legacy-mismatch", "legacy-mismatch");
   exactState("cannot download a specific source");
   noExactButton("An older host offering another build offers no action");
-  exactReset("legacy-match");
+  noBridge();
+
+  exactCase("legacy-match", "legacy-match");
   exactState(`Download ${shortSource}`);
   click(exactButton(`Download ${shortSource}`));
   exactState("Synthetic download is in progress.");
   exactCallsAre("An older host downloads only by its own artifact binding", "c.action", [
     "download",
   ]);
-  exactReset("stale");
+  noBridge();
+
+  exactCase("stale", "stale");
   exactState("temporarily unavailable");
   noExactButton("A stale observation offers no action");
-  exactReset("unsupported");
+  noBridge();
+
+  exactCase("unsupported", "unsupported");
   exactState("does not support Jones updates");
-  exactReset("exact");
+  noBridge();
+
+  exactCase("permission");
+  exactState("Exact-source notices: 1");
   control("exact-toggle-permission");
   exactState("cannot change updates");
   noExactButton("A session without operate permission offers no action");
@@ -1493,10 +1525,7 @@ function rendererSteps(origin, sourceSha, runId) {
   exactState(`Download ${shortSource}`);
   click(`${banners} >> role=button[name="Dismiss client version notice"]`);
   exactState("Exact-source notices: 0");
-  check(
-    "The exact-source notice never used the desktop update bridge",
-    `s.calls.every(c => c.action !== 'downloadUpdate' && c.action !== 'installUpdate')`,
-  );
+  noBridge();
   return steps;
 }
 

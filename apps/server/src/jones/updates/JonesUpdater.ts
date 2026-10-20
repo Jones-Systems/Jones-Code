@@ -226,6 +226,11 @@ export class JonesUpdater {
     }
   }
 
+  /** Read through a method so the awaited `check()` mutation is not hidden by control-flow narrowing. */
+  private latestChecked(): JonesActionsCandidate | undefined {
+    return this.checked;
+  }
+
   /**
    * Stages the one qualified build of `targetSource`. The target is never widened to a newer build,
    * a different staged source is never replaced, and the same staged source is returned unchanged.
@@ -248,7 +253,7 @@ export class JonesUpdater {
     const state = await this.check(targetSource);
     // Download only the candidate this check returned for the target; a skipped check or a
     // candidate left by an earlier latest-main check must not be staged.
-    const candidate = this.checked;
+    const candidate = this.latestChecked();
     if (state.phase !== "available" || candidate?.source !== targetSource)
       return state.phase === "available" || state.phase === "checking"
         ? {
