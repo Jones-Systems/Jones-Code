@@ -396,10 +396,11 @@
         "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
-        "apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "apps/web/src/jones/composer/composerShortcutRails.test.ts",
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts"
+        "vp test run apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
       ]
     },
     {
@@ -1759,6 +1760,58 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp run --filter @t3tools/web test --project unit src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedSteerBatch\"",
         "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\""
+      ]
+    },
+    {
+      "id": "jones-codex-capacity-settlement",
+      "tests": [
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t 'capacity|native goals' --maxWorkers=1",
+        "vp test run apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
+      ]
+    },
+    {
+      "id": "hq-jones-client-launch",
+      "tests": [
+        "packages/contracts/src/jones/clientLaunch.test.ts",
+        "apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/McpToolAccess.race.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/client-runtime/src/t3ToolSummary.test.ts",
+        "packages/client-runtime/src/work-log/presentation.test.ts",
+        "packages/provider-acp/src/server/runtimeModel.test.ts",
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/clientLaunch.test.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/ws.ts packages/contracts/src/jones/clientLaunch.ts packages/contracts/src/jones/clientLaunch.test.ts packages/contracts/src/index.ts packages/contracts/src/orchestratorMcp.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/persistence/JonesMigrations.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/mcp/toolkits/project/tools.ts apps/server/src/mcp/toolkits/project/handlers.ts apps/server/src/mcp/McpToolAccess.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts packages/shared/src/t3McpToolPresentation.ts packages/shared/src/t3McpToolPresentation.test.ts packages/client-runtime/src/t3ToolSummary.ts packages/client-runtime/src/t3ToolSummary.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
+        "vp run --filter @t3tools/contracts --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp run --filter @t3tools/shared test src/t3McpToolPresentation.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime test src/t3ToolSummary.test.ts src/work-log/presentation.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/provider-acp test src/server/runtimeModel.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --concurrency-limit 1 typecheck"
       ]
     },
     {

@@ -176,6 +176,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 109, name: "OrdinaryCheckoutLifecycle" },
           { id: 110, name: "ThreadLookupIndexes" },
           { id: 111, name: "ClientSettlementCommands" },
+          { id: 112, name: "ClientLaunchRequests" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

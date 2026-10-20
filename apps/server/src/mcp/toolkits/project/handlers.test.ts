@@ -1,3 +1,6 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as CommandReceipts from "../../../orchestration-v2/CommandReceiptStore.ts";
+import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
@@ -48,6 +51,9 @@ it.effect("attributes a launched thread's first message to the calling thread", 
     } as OrchestrationV2ThreadShell;
     let launchedSender: ThreadId | undefined;
     const layerDependencies = Layer.mergeAll(
+      NodeSqliteClient.layer({ filename: ":memory:" }),
+      Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+      Layer.mock(EventSink.EventSinkV2)({}),
       ServerSettings.layerTest(),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -120,6 +126,9 @@ it.effect("launches a scratch thread into the Scratch project", () =>
     } as OrchestrationV2ThreadShell;
     const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
     const layerDependencies = Layer.mergeAll(
+      NodeSqliteClient.layer({ filename: ":memory:" }),
+      Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+      Layer.mock(EventSink.EventSinkV2)({}),
       ServerSettings.layerTest(),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -218,6 +227,9 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
       deletedAt: null,
     };
     const layerDependencies = Layer.mergeAll(
+      NodeSqliteClient.layer({ filename: ":memory:" }),
+      Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+      Layer.mock(EventSink.EventSinkV2)({}),
       ServerSettings.layerTest(),
       NodeCrypto.layer,
       Layer.succeed(McpInvocationContext.McpInvocationContext, {
@@ -311,6 +323,9 @@ const clientLaunchHarness = (input: {
     model: "claude-opus",
   };
   const layerDependencies = Layer.mergeAll(
+    NodeSqliteClient.layer({ filename: ":memory:" }),
+    Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
+    Layer.mock(EventSink.EventSinkV2)({}),
     ServerSettings.layerTest(),
     NodeCrypto.layer,
     Layer.succeed(McpInvocationContext.McpInvocationContext, {
