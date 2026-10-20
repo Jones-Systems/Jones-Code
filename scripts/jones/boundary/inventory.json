@@ -1214,7 +1214,15 @@
     "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.test.ts": "jones-owned",
     "packages/client-runtime/src/jones/settlementNotifications/fetchSettlementOrigins.ts": "jones-owned",
     "packages/contracts/src/jones/settlementOrigins.test.ts": "jones-owned",
-    "packages/contracts/src/jones/settlementOrigins.ts": "jones-owned"
+    "packages/contracts/src/jones/settlementOrigins.ts": "jones-owned",
+    "apps/server/src/jones/cloud/ownedScratch.ts": "jones-owned",
+    "apps/server/src/jones/cloud/ownedScratch.test.ts": "jones-owned",
+    "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts": "jones-owned",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.tsx": "jones-owned",
+    "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/updates/ProductionExactSourceUpdateAction.tsx": "jones-owned",
+    "apps/web/src/jones/updates/fixtures/exact-source-fixture.tsx": "jones-owned",
+    "docs/user/updating.md": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

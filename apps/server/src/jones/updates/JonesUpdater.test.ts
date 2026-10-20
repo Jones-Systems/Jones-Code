@@ -3,6 +3,7 @@ import { EnvironmentId, JonesUpdateState } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import type {
   JonesActionsCandidate,
+  JonesActionsCheckResult,
   JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesUpdaterHost } from "./JonesUpdater.ts";
@@ -249,5 +250,156 @@ describe("exact unaccepted stage retirement", () => {
     });
     expect(result).toEqual({ retired: false, reason: "Native acceptance is unknown." });
     expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+});
+
+describe("exact-source staging for this host", () => {
+  // Each case scripts what the Actions check returns for the requested source.
+  function exact(check: (targetSource: string | undefined) => Promise<JonesActionsCheckResult>) {
+    const effects: string[] = [];
+    const checks: Array<string | undefined> = [];
+    const downloads: number[] = [];
+    const updater = new JonesUpdater(
+      {
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          environmentId: EnvironmentId.make("fixture"),
+          currentVersion: "0.0.0-preview.20261002.1",
+          capability: { check: true, download: true, install: true },
+        },
+        installedSource: async () => "a".repeat(40),
+        platform: "linux",
+        architecture: "x64",
+        cacheRoot: "fixture",
+        stage: async () => {
+          effects.push("stage");
+          return { stagedHandle: "fixed-handle", version: candidate.version };
+        },
+        install: async () => {
+          effects.push("install");
+        },
+      },
+      {
+        check: async (input) => {
+          checks.push(input.targetSource);
+          return check(input.targetSource);
+        },
+        stage: async (staged) => {
+          downloads.push(staged.artifactId);
+          return { receipt: { sha256: "e".repeat(64) } } as JonesStagedArtifact;
+        },
+      },
+    );
+    return { updater, effects, checks, downloads };
+  }
+  const offered = async (): Promise<JonesActionsCheckResult> => ({
+    state: "available",
+    candidate,
+  });
+
+  it("downloads exactly the artifact its check returned for the target, no install", async () => {
+    const f = exact(offered);
+    const staged = await f.updater.stageExact(candidate.source);
+    expect(f.checks).toEqual([candidate.source]);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(staged).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("never downloads a build whose source differs from the target", async () => {
+    const other = { ...candidate, artifactId: 9, source: "f".repeat(40) };
+    const f = exact(async () => ({ state: "available", candidate: other }));
+    const result = await f.updater.stageExact(candidate.source);
+    expect(result.stagedHandle).toBeUndefined();
+    expect(result.phase).toBe("available");
+    expect(result.message).toContain("not available from the current check");
+    expect(f.downloads).toEqual([]);
+    expect(f.effects).toEqual([]);
+  });
+
+  it("ignores a candidate left by an earlier check when this check is skipped", async () => {
+    const gate = { release: () => {} };
+    const hold = new Promise<void>((resolve) => (gate.release = resolve));
+    let call = 0;
+    const f = exact(async () => {
+      if (call++ === 1) await hold;
+      return { state: "available", candidate };
+    });
+    // The first check populates the offered candidate with the target's own source, then a
+    // second one stays in flight so the exact request's check is skipped as busy.
+    await f.updater.check();
+    const pending = f.updater.check();
+    const result = await f.updater.stageExact(candidate.source);
+    expect(result.message).toContain("not available from the current check");
+    expect(f.downloads).toEqual([]);
+    gate.release();
+    await pending;
+  });
+
+  it("reports an already-running source as no-new instead of downloading", async () => {
+    const f = exact(async () => ({ state: "no-new" }));
+    const result = await f.updater.stageExact("a".repeat(40));
+    expect(result.phase).toBe("no-new");
+    expect(result.message).toBe("This host already runs the requested source.");
+    expect(f.downloads).toEqual([]);
+  });
+
+  it("surfaces an unqualified or blocked target and a check failure without staging", async () => {
+    const blocked = exact(async () => ({
+      state: "blocked",
+      reason: "unqualified",
+      retryAfterMs: 0,
+    }));
+    expect((await blocked.updater.stageExact(candidate.source)).phase).toBe("blocked");
+    const failed = exact(async () => {
+      throw new Error("Actions unavailable");
+    });
+    expect(await failed.updater.stageExact(candidate.source)).toMatchObject({
+      phase: "blocked",
+      message: "Actions unavailable",
+    });
+    expect(blocked.downloads.concat(failed.downloads)).toEqual([]);
+  });
+
+  it("is idempotent for the staged source and never replaces another staged source", async () => {
+    const f = exact(offered);
+    await f.updater.stageExact(candidate.source);
+    const checks = f.checks.length;
+    const again = await f.updater.stageExact(candidate.source);
+    expect(again).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+    const refused = await f.updater.stageExact("f".repeat(40));
+    expect(refused.phase).toBe("blocked");
+    expect(refused.message).toContain(candidate.source.slice(0, 12));
+    expect(f.updater.snapshot()).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source },
+    });
+    // Neither repeat consulted Actions or staged again.
+    expect(f.checks).toHaveLength(checks);
+    expect(f.downloads).toEqual([candidate.artifactId]);
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("keeps the staged provenance through later latest-main checks", async () => {
+    const newer = { ...candidate, artifactId: 5, source: "f".repeat(40) };
+    const f = exact(async (target) => ({
+      state: "available",
+      candidate: target === undefined ? newer : candidate,
+    }));
+    await f.updater.stageExact(candidate.source);
+    const checked = await f.updater.check();
+    expect(f.checks).toEqual([candidate.source, undefined]);
+    expect(checked).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: candidate.source, artifactId: candidate.artifactId },
+    });
   });
 });

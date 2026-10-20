@@ -38,6 +38,11 @@ export const JonesUpdateCapability = Schema.Struct({
   check: Schema.Boolean,
   download: Schema.Boolean,
   install: Schema.Boolean,
+  /**
+   * The server accepts the exact-source download action. Absent means unsupported, which is how
+   * older servers read; it is never advertised without `download`.
+   */
+  exactSource: Schema.optionalKey(Schema.Boolean),
   reason: Schema.optionalKey(
     Schema.Literals([
       "bootstrap-required",
@@ -100,6 +105,12 @@ export const JonesUpdateDownloadInput = Schema.Struct({
   sourceSha: TrimmedNonEmptyString,
 });
 export type JonesUpdateDownloadInput = typeof JonesUpdateDownloadInput.Type;
+
+/** Selects one build by its full source commit. A version string never identifies a source. */
+export const JonesUpdateExactInput = Schema.Struct({
+  targetSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+});
+export type JonesUpdateExactInput = typeof JonesUpdateExactInput.Type;
 
 export const JonesUpdateInstallInput = Schema.Struct({
   stagedHandle: TrimmedNonEmptyString,

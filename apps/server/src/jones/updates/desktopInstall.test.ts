@@ -163,6 +163,14 @@ it.effect("hands desktop installation to its controller before any continuation 
         }),
       );
       expect(preparations).toBe(1);
+      // The desktop updater owns its own check and download, so exact selection is refused
+      // without issuing another desktop request.
+      const requested = requestId;
+      const exact = yield* updates.downloadExact({ targetSource: "a".repeat(40) });
+      expect(exact.phase).toBe("blocked");
+      expect(exact.capability).toMatchObject({ download: false });
+      expect(exact.capability.exactSource).toBeUndefined();
+      expect(requestId).toBe(requested);
     }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

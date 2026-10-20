@@ -27,6 +27,8 @@ export function qualifiedServerCapability(input: {
     check,
     download,
     install,
+    // Exact-source staging reuses the download guards; older clients read absence as unsupported.
+    ...(download ? { exactSource: true } : {}),
     ...(download && install
       ? {}
       : {
