@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   ProjectId,
   ProviderInstanceId,
   RunId,
@@ -14,6 +15,7 @@ import {
   resolveThreadAttentionPill,
   resolveThreadAttentionStatus,
   shellAttentionInput,
+  subagentRequest,
   type ThreadAttentionInput,
 } from "./threadAttention.ts";
 
@@ -207,6 +209,50 @@ describe("shared native thread attention", () => {
     }
     const cycle = { ...input, lineage: { ...input.lineage, parentThreadId: nested.id } };
     expect(pendingSubagentRequestsByThread([cycle, nested]).size).toBe(2);
+  });
+  it("projects a linked task question onto its source thread with Jones attention parity", () => {
+    const parent = shell();
+    const remote = shell({
+      id: ThreadId.make("remote-task"),
+      creationSource: "mcp",
+      status: "running",
+      activityRunStatus: "running",
+      delegatedFrom: {
+        environmentId: EnvironmentId.make("source"),
+        threadId: parent.id,
+        title: parent.title,
+      },
+      pendingRuntimeRequest: request("user_input"),
+    });
+    expect(subagentRequest(remote)).toBe("user_input");
+    const pending = pendingSubagentRequestsByThread(
+      [parent],
+      [{ parentThreadId: parent.id, request: "user_input" }],
+    );
+    const state = shellAttentionInput(parent, pending.get(parent.id));
+    expect(resolveThreadAttentionStatus(state)).toBe("input");
+    expect(resolveThreadAttentionPill({ thread: state })).toBe("Awaiting Input");
+    expect(pendingSubagentRequestsByThread([remote]).size).toBe(0);
+    expect(subagentRequest({ ...remote, activityRunStatus: null })).toBeNull();
+    expect(
+      subagentRequest({ ...remote, pendingRuntimeRequest: request("auth_refresh") }),
+    ).toBeNull();
+  });
+  it("combines delegated requests with local descendants without losing approval priority", () => {
+    const parent = shell();
+    const local = child("local-child", "permission");
+    const delegated = [
+      { parentThreadId: local.id, request: "user_input" as const },
+      { parentThreadId: parent.id, request: "user_input" as const },
+    ];
+    for (const threads of [
+      [parent, local],
+      [local, parent],
+    ]) {
+      const pending = pendingSubagentRequestsByThread(threads, delegated);
+      expect(pending.get(parent.id)).toBe("approval");
+      expect(pending.get(local.id)).toBe("user_input");
+    }
   });
   it("excludes ended, auth-refresh, fork and provider-native children", () => {
     const children = [

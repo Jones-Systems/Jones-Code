@@ -109,9 +109,11 @@ function isAppOwnedDelegation(task: {
   readonly origin: OrchestrationV2Subagent["origin"];
   readonly childThreadId: ThreadId | null;
   readonly remoteChild?: OrchestrationV2Subagent["remoteChild"];
+  readonly driver: OrchestrationV2Subagent["driver"];
 }): boolean {
   return (
-    task.origin === "app_owned" && (task.childThreadId !== null || task.remoteChild !== undefined)
+    task.origin === "app_owned" &&
+    (task.childThreadId !== null || task.remoteChild !== undefined || task.driver === "remote")
   );
 }
 

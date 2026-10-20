@@ -119,6 +119,8 @@ export function existingThreadIdsForCommand(
     case "delegated_task.completion-delivery.acknowledge":
     case "delegated_task.completion-delivery.dispose":
     case "delegated_task.remote.request":
+    case "delegated_task.remote.bind":
+    case "delegated_task.remote.hold":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
       return [command.parentThreadId];
@@ -1056,9 +1058,11 @@ const make = Effect.gen(function* () {
       const delegatedWorkResult = Effect.gen(function* () {
         const records = yield* getProjectThreadRecords(
           input,
-          ["runs", "messages", "subagents", "providerThreads"],
+          ["runs", "messages", "subagents", "providerThreads", "runtimeRequests"],
           { messageRoles: ["user"] },
         );
+        if (records.runtimeRequests.some((request) => request.status === "pending"))
+          return undefined;
         const progress = delegatedTaskProgress(records);
         if (progress.state !== "result_available") return undefined;
         const pending = yield* orchestrator
@@ -1095,7 +1099,11 @@ const make = Effect.gen(function* () {
               // What delegated work reads besides runs: tasks and their
               // deliveries, and a provider thread's background tasks.
               ...(untilDelegatedWorkSettled
-                ? (["subagent.updated", "provider-thread.updated"] as const)
+                ? ([
+                    "subagent.updated",
+                    "provider-thread.updated",
+                    "runtime-request.updated",
+                  ] as const)
                 : []),
             ] as const
           ).map((eventType) =>
@@ -1325,7 +1333,8 @@ const make = Effect.gen(function* () {
         if (task.childThreadId === null) {
           // A task in a linked environment ends here; its follower then stops it there.
           // One with its result keeps it, but its thread there may run follow-up work.
-          if (task.remoteChild === undefined) continue;
+          if (task.remoteChild === undefined && (task.driver !== "remote" || task.result !== null))
+            continue;
           const commandId = CommandId.make(`${input.commandId}:stop:${task.id}`);
           yield* dispatch(
             task.result === null

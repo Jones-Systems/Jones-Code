@@ -1,3 +1,4 @@
+import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
 import * as GoalControl from "../jones/goals/GoalControl.ts";
 import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
 import * as Cause from "effect/Cause";
@@ -898,6 +899,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 
 export const layer = Layer.mergeAll(
   OrganizationMetadataRegistrationLive,
+  toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,

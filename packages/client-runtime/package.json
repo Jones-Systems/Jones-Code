@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/remote-admission": {
+      "types": "./src/jones/remoteAdmission/index.ts",
+      "default": "./src/jones/remoteAdmission/index.ts"
+    },
     "./jones/queue": {
       "types": "./src/jones/queue/queuedSteerBatch.ts",
       "default": "./src/jones/queue/queuedSteerBatch.ts"

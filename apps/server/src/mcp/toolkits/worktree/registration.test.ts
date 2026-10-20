@@ -25,6 +25,7 @@ import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../../../secrets/SecretRequests.ts";
 import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
+import * as RemoteAdmissionIntake from "../../../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as VcsStatusBroadcaster from "../../../vcs/VcsStatusBroadcaster.ts";
 import * as ServerSecretStore from "../../../auth/ServerSecretStore.ts";
@@ -56,6 +57,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(PeerForwarding.PeerForwarding)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
   Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
   Layer.mock(ProjectService.ProjectService)({}),
   Layer.mock(PullRequestReviewGuideService.PullRequestReviewGuideService)({}),
   ServerSettings.layerTest({}),

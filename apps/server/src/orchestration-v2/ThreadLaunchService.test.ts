@@ -66,6 +66,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectStore from "./ProjectStore.ts";
+import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -571,6 +572,9 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           Effect.provide(
             Layer.mergeAll(
               Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(ProjectionStore.ProjectionStoreV2)({
+                getThreadShell: () => Effect.succeed(null),
+              }),
               Layer.succeed(TerminalManager.TerminalManager, manager),
               ServerSettings.layerTest(),
               Layer.succeed(HostProcess.Environment, {}),

@@ -3200,8 +3200,9 @@ const OrchestrationV2InternalCommand = Schema.Union([
   /**
    * Records a delegated task that runs in a linked environment: the task, its
    * node and its turn item on the parent, as `delegated_task.request` does,
-   * without a child thread here. `remoteChild` is the thread already launched
-   * there. The ids derive from `commandId`, so a retry records nothing new.
+   * without a child thread here. Omit `remoteChild` to reserve the task before
+   * remote launch; bind the acknowledged child with remote.bind. The ids
+   * derive from `commandId`, so a retry records nothing new.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.request"),
@@ -3213,8 +3214,24 @@ const OrchestrationV2InternalCommand = Schema.Union([
     title: Schema.optional(TrimmedNonEmptyString),
     driver: ProviderDriverKind,
     modelSelection: ModelSelection,
-    remoteChild: OrchestrationV2RemoteTaskChild,
+    remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  /** Records a nonterminal hold; approval remains owned by the receiving environment. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.hold"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    progress: Schema.String,
+  }),
+  /** Attaches the acknowledged remote child to its existing reservation, including after restart. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.bind"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    remoteChild: OrchestrationV2RemoteTaskChild,
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its

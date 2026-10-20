@@ -1455,6 +1455,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
   const driver = ProviderDriverKind.make("claude");
   const settledTaskId = NodeId.make("node_recovery_delegation_settled");
   const runningTaskId = NodeId.make("node_recovery_delegation_running");
+  const reservedTaskId = NodeId.make("node_recovery_remote_reservation");
   const nativeSubagentId = NodeId.make("node_recovery_native_subagent");
   const delegatedTask = (id: NodeId, runId: RunId) => ({
     id,
@@ -1516,11 +1517,17 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     nodes: [
       { id: settledTaskId, runId: settledRunId, status: "running", kind: "subagent" },
       { id: runningTaskId, runId: runningRunId, status: "running", kind: "subagent" },
+      { id: reservedTaskId, runId: runningRunId, status: "running", kind: "subagent" },
       { id: nativeSubagentId, runId: settledRunId, status: "running", kind: "subagent" },
     ],
     subagents: [
       delegatedTask(settledTaskId, settledRunId),
       delegatedTask(runningTaskId, runningRunId),
+      {
+        ...delegatedTask(reservedTaskId, runningRunId),
+        driver: ProviderDriverKind.make("remote"),
+        childThreadId: null,
+      },
       {
         ...delegatedTask(nativeSubagentId, settledRunId),
         origin: "provider_native",
@@ -1531,6 +1538,11 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     turnItems: [
       subagentItem(settledTaskId, settledRunId, "app_owned"),
       subagentItem(runningTaskId, runningRunId, "app_owned"),
+      {
+        ...subagentItem(reservedTaskId, runningRunId, "app_owned"),
+        driver: ProviderDriverKind.make("remote"),
+        childThreadId: null,
+      },
       subagentItem(nativeSubagentId, settledRunId, "provider_native"),
     ],
   } as unknown as OrchestrationV2ThreadProjection;
@@ -1583,6 +1595,7 @@ it.effect("leaves delegated tasks to their own child threads after process loss"
     );
     assert.notInclude(touched, settledTaskId);
     assert.notInclude(touched, runningTaskId);
+    assert.notInclude(touched, reservedTaskId);
     assert.include(touched, nativeSubagentId);
 
     const noted = events.flatMap((event) =>

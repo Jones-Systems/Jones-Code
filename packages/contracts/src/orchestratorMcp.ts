@@ -1,3 +1,4 @@
+import { RemoteAdmissionDigest, RemoteAdmissionStatus } from "./jones/remoteAdmission.ts";
 import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -736,6 +737,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
   "OrchestratorMcpFailure",
   {
     code: Schema.Literals([
+      "remote_admission_pending",
+      "remote_admission_denied",
       "capability_denied",
       "parent_not_active",
       "provider_unavailable",
@@ -756,6 +759,13 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    remoteAdmission: Schema.optionalKey(
+      Schema.Struct({
+        id: Schema.NonEmptyString,
+        bindingDigest: RemoteAdmissionDigest,
+        status: RemoteAdmissionStatus,
+      }),
+    ),
   },
 ) {}
 

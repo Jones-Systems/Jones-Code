@@ -208,6 +208,7 @@ describe("filterSidebarOperatingThreads", () => {
     const visible = filterSidebarV2VisibleThreads(
       [running, child, match, archived, elsewhere],
       new Set([`${running.environmentId}:${running.projectId}`]),
+      new Set(),
     );
     const active = filterSidebarOperatingThreads(visible, true, isSidebarThreadOperating);
     expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);

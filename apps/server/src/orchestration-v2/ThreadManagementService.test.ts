@@ -867,6 +867,7 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
                   messages: [],
                   subagents,
                   providerThreads: [],
+                  runtimeRequests: [],
                 }) as unknown as OrchestrationV2ThreadProjection,
             ),
         }),
@@ -908,6 +909,98 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
       resultRun: { id: wakeRunId, status: "completed" },
     });
   }),
+);
+
+it.effect(
+  "waitForThread keeps a completed run with pending input nonterminal until the request resolves",
+  () =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-delegated");
+      const threadId = ThreadId.make("thread:thread-management:wait-delegated");
+      const runId = RunId.make("run:thread-management:wait-delegated");
+      const wakeRunId = RunId.make("run:thread-management:wait-delegated:wake");
+      const subscribed = yield* Deferred.make<void>();
+      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1_000);
+      const run = (id: RunId, ordinal: number, status: OrchestrationV2Run["status"], end: number) =>
+        ({
+          id,
+          ordinal,
+          status,
+          startedAt: at(end - 1),
+          completedAt: status === "running" ? null : at(end),
+        }) as unknown as OrchestrationV2Run;
+      // Input can remain pending after provider completion; it is still not a task result.
+      let runs = [run(runId, 1, "completed", 1)];
+      const subagents: Array<never> = [];
+      let runtimeRequests = [{ status: "pending" }];
+      const stored = (sequence: number, event: object) =>
+        ({ sequence, event: { threadId, ...event } }) as unknown as OrchestrationV2StoredEvent;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: () => Effect.succeed(false),
+            delegatedTaskResultPending: () => Effect.succeed(false),
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === "runtime-request.updated"
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(events)),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.sync(
+                () =>
+                  ({
+                    thread: { id: threadId, projectId, deletedAt: null },
+                    runs,
+                    messages: [],
+                    subagents,
+                    providerThreads: [],
+                    runtimeRequests,
+                  }) as unknown as OrchestrationV2ThreadProjection,
+              ),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      // Without the option, the ended run is the answer, as before.
+      expect(
+        yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
+      ).toMatchObject({ timedOut: false, run: { id: runId } });
+      expect(
+        yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60 * 60 * 1_000 }),
+      ).not.toHaveProperty("resultRun");
+
+      const fiber = yield* service
+        .waitForThread({
+          projectId,
+          threadId,
+          runId,
+          timeoutMs: 60 * 60 * 1_000,
+          untilDelegatedWorkSettled: true,
+        })
+        .pipe(Effect.forkChild);
+      // A wait that returns early fails below instead of hanging here.
+      yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.await(fiber));
+      // Resolving input wakes the existing long poll, without reading a transcript.
+      runtimeRequests = [];
+      runs = [...runs, run(wakeRunId, 2, "completed", 3)];
+      yield* Queue.offer(events, stored(1, { type: "runtime-request.updated", payload: {} }));
+      const result = yield* Fiber.join(fiber);
+
+      expect(result).toMatchObject({
+        timedOut: false,
+        run: { id: runId, status: "completed" },
+        resultRun: { id: wakeRunId, status: "completed" },
+      });
+    }),
 );
 
 it.effect("waitForThread returns the cut run once its continuation is declined", () =>

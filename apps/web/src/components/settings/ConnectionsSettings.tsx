@@ -1,3 +1,4 @@
+import { RemoteAdmissionSettings } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
 import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { SessionPermissions } from "./SessionPermissions";
@@ -3860,6 +3861,9 @@ export function ConnectionsSettings() {
   return (
     <SettingsPageContainer>
       {primarySettings}
+      {primaryEnvironmentId ? (
+        <RemoteAdmissionSettings environmentId={primaryEnvironmentId} />
+      ) : null}
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"

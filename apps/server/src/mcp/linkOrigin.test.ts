@@ -68,7 +68,7 @@ const layerOrchestrator = Layer.mergeAll(
   ),
 );
 const layerOrchestration = ThreadManagement.layer.pipe(
-  Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+  Layer.provideMerge(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
   Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
 );
 

@@ -732,6 +732,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(JonesSourceRelation.layer))),
       Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
+      Layer.provide(JonesHttp.remoteAdmissionHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
       JonesHttp.provideConversationAndVoiceReview,
@@ -755,10 +756,12 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
-  McpHttpServer.layer.pipe(
-    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-    Layer.provide(McpOAuth.layerMcpClientAuthenticator),
-  ),
+  JonesHttp.remoteAdmissionResumeLayer
+    .pipe(Layer.provideMerge(McpHttpServer.layer))
+    .pipe(
+      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+      Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
@@ -773,7 +776,9 @@ const layerMakeRoutes = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
   Layer.provide(ServerBrowser.layer),
-  Layer.provide(JonesHttp.previewCompanionServicesLayer),
+  Layer.provide(
+    Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
+  ),
   Layer.provide(DesktopBrowserChannel.layer),
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(workstreamGatewayLayerLive),

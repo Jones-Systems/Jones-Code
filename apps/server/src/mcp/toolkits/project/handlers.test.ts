@@ -318,6 +318,8 @@ it.effect("starts a project from just a title when workspaceRoot is omitted", ()
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: "approval-required" | "auto-accept-edits" | "auto" | "full-access";
   readonly launched: Array<ThreadLaunch.ThreadLaunchInput>;
+  readonly linked?: boolean;
+  readonly narrowedTo?: McpInvocationContext.ClientModes;
   readonly workspaceRoot?: string;
   readonly checkWorktreeBase?: ThreadLaunch.ThreadLaunchService["Service"]["checkWorktreeBase"];
 }) => {
@@ -340,6 +342,8 @@ const clientLaunchHarness = (input: {
         sessionId: "session-1",
         label: "Claude Code",
         access: input.runtimeModeCeiling,
+        ...(input.linked === undefined ? {} : { linked: input.linked }),
+        ...(input.narrowedTo === undefined ? {} : { narrowedTo: input.narrowedTo }),
       },
       issuedAt: 0,
       capabilities: new Set(["orchestration" as const]),
@@ -422,42 +426,67 @@ it.effect("a client launches at its ceiling with the project's default model", (
   }),
 );
 
-it.effect("a launch retried with the same clientRequestId replays the first one", () =>
-  Effect.gen(function* () {
-    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
-    const { projectId, dependencies } = clientLaunchHarness({
-      runtimeModeCeiling: "auto",
-      launched,
-    });
-    const toolkit = yield* ProjectToolkit.pipe(
-      Effect.provide(
-        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
-      ),
-    );
-    const launch = (clientRequestId: string | undefined) =>
-      toolkit
-        .handle("t3_thread_launch", {
-          title: "Fix",
-          projectId,
-          message: "Fix the bug",
-          ...(clientRequestId === undefined ? {} : { clientRequestId }),
-        })
-        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+it.effect(
+  "a linked launch retried with the same clientRequestId retains its origin and modes",
+  () =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "auto",
+        linked: true,
+        narrowedTo: { runtimeMode: "approval-required", interactionMode: "plan" },
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const launch = (clientRequestId: string | undefined) =>
+        toolkit
+          .handle("t3_thread_launch", {
+            title: "Fix",
+            projectId,
+            message: "Fix the bug",
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("source-environment"),
+              threadId: ThreadId.make("source-parent"),
+              title: "Parent task",
+            },
+            ...(clientRequestId === undefined ? {} : { clientRequestId }),
+          })
+          .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
 
-    yield* launch("fix-1");
-    yield* launch("fix-1");
-    yield* launch("fix-2");
-    yield* launch(undefined);
-    yield* launch(undefined);
-    const ids = launched.map((input) => [input.commandId, input.threadId]);
-    // The same key sends the same command and thread ids, which the launch
-    // service replays instead of starting a second thread.
-    expect(ids[0]).toEqual(ids[1]);
-    expect(ids[0]?.[0]).toContain("client%3Asession-1");
-    expect(ids[2]).not.toEqual(ids[0]);
-    // Without a key every launch is new.
-    expect(ids[3]).not.toEqual(ids[4]);
-  }),
+      yield* launch("fix-1");
+      yield* launch("fix-1");
+      yield* launch("fix-2");
+      yield* launch(undefined);
+      yield* launch(undefined);
+      const ids = launched.map((input) => [input.commandId, input.threadId]);
+      // The same key sends the same command and thread ids, which the launch
+      // service replays instead of starting a second thread.
+      expect(ids[0]).toEqual(ids[1]);
+      expect(ids[0]?.[0]).toContain("client%3Asession-1");
+      expect(ids[2]).not.toEqual(ids[0]);
+      // Without a key every launch is new.
+      expect(ids[3]).not.toEqual(ids[4]);
+      for (const input of launched) {
+        expect(input.linkOrigin).toEqual({
+          sessionId: "session-1",
+          label: "Claude Code",
+          access: "auto",
+        });
+        expect(input.delegatedFrom).toEqual({
+          environmentId: "source-environment",
+          threadId: "source-parent",
+          title: "Parent task",
+        });
+        expect(input.runtimeMode).toBe("approval-required");
+        expect(input.interactionMode).toBe("plan");
+      }
+    }),
 );
 
 it.effect("a launch binds only an existing checkout that is one of the project's worktrees", () =>

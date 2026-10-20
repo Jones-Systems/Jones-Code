@@ -326,6 +326,8 @@ function createTextGeneration(
   overrides: Partial<FakeGitTextGeneration> = {},
 ): TextGeneration.TextGeneration["Service"] {
   const implementation: FakeGitTextGeneration = {
+    evaluateRemoteRequest: () =>
+      Effect.die("Remote evaluation is not configured in GitManager tests"),
     generateCommitMessage: (input) =>
       Effect.succeed({
         subject: "Implement stacked git actions",
@@ -350,6 +352,7 @@ function createTextGeneration(
   };
 
   return {
+    evaluateRemoteRequest: (input) => implementation.evaluateRemoteRequest(input),
     generateCommitMessage: (input) =>
       implementation.generateCommitMessage(input).pipe(
         Effect.mapError(

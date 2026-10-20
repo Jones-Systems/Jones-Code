@@ -1,3 +1,4 @@
+import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
   type EnvironmentId,
   type OrchestrationV2LinkOrigin,
@@ -289,38 +290,47 @@ export const startsOrContinuesThreads = <P, A, E, R>(
     readonly interactionMode?: ProviderInteractionMode | undefined;
   },
   handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
-) =>
-  declare((params: P) =>
+  linked: "stamped" | { readonly refused: string },
+) => {
+  const started = (caller: Caller, params: P) =>
     Effect.gen(function* () {
-      const { limits } = yield* writingCaller;
-      const gate: ThreadStartGate = {
-        start: Effect.gen(function* () {
-          const requested = modes(params);
-          return {
-            runtimeMode: yield* resolveRuntimeMode(limits.runtimeMode, requested.runtimeMode),
-            interactionMode: yield* resolveInteractionMode(
-              limits.interactionMode,
-              requested.interactionMode,
-            ),
-          };
-        }),
-        continueWithin: (target, effect) =>
-          Effect.gen(function* () {
-            yield* assertTargetWithinLimits(limits, target);
-            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
-            return yield* effect.pipe(
-              Effect.provideService(DispatchModeLimit, { ...limits, refused }),
-              Effect.catch((error) =>
-                Effect.flatMap(Ref.get(refused), (refusal) =>
-                  Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
+      const requested = modes(params);
+      return {
+        runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
+        interactionMode: yield* resolveInteractionMode(
+          caller.limits.interactionMode,
+          requested.interactionMode,
+        ),
+        linkOrigin: callerLinkOrigin(caller),
+      } satisfies StartedModes;
+    });
+  return declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        const caller = yield* writingCaller;
+        const { limits } = caller;
+        if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
+        const gate: ThreadStartGate = {
+          start: started(caller, params),
+          continueWithin: (target, effect) =>
+            Effect.gen(function* () {
+              yield* assertTargetWithinLimits(limits, target);
+              const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+              return yield* effect.pipe(
+                Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+                Effect.catch((error) =>
+                  Effect.flatMap(Ref.get(refused), (refusal) =>
+                    Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
+                  ),
                 ),
-              ),
-            );
-          }),
-      };
-      return yield* handle(params, gate);
-    }),
+              );
+            }),
+        };
+        return yield* handle(params, gate);
+      }),
+    (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
   );
+};
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
@@ -430,7 +440,12 @@ const routed = <Tools extends Record<string, Tool.Any>>(
     const handlers: Record<string, unknown> = { ...checked };
     for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
       const tool = toolkit.tools[name];
-      if (tool === undefined || !takesLinkedEnvironment(tool)) continue;
+      if (tool === undefined) continue;
+      handlers[name] = yield* RemoteAdmissionMcp.wrap(
+        tool,
+        handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+      );
+      if (!takesLinkedEnvironment(tool)) continue;
       const remote = remoteCheckOf(declaration);
       if (remote === undefined)
         return yield* Effect.die(

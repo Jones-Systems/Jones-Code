@@ -1256,7 +1256,10 @@ const make = Effect.gen(function* () {
           candidate.origin === "app_owned" &&
           candidate.threadId === scope.thread.threadId,
       );
-      if (task === undefined || (task.childThreadId === null && task.remoteChild === undefined)) {
+      if (
+        task === undefined ||
+        (task.childThreadId === null && task.remoteChild === undefined && task.driver !== "remote")
+      ) {
         return yield* failure(
           "task_not_found",
           `Delegated task ${taskId} does not belong to thread ${scope.thread.threadId}.`,
@@ -1517,7 +1520,7 @@ const make = Effect.gen(function* () {
         hasPendingChildRuns: false,
         providerInstanceId: task.providerInstanceId,
         model: task.model,
-        summary: task.result,
+        summary: task.result ?? (task.status === "waiting" ? (task.progress ?? null) : null),
         resultContextTransferId: null,
         latestTerminalRunId: null,
         latestTerminalStatus: terminal
@@ -1526,7 +1529,7 @@ const make = Effect.gen(function* () {
         latestTerminalSummary: terminal ? task.result : null,
         latestTerminalResultContextTransferId: null,
         // Its questions are asked and answered in the environment it runs in.
-        hasPendingQuestion: false,
+        hasPendingQuestion: task.result === null && task.status === "waiting",
         waitTimedOut,
       } satisfies OrchestratorMcpDelegateTaskResult;
     });
@@ -2232,7 +2235,7 @@ const make = Effect.gen(function* () {
             (task) =>
               task.id === input.taskId &&
               task.origin === "app_owned" &&
-              task.remoteChild !== undefined,
+              (task.remoteChild !== undefined || task.driver === "remote"),
           );
           if (remoteTask === undefined) {
             return yield* failure(

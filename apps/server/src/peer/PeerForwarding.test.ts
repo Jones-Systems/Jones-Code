@@ -32,6 +32,16 @@ import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
+
+// Linked launches use the upstream receipt namespace, outside the client-launch service.
+const layerLaunchDependencies = Layer.mergeAll(
+  SqlitePersistence.layerMemory,
+  Layer.mock(EventSink.EventSinkV2)({}),
+  Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
+);
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
@@ -220,6 +230,7 @@ const serveBox = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) =>
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(layerLaunchDependencies),
     ),
   );
 
@@ -246,56 +257,58 @@ const makeLaptop = Effect.gen(function* () {
     McpHttpServer.layerOrchestratorToolkit,
     McpHttpServer.layerProjectRegistration,
     McpHttpServer.layerThreadToolkit,
-  ).pipe(
-    Layer.provideMerge(McpServer.McpServer.layer),
-    Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
-    Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
-    Layer.provide(
-      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-    ),
-    Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-    Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
-    Layer.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-laptop-" }).pipe(
-        Layer.provide(NodeServices.layer),
+  )
+    .pipe(
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),
+      Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
+      Layer.provide(
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       ),
-    ),
-    Layer.provide(NodeServices.layer),
-    Layer.provide(PeerForwarding.layer),
-    Layer.provide(Layer.succeedContext(linking)),
-    Layer.provide(NodeCrypto.layer),
-    Layer.provideMerge(
-      Layer.mock(ThreadManagement.ThreadManagementService)({
-        getThreadShell: (threadId) =>
-          Effect.succeed(
-            threadId === ThreadId.make("thread:laptop-from-desk")
-              ? {
-                  ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
-                  // Work another environment's link started on this laptop.
-                  linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
-                }
-              : liveThreadShell(
-                  threadId,
-                  threadId === ThreadId.make("thread:laptop-plan")
-                    ? { runtimeMode: "full-access", interactionMode: "plan" }
-                    : { runtimeMode: "full-access" },
-                ),
-          ),
-        getProjectThreadRecords: ({ threadId }) =>
-          Effect.succeed({
-            thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
-          } as never),
-      }),
-    ),
-    Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
-    Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
-    Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
-    Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
-    Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-    Layer.provide(ServerSettings.layerTest()),
-    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-    Layer.fresh,
-  );
+      Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provide(Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({})),
+      Layer.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-peer-forwarding-laptop-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+      Layer.provide(NodeServices.layer),
+      Layer.provide(PeerForwarding.layer),
+      Layer.provide(Layer.succeedContext(linking)),
+      Layer.provide(NodeCrypto.layer),
+      Layer.provideMerge(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) =>
+            Effect.succeed(
+              threadId === ThreadId.make("thread:laptop-from-desk")
+                ? {
+                    ...liveThreadShell(threadId, { runtimeMode: "full-access" }),
+                    // Work another environment's link started on this laptop.
+                    linkOrigin: { sessionId: "session:desk", label: "T3 Code · Desk" },
+                  }
+                : liveThreadShell(
+                    threadId,
+                    threadId === ThreadId.make("thread:laptop-plan")
+                      ? { runtimeMode: "full-access", interactionMode: "plan" }
+                      : { runtimeMode: "full-access" },
+                  ),
+            ),
+          getProjectThreadRecords: ({ threadId }) =>
+            Effect.succeed({
+              thread: liveThreadShell(threadId, { runtimeMode: "full-access" }),
+            } as never),
+        }),
+      ),
+      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
+      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
+      Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+      Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.fresh,
+    )
+    .pipe(Layer.provide(layerLaunchDependencies));
   const here = yield* Layer.build(layerHere);
   const server = Context.get(here, McpServer.McpServer);
   const scopeOf = (

@@ -275,6 +275,33 @@ describe("v2 thread shell lists", () => {
       `${remoteEnvironmentId}/${helper.id}`,
     ]);
 
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...task, pendingRuntimeRequest: { ...approval, kind: "user_input" } }, helper],
+    });
+    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBe(
+      "user_input",
+    );
+    expect(registry.get(inputs).map((thread) => `${thread.environmentId}/${thread.id}`)).toEqual([
+      `${remoteEnvironmentId}/${task.id}`,
+    ]);
+    expect(childThreadInputsTitle(registry.get(inputs))).toBe("Subagent needs input");
+    expect(listed()).toEqual([`${environmentId}/${parent.id}`]);
+
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [
+        {
+          ...task,
+          activityRunStatus: null,
+          pendingRuntimeRequest: { ...approval, kind: "user_input" },
+        },
+        helper,
+      ],
+    });
+    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBeNull();
+    expect(registry.get(inputs)).toEqual([]);
+
     // A task whose parent is gone there is listed on its own, as is one whose
     // parent's environment is switched off.
     registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [] });

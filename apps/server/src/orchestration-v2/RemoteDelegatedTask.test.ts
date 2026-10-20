@@ -225,6 +225,65 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
     }),
   );
 
+  it.effect(
+    "reserves before launch, cancels while held, and binds the late child without another completion",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const parent = yield* seedLiveParent("reserved");
+        const request = {
+          type: "delegated_task.remote.request" as const,
+          commandId: CommandId.make("command:remote-reserve"),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Await admission there.",
+          driver: ProviderDriverKind.make("remote"),
+          modelSelection,
+        };
+        yield* orchestrator.dispatch(request);
+        yield* orchestrator.dispatch(request);
+        const reserved = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!;
+        assert.equal(reserved.status, "running");
+        assert.equal(reserved.remoteChild, undefined);
+        assert.equal(reserved.result, null);
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.complete",
+          commandId: CommandId.make("command:cancel-reserved"),
+          parentThreadId: parent.threadId,
+          taskId: reserved.id,
+          status: "cancelled",
+          result: "Cancelled while admission was held.",
+        });
+        const cancelled = (yield* orchestrator.getThreadProjection(parent.threadId)).subagents[0]!;
+        const bind = {
+          type: "delegated_task.remote.bind" as const,
+          commandId: CommandId.make("command:bind-reserved"),
+          parentThreadId: parent.threadId,
+          taskId: reserved.id,
+          remoteChild: { ...remoteChild, runId: RunId.make("run:remote-original") },
+        };
+        yield* orchestrator.dispatch(bind);
+        yield* orchestrator.dispatch(bind);
+        const projection = yield* orchestrator.getThreadProjection(parent.threadId);
+        assert.equal(projection.subagents.length, 1);
+        const bound = projection.subagents[0]!;
+        assert.equal(bound.status, "cancelled");
+        assert.equal(bound.result, cancelled.result);
+        assert.deepEqual(bound.completionDelivery, cancelled.completionDelivery);
+        assert.equal(bound.remoteChild?.stoppedThere, false);
+        assert.equal(bound.remoteChild?.runId, "run:remote-original");
+        const conflict = yield* orchestrator
+          .dispatch({
+            ...bind,
+            commandId: CommandId.make("command:bind-other-child"),
+            remoteChild: { ...remoteChild, threadId: ThreadId.make("thread:other-child") },
+          })
+          .pipe(Effect.result);
+        assert.equal(conflict._tag, "Failure");
+      }),
+  );
+
   it.effect("keeps a newer stop recoverable after an older acknowledgement", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

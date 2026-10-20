@@ -3306,6 +3306,7 @@ export const WS_RPC_SERVER_OPTIONS = {
 } as const;
 
 type WsLayerServices =
+  | PeerLinks.PeerLinks
   | HttpRouter.HttpRouter
   | NativeStoreAuthority.NativeStoreAuthority
   | PreviewAutomationBroker.PreviewAutomationBroker

@@ -309,6 +309,28 @@ ends, as for any delegated task. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
+### Jones Code: review incoming requests on your laptop
+
+On the receiving laptop, open **Settings → Connections → Remote request
+review**, choose the local evaluator provider and model, and enable evaluation.
+This is a setting on that environment. Leave it disabled on the VPS, Mini and
+other environments that should run remote requests directly.
+
+Passing requests run as ordinary Jones Code tasks with the receiving
+workspace's normal tools, permissions and provider settings. A request that
+needs review waits for your decision. Open the sidebar's needs-input indicator
+or the review section in Connections, inspect the request, then **Approve** or
+**Deny**. An approval releases that exact request. Linked agents and MCP
+question-response tools cannot approve these holds. New remote instructions
+are evaluated separately; cancellation remains available while a request waits.
+
+The evaluator runs without tools. If it is unavailable, unsupported, times out,
+or returns an invalid answer, the request waits for your review. The initial
+adapter supports Claude evaluation; choosing another adapter currently holds
+requests until reviewed. Screening is a heuristic, and does not change normal
+execution after a pass or the link's underlying access grant. Revoke the link
+in Connections to remove its access.
+
 ## Manage or revoke access
 
 On the host, **Settings → Connections** lets authorized administrators create

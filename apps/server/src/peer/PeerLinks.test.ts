@@ -234,7 +234,7 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
 
       // A link stored before links were marked: its session there is not a
       // link's, so the peer would not fence its work even though it can.
-      yield* a.sql`UPDATE peer_environment_links SET fenced = 0`;
+      yield* a.sql`UPDATE jones_peer_environment_links SET fenced = 0`;
       const legacy = yield* probe(a).pipe(Effect.flip);
       expect(legacy.code).toBe("capability_denied");
       expect(legacy.message).toContain("Link it again");

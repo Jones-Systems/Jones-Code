@@ -91,7 +91,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
-import { DispatchModeLimit } from "./DispatchModeLimit.ts";
+import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
@@ -2480,6 +2480,7 @@ const make = Effect.gen(function* () {
             (yield* ids.allocate
               .message({ threadId, ordinal: 1 })
               .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId))));
+          const inheritedDispatchLimit = yield* DispatchModeLimit;
           const dispatched = yield* threads
             .dispatch({
               type: "message.dispatch",
@@ -2521,12 +2522,26 @@ const make = Effect.gen(function* () {
               // An agent's launch may land on a thread a replay, or a
               // concurrent launch with the same key, created with broader modes
               // than it asks for. The orchestrator refuses the message under
-              // the thread's lock. The user's own clients launch into their
+              // the thread's lock. Preserve a stricter caller limit and its
+              // refusal signal. The user's own clients launch into their
               // own drafts, whatever modes those hold.
               input.createdBy === "agent"
                 ? Effect.provideService(DispatchModeLimit, {
-                    runtimeMode: input.runtimeMode,
-                    interactionMode: input.interactionMode,
+                    runtimeMode:
+                      inheritedDispatchLimit !== undefined &&
+                      exceededDispatchModeLimit(inheritedDispatchLimit, {
+                        runtimeMode: input.runtimeMode,
+                        interactionMode: inheritedDispatchLimit.interactionMode,
+                      }) === "runtime"
+                        ? inheritedDispatchLimit.runtimeMode
+                        : input.runtimeMode,
+                    interactionMode:
+                      inheritedDispatchLimit?.interactionMode === "plan"
+                        ? "plan"
+                        : input.interactionMode,
+                    ...(inheritedDispatchLimit?.refused === undefined
+                      ? {}
+                      : { refused: inheritedDispatchLimit.refused }),
                   })
                 : (effect) => effect,
               Effect.mapError(mapError(input, "dispatch-message", threadId)),

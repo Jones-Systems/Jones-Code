@@ -7,6 +7,13 @@ import type {
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 
+import type {
+  RemoteRequestEvaluationInput,
+  RemoteRequestEvaluationResult,
+} from "./jones/remoteRequestEvaluation.ts";
+export type { RemoteRequestEvaluationInput } from "./jones/remoteRequestEvaluation.ts";
+export { RemoteRequestEvaluationResult } from "./jones/remoteRequestEvaluation.ts";
+
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
 
 export interface CommitMessageGenerationInput {
@@ -94,6 +101,10 @@ export type ReviewGuideGenerationResult = Omit<
 >;
 
 export interface ProviderTextGeneration {
+  readonly evaluateRemoteRequest: (
+    input: RemoteRequestEvaluationInput,
+  ) => Effect.Effect<RemoteRequestEvaluationResult, TextGenerationError>;
+
   readonly generateCommitMessage: (
     input: CommitMessageGenerationInput,
   ) => Effect.Effect<CommitMessageGenerationResult, TextGenerationError>;

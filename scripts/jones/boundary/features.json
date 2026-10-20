@@ -978,7 +978,7 @@
         "packages/contracts/src/threadCorpusProtocol.test.ts",
         "apps/server/src/orchestration-v2/http.test.ts"
       ],
-      "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation."
+      "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation. Cross-host compatibility keeps attention semantics shared with the client shell and supplies canonical thread membership keys to the existing sidebar/filter harnesses."
     },
     {
       "id": "question-answer-field",
@@ -1101,7 +1101,7 @@
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts"
       ],
-      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Unkeyed launch and existing access builders remain unchanged."
+      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Cross-host launch propagates the authoritative linked origin through keyed and unkeyed paths; the existing project-handler harness covers integration and keeps its upstream assertions."
     },
     {
       "id": "request-economy",
@@ -1144,6 +1144,88 @@
         "packages/shared/src/t3McpToolPresentation.test.ts"
       ],
       "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement."
+    },
+    {
+      "id": "cross-host-integration",
+      "tests": [
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts",
+        "apps/server/src/mcp/linkOrigin.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "packages/client-runtime/src/state/peerLinks.test.ts",
+        "packages/client-runtime/src/state/commandPermissions.test.ts",
+        "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
+        "apps/mobile/src/state/thread-order.test.ts",
+        "apps/mobile/src/features/home/useThreadListActions.test.ts",
+        "apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+        "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
+        "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx"
+      ],
+      "scope": "Imports the pinned cross-host compatibility layer: environment mode ceilings, peer pairing and forwarding, remote child lineage, shared client connections, web/desktop and mobile relationship presentation. Imported protocol, orchestration, authentication, CLI and existing renderer files remain accepted shared integrations because they extend the original owners of those contracts and flows. Existing MCP, provider, peer and client test harnesses remain in their original modules to exercise real mode propagation, command permissions and relationship behavior. Jones additions and transport repairs remain behind recorded hooks. Baseline, ancestry, resolution hashes and existing upstream assertions are preserved. The ws.ts service-requirement hook declares PeerLinks in the existing WebSocket layer; docs/user/remote-access.md documents environment-local review settings, owner decisions, unsupported evaluator holds and unchanged accepted-task execution. Both paths retain their existing boundary classifications."
+    },
+    {
+      "id": "remote-admission",
+      "tests": [
+        "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/target.test.ts",
+        "apps/web/src/jones/remoteAdmission/presentation.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "scope": "Jones-owned durable remote-request admission and owner-only HTTP/MCP integration, with canonical bindings, duplicate handling, screening, owner decisions, cancellation, dispatch claims and resume. Contracts, server policy/invocations, client settings and attention live in Jones modules. Server and environment HTTP composition retain small registration hooks; MCP tool access and cancellation use typed Jones wrappers. The shared contracts barrel and orchestrator MCP schema expose compatible status fields. Shared sidebar and connection settings only mount Jones views. Existing HTTP group tests cover registration using the consumed upstream API harness. The evaluator screens requests before normal task dispatch; it does not constrain tools of accepted tasks. Owner progress is presented through the Jones sidebar attention link and Connections view using stored sender, task and target information. Jones HTTP tests cover owner-only decisions, target tests cover authoritative target binding, and presentation tests cover stored request context. The existing worktree toolkit registration harness supplies the intake service required by the new MCP wrapper; this test-only upstream import avoids duplicating the real toolkit registration harness."
+    },
+    {
+      "id": "remote-delegation",
+      "tests": [
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "apps/server/src/jones/remoteDelegation/IntentStore.test.ts",
+        "apps/server/src/jones/remoteDelegation/Lifecycle.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts"
+      ],
+      "scope": "Jones-owned durable remote delegation intent and peer monitoring integrate with the imported remote service. Reservation precedes remote launch; acknowledged child binding, cancellation debt and completion survive reconnect/restart. Shared orchestration commands and event emission remain with their existing owner to preserve atomic event projection and replay. Existing service/orchestrator tests remain in the real delegation harness instead of duplicating its projection, wake and stop machinery. ThreadManagementService keeps pending owner input nonterminal until the request resolves and wakes the existing long poll; ProviderRuntimeRecoveryService preserves unbound remote reservations during local provider recovery. Their existing integration tests exercise those shared lifecycle owners. PeerForwarding retains its existing test harness with the synthetic lifecycle dependencies required by the composed remote service."
+    },
+    {
+      "id": "peer-transport",
+      "tests": [
+        "apps/server/src/jones/peerTransport/PeerMcpClient.test.ts",
+        "apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts"
+      ],
+      "scope": "Jones-owned peer MCP transport preserves the imported client interface through a thin construction hook. Covers no mutation replay after 404, generation-safe session eviction, redirect refusal, JSON-RPC/SSE validation, structured results and typed failures. Jones tests are colocated with the extracted transport."
+    },
+    {
+      "id": "peer-persistence",
+      "tests": [
+        "apps/server/src/jones/peerPersistence/PeerPersistence.test.ts",
+        "apps/server/src/peer/PeerLinks.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts",
+        "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
+      ],
+      "scope": "Jones migrations 115–118 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned."
+    },
+    {
+      "id": "remote-request-evaluation",
+      "tests": [
+        "packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts",
+        "packages/provider-core/src/server/textGenerationPrompts.test.ts",
+        "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "apps/server/src/textGeneration/ClaudeTextGeneration.test.ts",
+        "apps/server/src/textGeneration/CodexTextGeneration.test.ts",
+        "apps/server/src/git/GitManager.test.ts"
+      ],
+      "scope": "Jones-owned typed remote-request evaluation schema, bounded input and prompt helpers extend the existing provider text-generation interface through explicit hooks. Claude opts into tool-less evaluation; unsupported providers return typed failures. Existing provider drivers and generation services retain the method wiring because they own provider resolution and invocation. Their existing mock-process and registry tests remain upstream harness exceptions, proving disabled task tools, provider routing and unsupported results without duplicating adapter machinery."
     }
   ]
 }

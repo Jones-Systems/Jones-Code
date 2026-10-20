@@ -29,6 +29,7 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
 
 /** The redirect registered for a link. Nothing ever listens there: the code comes back in the response. */
 const LINK_REDIRECT_URI = "http://127.0.0.1/t3code-peer-link";
@@ -184,12 +185,12 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.catch(failStorage));
 
   const readRows = sql<PeerLinkRow>`
-    SELECT * FROM peer_environment_links ORDER BY label, environment_id
+    SELECT * FROM ${sql(peerEnvironmentLinksTable)} ORDER BY label, environment_id
   `.pipe(Effect.catch(failStorage));
 
   const readRow = (environmentId: EnvironmentId) =>
     sql<PeerLinkRow>`
-      SELECT * FROM peer_environment_links WHERE environment_id = ${environmentId}
+      SELECT * FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}
     `.pipe(
       Effect.catch(failStorage),
       Effect.map((rows) => Option.fromNullishOr(rows[0])),
@@ -358,7 +359,7 @@ const make = Effect.gen(function* () {
       const urlsJson = yield* encodeUrls(origins).pipe(Effect.catch(failStorage));
       const previous = yield* readRow(peer.environmentId);
       yield* sql`
-        INSERT INTO peer_environment_links (
+        INSERT INTO ${sql(peerEnvironmentLinksTable)} (
           environment_id, secret_name, label, urls_json, access, linked_at, expires_at,
           last_reached_at, last_error, fenced
         ) VALUES (
@@ -423,7 +424,7 @@ const make = Effect.gen(function* () {
   const unlink: PeerLinks["Service"]["unlink"] = (environmentId) =>
     Effect.gen(function* () {
       const deleted = yield* sql<{ secret_name: string }>`
-        DELETE FROM peer_environment_links WHERE environment_id = ${environmentId}
+        DELETE FROM ${sql(peerEnvironmentLinksTable)} WHERE environment_id = ${environmentId}
         RETURNING secret_name
       `.pipe(Effect.catch(failStorage));
       for (const row of deleted) {
@@ -497,12 +498,12 @@ const make = Effect.gen(function* () {
       Effect.flatMap((now) =>
         outcome.error === null
           ? sql`
-              UPDATE peer_environment_links
+              UPDATE ${sql(peerEnvironmentLinksTable)}
               SET last_reached_at = ${DateTime.formatIso(now)}, last_error = NULL
               WHERE environment_id = ${environmentId}
             `
           : sql`
-              UPDATE peer_environment_links SET last_error = ${outcome.error}
+              UPDATE ${sql(peerEnvironmentLinksTable)} SET last_error = ${outcome.error}
               WHERE environment_id = ${environmentId}
             `,
       ),

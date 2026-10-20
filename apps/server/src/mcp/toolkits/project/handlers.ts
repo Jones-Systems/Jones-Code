@@ -59,10 +59,26 @@ const access = Effect.gen(function* () {
   return yield* Project.ProjectService;
 });
 export const layer = McpToolAccess.toLayer(ProjectToolkit, {
-  t3_thread_launch: McpToolAccess.startsThreads(
+  t3_thread_launch: McpToolAccess.startsOrContinuesThreads(
     (input) => input,
-    (input, { runtimeMode, interactionMode, linkOrigin }) =>
+    (input, gate) =>
       Effect.gen(function* () {
+        const keyedCaller = input.clientRequestId === undefined ? undefined : yield* readCaller();
+        const modes = yield* gate.start;
+        // Jones replay owns local keyed launches; linked launches retain upstream IDs and origin.
+        if (
+          keyedCaller !== undefined &&
+          input.clientRequestId !== undefined &&
+          modes.linkOrigin === undefined
+        ) {
+          return yield* ClientLaunch.launch(
+            { ...input, clientRequestId: input.clientRequestId },
+            keyedCaller,
+            modes,
+            gate,
+          );
+        }
+        const { runtimeMode, interactionMode, linkOrigin } = modes;
         const scope = yield* McpInvocationContext.McpInvocationContext;
         const context = yield* readCaller();
         const { caller } = context;
@@ -208,13 +224,13 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
   t3_thread_launch_lookup: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const caller = yield* readCaller();
-      return yield* ClientLaunch.lookup(caller.scope.requestNamespace, input.clientRequestId);
+      return yield* ClientLaunch.lookupForCaller(caller, input.clientRequestId);
     }),
   ),
   t3_thread_launch_fence: McpToolAccess.writesWithCapability((input) =>
     Effect.gen(function* () {
       const caller = yield* readCaller();
-      return yield* ClientLaunch.fence(caller.scope.requestNamespace, input.clientRequestId);
+      return yield* ClientLaunch.fenceForCaller(caller, input.clientRequestId);
     }),
   ),
   t3_project_list: McpToolAccess.reads((input) =>

@@ -417,6 +417,9 @@ it.effect(
         Layer.mergeAll(
           terminal,
           settings,
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+          }),
           Layer.mock(ProjectService.ProjectService)({
             getById: () => Effect.succeed(Option.some(project)),
           }),
@@ -518,6 +521,9 @@ it.effect(
       Layer.provide(
         Layer.mergeAll(
           Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+          }),
           ServerSettings.layerTest(),
           Layer.mock(TerminalManager.TerminalManager)({
             openNativeSetup: (input, hooks) =>
