@@ -36,6 +36,18 @@ The confirmation counts the running threads that the restarts will interrupt,
 and how many can resume afterwards. See **Continue threads after restarts**
 below.
 
+### Prepare Jones desktop builds in the background
+
+Jones desktop builds can download and verify the newest main build while you work.
+Turn on **Settings → General → Prepare updates in the background**; it is off by
+default. The app never installs a build on its own. Choose **Install** when you are
+ready.
+
+A build is prepared after it has been the newest for about ten minutes, so a quick
+series of builds downloads only the last one. A newer build replaces a download you
+have not installed, but not one you are installing. A build you discard is not
+prepared again; the next newer build is.
+
 ## Before you update
 
 Server updates restart the connection and can interrupt active agents and

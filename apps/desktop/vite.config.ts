@@ -98,6 +98,7 @@ export default defineConfig({
         "src/snapShot/GlobalShiftShortcutWorker.ts",
         "src/snapShot/RegionSnapShotWorker.ts",
         "src/snapShot/SnapShotAccessibilityWorker.ts",
+        "src/jones/updates/jonesStagingWorker.ts",
       ],
       clean: false,
       deps: {

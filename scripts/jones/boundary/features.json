@@ -158,6 +158,18 @@
       "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
     },
     {
+      "id": "desktop-background-preparation",
+      "tests": [
+        "apps/desktop/src/jones/updates/backgroundPreparationPolicy.test.ts",
+        "apps/desktop/src/jones/updates/backgroundPreparation.test.ts",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "apps/desktop/src/jones/updates/stagingWorkerClient.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "packages/contracts/src/jones/desktopPreparation.test.ts",
+        "apps/web/src/jones/updates/DesktopBackgroundPreparation.test.tsx"
+      ]
+    },
+    {
       "id": "desktop-stage-attempts",
       "tests": [
         "packages/shared/src/jones/jonesActionsStage.test.ts",

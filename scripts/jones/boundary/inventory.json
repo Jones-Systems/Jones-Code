@@ -110,6 +110,7 @@
     "apps/server/src/ServerSettingsPersistence.test.ts": "jones-owned",
     "apps/server/src/serverSettings.ts": "accepted-shared",
     "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",
+    "scripts/jones/boundary/fragments/desktop-background-preparation.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
     ".agents/skills/capture-ui-evidence/references/runner-output-and-limits.md": "policy",
     ".agents/skills/test-t3-app/SKILL.md": "policy",
