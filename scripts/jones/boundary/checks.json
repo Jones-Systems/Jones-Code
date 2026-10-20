@@ -1704,7 +1704,10 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
-        "apps/server/scripts/jones/currentFixtures.test.ts"
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
@@ -1721,7 +1724,8 @@
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
         "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1",
-        "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1"
+        "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1",
+        "vp test run packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1914,6 +1918,29 @@
         "vp test run apps/server/src/orchestration-v2/runtimeLayer.test.ts -t \"restarted watch reactor\"",
         "vp test run apps/server/src/jones/persistence/ apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-native-goal-controls",
+      "tests": [
+        "apps/server/src/jones/goals/CodexGoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
+        "packages/contracts/src/jones/threadGoal.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderGoalState.test.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/goals/GoalStartDispatch.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter @t3tools/shared --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

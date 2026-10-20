@@ -178,6 +178,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 111, name: "ClientSettlementCommands" },
           { id: 112, name: "ClientLaunchRequests" },
           { id: 113, name: "ScheduledWebhookPendingRuns" },
+          { id: 114, name: "SelfSettlementProjectItems" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

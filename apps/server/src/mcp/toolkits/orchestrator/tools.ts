@@ -1,3 +1,4 @@
+import { ThreadGoalTool } from "../../../jones/goals/tool.ts";
 import {
   OrchestratorMcpCapabilitiesResult,
   OrchestrationV2StopWorkflowInput,
@@ -287,6 +288,7 @@ const ThreadSettleTool = Tool.make("t3_thread_settle", {
   .annotate(Tool.Idempotent, true);
 
 export const OrchestratorToolkit = Toolkit.make(
+  ThreadGoalTool,
   ThreadSettleTool,
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,

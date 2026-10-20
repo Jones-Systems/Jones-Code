@@ -12,6 +12,10 @@ import type {
 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
 import { captureNativeProviderSettlementProof } from "../jones/workstreams/nativeProvider/settlementProof.ts";
+import {
+  recordSelfSettlementProjectRemaining,
+  type SelfSettlementProjectRemaining,
+} from "../jones/settlementOrigins/projectRemaining.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
@@ -326,6 +330,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
@@ -1186,6 +1191,13 @@ const layerBase: Layer.Layer<
               yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          if (input.selfSettlementProjectRemaining)
+            yield* recordSelfSettlementProjectRemaining(
+              sql,
+              jonesTables,
+              input,
+              input.selfSettlementProjectRemaining,
+            );
           if (imported !== undefined && choice !== undefined) {
             if (choice.duplicate)
               return yield* new ImportedChoice.ImportedHistoryChoiceError({

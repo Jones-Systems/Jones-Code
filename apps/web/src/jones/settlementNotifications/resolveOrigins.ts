@@ -1,7 +1,7 @@
 import {
   resolveEnvironmentSettlementOrigins,
   type SettlementArrival,
-  type SettlementOrigin,
+  type SettlementOriginDetails,
 } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { createEnvironmentCommand, runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -22,7 +22,7 @@ let command: Promise<ReturnType<typeof makeCommand>> | undefined;
 export async function resolveSettlementOrigins(
   environmentId: EnvironmentId,
   arrivals: readonly SettlementArrival[],
-): Promise<readonly SettlementOrigin[] | null> {
+): Promise<readonly SettlementOriginDetails[] | null> {
   command ??= import("../../connection/runtime").then(({ connectionAtomRuntime }) =>
     makeCommand(connectionAtomRuntime),
   );

@@ -28,7 +28,7 @@
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts"
       ],
-      "scope": "Forward protocol termination through both Codex client factories, bound to the exact process generation. Process-exit handling uses existing adapter terminalization for active shared roots, native children, capacity retries and goal holds, then drains the event stream for manager-owned release. Replacement-overlap event filtering and a concurrent goal-timer hold release remain deferred review limitations. No replay or quiet-turn timeout. The shared adapter owns these lifecycle maps; extracting them would duplicate its terminalization machinery. Optional client and replay callbacks preserve existing callers. Jones tests remain in the existing client and adapter harnesses to exercise real transport and scoped producer ownership. The shared session manager holds the removed runtime scope until terminal subscribers finish processing, preserves their original failure cause, and serializes registration with exact-entry removal. This private lifecycle repair preserves generation validation and lets a replacement open while shutdown can interrupt the wait. Existing manager and orchestration harnesses cover ingestion ordering, Stop behavior, runtime recovery and another provider. The delegated-task status replay keeps its shared process alive through final parent MCP queries; scope cleanup owns disposal after the assertions. The native-fork replay similarly retains its shared process through the live-generation projection assertions and leaves disposal to scope cleanup."
+      "scope": "Forward protocol termination through both Codex client factories, bound to the exact process generation. Process-exit handling uses existing adapter terminalization for active shared roots, native children, capacity retries and goal holds, then drains the event stream for manager-owned release. Exact draining-runtime subscriber eligibility preserves queued terminals across replacement while retaining producer-origin and live-pump guards. Goal holds can be consumed only by a producer context eligible to publish their terminal, preserving process-exit failure when a grace timer overlaps termination. No replay or quiet-turn timeout. The shared adapter owns these lifecycle maps; extracting them would duplicate its terminalization machinery. Optional client and replay callbacks preserve existing callers. Jones tests remain in the existing client and adapter harnesses to exercise real transport and scoped producer ownership. The shared session manager holds the removed runtime scope until terminal subscribers finish processing, preserves their original failure cause, and serializes registration with exact-entry removal. This private lifecycle repair preserves generation validation and lets a replacement open while shutdown can interrupt the wait. Existing manager and orchestration harnesses cover ingestion ordering, Stop behavior, runtime recovery and another provider. The delegated-task status replay keeps its shared process alive through final parent MCP queries; scope cleanup owns disposal after the assertions. The native-fork replay similarly retains its shared process through the live-generation projection assertions and leaves disposal to scope cleanup."
     },
     {
       "id": "workstreams-interaction-recovery",
@@ -1032,9 +1032,12 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
-        "apps/server/scripts/jones/currentFixtures.test.ts"
+        "apps/server/scripts/jones/currentFixtures.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts"
       ],
-      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims."
+      "scope": "Persistent device-local settlement inbox from confirmed active and archived shell snapshots. First-use silent baseline, supported offline catch-up, exact-ID clicked dismissals, unbounded pending and acknowledgement retention, commutative merge and serialized inbox-before-baseline writes. Capability-gated server origin evidence suppresses manual app settlements across clients; only validated client origins are silent, with bounded conservative fallback and classification-gated baseline persistence. Web/desktop and native mobile hooks share the core; explicit-dismiss toast behavior prevents Escape/swipe removal. No provider/focus exclusions, baseline GC or server history claims. Deferred self-settlement project items are stored atomically in sparse Jones rows keyed by the original acceptance; exact settlement identity resolves plain-text bullets without changing upstream payloads."
     },
     {
       "id": "delegated-task-workspace",
@@ -1131,6 +1134,25 @@
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
       "scope": "Webhook deliveries acknowledged before their run settles are recorded in Jones migration 113's table keyed by delivery id and run once, in arrival order, after the next server activation; a run the server stops stays pending instead of being marked failed. Replays reuse the delivery's command id, so a dispatch that landed is not repeated. Deleted, paused, replaced or retargeted tasks and deliveries past the task's maximum age are not run. Timer schedules, pull request watches and delegated completions already restore from durable rows and projections; the runtime layer case proves a fresh pull request watch reactor reports changes from an outage once and does not restore a stopped watch. The case stays in the upstream runtime layer test because its harness owns the orchestrator and projections. The ScheduledTaskService hook (record, settle, interrupted runs left pending, and the recovery scheduler source) shares the hook path recorded by scheduled-wake-coalescing."
+    },
+    {
+      "id": "native-goal-controls",
+      "tests": [
+        "apps/server/src/jones/goals/CodexGoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalControl.test.ts",
+        "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
+        "packages/contracts/src/jones/threadGoal.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderGoalState.test.ts",
+        "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
+        "packages/contracts/src/orchestratorMcp.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts"
+      ],
+      "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement."
     }
   ]
 }

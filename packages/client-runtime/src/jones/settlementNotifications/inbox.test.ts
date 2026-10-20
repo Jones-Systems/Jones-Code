@@ -12,8 +12,11 @@ describe("settlement inbox", () => {
     const b = dismiss(withEntries({ ...entry(), title: "Renamed", threadGone: true }, entry("b")), [
       entry("b").id,
     ]);
-    const c = withEntries(entry("c"), { ...entry(), detectedAtMs: 999 });
+    const c = withEntries(entry("c"), { ...entry(), projectRemaining: ["Project follow-up"] });
     expect(mergeInbox(a, b)).toEqual(mergeInbox(b, a));
+    expect(
+      mergeInbox(a, c).entries.find((value) => value.id === entry().id)?.projectRemaining,
+    ).toEqual(["Project follow-up"]);
     expect(mergeInbox(mergeInbox(a, b), c)).toEqual(mergeInbox(a, mergeInbox(b, c)));
     expect(mergeInbox(mergeInbox(a, b), mergeInbox(a, b))).toEqual(mergeInbox(a, b));
   });
