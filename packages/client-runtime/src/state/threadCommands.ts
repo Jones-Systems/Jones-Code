@@ -420,9 +420,13 @@ export function createThreadEnvironmentAtoms<R, E>(
           );
         }),
       scheduler,
+      // A page load can make two sequential HTTP fetches, so it gets its own lane
+      // and Send or Stop never waits behind it. Loads still run one at a time, and
+      // the controller drops stale cursors and merges pages under its apply lock.
       concurrency: {
         mode: "serial",
-        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.threadId]),
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.threadId, "history"]),
       },
     }),
     uploadFeedback: createEnvironmentRpcCommand(runtime, {
