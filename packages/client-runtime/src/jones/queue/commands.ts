@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Data from "effect/Data";
 import { getInitialServerConfig, request } from "../../rpc/client.ts";
 
-export class QueuedSteerBatchUnavailableError extends Data.TaggedError(
+class QueuedSteerBatchUnavailableError extends Data.TaggedError(
   "QueuedSteerBatchUnavailableError",
 )<{ readonly message: string }> {}
 

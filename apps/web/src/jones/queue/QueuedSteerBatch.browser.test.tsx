@@ -261,19 +261,25 @@ describe("queue header batch action", () => {
     },
   );
 
-  it("keeps all rows after failure and retries the identical batch", async () => {
-    state.batch.mockResolvedValueOnce({ _tag: "Failure" });
-    const view = await render();
-    await act(async () => {
-      button(view, "Steer all (22)")!.click();
-    });
-    expect(view.querySelectorAll("li")).toHaveLength(22);
-    expect(view.querySelector("[role=alert]")?.textContent).toContain("not confirmed");
-    await act(async () => {
-      button(view, "Retry steer (22)")!.click();
-    });
-    expect(state.batch).toHaveBeenCalledTimes(2);
-    expect(state.batch.mock.calls[1]![0].input).toBe(state.batch.mock.calls[0]![0].input);
-    expect(state.row).not.toHaveBeenCalled();
-  });
+  it.each(["failure", "rejection"])(
+    "keeps all rows after %s and retries the identical batch",
+    async (outcome) => {
+      if (outcome === "rejection")
+        state.batch.mockRejectedValueOnce(new Error("Transport unavailable"));
+      else state.batch.mockResolvedValueOnce({ _tag: "Failure" });
+      const view = await render();
+      await act(async () => {
+        button(view, "Steer all (22)")!.click();
+      });
+      expect(view.querySelectorAll("li")).toHaveLength(22);
+      expect(view.querySelector("[role=alert]")?.textContent).toContain("not confirmed");
+      expect(button(view, "Remove queued message")?.disabled).toBe(false);
+      await act(async () => {
+        button(view, "Retry steer (22)")!.click();
+      });
+      expect(state.batch).toHaveBeenCalledTimes(2);
+      expect(state.batch.mock.calls[1]![0].input).toBe(state.batch.mock.calls[0]![0].input);
+      expect(state.row).not.toHaveBeenCalled();
+    },
+  );
 });

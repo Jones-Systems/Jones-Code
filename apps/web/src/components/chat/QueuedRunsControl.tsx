@@ -239,15 +239,17 @@ export function QueuedRunsControl({
     if (steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
-    try {
-      await reorder({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, runId, beforeRunId },
+    await Promise.resolve()
+      .then(() =>
+        reorder({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId, beforeRunId },
+        }),
+      )
+      .finally(() => {
+        steerInFlightRef.current = false;
+        setBusyRunId(null);
       });
-    } finally {
-      steerInFlightRef.current = false;
-      setBusyRunId(null);
-    }
   };
 
   const completeDrag = (runId: RunId, insertIndex: number | null) => {
@@ -318,15 +320,17 @@ export function QueuedRunsControl({
     if (steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
-    try {
-      await cancel({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, runId },
+    await Promise.resolve()
+      .then(() =>
+        cancel({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId },
+        }),
+      )
+      .finally(() => {
+        steerInFlightRef.current = false;
+        setBusyRunId(null);
       });
-    } finally {
-      steerInFlightRef.current = false;
-      setBusyRunId(null);
-    }
   };
 
   return (

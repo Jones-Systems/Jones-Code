@@ -1259,7 +1259,8 @@
     "scripts/jones/boundary/fragments/scheduled-wake-coalescing.json": "policy",
     "scripts/jones/boundary/fragments/queued-steer-batch.json": "policy",
     "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts": "hook"
+    "apps/server/src/orchestration-v2/testkit/OrchestratorScenario.ts": "hook",
+    "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

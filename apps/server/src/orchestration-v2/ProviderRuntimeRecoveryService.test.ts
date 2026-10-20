@@ -852,6 +852,7 @@ it.effect(
         "provider-turn.start",
         "provider-turn.interrupt",
         "provider-turn.steer",
+        "provider-turn.steer-batch",
         "provider-turn.restart",
         "runtime-request.respond",
       ]);

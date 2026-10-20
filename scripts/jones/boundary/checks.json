@@ -1746,15 +1746,19 @@
         "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
         "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
-        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts"
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/queuedSteerBatch.test.ts packages/shared/src/jones/queuedSteerBatch.test.ts packages/client-runtime/src/jones/queue/commands.test.ts packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web test --project browser src/jones/queue/QueuedSteerBatch.browser.test.tsx src/components/chat/QueuedRunsControl.browser.test.tsx",
         "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web --filter @t3tools/mobile --concurrency-limit 1 typecheck",
         "vp run lint:mobile",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp run --filter @t3tools/web test --project unit src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedSteerBatch\"",
+        "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\""
       ]
     }
   ]

@@ -38,14 +38,23 @@ export function useQueuedSteerBatch(input: {
     });
   }
   const controller = submission.controller;
-  const [status, setStatus] = useState({ controller, pending: false, failed: false });
+  const [status, setStatus] = useState({
+    controller,
+    pending: false,
+    failed: false,
+    acceptedMessageIds: [] as ReadonlyArray<string>,
+    retryCount: null as number | null,
+  });
   const pending = status.controller === controller && status.pending;
   const failed = status.controller === controller && status.failed;
   const view = deriveQueuedSteerBatch({
     ...input,
     capability: config?.environment.capabilities.queuedSteerBatch,
   });
-  const awaitingProjection = view !== null && controller.awaitingProjection(view.items);
+  const awaitingProjection =
+    status.controller === controller &&
+    view !== null &&
+    view.items.some((item) => status.acceptedMessageIds.includes(item.messageId));
   const reason = pending
     ? "Sending queued messages together."
     : awaitingProjection
@@ -58,30 +67,49 @@ export function useQueuedSteerBatch(input: {
     reason,
     label: pending
       ? "Steering…"
-      : controller.retry
-        ? `Retry steer (${controller.retry.items.length})`
+      : status.controller === controller && status.retryCount !== null
+        ? `Retry steer (${status.retryCount})`
         : (view?.label ?? ""),
     async send() {
       if (!view || reason || !view.targetRunId || !input.mutationLock.acquire()) return;
       const lock = input.mutationLock;
-      setStatus({ controller, pending: true, failed: false });
-      try {
-        const result = await controller.submit(
+      const submittedItems = controller.retry?.items ?? view.items;
+      setStatus((current) => ({
+        controller,
+        pending: true,
+        failed: false,
+        acceptedMessageIds: current.controller === controller ? current.acceptedMessageIds : [],
+        retryCount: current.controller === controller ? current.retryCount : null,
+      }));
+      await controller
+        .submit(
           {
             threadId: input.threadId,
             targetRunId: view.targetRunId,
             items: view.items,
           },
           (command) => promote({ environmentId: input.environmentId, input: command }),
-        );
-        setStatus((current) =>
-          current.controller === controller
-            ? { controller, pending: false, failed: result === "failure" }
-            : current,
-        );
-      } finally {
-        lock.release();
-      }
+        )
+        .then((result) => {
+          const retryCount = controller.retry?.items.length ?? null;
+          setStatus((current) =>
+            current.controller === controller
+              ? {
+                  controller,
+                  pending: false,
+                  failed: result === "failure",
+                  retryCount,
+                  acceptedMessageIds:
+                    result === "success"
+                      ? submittedItems.map((item) => item.messageId)
+                      : current.acceptedMessageIds,
+                }
+              : current,
+          );
+        })
+        .finally(() => {
+          lock.release();
+        });
     },
   };
 }
