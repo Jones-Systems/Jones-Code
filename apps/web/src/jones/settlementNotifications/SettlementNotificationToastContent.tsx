@@ -8,12 +8,12 @@ export function SettlementNotificationToastContent({
   onOpen: (entry: SettlementEntry) => void;
 }) {
   return (
-    <ul className="flex max-h-64 flex-col gap-2 overflow-y-auto">
+    <ul className="flex flex-col gap-2">
       {entries.map((entry) => (
-        <li key={entry.id}>
+        <li key={entry.id} className="min-w-0">
           <button
             type="button"
-            className="text-left underline underline-offset-2 hover:text-foreground"
+            className="max-w-full text-left wrap-anywhere underline underline-offset-2 hover:text-foreground"
             onClick={() => onOpen(entry)}
           >
             {entry.title || "Untitled thread"}
