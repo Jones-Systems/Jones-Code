@@ -6,6 +6,7 @@ import {
   ServerSelfUpdateError,
   type ServerSelfUpdateCapability,
   type ServerSelfUpdateInput,
+  type ServerSelfUpdateProgressEvent,
   type ServerSelfUpdateProgressStage,
   type ServerSelfUpdateResult,
   type ThreadId,
@@ -24,6 +25,8 @@ import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
@@ -44,6 +47,7 @@ import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts
 import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
 import { withOwnedScratch } from "../jones/cloud/ownedScratch.ts";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -52,6 +56,7 @@ import {
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   PinnedRuntimePreflightBlockedError,
+  prunePinnedRuntimes,
 } from "./pinnedRuntime.ts";
 import {
   decodeServicePreflightResult,
@@ -252,115 +257,33 @@ export const withRunningThreadContinuation = Effect.fn(
 
   return ServerSelfUpdate.of({
     update,
-    ...(input.selfUpdate.stageQualified === undefined
-      ? {}
-      : { stageQualified: input.selfUpdate.stageQualified }),
-    ...(input.selfUpdate.installQualified === undefined
-      ? {}
-      : {
-          installQualified: (
-            request: {
-              readonly stagedHandle: string;
-              readonly continueRunningThreads?: boolean;
-              readonly operationId?: string;
-            },
-            onAccepted?: () => Effect.Effect<void>,
-            onPrepared?: (
-              staged: StagedQualifiedRuntime,
-            ) => Effect.Effect<void, ServerSelfUpdateError>,
-            reportStep?: (
-              step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
-            ) => Effect.Effect<void>,
-          ) => {
-            let handoffAccepted = false;
-            let continuationThreadIds: ReadonlyArray<ThreadId> = [];
-            return Effect.gen(function* () {
-              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
-              if (
-                request.operationId !== undefined &&
-                inFlight?.operationId === request.operationId &&
-                inFlight.uncertain &&
-                input.reconcileQualifiedOperation !== undefined
-              ) {
-                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
-                if (receipt.operationId === request.operationId && receipt.state === "absent")
-                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
-                    current === inFlight ? undefined : current,
-                  );
-              }
-              const attempt = { operationId: request.operationId, uncertain: false };
-              const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
-                current === undefined ? ([true, attempt] as const) : ([false, current] as const),
-              );
-              if (!claimed)
-                return yield* new ServerSelfUpdateError({
-                  reason: "A qualified Install has already started or needs reconciliation.",
-                });
-              return yield* clearOnError(
-                Effect.gen(function* () {
-                  if (request.continueRunningThreads === true) {
-                    yield* reportStep?.("marking") ?? Effect.void;
-                    continuationThreadIds = yield* timedQualifiedStep(
-                      "marking",
-                      request.operationId,
-                      input.prepare,
-                    );
-                  }
-                  return yield* input.selfUpdate.installQualified!(
-                    request,
-                    () =>
-                      Effect.sync(() => {
-                        handoffAccepted = true;
-                      }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
-                    onPrepared,
-                    reportStep,
-                  );
-                }),
-                () => continuationThreadIds,
-                () => handoffAccepted,
-                true,
-              ).pipe(
-                Effect.catchCause((cause) =>
-                  Ref.update(qualifiedInstallInFlight, (current) =>
-                    current !== attempt
-                      ? current
-                      : handoffAccepted || uncertainQualifiedHandoff(cause)
-                        ? { ...attempt, uncertain: !handoffAccepted }
-                        : undefined,
-                  ).pipe(Effect.andThen(Effect.failCause(cause))),
-                ),
-              );
-            }).pipe((effect) => timedQualifiedStep("total", request.operationId, effect));
-          },
+    commitDesktopUpdate: Effect.fn("selfUpdate.commitDesktopUpdate")(function* (requestId) {
+      const shouldContinue = yield* Ref.modify(desktopContinuationTokens, (tokens) => [
+        HashSet.has(tokens, requestId),
+        HashSet.remove(tokens, requestId),
+      ]);
+      let handoffAccepted = false;
+      let continuationThreadIds: ReadonlyArray<ThreadId> = [];
+      return yield* clearOnError(
+        Effect.gen(function* () {
+          continuationThreadIds = shouldContinue ? yield* input.prepare : [];
+          return yield* input.selfUpdate.commitDesktopUpdate(requestId, () =>
+            Effect.sync(() => {
+              handoffAccepted = true;
+            }),
+          );
         }),
-    commitDesktopUpdate: (requestId) =>
-      Effect.gen(function* () {
-        const shouldContinue = yield* Ref.modify(desktopContinuationTokens, (tokens) => [
-          HashSet.has(tokens, requestId),
-          HashSet.remove(tokens, requestId),
-        ]);
-        let handoffAccepted = false;
-        let continuationThreadIds: ReadonlyArray<ThreadId> = [];
-        return yield* clearOnError(
-          Effect.gen(function* () {
-            continuationThreadIds = shouldContinue ? yield* input.prepare : [];
-            return yield* input.selfUpdate.commitDesktopUpdate(requestId, () =>
-              Effect.sync(() => {
-                handoffAccepted = true;
-              }),
-            );
-          }),
-          () => continuationThreadIds,
-          () => handoffAccepted,
-        ).pipe(
-          Effect.catchCause((cause) =>
-            (shouldContinue && !handoffAccepted
-              ? Ref.update(desktopContinuationTokens, HashSet.add(requestId))
-              : Effect.void
-            ).pipe(Effect.andThen(Effect.failCause(cause))),
-          ),
-        );
-      }),
+        () => continuationThreadIds,
+        () => handoffAccepted,
+      ).pipe(
+        Effect.catchCause((cause) =>
+          (shouldContinue && !handoffAccepted
+            ? Ref.update(desktopContinuationTokens, HashSet.add(requestId))
+            : Effect.void
+          ).pipe(Effect.andThen(Effect.failCause(cause))),
+        ),
+      );
+    }),
   });
 });
 
@@ -380,6 +303,19 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
   const inFlight = yield* Ref.make(false);
   const runtimeContext = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(runtimeContext);
+
+  // A managed server starting means its launcher has settled on a version, so runtimes left by
+  // earlier updates can go.
+  if (launcher.managed) {
+    yield* prunePinnedRuntimes({ baseDir: serverConfig.baseDir, keep: [packageJson.version] }).pipe(
+      Effect.tap((removed) =>
+        removed.length === 0
+          ? Effect.void
+          : Effect.logInfo("Removed unused t3 runtimes.", { versions: removed }),
+      ),
+      Effect.forkScoped,
+    );
+  }
 
   const capability: ServerSelfUpdateCapability | null =
     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
@@ -763,3 +699,26 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 export const layer = Layer.effect(ServerSelfUpdate, make()).pipe(
   Layer.provide(ProcessRunner.layer),
 );
+
+// The RPC stream used to own this fiber, so a dropped client socket interrupted
+// the download. Offers after the queue shuts down are ignored; the update
+// still finishes, and the in-flight guard stays as it was.
+export const updateProgressStream = (
+  selfUpdate: ServerSelfUpdate["Service"],
+  input: ServerSelfUpdateInput,
+) =>
+  Stream.callback<ServerSelfUpdateProgressEvent, ServerSelfUpdateError>((queue) => {
+    const offer = (event: ServerSelfUpdateProgressEvent) =>
+      Queue.offer(queue, event).pipe(Effect.ignore);
+
+    return selfUpdate
+      .update(input, (stage) => offer({ type: "progress", stage }))
+      .pipe(
+        Effect.flatMap((result) => offer({ type: "complete", result })),
+        Effect.catchTags({
+          ServerSelfUpdateError: (error) => Queue.fail(queue, error).pipe(Effect.ignore),
+        }),
+        Effect.andThen(Queue.end(queue).pipe(Effect.ignore)),
+        Effect.forkDetach,
+      );
+  });

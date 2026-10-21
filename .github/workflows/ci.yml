@@ -71,6 +71,9 @@ jobs:
       - name: Verify Jones boundary accounting
         run: node scripts/jones/check-boundary.ts --strict --json
 
+      - name: Check generated Expo GraphQL operations
+        run: vp run --filter t3 generate --check
+
       - name: Check
         run: vp check
 

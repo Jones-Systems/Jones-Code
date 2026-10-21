@@ -101,6 +101,9 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     scopeId: CheckpointScopeId,
   }),
   Schema.Struct({
+    type: Schema.Literal("scheduled-tasks.cleanup"),
+  }),
+  Schema.Struct({
     type: Schema.Literal("terminal.cleanup"),
     legacyOwnedControl: Schema.optional(LegacyOwnedTerminalControl),
   }),

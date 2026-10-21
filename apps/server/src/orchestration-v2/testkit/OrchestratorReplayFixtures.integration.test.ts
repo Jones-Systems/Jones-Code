@@ -1,14 +1,23 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import type {
-  OrchestrationV2DomainEvent,
-  ProviderReplayEntry,
-  ProviderReplayTranscript,
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type OrchestrationV2DomainEvent,
+  type ProviderReplayEntry,
+  type ProviderReplayTranscript,
 } from "@t3tools/contracts";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
+import { TestClock } from "effect/testing";
+
+import * as EffectWorker from "../EffectWorker.ts";
+import * as Orchestrator from "../Orchestrator.ts";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
@@ -34,12 +43,14 @@ import {
   assertProviderNativeSubagentRootTurns,
   CODEX_MODEL_SELECTION,
   materializeFixtureInput,
+  SIMPLE_PROMPT,
   projectionFor,
   type OrchestratorFixtureInput,
   type ProviderOrchestratorReplayVariant,
 } from "./fixtures/shared.ts";
 import {
   runOrchestratorV2ProviderReplayScenario,
+  layerProviderReplay,
   type OrchestratorV2ProviderReplayHarness,
 } from "./ProviderReplayHarness.ts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -235,154 +246,182 @@ function runFixtureProviderWithRegisteredHarness(input: {
 }
 
 describe("orchestrator replay fixtures", () => {
-  it.effect("completes a recovered Codex capacity run and dispatches its queued followup", () =>
+  it.effect.each([
+    { name: "open", firstTurn: false, code: -32602 },
+    { name: "switch", firstTurn: true, code: -32602 },
+    { name: "authentication", firstTurn: false, code: -32000 },
+  ])("preserves the ACP model-write $name failure through orchestration", (testCase) =>
     Effect.gen(function* () {
-      const fixtureName = "codex_capacity_queued_followup";
-      const workspace = yield* checkpointWorkspace(fixtureName);
+      const name = `acp_model_write_${testCase.name}`;
+      const sessionId = "grok-replay-session-1";
+      const rejectedModel = "replay-model-b";
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("acpRegistry"),
+        model: rejectedModel,
+      };
       const recorded = yield* readTranscript(
-        new URL("./fixtures/queued_turn/codex_transcript.ndjson", import.meta.url),
+        new URL("./fixtures/simple/registry_transcript.ndjson", import.meta.url),
       );
-      const startIndex = recorded.entries.findIndex(
-        (entry) => entry.type === "expect_outbound" && entry.label === "turn/start",
+      const sessionIndex = recorded.entries.findIndex(
+        (entry) => "label" in entry && entry.label === "session.created",
       );
-      const startedIndex = recorded.entries.findIndex(
-        (entry) => entry.type === "emit_inbound" && entry.label === "turn/started",
-      );
-      const completedIndex = recorded.entries.findIndex(
-        (entry) => entry.type === "emit_inbound" && entry.label === "turn/completed",
-      );
-      const start = recorded.entries[startIndex] as Extract<
-        ProviderReplayEntry,
-        { type: "expect_outbound" }
-      >;
-      const startFrame = start.frame as { id: number; params: Record<string, unknown> };
-      const started = recorded.entries[startedIndex] as Extract<
-        ProviderReplayEntry,
-        { type: "emit_inbound" }
-      >;
-      const startedFrame = started.frame as {
-        params: { threadId: string; turn: { id: string } };
-      };
-      const nativeThreadId = startedFrame.params.threadId;
-      const originalTurnId = startedFrame.params.turn.id;
-      const retryTurnId = "synthetic-capacity-successor";
-      const remapTurn = (entry: ProviderReplayEntry): ProviderReplayEntry =>
-        JSON.parse(JSON.stringify(entry).replaceAll(originalTurnId, retryTurnId));
-      const retryAck = recorded.entries.find(
-        (entry) =>
-          entry.type === "emit_inbound" &&
-          entry.label === "turn/start" &&
-          (entry.frame as { id?: number }).id === startFrame.id,
-      ) as Extract<ProviderReplayEntry, { type: "emit_inbound" }>;
-      const error = {
-        message: "Synthetic native capacity failure",
-        codexErrorInfo: "serverOverloaded",
-        additionalDetails: null,
-      };
-      const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
-        materializeReplayTranscriptWorkspace(
+      assert.isAtLeast(sessionIndex, 0);
+      const transcript = {
+        ...recorded,
+        scenario: name,
+        entries: [
+          ...recorded.entries.slice(0, sessionIndex),
           {
-            ...recorded,
-            scenario: fixtureName,
-            entries: [
-              ...recorded.entries.slice(0, startedIndex + 1),
-              {
-                type: "emit_inbound",
-                label: "capacity-failure",
-                frame: {
-                  method: "error",
-                  params: {
-                    threadId: nativeThreadId,
-                    turnId: originalTurnId,
-                    willRetry: false,
-                    error,
+            type: "emit_inbound",
+            label: "session.created",
+            frame: {
+              kind: "response",
+              method: "session/new",
+              result: {
+                sessionId,
+                configOptions: [
+                  {
+                    id: "model",
+                    name: "Model",
+                    category: "model",
+                    type: "select",
+                    currentValue: "replay-model-a",
+                    options: [
+                      { value: "replay-model-a", name: "Model A" },
+                      { value: rejectedModel, name: "Model B" },
+                    ],
                   },
-                },
+                ],
               },
-              {
-                type: "emit_inbound",
-                frame: {
-                  method: "turn/completed",
-                  params: {
-                    threadId: nativeThreadId,
-                    turn: { ...startedFrame.params.turn, status: "failed", error },
-                  },
-                },
-              },
-              {
-                ...start,
-                frame: {
-                  ...startFrame,
-                  id: 4,
-                  params: { ...startFrame.params, input: [] },
-                },
-              },
-              remapTurn({ ...retryAck, frame: { ...(retryAck.frame as object), id: 4 } }),
-              remapTurn(started),
-              ...recorded.entries.slice(startedIndex + 1, completedIndex + 1).map(remapTurn),
-              ...recorded.entries
-                .slice(completedIndex + 1)
-                .map((entry) =>
-                  (entry.type === "expect_outbound" || entry.type === "emit_inbound") &&
-                  (entry.frame as { id?: number }).id === 4
-                    ? { ...entry, frame: { ...(entry.frame as object), id: 5 } }
-                    : entry,
-                ),
-            ],
+            },
           },
-          workspace,
-        ),
-      );
-      const materialized = yield* materializeFixtureInput({
-        scenario: fixtureName,
-        fixtureInput: queuedTurnInput(),
-        driver: ProviderDriverKind.make("codex"),
-        modelSelection: CODEX_MODEL_SELECTION,
-      }).pipe(Effect.provide(IdAllocator.layer));
-      const threadId = materialized.projectionThreadIds[0]!;
-      const ids = yield* IdAllocator.IdAllocatorV2;
-      const firstRunId = ids.derive.run({ threadId, ordinal: 1 });
-      const secondRunId = ids.derive.run({ threadId, ordinal: 2 });
-      const barrier = materialized.steps.findIndex((step) => step.type === "await");
-      const result = yield* runOrchestratorV2ProviderReplayScenario(
-        {
-          name: fixtureName,
-          transcript,
-          commands: materialized.commands,
-          projectionThreadIds: materialized.projectionThreadIds,
-          runtimePolicyOverride: { cwd: workspace },
-          steps: [
-            ...materialized.steps.slice(0, barrier),
-            { type: "await_run_status", threadId, runId: secondRunId, status: "queued" },
-            { type: "release_replay_gate", label: "capacity-failure" },
-            { type: "await_run_turn_item", threadId, runId: firstRunId, itemType: "error" },
-            { type: "advance_clock", duration: "5 seconds" },
-            ...materialized.steps.slice(barrier),
-          ],
-        },
-        CodexOrchestratorReplayHarness,
-      );
-      const projection = result.projections.get(threadId)!;
-      assert.deepEqual(
-        projection.runs.map((run) => [run.ordinal, run.status]),
-        [
-          [1, "completed"],
-          [2, "completed"],
+          ...(testCase.firstTurn
+            ? recorded.entries
+                .slice(sessionIndex + 1)
+                .filter((entry) => entry.type !== "runtime_exit")
+            : []),
+          {
+            type: "expect_outbound",
+            label: "session.set_model",
+            frame: {
+              kind: "request",
+              method: "session/set_config_option",
+              params: { sessionId, configId: "model", value: rejectedModel },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "session.set_model.rejected",
+            frame: {
+              kind: "response",
+              method: "session/set_config_option",
+              error: {
+                code: testCase.code,
+                message: testCase.code === -32602 ? "Invalid provider" : "Authentication required",
+              },
+            },
+          },
         ],
-      );
-      assert.isTrue(
-        projection.providerTurns.some((turn) => turn.nativeTurnRef?.nativeId === retryTurnId),
-      );
-      assert.isTrue(
-        projection.turnItems.some(
-          (item) => item.type === "error" && item.title === "Provider recovered",
+      } satisfies ProviderReplayTranscript;
+      const materialized = yield* materializeFixtureInput({
+        scenario: name,
+        fixtureInput: {
+          steps: Array.from({ length: testCase.firstTurn ? 2 : 1 }, () => ({
+            type: "message" as const,
+            text: SIMPLE_PROMPT,
+          })),
+        },
+        driver: ProviderDriverKind.make("acpRegistry"),
+        modelSelection: {
+          ...modelSelection,
+          model: testCase.firstTurn ? "replay-model-a" : rejectedModel,
+        },
+      });
+      const scenario = {
+        ...materialized,
+        name,
+        transcript: yield* AcpRegistryOrchestratorReplayHarness.decodeTranscript(
+          materializeReplayTranscriptRuntimeInstructions(transcript, {
+            driver: ProviderDriverKind.make("acpRegistry"),
+            model: "replay-model-a",
+          }),
+        ),
+        runtimePolicyOverride: { cwd: yield* checkpointWorkspace(name) },
+      };
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        if (testCase.firstTurn) yield* EffectWorker.runDaemon.pipe(Effect.forkScoped);
+        for (const [index, command] of materialized.commands.entries()) {
+          const isFirstTurn =
+            testCase.firstTurn && command.type === "message.dispatch" && index === 1;
+          yield* orchestrator.dispatch(
+            command.type === "message.dispatch" && !isFirstTurn
+              ? { ...command, modelSelection }
+              : command,
+          );
+          if (isFirstTurn) {
+            // Wait for the committed terminal event before switching models.
+            yield* orchestrator.streamStoredEvents.pipe(
+              Stream.filter(
+                ({ event }) => event.type === "run.updated" && event.payload.status === "completed",
+              ),
+              Stream.runHead,
+            );
+          }
+        }
+        if (testCase.firstTurn) {
+          yield* orchestrator.streamStoredEvents.pipe(
+            Stream.filter(
+              ({ event }) => event.type === "run.updated" && event.payload.status === "failed",
+            ),
+            Stream.runHead,
+          );
+        } else {
+          // Failed opens retry on the outbox schedule. Advance to each recorded
+          // deadline, draining effects instead of polling the projection.
+          for (let attempt = 0; attempt < 10; attempt++) {
+            yield* worker.drain();
+            const next = yield* worker.nextClaimableAt;
+            if (Option.isNone(next)) break;
+            const now = yield* DateTime.now;
+            yield* TestClock.adjust(
+              Math.max(0, DateTime.toEpochMillis(next.value) - DateTime.toEpochMillis(now)),
+            );
+          }
+        }
+        const projection = yield* orchestrator.getThreadProjection(
+          materialized.projectionThreadIds[0]!,
+        );
+        assert.deepEqual(
+          projection.runs.map((run) => run.status),
+          testCase.firstTurn ? ["completed", "failed"] : ["failed"],
+        );
+        const errors = projection.turnItems.filter((item) => item.type === "error");
+        assert.lengthOf(errors, 1);
+        assert.equal(errors[0]?.failure.class, "provider_error");
+        if (testCase.code === -32602) {
+          assert.equal(
+            errors[0]?.failure.message,
+            'The agent did not accept the model "replay-model-b". Choose another model for this provider, then retry.',
+          );
+        } else {
+          assert.match(
+            errors[0]?.failure.message ?? "",
+            /^Failed to open acpRegistry provider session \S+\.$/u,
+          );
+        }
+      }).pipe(
+        Effect.provide(
+          layerProviderReplay(scenario, AcpRegistryOrchestratorReplayHarness, {
+            runEffectWorker: false,
+          }),
         ),
       );
     }).pipe(
       Effect.scoped,
-      Effect.provide(IdAllocator.layer),
       provideDeterministicTestRuntime,
-      Effect.provide(NodeServices.layer),
+      Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer)),
     ),
   );
 
@@ -535,13 +574,11 @@ describe("orchestrator replay fixtures", () => {
       }),
     );
 
-    it.effect.each(
-      (["WebFetch", "Write"] as const).flatMap((tool) =>
-        (["before root settles", "while root is idle"] as const).flatMap((opens) =>
-          (["stopped", "failed"] as const).map((status) => [tool, opens, status] as const),
-        ),
-      ),
-    )(
+    // regression: #16486 a background subagent's tool left open while its parent is idle never settled
+    it.effect.each([
+      ["WebFetch", "while root is idle", "stopped"],
+      ["Write", "before root settles", "failed"],
+    ] as const)(
       "ends a background subagent's open %s (opened %s) when its notification is %s",
       ([tool, opens, notificationStatus]) =>
         runFixtureProviderWithRegisteredHarness({

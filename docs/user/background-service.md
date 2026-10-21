@@ -72,82 +72,34 @@ preserved. An update prompt in a client does not prove a Jones artifact is avail
 
 ## Adopt an existing Mac direct-serve installation
 
-For an existing user LaunchAgent named `com.t3tools.t3code.service` that runs
-an owned executable under your home as `t3 serve`, adoption can retain that
-label, active version, port and environment while adding the qualified Jones
-launcher. It preserves the dated installation and archives the exact plist for
-recovery. This interrupts active work and requires an approved host operation.
+`t3 uninstall` removes the background service, the `t3` launcher, and the
+downloaded versions after showing you the list and asking once. Your projects,
+threads, and settings under `~/.t3/userdata` are kept, along with `service.env`
+under T3 home. Pass `--yes` from a script.
 
-First obtain the exact active Mac CLI artifact and the launcher artifact, each
-with its retained `github-artifact.zip` and source commit. Adoption verifies
-both against their successful Jones Actions generation and main-source CI.
-The native `runtime/service-state.json` must have no update block and its active
-version must already match the running server and active artifact. A stale
-state file requires a separately approved, backed-up reconciliation; adoption
-refuses it and does not rewrite it.
+## Configure the service environment
 
-Run the qualified CLI on the host, replacing every placeholder with the reviewed
-absolute path or full digest:
+Put custom environment variables in `service.env` under the service's T3 home
+directory, normally `~/.t3/service.env`. This file survives service installation
+and updates. For example:
 
-```sh
-t3 jones host adopt --base-dir /absolute/service/home \
-  --active-artifact-dir /absolute/active-artifact --active-source-commit ACTIVE_COMMIT \
-  --launcher-artifact-dir /absolute/launcher-artifact --launcher-source-commit LAUNCHER_COMMIT \
-  --launchd-label com.t3tools.t3code.service --service-unit-sha256 PLIST_SHA256 \
-  --retained-executable /absolute/user/home/dated-install/t3 --dry-run
+```dotenv
+T3CODE_PORT=3773
+T3CODE_HOST=127.0.0.1
 ```
 
-Review the effect plan and recovery instructions. The plist hash binds its exact
-bytes; the executable must match the authenticated active archive, the loaded
-LaunchAgent and the running process. Only the two arguments `t3 serve` are
-supported for this legacy shape. The existing plist's other settings remain in
-place. Apply the same command without `--dry-run` only under the approved
-operation, with a current state backup and enough space for both qualified
-runtimes. Do not add the Linux `--legacy-direct-serve` flags or accept unattested
-child capability for this Mac path.
+Use `KEY=VALUE` entries, quoting values that contain spaces or `#`. Values are
+literal: shell commands and variable expansion are not evaluated. Entries
+override the inherited service environment, except for `PATH`, `T3CODE_HOME`,
+`T3_BOOT_SERVICE_UNIT`, and `T3_SERVICE_LAUNCHER_CONTEXT` (including case variants).
 
-Success requires a new service-managed child with the same version, environment
-and port, a matching `jones-update-capability.json` reporting qualified launcher
-and Install support, and an applied `runtime/jones-host-adoption.json` receipt.
-Use `launchctl print gui/USER_ID/com.t3tools.t3code.service` for this retained
-legacy label; the ordinary Jones service commands above target the Jones label.
-A pending receipt, missing readback or lost command response requires inspection
-before another attempt; adoption never retries service effects automatically.
-
-Recovery is a separate approved operation: verify the current plist against the
-adoption receipt, stop that exact legacy LaunchAgent, restore the archived
-`launch-agent.plist` only after checking its recorded SHA-256 and original mode,
-then run `launchctl bootstrap gui/USER_ID /absolute/path/to/original.plist`.
-Confirm the old executable, port, version and environment. Keep the adoption
-receipt and enrolled runtimes for reconciliation. Any earlier state-file repair
-has its own compare-and-swap recovery; restoring the plist does not undo it.
-
-## Follow laptop updates automatically
-
-In the Jones desktop app, open **Settings → Connections** and choose **Enroll
-this host** for each server you want to follow laptop updates. Enrollment is
-separate from connecting to a server. A host must first have a verified Jones
-installation and the supported background launcher; **Setup required** means
-that initial host setup is still needed. Enrollment does not replace an existing
-system service or take over an upstream T3 Code installation.
-
-Download the offered laptop update, then choose Install. Enrolled hosts follow
-that exact source only after the laptop successfully switches to it. Servers
-may download ahead of time, but a laptop rollback does not authorize their
-installation. Offline hosts wait until they can be reached; another unavailable
-host does not stop the rest of the rollout. Keep the desktop app running to
-coordinate remaining hosts.
-
-The connection row shows each host's progress and any action needed. If the
-connection drops during installation, Jones checks what the host accepted before
-sending another installation request. An uncertain outcome stays on hold;
-repeatedly clicking Install does not resolve missing evidence.
-
-Choose **Continue eligible active threads after this host updates** when enrolling
-if you want that behavior. Explicit user stops and queue holds remain in force;
-provider approval or unavailable native session state can still require attention.
-Disabling automatic updates stops new dispatch from the laptop; an installation
-already accepted by a host must still finish or reconcile.
+Run `t3 service restart` after changing the file. Changes apply when the service
+starts again; switching the server version alone keeps the current values.
+For a service installed before env-file support, run `t3 service install` once
+with an up-to-date CLI.
+A missing file is ignored; other read failures stop service startup.
+If the file contains credentials, restrict access to that file with `chmod 600`
+(for the default T3 home, `chmod 600 ~/.t3/service.env`).
 
 ## Platform support
 
@@ -187,11 +139,36 @@ check the saved connection there too.
 | `restart-pending`                       | A newer runtime is installed; restart when active work can be interrupted.                                   |
 | `conflicting` or `unknown` route        | Inspect the host and Serve configuration; do not force overwrite or use raw Serve removal.                   |
 
-On macOS, check **System Settings → General → Login Items** if startup fails.
-Access to Desktop, Documents, or Downloads may need Full Disk Access for the
-`t3` executable listed in the Jones LaunchAgent's `ProgramArguments`.
-For T3 Connect failures, see
-[connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).
+```sh
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Over SSH, allow sudo to prompt:
+
+```sh
+ssh -t your-server 'sudo loginctl enable-linger "$(id -un)"'
+```
+
+Then retry service setup as your normal user. Run only the `loginctl` command
+with sudo; running T3 Code as root creates a separate installation and Connect
+identity. Without administrator access, run `t3 serve` in a terminal and keep
+that session open.
+
+| Status problem                          | Next step                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `linger-unavailable`                    | Run `loginctl show-user "$(id -un)" --property=Linger` and check that systemd-logind is available.                             |
+| `user-manager-unavailable`              | Run `systemctl --user status` in a login session for the service user; check your distribution's systemd user-session support. |
+| `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by T3 Code.                     |
+| `restart-pending`                       | A newer version is installed but the service still runs the previous one. Run `t3 service restart`.                            |
+
+On macOS, check **System Settings → General → Login Items** if the service no
+longer starts at login. If agent work cannot access Desktop, Documents, or
+Downloads, it may need Full Disk Access for the `t3` executable listed in
+`ProgramArguments` in
+`~/Library/LaunchAgents/com.t3tools.t3code.service.plist`.
+
+For failures after signing in to T3 Connect, see
+[connection troubleshooting](./t3-connect-troubleshooting.md).
 
 ## Reclaim database space
 

@@ -15,7 +15,15 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { useEffect, useRef, useState, type SetStateAction } from "react";
+import { create } from "zustand";
+import {
+  useLayoutEffect,
+  useEffect,
+  useRef,
+  useState,
+  type RefObject,
+  type SetStateAction,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";
@@ -24,7 +32,10 @@ import {
   buildPendingUserInputAnswers,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
+  pendingUserInputRequestKey,
+  pruneResolvedUserInputDrafts,
   setPendingUserInputCustomAnswer,
+  threadContextsReferencedByAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
@@ -45,6 +56,10 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
+const usePendingUserInputAnswers = create<
+  Record<string, Record<string, PendingUserInputDraftAnswer>>
+>(() => ({}));
+const usePendingUserInputQuestionIndex = create<Record<string, number>>(() => ({}));
 const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
 const NO_PENDING_APPROVALS: ReturnType<typeof derivePendingApprovals> = [];
 const NO_PENDING_USER_INPUTS: ReturnType<typeof derivePendingUserInputs> = [];
@@ -87,7 +102,6 @@ function makePendingCustomAnswerSetter(input: {
 export function usePendingThreadRequests(input: {
   readonly environmentId: EnvironmentId;
   readonly activeThreadId: ThreadId | null;
-  // The effect that prunes stale question drafts re-runs when this object changes.
   readonly activeThread: { readonly id: ThreadId } | undefined;
   readonly serverProjection: OrchestrationV2ThreadProjection | null;
   readonly supportsQuestionAttachments: boolean;
@@ -115,13 +129,13 @@ export function usePendingThreadRequests(input: {
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
     RuntimeRequestId[]
   >([]);
-  const [pendingUserInputAnswersByRequestId, setPendingUserInputAnswersByRequestId] = useState<
-    Record<string, Record<string, PendingUserInputDraftAnswer>>
-  >({});
-  const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
-    useState<Record<string, number>>({});
+  const setPendingUserInputAnswersByRequestId = usePendingUserInputAnswers.setState;
+  const setPendingUserInputQuestionIndexByRequestId = usePendingUserInputQuestionIndex.setState;
+  const projectedThreadId = serverProjection?.thread.id;
   const pendingRequests =
-    serverProjection === null ? NO_PENDING_REQUESTS : derivePendingThreadRequests(serverProjection);
+    serverProjection !== null && serverProjection.thread.id === activeThreadId
+      ? derivePendingThreadRequests(serverProjection)
+      : NO_PENDING_REQUESTS;
   // The projection changes on every streamed event, so shared empties keep the
   // composer and approval panel from re-rendering while nothing is pending.
   const pendingApprovals =
@@ -133,24 +147,25 @@ export function usePendingThreadRequests(input: {
       ? NO_PENDING_USER_INPUTS
       : derivePendingUserInputs(pendingRequests.userInputs);
   const activePendingUserInput = pendingUserInputs[0] ?? null;
-  const activePendingRequestKey = JSON.stringify([
+  const activePendingRequestKey = pendingUserInputRequestKey(
     environmentId,
     activeThreadId,
     activePendingUserInput?.requestId,
-  ]);
-  const activePendingAnswerDrafts =
-    pendingUserInputAnswersByRequestId[activePendingRequestKey] ?? EMPTY_PENDING_USER_INPUT_ANSWERS;
-  if (
-    activePendingUserInput &&
-    seedUserInputDraftAnswers(activePendingUserInput.questions, activePendingAnswerDrafts) !==
-      activePendingAnswerDrafts
-  ) {
-    setPendingUserInputAnswersByRequestId((existing) => {
+  );
+  const activePendingAnswerDrafts = usePendingUserInputAnswers(
+    (state) => state[activePendingRequestKey] ?? EMPTY_PENDING_USER_INPUT_ANSWERS,
+  );
+  const activePendingQuestionIndex = usePendingUserInputQuestionIndex(
+    (state) => state[activePendingRequestKey] ?? 0,
+  );
+  useLayoutEffect(() => {
+    if (!activePendingUserInput) return;
+    usePendingUserInputAnswers.setState((existing) => {
       const drafts = existing[activePendingRequestKey] ?? EMPTY_PENDING_USER_INPUT_ANSWERS;
       const seeded = seedUserInputDraftAnswers(activePendingUserInput.questions, drafts);
       return seeded === drafts ? existing : { ...existing, [activePendingRequestKey]: seeded };
     });
-  }
+  }, [activePendingRequestKey, activePendingUserInput]);
   const pendingQuestionDraftKeys = activeThreadId
     ? pendingUserInputs.flatMap((request) =>
         request.questions.map((question) =>
@@ -188,9 +203,21 @@ export function usePendingThreadRequests(input: {
     ),
   );
   useEffect(() => {
-    if (!activeThread) return;
+    // A thread shell can arrive before its requests; missing detail is not resolution.
+    if (!activeThread || projectedThreadId !== activeThread.id) return;
     const questionThread = activeThread;
     const currentRequests = pendingUserInputs;
+    const pendingRequestIds = currentRequests.map((request) => request.requestId);
+    usePendingUserInputAnswers.setState(
+      (existing) =>
+        pruneResolvedUserInputDrafts(existing, environmentId, questionThread.id, pendingRequestIds),
+      true,
+    );
+    usePendingUserInputQuestionIndex.setState(
+      (existing) =>
+        pruneResolvedUserInputDrafts(existing, environmentId, questionThread.id, pendingRequestIds),
+      true,
+    );
     const prefix = questionAttachmentDraftPrefix(environmentId, questionThread.id);
     const retained = new Set(
       currentRequests.flatMap((request) =>
@@ -212,7 +239,7 @@ export function usePendingThreadRequests(input: {
       if (key.startsWith(prefix) && !retained.has(DraftId.make(key)))
         clearQuestionAttachmentDraft(DraftId.make(key));
     }
-  }, [environmentId, activeThread, pendingUserInputs]);
+  }, [environmentId, activeThread, projectedThreadId, pendingUserInputs]);
   const activePendingDraftAnswers =
     !activePendingUserInput || !activeThreadId
       ? EMPTY_PENDING_USER_INPUT_ANSWERS
@@ -229,7 +256,7 @@ export function usePendingThreadRequests(input: {
             return [
               question.id,
               {
-                ...pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[question.id],
+                ...activePendingAnswerDrafts[question.id],
                 attachmentCount: attachments.length,
                 attachmentsBlocked:
                   (attachments.length > 0 && !supportsQuestionAttachments) ||
@@ -239,9 +266,6 @@ export function usePendingThreadRequests(input: {
             ];
           }),
         );
-  const activePendingQuestionIndex = activePendingUserInput
-    ? (pendingUserInputQuestionIndexByRequestId[activePendingRequestKey] ?? 0)
-    : 0;
   const activePendingProgress = activePendingUserInput
     ? derivePendingUserInputProgress(
         activePendingUserInput.questions,
@@ -395,6 +419,32 @@ export function usePendingThreadRequests(input: {
   const onSelectActivePendingUserInputOption = (questionId: string, optionValue: string) => {
     if (!activePendingUserInput) {
       return;
+    }
+    // The option replaces the custom answer. Anything typed there is the
+    // user's text, so it goes back to the thread draft instead of vanishing.
+    const displacedAnswer = activePendingAnswerDrafts[questionId]?.customAnswer;
+    const currentPrompt =
+      useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
+    const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
+    if (nextPrompt !== currentPrompt) {
+      setComposerDraftPrompt(composerDraftTarget, nextPrompt);
+      if (activeThreadId) {
+        const store = useComposerDraftStore.getState();
+        const questionTarget = questionAttachmentDraftId(
+          environmentId,
+          activeThreadId,
+          activePendingUserInput.requestId,
+          questionId,
+        );
+        store.addThreadContexts(
+          composerDraftTarget,
+          threadContextsReferencedByAnswer(
+            displacedAnswer ?? "",
+            store.getComposerDraft(questionTarget)?.threadContexts ?? [],
+          ),
+          { appendReference: false },
+        );
+      }
     }
     setPendingUserInputAnswersByRequestId((existing) => {
       const question =

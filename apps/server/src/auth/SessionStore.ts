@@ -488,100 +488,7 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
   };
 }
 
-export const matchesReservedAuthSession = (
-  record: AuthSessions.AuthSessionRecord,
-  expected: AuthSessions.CreateAuthSessionInput,
-): boolean =>
-  record.sessionId === expected.sessionId &&
-  record.subject === expected.subject &&
-  record.method === expected.method &&
-  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
-  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
-  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
-  record.client.label === expected.client.label &&
-  record.client.ipAddress === expected.client.ipAddress &&
-  record.client.userAgent === expected.client.userAgent &&
-  record.client.deviceType === expected.client.deviceType &&
-  record.client.os === expected.client.os &&
-  record.client.browser === expected.client.browser;
-
-const encodeReservedSessionClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
-
-/**
- * Jones Workstreams native enrollment hook. Signs a bearer only for an already
- * reserved, unrevoked, current session whose stored record exactly matches the
- * expected reservation; it never creates a session or widens its scopes.
- * Enrollment reads the existing signing key; SessionStore startup still owns
- * key creation.
- */
-export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
-  const authSessions = yield* AuthSessions.AuthSessionRepository;
-  const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const secret = yield* secrets
-    .get(SIGNING_SECRET_NAME)
-    .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
-  if (Option.isNone(secret) || secret.value.byteLength !== 32)
-    return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
-  const signingSecret = secret.value;
-  return (expected: AuthSessions.CreateAuthSessionInput) =>
-    Effect.gen(function* () {
-      const row = yield* authSessions
-        .getById({ sessionId: expected.sessionId })
-        .pipe(
-          Effect.mapError(
-            (cause) => new SessionCredentialIssueError({ sessionId: expected.sessionId, cause }),
-          ),
-        );
-      const now = yield* DateTime.now;
-      if (
-        expected.method !== "bearer-access-token" ||
-        Option.isNone(row) ||
-        row.value.revokedAt !== null ||
-        !matchesReservedAuthSession(row.value, expected) ||
-        expected.issuedAt.epochMilliseconds > now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= now.epochMilliseconds ||
-        expected.expiresAt.epochMilliseconds <= expected.issuedAt.epochMilliseconds
-      ) {
-        return yield* new SessionCredentialIssueError({
-          sessionId: expected.sessionId,
-          cause: "reserved_session_mismatch",
-        });
-      }
-      const payload = yield* encodeReservedSessionClaims({
-        v: 1,
-        kind: "session",
-        sid: expected.sessionId,
-        sub: expected.subject,
-        scopes: expected.scopes,
-        method: "bearer-access-token",
-        iat: expected.issuedAt.epochMilliseconds,
-        exp: expected.expiresAt.epochMilliseconds,
-      }).pipe(
-        Effect.map(base64UrlEncode),
-        Effect.mapError(
-          (cause) =>
-            new SessionCredentialIssueError({
-              sessionId: expected.sessionId,
-              cause: new SessionClaimsEncodingError({
-                sessionId: expected.sessionId,
-                operation: "encode_session_claims",
-                cause,
-              }),
-            }),
-        ),
-      );
-      return {
-        sessionId: expected.sessionId,
-        token: `${payload}.${signPayload(payload, signingSecret)}`,
-        method: "bearer-access-token",
-        client: toClientMetadata(expected.client),
-        expiresAt: expected.expiresAt,
-        scopes: expected.scopes,
-      } satisfies IssuedSession;
-    });
-});
-
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
@@ -638,33 +545,34 @@ export const make = Effect.gen(function* () {
       sessionId,
     }).pipe(Effect.asVoid);
 
-  const loadActiveSession = (sessionId: AuthSessionId) =>
-    Effect.gen(function* () {
-      const row = yield* authSessions.getById({ sessionId });
-      if (Option.isNone(row) || row.value.revokedAt !== null) {
-        return Option.none<AuthClientSession>();
-      }
+  const loadActiveSession = Effect.fn("SessionStore.loadActiveSession")(function* (
+    sessionId: AuthSessionId,
+  ) {
+    const row = yield* authSessions.getById({ sessionId });
+    if (Option.isNone(row) || row.value.revokedAt !== null) {
+      return Option.none<AuthClientSession>();
+    }
 
-      const connectedSessions = yield* Ref.get(connectedSessionsRef);
-      const connected = connectedSessions.has(row.value.sessionId);
-      const now = yield* DateTime.now;
-      if (!connected && row.value.expiresAt.epochMilliseconds <= now.epochMilliseconds) {
-        return Option.none<AuthClientSession>();
-      }
-      return Option.some(
-        toAuthClientSession({
-          sessionId: row.value.sessionId,
-          subject: row.value.subject,
-          scopes: row.value.scopes,
-          method: row.value.method,
-          client: toClientMetadata(row.value.client),
-          issuedAt: row.value.issuedAt,
-          expiresAt: row.value.expiresAt,
-          lastConnectedAt: row.value.lastConnectedAt,
-          connected,
-        }),
-      );
-    });
+    const connectedSessions = yield* Ref.get(connectedSessionsRef);
+    const connected = connectedSessions.has(row.value.sessionId);
+    const now = yield* DateTime.now;
+    if (!connected && row.value.expiresAt.epochMilliseconds <= now.epochMilliseconds) {
+      return Option.none<AuthClientSession>();
+    }
+    return Option.some(
+      toAuthClientSession({
+        sessionId: row.value.sessionId,
+        subject: row.value.subject,
+        scopes: row.value.scopes,
+        method: row.value.method,
+        client: toClientMetadata(row.value.client),
+        issuedAt: row.value.issuedAt,
+        expiresAt: row.value.expiresAt,
+        lastConnectedAt: row.value.lastConnectedAt,
+        connected,
+      }),
+    );
+  });
 
   const markConnected: SessionStore["Service"]["markConnected"] = (sessionId) =>
     Ref.modify(connectedSessionsRef, (current) => {

@@ -4,6 +4,7 @@ import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import {
   projectScriptRuntimeEnv,
+  projectScriptTerminalInput,
   resolveProjectScripts,
   settleProjectScript,
   setupProjectScript,
@@ -261,16 +262,16 @@ export const make = Effect.gen(function* () {
     yield* HostProcess.Environment,
   );
 
-  const observeTerminalCompletion = (input: {
-    readonly threadId: string;
-    readonly terminalId: string;
-    readonly sentinel: string;
-    readonly sentinelPattern: RegExp;
-    /** The shell echoes typed input; lines ending with these are the wrapper, not output. */
-    readonly echoedWrapperLines: ReadonlyArray<string>;
-    readonly onOutputLine: ((line: string) => Effect.Effect<void>) | undefined;
-  }) =>
-    Effect.gen(function* () {
+  const observeTerminalCompletion = Effect.fn("ProjectSetupScriptRunner.observeTerminalCompletion")(
+    function* (input: {
+      readonly threadId: string;
+      readonly terminalId: string;
+      readonly sentinel: string;
+      readonly sentinelPattern: RegExp;
+      /** The shell echoes typed input; lines ending with these are the wrapper, not output. */
+      readonly echoedWrapperLines: ReadonlyArray<string>;
+      readonly onOutputLine: ((line: string) => Effect.Effect<void>) | undefined;
+    }) {
       const startedAtMs = yield* Clock.currentTimeMillis;
       const done = yield* Deferred.make<ProjectSetupScriptCompletion>();
       // The shell redraws its prompt just after the sentinel. Closing before
@@ -348,7 +349,8 @@ export const make = Effect.gen(function* () {
         Effect.ensuring(Effect.sync(() => unsubscribe())),
       );
       return { completion, unsubscribe };
-    });
+    },
+  );
 
   const runForThread: ProjectSetupScriptRunner["Service"]["runForThread"] = Effect.fn(
     "ProjectSetupScriptRunner.runForThread",
@@ -671,38 +673,23 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
 
-    const writeInput = { threadId: input.threadId, terminalId, data: `${commandLine}\r` };
-    const write: Effect.Effect<
-      void,
-      | TerminalError
-      | TerminalManager.LegacyTerminalControlError
-      | NativeSetup.NativeSetupControlError
-    > =
-      native !== undefined
-        ? terminalManager.writeNativeSetup!(
-            writeInput,
-            native.control,
-            native.beforeWrite({ control: native.control, data: writeInput.data }),
-          )
-        : legacy === undefined
-          ? terminalManager.write(writeInput)
-          : terminalManager.write(writeInput, {
-              legacyOwnedControl: legacy.binding,
-              beforeWrite: legacy.beforeWrite,
-              afterWrite: legacy.afterWrite,
-            });
-    yield* write.pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProjectSetupScriptOperationError({
-            ...errorContext,
-            operation: "writeCommand",
-            cause,
-          }),
-      ),
-      // Nothing will ever settle the completion if the command never ran.
-      Effect.tapError(() => Effect.sync(() => observed?.unsubscribe())),
-    );
+    yield* terminalManager
+      .write({
+        threadId: input.threadId,
+        terminalId,
+        data: projectScriptTerminalInput(commandLine),
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProjectSetupScriptOperationError({
+              ...errorContext,
+              operation: "writeCommand",
+              cause,
+            }),
+        ),
+        Effect.tapError(() => Effect.sync(() => observed?.unsubscribe())),
+      );
 
     const completion = observed?.completion.pipe(
       Effect.tap((result) =>

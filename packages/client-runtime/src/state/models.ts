@@ -34,6 +34,36 @@ export interface EnvironmentThread {
   readonly projection: OrchestrationV2ThreadProjection;
 }
 
+export interface ThreadRunSummary {
+  readonly runId: RunId;
+  readonly status: OrchestrationV2RunStatus;
+  readonly requestedAt: string | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
+  readonly assistantMessageId: MessageId | null;
+  /**
+   * The run is still open, but its provider turn already ended, so nothing is
+   * generating while the server settles it.
+   */
+  readonly turnEnded?: boolean;
+  readonly sourcePlanRef?: {
+    readonly threadId: ThreadId;
+    readonly planId: PlanId;
+  };
+}
+
+export interface ThreadRuntimeSummary {
+  readonly status: OrchestrationV2RunStatus | "idle";
+  readonly activeRunId: RunId | null;
+  readonly activityStartedAt?: string | null | undefined;
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly providerName: string | null;
+  readonly lastError: string | null;
+  readonly lastErrorClass?: OrchestrationV2ProviderFailureClass | null;
+  readonly usageLimitResetAt?: string | null;
+  readonly updatedAt: string;
+}
+
 export function threadRuntimeIsActive(runtime: ThreadRuntimeSummary | null | undefined): boolean {
   return runtime !== null && runtime !== undefined && threadRunStatusIsActive(runtime.status);
 }
@@ -78,6 +108,7 @@ export interface EnvironmentThreadShell {
   readonly activeProviderThreadId: OrchestrationV2ThreadShell["activeProviderThreadId"];
   readonly latestRun: ThreadRunSummary | null;
   readonly runtime: ThreadRuntimeSummary | null;
+  readonly blockedOnThreadWait?: boolean;
   readonly latestUserMessageAt: string | null;
   readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
@@ -141,7 +172,28 @@ export function presentThreadShell(
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
-  const attention = shellAttentionInput(thread, pendingSubagentRequest);
+  const latestRun =
+    thread.latestRunId === null
+      ? null
+      : ({
+          runId: thread.latestRunId,
+          status: thread.status === "idle" ? "completed" : thread.status,
+          requestedAt: nullableIso(thread.latestRunRequestedAt ?? null),
+          startedAt: nullableIso(thread.latestRunStartedAt ?? null),
+          completedAt:
+            thread.latestRunCompletedAt === undefined
+              ? thread.status === "idle" || terminalRunStatus(thread.status)
+                ? updatedAt
+                : null
+              : nullableIso(thread.latestRunCompletedAt),
+          assistantMessageId: null,
+        } satisfies ThreadRunSummary);
+  const runtime = shellRuntime(thread);
+  // Waiting runs have ended their provider turn and are only draining effects.
+  const runtimeIsWorking =
+    runtime?.status === "preparing" ||
+    runtime?.status === "starting" ||
+    runtime?.status === "running";
   return {
     environmentId,
     id: thread.id,
@@ -164,15 +216,20 @@ export function presentThreadShell(
     linkOrigin: thread.linkOrigin ?? null,
     delegatedFrom: thread.delegatedFrom ?? null,
     activeProviderThreadId: thread.activeProviderThreadId,
-    ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
-    latestRun: attention.latestRun,
-    runtime: attention.runtime,
+    latestRun,
+    runtime,
+    blockedOnThreadWait: thread.blockedOnThreadWait ?? false,
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}
       : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
-    hasPendingApprovals: attention.hasPendingApprovals,
-    hasPendingUserInput: attention.hasPendingUserInput,
+    hasPendingApprovals:
+      thread.pendingRuntimeRequest !== null &&
+      thread.pendingRuntimeRequest.kind !== "user_input" &&
+      thread.pendingRuntimeRequest.kind !== "auth_refresh",
+    hasPendingUserInput:
+      thread.pendingRuntimeRequest?.kind === "user_input" &&
+      (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking),
     pendingSubagentRequest,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
@@ -244,4 +301,12 @@ export function resolveThreadWorkingStartedAt(input: {
     return valid(run.startedAt) ?? valid(run.requestedAt);
   }
   return null;
+}
+
+export function formatWorkingDurationLabel(elapsedMs: number): string {
+  const seconds = Number.isFinite(elapsedMs) ? Math.max(0, Math.floor(elapsedMs / 1000)) : 0;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }

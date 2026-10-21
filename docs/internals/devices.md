@@ -19,10 +19,31 @@ middleware because serve-sim loads private CoreSimulator frameworks through a
 native addon, and a crash there must not take the server down.
 
 Everything platform-specific sits behind
-[`DeviceHost`](../../apps/server/src/device/DeviceHost.ts). The service, the
-proxy, and the MCP tools only see a hub origin and an agent-device endpoint.
+[`DeviceHost`](../../apps/server/src/device/DeviceHost.ts). The service lists,
+boots, and shuts down devices through the host's device operations, and the
+proxy and the MCP tools only see a hub origin and an agent-device endpoint.
+Hosts that run expo-device-hub share one hub-backed implementation of those
+operations, so a host whose devices live elsewhere only replaces them.
 SSH hosts forward both endpoints to server loopback. Every proxied request
 also carries the host id; device ids alone are not unique across hosts.
+
+## EAS Simulator hosts are billed sessions
+
+An [EAS host](../../apps/server/src/device/EasDeviceHost.ts) has no machine:
+each opened device is an EAS Simulator session that bills the Expo account
+until it stops. Every session is created with the host's run and idle limits,
+the host refuses to start past its session limit, and closing the host stops
+its sessions. Sessions it starts are recorded under the state directory and
+stopped by the next server if this one dies; sessions other tools started on
+the same account are never touched.
+
+Each session brings its own serve-sim preview host and agent-device daemon,
+with their own tokens. The proxy asks the host to route each request
+(`DeviceHostReady.upstream`) and adds the session token server-side, so
+clients never hold it. Agent config files are written per device
+(`DeviceOperations.agentEndpoint`), which is why `device_open` opens the
+device before targeting it. Device settings run `simctl` on the simulator's
+machine, which EAS does not expose, so they are unavailable there.
 
 ## The hub is never exposed
 
@@ -37,8 +58,12 @@ bearer and DPoP clients mint over authenticated HTTP. The ticket is stripped
 before the request reaches the hub.
 
 Stream responses carry `Cache-Control: no-transform`; the compression
-middleware would otherwise buffer an MJPEG body that never ends. In browser dev,
-the Vite proxy must forward WebSocket upgrades for `/api`, not only `/ws`.
+middleware would otherwise buffer an MJPEG body that never ends. Browsers paint an
+MJPEG part only once the next part begins and the hub writes one only when the
+screen changes, so the proxy
+[re-sends the last part](../../apps/server/src/device/mjpegStillFrame.ts) after a
+short quiet period. In browser dev, the Vite proxy must forward WebSocket
+upgrades for `/api`, not only `/ws`.
 
 ## Device settings never go through the hub
 
@@ -86,25 +111,9 @@ headless browsers reject that profile, and WebCodecs is secure-context only, so
 the viewer probes `isConfigSupported` and falls back to the MJPEG endpoint on
 iOS. Android has no MJPEG; there the panel reports that it cannot decode.
 
-## Direct desktop media
-
-A configured `directSshTarget` enables a separate loopback gateway on the
-SSH device host. The desktop opens its own scoped SSH forward to this gateway,
-never to the raw Hub. That transport does not provision a T3 environment or
-change the desktop client’s selected environment.
-
-A media grant binds the authenticated environment session, selected host/device,
-gateway generation and client origin. The gateway uses the proxy’s
-route/method/scope restrictions and checks current environment authorization
-through an SSH reverse loopback channel to a generation-owned validation-only
-listener before admitting requests, and revalidates live connections. That
-listener exposes no general environment API. General environment credentials
-and signing secrets stay on the environment server. Hub restart or reconnect
-replaces the gateway binding; stale generations are rejected. The route omits
-broad inventory, shell, dashboard and WebRTC access.
-
-The stream route owns its tunnel and in-flight gestures. A direct failure
-retires the old generation without replaying input and reconnects through the
-authenticated environment proxy. Older bridge versions, web and mobile keep
-the proxy route. Discovery, device actions, tools and agent access stay with
-the environment server.
+serve-sim can also be locked to WebRTC, as on EAS Simulator, and then refuses
+AVCC with a 409 naming the transport. The viewer still asks for AVCC first, so
+hubs that serve it pay nothing, and switches on that 409, or when its MJPEG
+image fails in a browser that has `RTCPeerConnection`. Offers are not trickled:
+serve-sim takes one offer with every candidate. The video element only feeds
+the same canvas sink, so the panel and the mobile WebView keep one surface.

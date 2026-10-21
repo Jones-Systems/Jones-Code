@@ -1052,12 +1052,20 @@ export function useThreadOutboxDrain(): void {
           message: queuedMessage,
           creation: workspace,
           projectCwd,
-          attachments: prepared.attachments,
-          settings: sendSettings,
-          serverResolvesWorktreeBase:
-            currentConfig.environment.capabilities.worktreeDefaultBase === true,
-          inlineMessageContext:
+          threadId: queuedMessage.threadId,
+          commandId: queuedMessage.commandId,
+          messageId: queuedMessage.messageId,
+          createdAt: queuedMessage.createdAt,
+          titleText: queuedMessage.text,
+          ...serializeComposerMessageForServer(
+            queuedMessage.text.trim(),
+            uploadedComposerContext(
+              queuedMessage.context,
+              queuedMessage.attachments,
+              prepared.attachments,
+            ),
             currentConfig.environment.capabilities.inlineMessageContext === true,
+          ),
         }),
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;

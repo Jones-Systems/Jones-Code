@@ -21,14 +21,20 @@ it.effect("preserves installed status after probes and cleans failed agent activ
     const home = yield* fs.makeTempDirectoryScoped();
     const modes: string[] = [];
     const owners: string[] = [];
+    const tunnelArgs: string[][] = [];
+    const tunnelStdins: unknown[] = [];
+    const commandArgs: string[][] = [];
     let forwards = 0;
     let failForward = true;
     let rejectConfig = true;
     const spawner = ChildProcessSpawner.make((command) =>
       Effect.gen(function* () {
         if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected command");
-        const forwarding = command.args.includes("-N");
+        const forwarding = command.args.includes("-L");
+        (forwarding ? tunnelArgs : commandArgs).push([...command.args]);
+        if (forwarding) tunnelStdins.push(command.options.stdin);
         let output = "";
+        let exitCode = 0;
         if (forwarding) {
           expect(command.args).not.toContain("-R");
           if (failForward) {
@@ -74,13 +80,19 @@ it.effect("preserves installed status after probes and cleans failed agent activ
               ? { daemonPort: 1235, token: "fixture", entryPath: "/agent.mjs" }
               : {}),
           });
+          if (mode === "") {
+            output = `${"verbose-prefix ".repeat(400)}PANIC: emulator SDK is broken\n`;
+            exitCode = 1;
+          }
         }
         return ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(123),
           stdout: Stream.make(new TextEncoder().encode(output)),
           stderr: Stream.empty,
           all: Stream.empty,
-          exitCode: forwarding ? Effect.never : Effect.succeed(ChildProcessSpawner.ExitCode(0)),
+          exitCode: forwarding
+            ? Effect.never
+            : Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
           isRunning: Effect.succeed(forwarding),
           kill: () => Effect.void,
           stdin: Sink.drain,
@@ -91,7 +103,7 @@ it.effect("preserves installed status after probes and cleans failed agent activ
       }),
     );
     const host = yield* SshDeviceHost.make(
-      { id: "test", label: "Test", target: "test.example" },
+      { kind: "ssh", id: "test", label: "Test", target: "test.example" },
       () =>
         rejectConfig
           ? Effect.fail(
@@ -117,7 +129,12 @@ it.effect("preserves installed status after probes and cleans failed agent activ
       ),
     );
     yield* host.ensureReady(() => Effect.void);
-    yield* SshDeviceHost.probe({ id: "test", label: "Test", target: "test.example" }).pipe(
+    yield* SshDeviceHost.probe({
+      kind: "ssh",
+      id: "test",
+      label: "Test",
+      target: "test.example",
+    }).pipe(
       Effect.provide(ServerConfig.layerTest(home, home)),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
@@ -125,6 +142,15 @@ it.effect("preserves installed status after probes and cleans failed agent activ
     expect(owners[0]).toMatch(/^[a-f0-9]{24}$/);
     expect(forwards).toBe(1);
     expect(modes.filter((mode) => mode === "start")).toHaveLength(2);
+    const ready = yield* host.current;
+    expect(ready).not.toBeNull();
+    if (ready) {
+      const failed = yield* ready.run("emulator", ["-list-avds"]);
+      expect(failed.code).toBe(1);
+      expect(failed.stdout).toMatch(/^\[truncated\]/);
+      expect(failed.stderr).toBe(failed.stdout.trim());
+      expect(failed.stderr).toMatch(/PANIC: emulator SDK is broken$/);
+    }
     yield* host.platformAvailability("ios");
     expect((yield* host.summary).hubInstalled).toBe(true);
     const failed = yield* host.ensureAgentReady(() => Effect.void).pipe(Effect.result);
@@ -138,6 +164,27 @@ it.effect("preserves installed status after probes and cleans failed agent activ
     expect((yield* host.summary).agentDeviceInstalled).toBe(true);
     yield* host.stopAgent;
     expect(forwards).toBe(1);
+    const multiplexingOff = ["ControlMaster=no", "ControlPath=none", "ControlPersist=no"];
+    expect(tunnelArgs.length).toBeGreaterThan(0);
+    for (const args of tunnelArgs) {
+      for (const option of multiplexingOff) {
+        const index = args.indexOf(option);
+        expect(index).toBeGreaterThan(0);
+        expect(args[index - 1]).toBe("-o");
+      }
+      // The tunnel lives only as long as the server holds the write end of its stdin.
+      expect(args).not.toContain("-N");
+      expect(args.slice(args.indexOf("test.example") + 1)).toEqual([
+        "sh",
+        "-c",
+        "'exec cat >/dev/null'",
+      ]);
+    }
+    expect(tunnelStdins).toEqual(tunnelArgs.map(() => "pipe"));
+    expect(commandArgs.length).toBeGreaterThan(0);
+    for (const args of commandArgs) {
+      for (const option of multiplexingOff) expect(args).not.toContain(option);
+    }
     yield* host.stop;
     expect(forwards).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -163,10 +210,11 @@ it.effect(
       const spawner = ChildProcessSpawner.make((command) =>
         Effect.gen(function* () {
           if (command._tag !== "StandardCommand") return yield* Effect.die("Unexpected command");
-          const forwarding = command.args.includes("-N");
+          const forwarding = command.args.includes("-L");
           let output = "";
           let bootstrapExit = 0;
           if (forwarding) {
+            expect(command.options.stdin).toBe("pipe");
             commands.push([...command.args]);
             if (failForward) {
               failForward = false;
@@ -245,7 +293,13 @@ it.effect(
         Effect.provide(ServerConfig.layerTest(home, home)),
       );
       const host = yield* SshDeviceHost.make(
-        { id: "test", label: "Test", target: "vps-mini", directSshTarget: "laptop-mini" },
+        {
+          kind: "ssh",
+          id: "test",
+          label: "Test",
+          target: "vps-mini",
+          directSshTarget: "laptop-mini",
+        },
         undefined,
         undefined,
         Effect.succeed(null),
@@ -287,7 +341,13 @@ it.effect(
         expect(args).not.toContain("ClearAllForwardings=yes");
         expect(args.some((arg) => arg.endsWith(":127.0.0.1:2234"))).toBe(true);
         expect(args).not.toContain("laptop-mini");
-        expect(args.at(-1)).toBe("vps-mini");
+        expect(args).toContain("-T");
+        expect(args).not.toContain("-N");
+        expect(args.slice(args.indexOf("vps-mini") + 1)).toEqual([
+          "sh",
+          "-c",
+          "'exec cat >/dev/null'",
+        ]);
       }
       yield* host.stop;
       expect(forwards).toBe(0);

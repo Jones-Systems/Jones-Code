@@ -9,6 +9,7 @@ import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/impo
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
+import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import type {
   ChatAttachment as ContractChatAttachment,
@@ -356,7 +357,14 @@ export function QueuedRunsControl({
           data-chat-composer-collapsed-controls="true"
           className="relative z-0"
         >
-          <ComposerBanner.Row>
+          <ComposerBanner.Row
+            render={<button type="button" />}
+            aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
+            aria-expanded={expanded}
+            aria-controls={queueListId}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => setExpanded((value) => !value)}
+          >
             <ComposerBanner.Icon>
               <ListOrderedIcon />
             </ComposerBanner.Icon>
@@ -364,32 +372,23 @@ export function QueuedRunsControl({
               Queued
             </ComposerBanner.Content>
             <ComposerBanner.Actions>
-              <QueuedSteerBatchAction batch={batch} />
-              <Button
-                size="xs"
-                variant="ghost-muted"
-                aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
-                aria-expanded={expanded}
-                aria-controls={queueListId}
-                onPointerDown={(event) => event.preventDefault()}
-                onClick={() => setExpanded((value) => !value)}
-              >
-                <ComposerBanner.Count>{items.length}</ComposerBanner.Count>
-                <ComposerBanner.ToggleIcon expanded={expanded} />
-              </Button>
+              <ComposerBanner.Count>{items.length}</ComposerBanner.Count>
+              <ComposerBanner.ToggleIcon expanded={expanded} />
             </ComposerBanner.Actions>
           </ComposerBanner.Row>
           <ComposerBanner.Scroll className={cn("max-h-32", !expanded && "hidden")}>
             <ComposerBanner.Children render={<ol />} id={queueListId}>
               {items.map((item) => {
-                const previewText = replaceComposerContextReferences(item.text, (reference) =>
-                  reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+                const previewText = assistantCitationsToPlainText(
+                  replaceComposerContextReferences(item.text, (reference) =>
+                    reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
+                  ),
                 ).trim();
                 const rowRunId = item.runId;
                 const rowServerIndex = item.serverIndex;
                 const isEditing = rowRunId !== null && rowRunId === props.editingRunId;
                 const rowDraggable =
-                  rowRunId !== null && rowServerIndex !== null && canReorder && !queueBusy;
+                  rowRunId !== null && rowServerIndex !== null && canReorder && busyRunId === null;
                 return (
                   <ComposerBanner.Row
                     render={<li />}

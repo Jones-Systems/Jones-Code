@@ -12,42 +12,11 @@ export class BrowserControlInterrupted extends Error {
   }
 }
 
-export class BrowserActionNotStarted extends Error {
-  constructor() {
-    super("The preview request deadline elapsed before its action started.");
-  }
-}
-
-export const assertBrowserActionDeadline = (deadlineMs?: number) => {
-  if (deadlineMs !== undefined && Date.now() >= deadlineMs) throw new BrowserActionNotStarted();
-};
-
-export class BrowserRequestDeadline {
-  readonly deadlineMs: number;
-  private started = false;
-  private timer: ReturnType<typeof setTimeout> | undefined;
-  constructor(timeoutMs: number) {
-    this.deadlineMs = Date.now() + timeoutMs;
-  }
-  start = () => {
-    assertBrowserActionDeadline(this.deadlineMs);
-    this.started = true;
-    if (this.timer !== undefined) clearTimeout(this.timer);
-  };
-  response<A>(work: Promise<A>): Promise<A> {
-    const waiting = new Promise<never>((_, reject) => {
-      this.timer = setTimeout(
-        () => {
-          if (!this.started) reject(new BrowserActionNotStarted());
-        },
-        Math.max(0, this.deadlineMs - Date.now()),
-      );
-    });
-    return Promise.race([work, waiting]).finally(() => {
-      if (this.timer !== undefined) clearTimeout(this.timer);
-    });
-  }
-}
+const settle = (work: Promise<unknown>) =>
+  work.then(
+    () => undefined,
+    () => undefined,
+  );
 
 /** Reserves control immediately, but drains running work before the new owner can act. */
 export class SessionControl {
@@ -55,6 +24,7 @@ export class SessionControl {
   private readonly onGenerationChange: () => void;
   private tail: Promise<unknown> = Promise.resolve();
   private pending: Promise<void> = Promise.resolve();
+  private readonly handoff = new Set<Promise<void>>();
   private owner: string | null = null;
   private epoch = 0;
   private closed = false;
@@ -83,11 +53,15 @@ export class SessionControl {
 
   /** An action can respond before its navigation commits, while later actions still wait. */
   track(work: Promise<unknown>) {
-    const settled = work.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.pending = Promise.all([this.pending, settled]).then(() => undefined);
+    this.pending = Promise.all([this.pending, settle(work)]).then(() => undefined);
+  }
+
+  /** Viewer input stays responsive, but control handoffs still drain its navigations. */
+  trackUntilHandoff(work: Promise<unknown>) {
+    const settled = settle(work).finally(() => {
+      this.handoff.delete(settled);
+    });
+    this.handoff.add(settled);
   }
 
   private assertOpen() {
@@ -101,7 +75,6 @@ export class SessionControl {
   }
 
   private async action<A>(allowed: () => boolean, run: () => Promise<A>, deadlineMs?: number) {
-    assertBrowserActionDeadline(deadlineMs);
     this.assertOpen();
     if (!allowed()) throw new BrowserControlInterrupted("You do not control this browser tab.");
     const epoch = this.epoch;
@@ -111,6 +84,12 @@ export class SessionControl {
       assertBrowserActionDeadline(deadlineMs);
       this.assertOpen();
       if (epoch !== this.epoch || !allowed()) throw new BrowserControlInterrupted();
+      if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
+        throw new DOMException(
+          "This browser request expired before it could start.",
+          "TimeoutError",
+        );
+      }
       return run();
     });
     if (deadlineMs === undefined) return queued;
@@ -130,10 +109,6 @@ export class SessionControl {
     return this.agentId === null || this.agentId === agentId;
   }
 
-  /**
-   * An agent action. It may act on its own tab or on one a human opened, but
-   * never while a human controls the tab; taking control interrupts it.
-   */
   agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(
@@ -188,7 +163,10 @@ export class SessionControl {
       );
     }
     this.changeOwner(null);
-    await this.enqueue(afterDrain);
+    await this.enqueue(async () => {
+      await Promise.all(this.handoff);
+      await afterDrain();
+    });
   }
 
   async disconnect(viewerId: string, afterDrain?: () => Promise<void>) {

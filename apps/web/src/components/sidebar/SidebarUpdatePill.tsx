@@ -15,6 +15,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
+  getDesktopUpdateIdleTooltip,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
@@ -52,86 +53,21 @@ type SidebarUpdatePopoverChangeDetails = Parameters<
 >[1];
 type SidebarUpdatePopoverHandle = ReturnType<typeof PopoverCreateHandle>;
 
-export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
-  type: "info" | "error";
-  title: string;
-  description?: string;
-} | null {
-  if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") {
-    return null;
-  }
-  if (state.jones?.phase === "building") {
-    return {
-      type: "info",
-      title: "Update still being qualified",
-      description: state.jones.message ?? state.message ?? "The update is still being qualified.",
-    };
-  }
-  if (state.jones?.phase === "blocked") {
-    return {
-      type: "error",
-      title: "Update check blocked",
-      description: state.jones.message ?? state.message ?? "The update check is blocked.",
-    };
-  }
-  if (state.status === "error") {
-    return {
-      type: "error",
-      title: "Could not check for updates",
-      description: state.message ?? "Update check failed.",
-    };
-  }
-  if (state.status === "up-to-date") {
-    return { type: "info", title: "No new update available" };
-  }
-  return null;
-}
-
-export function checkForSidebarUpdate(
-  bridge: Pick<DesktopBridge, "checkForUpdate">,
-): Promise<void> {
-  return bridge
-    .checkForUpdate()
-    .then((result) => {
-      if (result.checked) {
-        const feedback = resolveSidebarUpdateCheckFeedback(result.state);
-        if (feedback) toastManager.add(stackedThreadToast(feedback));
-        return;
-      }
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not check for updates",
-          description: result.state.message ?? "Automatic updates are not available in this build.",
-        }),
-      );
-    })
-    .catch((error) => {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Could not check for updates",
-          description: error instanceof Error ? error.message : "Update check failed.",
-        }),
-      );
-    });
-}
-
-export function shouldUseSidebarUpdateReleaseNotesPopover(
+function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
   state: DesktopUpdateState | null,
 ): boolean {
   return showUpdateDetails && state?.channel === "nightly" && state.releaseNotes.length > 0;
 }
 
-export function handleSidebarUpdateReleaseNotesPopoverOpenChange(
+function handleSidebarUpdateReleaseNotesPopoverOpenChange(
   _open: boolean,
   details: Pick<SidebarUpdatePopoverChangeDetails, "reason" | "cancel">,
 ): void {
   if (details.reason === "trigger-press") details.cancel();
 }
 
-export function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
+function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
   event: { readonly key: string; readonly shiftKey: boolean },
   handle: Pick<SidebarUpdatePopoverHandle, "open">,
   triggerId: string,
@@ -308,6 +244,8 @@ function SidebarUpdateControl() {
     isDownloading,
     showCheckIcon,
   });
+  const idleTooltip =
+    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
   const tooltip = runsEverything
     ? everything.summary
     : showUpdateDetails
@@ -316,7 +254,7 @@ function SidebarUpdateControl() {
         : "Update available"
       : showCheckIcon
         ? "Checking for updates…"
-        : "Check for updates";
+        : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -513,7 +451,7 @@ function SidebarUpdateControl() {
   const updateButton = (
     <button
       type="button"
-      aria-label={tooltip}
+      aria-label={idleTooltip?.detail ? `${tooltip}: ${idleTooltip.detail}` : tooltip}
       aria-disabled={isInteractionDisabled || undefined}
       className={cn(
         "inline-flex size-8 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
@@ -592,7 +530,14 @@ function SidebarUpdateControl() {
               side="top"
               variant={showUpdateDetails ? "glass" : "default"}
             >
-              <span className="whitespace-pre-line">{tooltip}</span>
+              {idleTooltip?.detail ? (
+                <div className="text-left">
+                  <div className="font-medium">{idleTooltip.title}</div>
+                  <div className="text-muted-foreground">{idleTooltip.detail}</div>
+                </div>
+              ) : (
+                <span className="whitespace-pre-line">{tooltip}</span>
+              )}
             </TooltipPopup>
           ) : null}
         </Tooltip>

@@ -58,13 +58,21 @@ let nextAgentRequestId = 1;
 const pendingClientRequestIds = new Map<string, string | number>();
 const pendingAgentRequestMethods = new Map<string, string>();
 
+// The test reads status while this agent may still be running; rename makes each
+// write atomic so a reader never sees a truncated file.
 function writeStatus(failure?: unknown): void {
-  publishAcpReplayStatus(replayStatusPath, {
-    scenario: transcript.scenario,
-    cursor,
-    total: transcript.entries.length,
-    ...(failure === undefined ? {} : { failure }),
-  });
+  const temporaryStatusPath = `${replayStatusPath}.${process.pid}.tmp`;
+  NodeFS.writeFileSync(
+    temporaryStatusPath,
+    JSON.stringify({
+      scenario: transcript.scenario,
+      cursor,
+      total: transcript.entries.length,
+      ...(failure === undefined ? {} : { failure }),
+    }),
+    "utf8",
+  );
+  NodeFS.renameSync(temporaryStatusPath, replayStatusPath);
 }
 
 function stableStringify(value: unknown): string {
@@ -136,11 +144,6 @@ function stopWithFailure(detail: string, actual?: unknown): void {
   process.stdin.pause();
 }
 
-function advance(): void {
-  cursor += 1;
-  writeStatus();
-}
-
 function send(message: JsonRpcMessage): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
@@ -205,7 +208,7 @@ function inboundMessage(recorded: LogicalFrame): JsonRpcMessage | undefined {
       const id = pendingClientRequestId(frame.method);
       if (id === undefined) {
         stopWithFailure(`No pending client request for ${frame.method}`, frame);
-        return;
+        return undefined;
       }
       pendingClientRequestIds.delete(frame.method);
       return {
@@ -218,16 +221,19 @@ function inboundMessage(recorded: LogicalFrame): JsonRpcMessage | undefined {
   }
 }
 
+// T3 may kill the agent after its last reply. Record the batch, including trailing
+// runtime exits, before publishing any frames.
 function flushInbound(): void {
+  const messages: Array<JsonRpcMessage> = [];
   while (!stopped) {
     const entry = transcript.entries[cursor];
-    if (entry === undefined || entry.type === "expect_outbound") return;
+    if (entry === undefined || entry.type === "expect_outbound") break;
     if (entry.type === "runtime_exit") {
       if (entry.status !== "success" && entry.status !== "cancelled") {
         stopWithFailure(`Recorded runtime exit was ${entry.status ?? "unknown"}`, entry.error);
-        return;
+        break;
       }
-      advance();
+      cursor += 1;
       continue;
     }
     const frame = entry.frame as LogicalFrame;
@@ -238,15 +244,15 @@ function flushInbound(): void {
       typeof frame.method !== "string"
     ) {
       stopWithFailure("Invalid emit_inbound logical ACP frame", entry.frame);
-      return;
+      break;
     }
     const message = inboundMessage(frame);
-    if (stopped || message === undefined) return;
-    // The cursor records validated replay entries, not consumer completion.
-    // Publish it before the answer can let the client close this process.
-    advance();
-    send(message);
+    if (message === undefined) break;
+    messages.push(message);
+    cursor += 1;
   }
+  if (!stopped) writeStatus();
+  messages.forEach(send);
 }
 
 function handleMessage(message: JsonRpcMessage): void {
@@ -258,6 +264,7 @@ function handleMessage(message: JsonRpcMessage): void {
   }
   const entry = transcript.entries[cursor];
   if (entry?.type !== "expect_outbound" || !matchesExpected(entry.frame, actual)) {
+    stopWithFailure("Unexpected outbound ACP frame", actual);
     if (actual.kind === "request" && message.id !== undefined && message.id !== null) {
       send({
         jsonrpc: "2.0",
@@ -265,7 +272,6 @@ function handleMessage(message: JsonRpcMessage): void {
         error: { code: -32603, message: "ACP replay frame mismatch" },
       });
     }
-    stopWithFailure("Unexpected outbound ACP frame", actual);
     return;
   }
   if (actual.kind === "request" && message.id !== undefined && message.id !== null) {
@@ -273,11 +279,10 @@ function handleMessage(message: JsonRpcMessage): void {
   } else if (actual.kind === "response" && message.id !== undefined && message.id !== null) {
     pendingAgentRequestMethods.delete(String(message.id));
   }
-  advance();
+  cursor += 1;
   flushInbound();
 }
 
-writeStatus();
 flushInbound();
 
 const input = NodeReadline.createInterface({ input: process.stdin, crlfDelay: Infinity });
