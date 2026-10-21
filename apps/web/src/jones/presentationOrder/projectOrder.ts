@@ -10,9 +10,13 @@ export function projectPreferenceIds(project: Project): string[] {
     ...new Set([
       getProjectOrderKey(project),
       legacyProjectCwdPreferenceKey(project.workspaceRoot),
-      deriveLogicalProjectKeyFromSettings(project, { sidebarProjectGroupingMode: "repository" }),
+      deriveLogicalProjectKeyFromSettings(project, {
+        sidebarProjectGroupingMode: "repository",
+        sidebarProjectGroupingOverrides: {},
+      }),
       deriveLogicalProjectKeyFromSettings(project, {
         sidebarProjectGroupingMode: "repository_path",
+        sidebarProjectGroupingOverrides: {},
       }),
     ]),
   ];

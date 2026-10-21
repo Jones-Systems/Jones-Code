@@ -1,6 +1,6 @@
 import { RegistryContext } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
-import { pendingSubagentRequestsByThread } from "@t3tools/client-runtime/state/threadShell";
+import { pendingSubagentRequestsByThread } from "@t3tools/shared/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
