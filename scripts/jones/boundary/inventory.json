@@ -1584,6 +1584,7 @@
     "apps/web/src/uiStateStore.test.ts": "jones-tests-in-upstream",
     "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream",
     "apps/server/src/checkpointing/CheckpointDiffQuery.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ThreadStop.test.ts": "jones-tests-in-upstream",
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/testing/nodeRenderer.ts": "jones-owned"
