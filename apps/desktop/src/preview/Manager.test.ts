@@ -296,6 +296,7 @@ const makeTestPreviewWebContents = (
   hostWebContents: TestHostWebContents = makeTestHostWebContents(),
 ) => {
   const setBackgroundThrottling = vi.fn<(enabled: boolean) => void>();
+  let debuggerAttached = false;
   return {
     id,
     mainFrame: { routingId: id },
@@ -319,8 +320,13 @@ const makeTestPreviewWebContents = (
     setIgnoreMenuShortcuts: vi.fn(),
     setWindowOpenHandler: vi.fn(),
     debugger: {
-      isAttached: () => false,
-      attach: vi.fn(),
+      isAttached: () => debuggerAttached,
+      attach: vi.fn(() => {
+        debuggerAttached = true;
+      }),
+      detach: vi.fn(() => {
+        debuggerAttached = false;
+      }),
       sendCommand: vi.fn(async () => undefined),
       on: vi.fn(),
       off: vi.fn(),
@@ -413,6 +419,7 @@ const makeFaviconWebContents = (options?: {
   });
   const off = vi.fn();
   const debuggerOff = vi.fn();
+  let debuggerAttached = false;
   const webContents = {
     id: options?.id ?? 42,
     isDestroyed: () => destroyed,
@@ -442,8 +449,13 @@ const makeFaviconWebContents = (options?: {
     setWindowOpenHandler: vi.fn(),
     executeJavaScriptInIsolatedWorld,
     debugger: {
-      isAttached: () => false,
-      attach: vi.fn(),
+      isAttached: () => debuggerAttached,
+      attach: vi.fn(() => {
+        debuggerAttached = true;
+      }),
+      detach: vi.fn(() => {
+        debuggerAttached = false;
+      }),
       sendCommand: vi.fn(async () => undefined),
       on: vi.fn(),
       off: debuggerOff,
