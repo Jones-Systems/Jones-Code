@@ -85,6 +85,7 @@ import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { PlannedUpdateContinuity } from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -1780,6 +1781,114 @@ it.layer(layerLegacyImportTest)("OrchestrationV2 legacy import", (it) => {
       });
       const projectionAfterRetry = yield* threadManagement.getThreadProjection(failureThreadId);
       assert.isNotNull(projectionAfterRetry.thread.archivedAt);
+    }),
+  );
+});
+
+it.layer(Layer.fresh(layerTest))("planned-update terminal continuity", (it) => {
+  it.effect("terminal observation releases the exact planned-update held queue", () =>
+    Effect.gen(function* () {
+      const f = yield* queueGuardFixture("planned-update-terminal");
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const continuity = yield* PlannedUpdateContinuity;
+      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+      const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      yield* f.engine.dispatch(f.command);
+      yield* f.engine.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("planned-update-terminal:queue"),
+        threadId: f.threadId,
+        messageId: MessageId.make("planned-update-terminal:queued-message"),
+        text: "Continue the queued work after the update",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "queue_after_active" },
+      });
+      const before = yield* f.engine.getThreadProjection(f.threadId);
+      const source = before.runs[0]!;
+      const queued = before.runs[1]!;
+      assert.equal(source.status, "starting");
+      assert.equal(queued.status, "queued");
+      const now = yield* DateTime.now;
+      const completion = {
+        id: EventId.make("planned-update-terminal:completed"),
+        type: "run.updated" as const,
+        threadId: f.threadId,
+        runId: source.id,
+        occurredAt: now,
+        payload: { ...source, status: "completed" as const, startedAt: now, completedAt: now },
+      };
+      // Restore the completion projection before its terminal observation reaches the reactor.
+      yield* projections.apply(completion);
+      const operationId = "planned-update-terminal-operation";
+      const binding = {
+        baseDir: "/synthetic/planned-update-terminal",
+        dbPath: "/synthetic/planned-update-terminal/state.sqlite",
+        environmentId: "planned-update-terminal-environment",
+        currentVersion: "0.0.0-preview.20261010.1.1",
+        targetVersion: "0.0.0-preview.20261010.2.1",
+        expectedInstalledSource: "a".repeat(40),
+        targetSource: "b".repeat(40),
+        stagedHandle: "planned-update-terminal-staged",
+      };
+      yield* continuity.capture({ operationId, binding, continueRunningThreads: true });
+      yield* projections.apply({
+        id: EventId.make("planned-update-terminal:restart-hold"),
+        type: "run.updated",
+        threadId: f.threadId,
+        runId: queued.id,
+        occurredAt: now,
+        payload: { ...queued, queueHeld: true },
+      });
+      yield* continuity.activate({
+        operationId,
+        binding,
+        outcome: "committed",
+        current: {
+          baseDir: binding.baseDir,
+          dbPath: binding.dbPath,
+          environmentId: binding.environmentId,
+          activeVersion: binding.targetVersion,
+          activeSourceSha: binding.targetSource,
+        },
+      });
+      const resumeCommandId = CommandId.make(
+        `command:planned-update-queue:${operationId}:${f.threadId}`,
+      );
+      assert.deepEqual(yield* continuity.queueThreadIds, [f.threadId]);
+      assert.isTrue(
+        (yield* f.engine.getThreadProjection(f.threadId)).runs.find((run) => run.id === queued.id)
+          ?.queueHeld,
+      );
+      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(resumeCommandId)));
+      const promoted = yield* Queue.unbounded<RunId>();
+      const afterSequence = yield* f.engine.getThreadEventSequence(f.threadId);
+      yield* eventSink.stream({ threadId: f.threadId, afterSequence }).pipe(
+        Stream.runForEach((stored) =>
+          stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+            ? Queue.offer(promoted, stored.event.payload.id)
+            : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      yield* Effect.yieldNow;
+      yield* eventSink.write({ events: [completion] });
+      assert.equal(yield* Queue.take(promoted), queued.id);
+      yield* threadCommands.withLock(
+        f.threadId,
+        Effect.gen(function* () {
+          const after = yield* f.engine.getThreadProjection(f.threadId);
+          assert.equal(after.runs.find((run) => run.id === queued.id)?.status, "starting");
+          assert.isFalse(after.runs.find((run) => run.id === queued.id)?.queueHeld);
+          const receipt = yield* receipts.getByCommandId(resumeCommandId);
+          assert.isTrue(Option.isSome(receipt));
+          if (Option.isSome(receipt)) assert.equal(receipt.value.status, "accepted");
+          assert.deepEqual(yield* continuity.queueThreadIds, []);
+        }),
+      );
     }),
   );
 });
@@ -7894,20 +8003,6 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
         assert.isUndefined(recreation.pollUnsafe());
         assert.isTrue(Option.isNone(yield* receipts.getByCommandId(create.commandId)));
         assert.isNotNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
-        const previewCleanup = yield* outbox.claimNext({
-          workerId: "creation-fence-worker",
-          leaseDurationMs: 30_000,
-        });
-        assert.isTrue(Option.isSome(previewCleanup));
-        if (Option.isSome(previewCleanup)) {
-          assert.equal(previewCleanup.value.commandId, deletionId);
-          assert.equal(previewCleanup.value.request.type, "preview.cleanup");
-          yield* outbox.succeed({
-            effectId: previewCleanup.value.id,
-            workerId: "creation-fence-worker",
-          });
-        }
-        assert.isUndefined(recreation.pollUnsafe());
         const scheduledCleanup = yield* outbox.claimNext({
           workerId: "creation-fence-worker",
           leaseDurationMs: 30_000,
@@ -7931,6 +8026,20 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
           assert.equal(cleanup.value.commandId, deletionId);
           assert.equal(cleanup.value.request.type, "terminal.cleanup");
           yield* outbox.succeed({ effectId: cleanup.value.id, workerId: "creation-fence-worker" });
+        }
+        assert.isUndefined(recreation.pollUnsafe());
+        const previewCleanup = yield* outbox.claimNext({
+          workerId: "creation-fence-worker",
+          leaseDurationMs: 30_000,
+        });
+        assert.isTrue(Option.isSome(previewCleanup));
+        if (Option.isSome(previewCleanup)) {
+          assert.equal(previewCleanup.value.commandId, deletionId);
+          assert.equal(previewCleanup.value.request.type, "preview.cleanup");
+          yield* outbox.succeed({
+            effectId: previewCleanup.value.id,
+            workerId: "creation-fence-worker",
+          });
         }
         const created = yield* Fiber.join(recreation);
         assert.isTrue(
