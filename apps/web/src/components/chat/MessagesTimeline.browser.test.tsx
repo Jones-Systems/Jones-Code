@@ -15,11 +15,11 @@ import {
 } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { createRef, type ComponentProps, type ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
 
-import { act, render } from "../../../test/render";
+import { act, render, fakeTimers, type Screen } from "../../../test/render";
 import { MessagesTimeline, remarkThoughtPreview } from "./MessagesTimeline";
 import { parseMarkdownWithMath } from "@t3tools/shared/markdownMath";
 
@@ -137,11 +137,7 @@ function v2Item(type: string, fields: Record<string, unknown>) {
   } as never;
 }
 
-const roots: Array<{ unmount: () => Promise<void> }> = [];
 let container: HTMLElement;
-afterEach(async () => {
-  for (const root of roots.splice(0)) await root.unmount();
-});
 
 function text() {
   return container.textContent ?? "";
@@ -164,7 +160,6 @@ async function renderElement(element: ReactElement) {
   container = document.createElement("div");
   container.style.cssText = "height: 1200px; width: 900px; display: flex; flex-direction: column;";
   const screen = await render(element, { container });
-  roots.push({ unmount: () => screen[Symbol.asyncDispose]() });
   const buttons = (name: string | RegExp) =>
     [...container.querySelectorAll<HTMLElement>("button, [role=button]")].filter((button) => {
       const label = button.getAttribute("aria-label") ?? button.textContent ?? "";
@@ -280,11 +275,11 @@ describe("compact reasoning math", () => {
           },
         ] as never,
       });
-    await renderTimeline([snapShot()]);
+    await using withoutPreview = await renderTimeline([snapShot()]);
     expect(text()).toContain("screenshot.png");
     expect(text()).not.toContain("t3code — Tests");
-    await act(async () => roots.pop()!.unmount());
-    await renderTimeline([snapShot("data:image/png;base64,iVBORw0KGgo=")]);
+    await withoutPreview.unmount();
+    await using withPreview = await renderTimeline([snapShot("data:image/png;base64,iVBORw0KGgo=")]);
     expect(text()).toContain("Terminal");
     expect(text()).toContain("t3code — Tests");
   });
@@ -293,7 +288,7 @@ describe("compact reasoning math", () => {
 describe("MessagesTimeline history and thread links", () => {
   it("loads earlier turns from a control ahead of the bounded timeline", async () => {
     const onLoadEarlier = vi.fn();
-    await renderTimeline([message("Recent activity")], {
+    await using screen1 = await renderTimeline([message("Recent activity")], {
       historyControls: {
         hasMoreHistory: true,
         loading: false,
@@ -308,7 +303,7 @@ describe("MessagesTimeline history and thread links", () => {
   });
 
   it("keeps an empty bounded timeline busy while earlier history loads", async () => {
-    await renderTimeline([], {
+    await using screen2 = await renderTimeline([], {
       historyControls: {
         hasMoreHistory: true,
         loading: true,
@@ -323,7 +318,7 @@ describe("MessagesTimeline history and thread links", () => {
 
   it("opens the parent thread from the top of an empty subagent timeline", async () => {
     const open = vi.fn();
-    await renderTimeline([], { parentThreadLink: { title: "Architecture audit", open } });
+    await using screen3 = await renderTimeline([], { parentThreadLink: { title: "Architecture audit", open } });
     expect(text()).toContain("Subagent of");
     expect(text()).toContain("Architecture audit");
     expect(text()).not.toContain("Send a message to start the conversation");
@@ -332,7 +327,7 @@ describe("MessagesTimeline history and thread links", () => {
   });
 
   it("does not render the transient V2 interruption request", async () => {
-    await renderTimeline([
+    await using screen4 = await renderTimeline([
       {
         id: "interrupt-request",
         kind: "event",
@@ -349,7 +344,7 @@ describe("MessagesTimeline history and thread links", () => {
 
   it("opens created threads from a lean row", async () => {
     const onOpenThread = vi.fn();
-    await renderTimeline(
+    await using screen5 = await renderTimeline(
       [
         {
           id: "thread-created",
@@ -412,15 +407,17 @@ describe("MessagesTimeline history and thread links", () => {
           ...fields,
         }),
       }) as Entry;
+    await using views = new AsyncDisposableStack();
+    let previous: Screen | undefined;
     const show = async (entry: Entry, props: Partial<TimelineProps> = {}) => {
-      for (const root of roots.splice(0)) await act(async () => root.unmount());
-      await renderElement(
+      await previous?.unmount();
+      previous = views.use(await renderElement(
         <RegistryProvider
           initialValues={[[serverEnvironment.providersValueAtom(ENVIRONMENT_ID), providers]]}
         >
           <MessagesTimeline {...baseProps()} timelineEntries={[entry]} {...props} />
         </RegistryProvider>,
-      );
+      ));
     };
 
     await show(
@@ -505,7 +502,7 @@ describe("MessagesTimeline subagents", () => {
     "shows $count $status subagents with '$preview', grouping only multiple agents",
     async ({ status, progress, result, preview, count }) => {
       const onOpenThread = vi.fn();
-      await renderTimeline(
+      await using screen6 = await renderTimeline(
         Array.from(
           { length: count },
           (_, index) =>
@@ -579,7 +576,7 @@ describe("timeline tooltip scroll dismissal", () => {
         <TooltipPopup>https://example.com</TooltipPopup>
       </Tooltip>
     );
-    await renderElement(
+    const screen = await renderElement(
       <>
         <TooltipScrollDismissArea>
           <div data-testid="scrollable" className="h-[100px] overflow-auto">
@@ -590,10 +587,10 @@ describe("timeline tooltip scroll dismissal", () => {
         {outside ? tooltip : null}
       </>,
     );
-    return {
+    return Object.assign(screen, {
       trigger: container.querySelector<HTMLButtonElement>("button")!,
       scrollable: container.querySelector<HTMLElement>('[data-testid="scrollable"]')!,
-    };
+    });
   }
 
   async function scroll(scrollable: HTMLElement) {
@@ -606,7 +603,8 @@ describe("timeline tooltip scroll dismissal", () => {
   it.each([false, true])(
     "closes a hovered tooltip on scroll but keeps a focused one (pull request=%s)",
     async (pullRequest) => {
-      const { trigger, scrollable } = await renderTooltip(pullRequest, false);
+      await using fixture = await renderTooltip(pullRequest, false);
+      const { trigger, scrollable } = fixture;
       await userEvent.hover(trigger);
       await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
       await scroll(scrollable);
@@ -623,7 +621,8 @@ describe("timeline tooltip scroll dismissal", () => {
   );
 
   it("leaves tooltips outside the timeline open when it scrolls", async () => {
-    const { trigger, scrollable } = await renderTooltip(false, true);
+    await using fixture = await renderTooltip(false, true);
+    const { trigger, scrollable } = fixture;
     await userEvent.hover(trigger);
     await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
     await scroll(scrollable);
@@ -631,7 +630,8 @@ describe("timeline tooltip scroll dismissal", () => {
   });
 
   it("keeps a hovered tooltip open on a wheel that does not scroll", async () => {
-    const { trigger, scrollable } = await renderTooltip(false, false);
+    await using fixture = await renderTooltip(false, false);
+    const { trigger, scrollable } = fixture;
     await userEvent.hover(trigger);
     await vi.waitFor(() => expect(openPopup()).toBe("https://example.com"));
     await act(async () => {
@@ -673,14 +673,14 @@ describe("MessagesTimeline scroll position", () => {
         </div>
       );
     }
-    await renderElement(<Chat />);
+    await using screen7 = await renderElement(<Chat />);
     const viewport = await waitForList(props);
     await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(true));
 
     await userEvent.wheel(viewport, { delta: { y: -600 } });
     await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false));
     const offset = viewport.scrollTop;
-    await act(async () => roots.pop()!.unmount());
+    await screen7.unmount();
     expect(readTimelinePosition(props.routeThreadKey)).toMatchObject({
       atEnd: false,
       scrollOffset: offset,
@@ -711,7 +711,7 @@ describe("MessagesTimeline scroll position", () => {
         </>
       );
     }
-    await renderElement(<Thread />);
+    await using screen8 = await renderElement(<Thread />);
     const composerState = () => container.querySelector("output")!.textContent;
     const viewport = await waitForList(props);
     await click(button("Collapse"));
@@ -722,9 +722,14 @@ describe("MessagesTimeline scroll position", () => {
 
     await click(button("Collapse"));
     await userEvent.wheel(viewport, { delta: { y: -2000 } });
+    await vi.waitFor(() => expect(readTimelinePosition(props.routeThreadKey)?.atEnd).toBe(false));
+    using _timers = fakeTimers();
     await click(toggle());
     await click(toggle());
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await act(async () => {
+      vi.advanceTimersToNextFrame();
+      vi.advanceTimersToNextFrame();
+    });
     expect(composerState()).toBe("collapsed");
   });
 });
@@ -733,7 +738,9 @@ describe("MessagesTimeline send anchor", () => {
   it("reports the anchored sent message once it is laid out", async () => {
     const onAnchorReady = vi.fn();
     const sent = message("Newest prompt.", {}, "message-2");
-    await renderTimeline([message("Earlier reply.", { role: "assistant" }), sent], {
+    const props = baseProps();
+    await using screen9 = await renderTimeline([message("Earlier reply.", { role: "assistant" }), sent], {
+      ...props,
       anchorMessageId: MessageId.make("message-2"),
       onAnchorReady,
       contentInsetEndAdjustment: 144,
@@ -745,11 +752,17 @@ describe("MessagesTimeline send anchor", () => {
 
   it("does not anchor a follow-up user message that is not the newest turn", async () => {
     const onAnchorReady = vi.fn();
-    await renderTimeline([message("First prompt."), message("Newest prompt.", {}, "message-2")], {
+    const props = baseProps();
+    await using screen10 = await renderTimeline([message("First prompt."), message("Newest prompt.", {}, "message-2")], {
+      ...props,
       anchorMessageId: MessageId.make("message-2"),
       onAnchorReady,
     });
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await vi.waitFor(() => {
+      const state = props.listRef.current?.getState();
+      expect(state?.sizeAtIndex(state.data.length - 1) ?? 0).toBeGreaterThan(0);
+      expect(text()).toContain("Newest prompt.");
+    });
     expect(onAnchorReady).not.toHaveBeenCalled();
   });
 });

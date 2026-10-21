@@ -23,9 +23,8 @@ import {
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
 import type { Project } from "~/types";
@@ -142,15 +141,11 @@ const session = (scopes: ReadonlyArray<AuthEnvironmentScope>): AuthSessionState 
 });
 const writable = () => AsyncResult.success(session([AuthOrchestrationOperateScope]));
 
-let root: Root;
-let container: HTMLDivElement;
+let container: HTMLElement;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+function setup(): Disposable {
+  const { clearProjectDraftThreadId } = useComposerDraftStore.getState();
   vi.clearAllMocks();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
   state.sessions.clear();
   for (const id of [primaryId, remoteId])
     state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
@@ -187,13 +182,12 @@ beforeEach(() => {
   state.delete.mockResolvedValue(AsyncResult.success(undefined));
   state.confirm.mockResolvedValue(true);
   useComposerDraftStore.setState({ clearProjectDraftThreadId: state.clearDraft });
-});
-
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  return {
+    [Symbol.dispose]() {
+      useComposerDraftStore.setState({ clearProjectDraftThreadId });
+    },
+  };
+}
 
 function projectKey() {
   return buildSidebarProjectSnapshots({
@@ -211,14 +205,14 @@ async function mountPanel() {
     history: createMemoryHistory({ initialEntries: ["/settings/projects"] }),
   });
   await router.load();
-  await act(async () =>
-    root.render(
-      <RegistryContext.Provider value={appAtomRegistry}>
-        <RouterProvider router={router} />
-      </RegistryContext.Provider>,
-    ),
+  const screen = await render(
+    <RegistryContext.Provider value={appAtomRegistry}>
+      <RouterProvider router={router} />
+    </RegistryContext.Provider>,
+    { router: false },
   );
-  await vi.waitFor(() => expect(nameInput()).not.toBeNull());
+  container = screen.container;
+  return screen;
 }
 
 const nameInput = () => container.querySelector<HTMLInputElement>('[aria-label="Project name"]')!;
@@ -251,8 +245,10 @@ describe("project settings permissions", () => {
   ] as const)(
     "disables shared mutations while a member's session is %s and restores them after a fresh grant",
     async (_state, result, status) => {
+      using _fixture = setup();
       await grant(remoteId, result());
-      await mountPanel();
+      await using screen = await mountPanel();
+      await vi.waitFor(() => expect(nameInput()).not.toBeNull());
       expect(readEnvironmentScopeAccess(remoteId, AuthOrchestrationOperateScope)).toEqual({
         status,
       });
@@ -287,7 +283,9 @@ describe("project settings permissions", () => {
   ] as const)(
     "keeps an in-progress edit unsaved when session refresh resolves to %s",
     async (status, result) => {
-      await mountPanel();
+      using _fixture = setup();
+      await using screen = await mountPanel();
+      await vi.waitFor(() => expect(nameInput()).not.toBeNull());
       await userEvent.fill(nameInput(), "Unsaved rename");
 
       await grant(remoteId, AsyncResult.waiting(writable()));

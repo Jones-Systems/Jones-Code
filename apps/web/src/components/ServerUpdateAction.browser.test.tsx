@@ -1,4 +1,3 @@
-import { beforeEach } from "vite-plus/test";
 import { RegistryContext } from "@effect/atom-react";
 import { AuthSessionState, type EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -119,6 +118,7 @@ function setSession(session: SessionResult) {
 }
 
 function setup(): Disposable {
+  testState.jonesEnvironmentIds.clear();
   testState.updateServer.mockReset();
   testState.toast.mockReset();
   testState.clipboard.mockReset();
@@ -157,10 +157,6 @@ function renderAction(props: Partial<Parameters<typeof ServerUpdateAction>[0]> =
     />,
   );
 }
-
-beforeEach(() => {
-  testState.jonesEnvironmentIds.clear();
-});
 
 describe("ServerUpdateAction", () => {
   it.each([
@@ -241,10 +237,11 @@ describe("ServerUpdatesAction", () => {
   const mount = (batch = targets) => renderUpdate(<ServerUpdatesAction targets={batch} />);
 
   it("keeps a Jones host out of bulk release updates even when it reports no update capabilities", async () => {
+    using _state = setup();
     testState.jonesEnvironmentIds.add("batch-a");
     testState.updateServer.mockResolvedValue(success());
-    await mount();
-    await click("Update all");
+    await using screen = await mount();
+    await click(screen, "Update all");
     expect(testState.updateServer.mock.calls.map(([target]) => target)).toEqual([
       { environmentId: "batch-b", input: { targetVersion: "0.0.31" } },
     ]);

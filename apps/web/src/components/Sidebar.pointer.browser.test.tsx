@@ -1,11 +1,10 @@
 import { DndContext, useDraggable, useSensor, useSensors, type SensorProps } from "@dnd-kit/core";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { act, StrictMode, useState } from "react";
-import { createRoot } from "react-dom/client";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
 import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
-import { fakeTimers } from "../../test/render";
+import { act, render, fakeTimers } from "../../test/render";
 
 const sensors: SidebarPointerSensor[] = [];
 
@@ -94,8 +93,7 @@ describe("sidebar pointer lifecycle", () => {
 describe("pinned Workstream viewport pointer drops", () => {
   it("hits the release target after scrolling despite a clamped dnd modifier, then unpins after commit", async () => {
     const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
+    using _environment = setup();
     const assigned: string[] = [];
     const deltas: Array<{ x: number; y: number }> = [];
     const ordinaryDrop = vi.fn();
@@ -203,8 +201,8 @@ describe("pinned Workstream viewport pointer drops", () => {
       );
     }
     const sensorsToCancel: SidebarPointerSensor[] = [];
+    await using screen = await render(<Harness />, { container });
     try {
-      await act(async () => root.render(<Harness />));
       const shelf = container.querySelector<HTMLElement>("[data-scroll-shelf]")!;
       const source = container.querySelector<HTMLElement>("[data-pinned-source]")!;
       await act(async () =>
@@ -244,13 +242,12 @@ describe("pinned Workstream viewport pointer drops", () => {
     } finally {
       await act(async () => {
         sensorsToCancel.forEach((sensor) => sensor.cancel());
-        root.unmount();
       });
-      container.remove();
     }
   });
 
   it("clears cancellation feedback and never reuses an earlier release position", async () => {
+    using _environment = setup();
     const thread = {
       id: "pinned",
       environmentId: "synthetic",

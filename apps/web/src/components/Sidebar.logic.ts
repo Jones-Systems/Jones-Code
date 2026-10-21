@@ -934,8 +934,7 @@ type SidebarThreadStatusInput = Pick<
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
   | "runtime"
-  | "blockedOnThreadWait"
->;
+> & { blockedOnThreadWait?: boolean | undefined };
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {

@@ -1,7 +1,7 @@
-import { act, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { useSyncExternalStore } from "react";
+import { act, render, fakeTimers, stubGlobal } from "../../../test/render";
 import { EnvironmentId } from "@t3tools/contracts";
-import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 
 const accessStore = {
   value: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true },
@@ -84,48 +84,34 @@ async function publishFrame(image: HTMLImageElement) {
   framedImages.add(image);
   await act(async () => image.dispatchEvent(new Event("load")));
 }
-let root: Root;
-let container: HTMLDivElement;
-beforeEach(() => {
-  images = [];
-  stubImages();
-  container = document.createElement("div");
-  container.style.cssText = "width: 400px; height: 800px; display: flex";
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  restoreImages();
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-});
-
+let container: HTMLElement;
 async function setup() {
-  vi.useFakeTimers();
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  // This retry case exercises MJPEG, without the unrelated H.264 phone-view fixture.
-  const videoDecoder = Object.getOwnPropertyDescriptor(globalThis, "VideoDecoder");
-  if (videoDecoder) {
-    Reflect.deleteProperty(globalThis, "VideoDecoder");
-    onTestFinished(() => {
-      Object.defineProperty(globalThis, "VideoDecoder", videoDecoder);
-    });
-  }
-  vi.stubGlobal("fetch", () => Promise.resolve(new Response("prime")));
-  vi.stubGlobal(
-    "WebSocket",
-    class {
-      static OPEN = 1;
-      readyState = 1;
-      onmessage?: (event: { data: ArrayBuffer }) => void;
-      send() {}
-      close() {}
-    },
-  );
-  await act(async () =>
-    root.render(
+  const resources = new AsyncDisposableStack();
+  try {
+    resources.use(fakeTimers());
+    images = [];
+    stubImages();
+    resources.defer(restoreImages);
+    const videoDecoder = Object.getOwnPropertyDescriptor(globalThis, "VideoDecoder");
+    if (videoDecoder) {
+      Reflect.deleteProperty(globalThis, "VideoDecoder");
+      resources.defer(() => {
+        Object.defineProperty(globalThis, "VideoDecoder", videoDecoder);
+      });
+    }
+    resources.use(stubGlobal("fetch", () => Promise.resolve(new Response("prime"))));
+    resources.use(
+      stubGlobal("WebSocket", class {
+        static OPEN = 1;
+        readyState = 1;
+        onmessage?: (event: { data: ArrayBuffer }) => void;
+        send() {}
+        close() {}
+      }),
+    );
+    container = document.createElement("div");
+    container.style.cssText = "width: 400px; height: 800px; display: flex";
+    resources.use(await render(
       <DeviceStreamView
         hostId="local"
         environmentId={EnvironmentId.make("test")}
@@ -134,9 +120,13 @@ async function setup() {
         visible={true}
         allowPhoneView={false}
       />,
-    ),
-  );
-  return { images };
+      { container },
+    ));
+    return Object.assign(resources, { images });
+  } catch (error) {
+    await resources.disposeAsync();
+    throw error;
+  }
 }
 
 const alert = () => container.querySelector('[role="alert"]');
@@ -148,7 +138,8 @@ const reconnect = () =>
   );
 
 it("offers Reconnect after the shared timeout and receives a frame after refreshing access for retry", async () => {
-  const { images } = await setup();
+  await using fixture = await setup();
+  const { images } = fixture;
   await act(async () => {
     await vi.advanceTimersByTimeAsync(15_000);
   });

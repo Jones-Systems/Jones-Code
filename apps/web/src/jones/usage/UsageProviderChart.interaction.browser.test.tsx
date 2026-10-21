@@ -1,29 +1,10 @@
-// @vitest-environment jsdom
 import { enumerateHourStarts } from "@t3tools/shared/usageFormat";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { UsageProviderChart } from "./UsageProviderChart";
+import { UsageProviderChart } from "~/components/usage/UsageProviderChart";
 
 describe("single-bucket usage chart", () => {
-  let renderer: Root;
-  let container: HTMLDivElement;
-
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    renderer = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(() => renderer.unmount());
-    container.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
-
   it.each([
     { minutes: 60, metric: "tokens" as const, values: ["100", "50", "150"] },
     { minutes: 30, metric: "cost" as const, values: ["$4.00", "$2.00", "$6.00"] },
@@ -36,32 +17,32 @@ describe("single-bucket usage chart", () => {
         new Date(Date.parse(hourStart) + minutes * 60 * 1000).toISOString(),
       );
       expect(hours).toEqual([hourStart]);
-      await act(() =>
-        renderer.render(
-          <UsageProviderChart
-            providers={["codex", "claude"]}
-            days={[]}
-            daily={[]}
-            hours={hours}
-            hourly={[
-              {
-                day: "2026-09-18",
-                hourStart,
-                costUsd: 6,
-                totalTokens: 150,
-                byProvider: new Map([
-                  ["codex", { costUsd: 4, totalTokens: 100 }],
-                  ["claude", { costUsd: 2, totalTokens: 50 }],
-                ]),
-              },
-            ]}
-            metric={metric}
-            referenceTime={undefined}
-            resolution="hour"
-            timeZone="UTC"
-          />,
-        ),
+      await using screen = await render(
+        <UsageProviderChart
+          providers={["codex", "claude"]}
+          days={[]}
+          daily={[]}
+          hours={hours}
+          hourly={[
+            {
+              day: "2026-09-18",
+              hourStart,
+              costUsd: 6,
+              totalTokens: 150,
+              byProvider: new Map([
+                ["codex", { costUsd: 4, totalTokens: 100 }],
+                ["claude", { costUsd: 2, totalTokens: 50 }],
+              ]),
+            },
+          ]}
+          metric={metric}
+          referenceTime={undefined}
+          resolution="hour"
+          hour12={false}
+          timeZone="UTC"
+        />,
       );
+      const container = screen.container;
 
       const svg = container.querySelector("svg")!;
       const [, , width, height] = svg.getAttribute("viewBox")!.split(" ").map(Number);
@@ -82,7 +63,9 @@ describe("single-bucket usage chart", () => {
       }
 
       const plot = svg.parentElement!;
-      vi.spyOn(plot, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 960, 260));
+      using _bounds = vi
+        .spyOn(plot, "getBoundingClientRect")
+        .mockReturnValue(new DOMRect(0, 0, 960, 260));
       await act(() =>
         plot.dispatchEvent(
           new MouseEvent("mousemove", { bubbles: true, clientX: 480, clientY: 60 }),

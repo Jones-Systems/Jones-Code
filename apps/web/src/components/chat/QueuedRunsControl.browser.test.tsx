@@ -1,6 +1,5 @@
-import { act, createRef, type ComponentProps } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { createRef, type ComponentProps } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import { serializeAssistantCitation } from "@t3tools/shared/assistantCitations";
 import { page } from "vite-plus/test/browser";
@@ -45,7 +44,7 @@ vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { handleComposerEnter } from "./composerSubmission";
 import { QueuedRunsControl, type QueuedRunsControlHandle } from "./QueuedRunsControl";
-import { render as renderUi } from "../../../test/render";
+import { act, render as renderUi } from "../../../test/render";
 
 function setup() {
   state.projection = null;
@@ -168,7 +167,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
         intent: {
           keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
           platform: "Linux",
-          isMobileViewport: false,
+          isSoftwareKeyboardOpen: false,
           isDraftThread: false,
           isRunning: true,
           prompt: "",
@@ -178,15 +177,9 @@ describe("QueuedRunsControl empty composer Enter", () => {
         onSteerNextQueuedMessage: () => ref.current?.steerNext(false) ?? false,
         onSubmit,
       });
-    let renderer: Root | undefined;
-    const container = document.createElement("div");
-    document.body.append(container);
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    await using screen = await renderUi(control());
+    const container = screen.container;
     try {
-      await act(async () => {
-        renderer = createRoot(container);
-        renderer.render(control());
-      });
       const rowAction = [...container.querySelectorAll("button")].find(
         (button) => button.textContent?.trim() === "Steer",
       );
@@ -207,9 +200,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
       });
       state.workflow = { ...workflow, queuedRuns: [first] };
       state.projection = { projection: { messages: [] } };
-      await act(async () => {
-        renderer!.render(control());
-      });
+      await screen.rerender(control());
       await act(async () => {
         expect(enter(true)).toBe(true);
       });
@@ -227,23 +218,19 @@ describe("QueuedRunsControl empty composer Enter", () => {
       });
       state.workflow = { ...workflow, queuedRuns: [] };
       state.projection = { projection: { messages: [] } };
-      await act(async () => {
-        renderer!.render(control());
-      });
+      await screen.rerender(control());
       expect(enter()).toBe(true);
       expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
       expect(state.promote).toHaveBeenCalledTimes(2);
     } finally {
       await act(async () => {
         finishSend?.();
-        renderer?.unmount();
       });
-      container.remove();
+      await screen.unmount();
       state.promote.mockReset();
       state.promote.mockImplementation(async () => undefined);
       state.projection = null;
       state.workflow = null;
-      vi.unstubAllGlobals();
     }
   });
 });

@@ -7,9 +7,9 @@ import {
   type PullRequestDetailView,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { act, type ComponentProps } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import type { ComponentProps } from "react";
+import { render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
 import { DraftId, useComposerDraftStore } from "~/composerDraftStore";
 
@@ -169,33 +169,27 @@ const shortcutContext = () => ({
   isDesktop: false,
 });
 
-const roots: Root[] = [];
-
-function render(props: Partial<ComponentProps<typeof PullRequestDetailPanel>> = {}) {
+function renderPanel(props: Partial<ComponentProps<typeof PullRequestDetailPanel>> = {}) {
   const container = document.createElement("div");
   container.className = "flex h-[700px] w-[900px]";
-  document.body.append(container);
-  const root = createRoot(container);
-  roots.push(root);
-  return act(async () =>
-    root.render(
-      <PullRequestDetailPanel
-        environmentId={threadRef.environmentId}
-        reference={detail}
-        context="page"
-        shortcutsEnabled={false}
-        getShortcutContext={shortcutContext}
-        {...props}
-      />,
-    ),
+  return render(
+    <PullRequestDetailPanel
+      environmentId={threadRef.environmentId}
+      reference={detail}
+      context="page"
+      shortcutsEnabled={false}
+      getShortcutContext={shortcutContext}
+      {...props}
+    />,
+    { container },
   );
 }
 
-beforeEach(() => {
+function setup(): Disposable {
+  const { draftsByThreadKey } = useComposerDraftStore.getState();
   detailError = null;
   refresh.mockReset();
   invalidate.mockReset().mockResolvedValue(undefined);
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   useComposerDraftStore.setState({ draftsByThreadKey: {} });
   newThread
     .mockReset()
@@ -204,12 +198,12 @@ beforeEach(() => {
     _tag: "Success",
     value: { branch: "feature", worktreePath: "/workspace/pr" },
   });
-});
-afterEach(async () => {
-  for (const root of roots.splice(0)) await act(async () => root.unmount());
-  document.body.replaceChildren();
-  vi.unstubAllGlobals();
-});
+  return {
+    [Symbol.dispose]() {
+      useComposerDraftStore.setState({ draftsByThreadKey });
+    },
+  };
+}
 
 describe("held pull request during a provider pause", () => {
   async function renderPaused(reason?: "rate-limited") {
@@ -218,11 +212,12 @@ describe("held pull request during a provider pause", () => {
       detail: "Provider reads are paused.",
       ...(reason ? { reason, retryAt: Date.parse("2026-09-01T13:00:00Z") } : {}),
     });
-    await render();
+    return renderPanel();
   }
 
   it("shows a typed pause beside held detail with its original observation time", async () => {
-    await renderPaused("rate-limited");
+    using _state = setup();
+    await using screen = await renderPaused("rate-limited");
     const status = document.querySelector('[role="status"]');
     expect(status?.textContent).toContain("paused");
     expect([...status!.querySelectorAll("time")].map((time) => time.dateTime)).toEqual([
@@ -235,12 +230,14 @@ describe("held pull request during a provider pause", () => {
   });
 
   it("does not infer a typed pause from a legacy error message", async () => {
-    await renderPaused();
+    using _state = setup();
+    await using screen = await renderPaused();
     expect(document.querySelector('[role="status"]')).toBeNull();
   });
 
   it("keeps manual refresh immediate and invalidates before refreshing", async () => {
-    await renderPaused("rate-limited");
+    using _state = setup();
+    await using screen = await renderPaused("rate-limited");
     refresh.mockClear();
     await page.getByRole("button", { name: "More pull request actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Refresh", exact: true }).click();
@@ -252,7 +249,8 @@ describe("held pull request during a provider pause", () => {
   });
 
   it("keeps title editing available during a read pause", async () => {
-    await renderPaused("rate-limited");
+    using _state = setup();
+    await using screen = await renderPaused("rate-limited");
     await page.getByRole("button", { name: "Edit title", exact: true }).click();
     const input = document.querySelector<HTMLInputElement>('[aria-label="Pull request title"]');
     expect(input?.value).toBe(detail.title);

@@ -3113,7 +3113,7 @@ function useLegacySidebarProjects() {
 
 // Kept apart from useLegacySidebarProjects so a thread change re-sorts the
 // projects without rebuilding their snapshots, which every project row keys on.
-function useSortedLegacySidebarProjects(input: {
+function sortLegacySidebarProjects(input: {
   sidebarThreads: readonly SidebarThreadSummary[];
   sidebarProjects: readonly SidebarProjectSnapshot[];
   physicalToLogicalKey: ReadonlyMap<string, string>;
@@ -3134,7 +3134,7 @@ function useSortedLegacySidebarProjects(input: {
     ...project,
     id: project.projectKey,
   }));
-  const sortableThreads = filterSidebarV2VisibleThreads(sidebarThreads, null).map((thread) => {
+  const sortableThreads = sidebarThreads.map((thread) => {
     const physicalKey =
       projectPhysicalKeyByScopedRef.get(
         scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3208,7 +3208,7 @@ function useLegacySidebarThreads(input: {
   }
   const visibleSidebarThreadKeys = sortedProjects.flatMap((project) => {
     const projectThreads = sortThreads(
-      filterSidebarV2VisibleThreads(threadsByProjectKey.get(project.projectKey) ?? [], null),
+      threadsByProjectKey.get(project.projectKey) ?? [],
       sidebarThreadSortOrder,
     );
     const projectExpanded = resolveProjectExpanded(
@@ -3330,7 +3330,7 @@ export default function LegacySidebar() {
     projectPhysicalKeyByScopedRef,
     sidebarProjects,
   } = useLegacySidebarProjects();
-  const { sortedProjects, sortedProjectKeys } = useSortedLegacySidebarProjects({
+  const { sortedProjects, sortedProjectKeys } = sortLegacySidebarProjects({
     sidebarThreads: visibleThreads,
     sidebarProjects,
     physicalToLogicalKey,

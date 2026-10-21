@@ -1,7 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import { act, useEffect } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useEffect } from "react";
+import { act, render, stubGlobal, type Screen } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const { refresh, pdfLoads } = vi.hoisted(() => ({
   refresh: vi.fn<() => Promise<string | null>>(),
@@ -46,34 +46,29 @@ describe("attachment HTML and PDF preview recovery", () => {
   const originalUrl = "data:text/html,original";
   const renewedUrl = "data:text/html,renewed";
   let now = 0;
-  let root: Root;
-  let container: HTMLDivElement;
+  let screen: Screen;
+  let container: HTMLElement;
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    now = 0;
-    pdfLoads.mockClear();
-    vi.spyOn(Date, "now").mockImplementation(() => now);
-    refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<p>Captured HTML</p>")),
-    );
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
+  async function setup() {
+    const resources = new AsyncDisposableStack();
+    try {
+      now = 0;
+      pdfLoads.mockClear();
+      resources.use(vi.spyOn(Date, "now").mockImplementation(() => now));
+      refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
+      resources.use(stubGlobal("fetch", vi.fn(async () => new Response("<p>Captured HTML</p>"))));
+      screen = resources.use(await render(null));
+      container = screen.container;
+      return resources;
+    } catch (error) {
+      await resources.disposeAsync();
+      throw error;
+    }
+  }
 
   const openRemote = () =>
     act(async () =>
-      root.render(
+      screen.rerender(
         <AttachmentFilePreview
           name="document.html"
           mimeType="text/html"
@@ -85,7 +80,7 @@ describe("attachment HTML and PDF preview recovery", () => {
 
   const openRemotePdf = async () => {
     await act(async () =>
-      root.render(
+      screen.rerender(
         <AttachmentFilePreview
           name="document.pdf"
           mimeType="application/pdf"
@@ -111,6 +106,7 @@ describe("attachment HTML and PDF preview recovery", () => {
   const alert = () => container.querySelector('[role="alert"]');
 
   it("keeps a renewed URL for subsequent rendered and source views", async () => {
+    await using _fixture = await setup();
     await openRemote();
     expect(container.querySelector("iframe")?.getAttribute("src")).toBe(originalUrl);
     now = 61 * 60_000;
@@ -131,6 +127,7 @@ describe("attachment HTML and PDF preview recovery", () => {
   });
 
   it("reauthorizes a remote PDF before retrying its viewer", async () => {
+    await using _fixture = await setup();
     await openRemotePdf();
     expect(container.querySelector("a")?.getAttribute("href")).toBe(originalUrl);
     now = 61 * 60_000;
@@ -142,6 +139,7 @@ describe("attachment HTML and PDF preview recovery", () => {
   });
 
   it("does not remount a PDF with an expired URL when reauthorization is unavailable", async () => {
+    await using _fixture = await setup();
     await openRemotePdf();
     refresh.mockResolvedValue(null);
     await retryPdf();

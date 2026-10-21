@@ -115,7 +115,7 @@ describe("web runtime", () => {
     try {
       await started;
       controller.abort();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await pending;
       expect(settled).toBe(true);
       expect(finalized).toBe(true);
     } finally {

@@ -229,7 +229,7 @@ const bareEnter = {
 const enterIntent = {
   keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
   platform: "Linux",
-  isMobileViewport: false,
+  isSoftwareKeyboardOpen: false,
   isDraftThread: false,
   isRunning: true,
   prompt: "",
@@ -370,9 +370,18 @@ describe("composer Enter with V2 submission routes", () => {
     expect(result.onSubmit).toHaveBeenCalledExactlyOnceWith("background");
   });
 
-  it("leaves mobile Enter on its existing newline path", () => {
+  it.each(["Linux", "iPhone"])("steers once with a hardware keyboard on %s", (platform) => {
     const result = enterScenario({
-      intent: { ...enterIntent, isMobileViewport: true },
+      intent: { ...enterIntent, platform, isSoftwareKeyboardOpen: false },
+    });
+    expect(result.handled).toBe(true);
+    expect(result.onSteerNextQueuedMessage).toHaveBeenCalledOnce();
+    expect(result.onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("leaves software-keyboard Enter on its existing newline path", () => {
+    const result = enterScenario({
+      intent: { ...enterIntent, isSoftwareKeyboardOpen: true },
     });
     expect(result.handled).toBe(false);
     expect(result.onSteerNextQueuedMessage).not.toHaveBeenCalled();

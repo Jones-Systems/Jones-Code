@@ -1936,6 +1936,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pendingUserInputs: incomingPendingUserInputs,
     activePendingProgress: incomingPendingProgress,
     activePendingResolvedAnswers,
+    activePendingDraftAnswers,
+    activePendingQuestionIndex,
     activePendingIsResponding: incomingPendingIsResponding,
     respondingRequestIds,
     showPlanFollowUpPrompt,
@@ -1986,6 +1988,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onInterrupt,
     onImplementPlanInNewThread,
     onRespondToApproval,
+    onSelectActivePendingUserInputOption,
+    onAdvanceActivePendingUserInput,
+    onDismissActivePendingUserInput,
     onPreviousActivePendingUserInputQuestion,
     onChangeActivePendingUserInputCustomAnswer,
     onProviderModelSelect,
@@ -4262,7 +4267,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         event,
         intent: {
           keybindings,
-          isMobileViewport,
+          isSoftwareKeyboardOpen,
           isDraftThread: routeKind === "draft",
           isRunning: phase === "running",
           sendShortcut: settings.sendShortcut,
@@ -6677,6 +6682,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     questionIndex={activePendingQuestionIndex}
                     onToggleOption={onSelectActivePendingUserInputOption}
                     onAdvance={onAdvanceActivePendingUserInput}
+                    onChangeCustomAnswer={onChangeActivePendingUserInputCustomAnswer}
+                    onPrevious={onPreviousActivePendingUserInputQuestion}
                     onDismiss={onDismissActivePendingUserInput}
                   />
                 ) : !isComposerCollapsedMobile && showPlanFollowUpPrompt && activeProposedPlan ? (
