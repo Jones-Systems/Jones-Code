@@ -102,22 +102,28 @@ describe("automatic activation decision", () => {
 
 describe("follower target refusal", () => {
   it("lets a host without a policy choose its own builds", () => {
-    expect(followerTargetRefusal(undefined, "c".repeat(40), "manual")).toBeUndefined();
+    expect(followerTargetRefusal(undefined, "c".repeat(40))).toBeUndefined();
   });
 
-  it("accepts only the laptop's committed source from any origin", () => {
-    const policy = { role: "follower" as const, leaderSource: leader };
-    expect(followerTargetRefusal(policy, leader, "manual")).toBeUndefined();
-    expect(followerTargetRefusal(policy, leader, "fleet")).toBeUndefined();
-    expect(followerTargetRefusal(policy, "c".repeat(40), "fleet")).toContain("bbbbbbb");
-    expect(followerTargetRefusal(policy, "a".repeat(40), "manual")).toContain("bbbbbbb");
-    expect(followerTargetRefusal(policy, undefined, "manual")).toBeDefined();
+  it("accepts only the laptop's committed source, with the tree it reported", () => {
+    const tree = "e".repeat(40);
+    const policy = { role: "follower" as const, leaderSource: leader, leaderTree: tree };
+    expect(followerTargetRefusal(policy, leader)).toBeUndefined();
+    expect(followerTargetRefusal(policy, leader, tree)).toBeUndefined();
+    expect(followerTargetRefusal(policy, leader, "9".repeat(40))).toContain("source tree");
+    expect(followerTargetRefusal(policy, "c".repeat(40))).toContain("bbbbbbb");
+    expect(followerTargetRefusal(policy, "a".repeat(40))).toContain("bbbbbbb");
+    expect(followerTargetRefusal(policy, undefined)).toBeDefined();
   });
 
-  it("holds manual actions until the laptop reports, leaving legacy campaigns to their proof", () => {
-    const policy = { role: "follower" as const, leaderSource: null };
-    expect(followerTargetRefusal(policy, leader, "manual")).toContain("waits for the laptop");
-    expect(followerTargetRefusal(policy, leader, "fleet")).toBeUndefined();
+  it("holds every target until the laptop reports a build with its tree", () => {
+    for (const policy of [
+      { role: "follower" as const, leaderSource: null },
+      { role: "follower" as const, leaderSource: leader },
+    ]) {
+      expect(followerTargetRefusal(policy, leader)).toContain("waits for the laptop");
+      expect(followerTargetRefusal(policy, leader, "e".repeat(40))).toContain("predates following");
+    }
   });
 });
 

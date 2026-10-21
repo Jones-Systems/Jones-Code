@@ -81,7 +81,9 @@ const quietHost = (): FleetQuietSignals & {
   };
 };
 
-const fixture = () =>
+const fixture = (
+  options: { readonly relation?: Parameters<typeof makeFleetUpdates>[0]["relation"] } = {},
+) =>
   Effect.gen(function* () {
     let savedEnrollment: FleetEnrollment | null = null;
     let follower: FleetFollowerRecord | null = null;
@@ -159,6 +161,7 @@ const fixture = () =>
         store,
         updates,
         quiet,
+        ...(options.relation === undefined ? {} : { relation: options.relation }),
         operationId: () => `33333333-3333-4333-8333-${String(++nextOperation).padStart(12, "0")}`,
       });
     return {
@@ -170,6 +173,9 @@ const fixture = () =>
       quiet,
       retireStaged,
       follower: () => follower,
+      setFollower: (next: FleetFollowerRecord | null) => {
+        follower = next;
+      },
       setUpdate: (next: JonesUpdateState) => {
         update = next;
       },
@@ -389,6 +395,48 @@ describe("fleet failure and retirement reconciliation", () => {
         expect((yield* f.service.status(input.operationId)).operation?.phase).toBe("committed");
         expect(f.install).not.toHaveBeenCalled();
       }),
+  );
+
+  it.effect("ends a reconciling operation the launcher proved rejected without reinstalling", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.stage(input);
+      const selected = f.operations.get(input.operationId)!;
+      f.operations.set(input.operationId, { ...selected, phase: "dispatching" });
+      const binding = {
+        environmentId,
+        currentVersion: selected.currentVersion,
+        expectedInstalledSource: input.expectedInstalledSource,
+        targetSource: input.targetSource,
+        stagedHandle: selected.stagedHandle!,
+      };
+      f.setNative({
+        state: "blocked",
+        operationId: input.operationId,
+        binding,
+        reason: "reservation precedes native state",
+      });
+      expect((yield* f.service.status(input.operationId)).operation?.phase).toBe("reconciling");
+      // A rejection bound to another installation proves nothing about this one.
+      f.setNative({
+        state: "rejected",
+        operationId: input.operationId,
+        binding: { ...binding, targetSource: "0".repeat(40) },
+      });
+      expect((yield* f.service.status(input.operationId)).operation?.phase).toBe("reconciling");
+      f.setNative({
+        state: "rejected",
+        operationId: input.operationId,
+        binding,
+        reason: "The launcher finished this request without accepting it.",
+      });
+      const ended = (yield* f.service.status(input.operationId)).operation;
+      expect(ended?.phase).toBe("blocked");
+      expect(ended?.reason).toBe("The launcher finished this request without accepting it.");
+      expect((yield* f.service.activate(input)).operation?.phase).toBe("blocked");
+      expect(f.install).not.toHaveBeenCalled();
+    }),
   );
 
   it.effect("retains a preacceptance refusal reason and safely retries only native absence", () =>
@@ -650,7 +698,9 @@ describe("following host", () => {
   const leaderInput = {
     enrollmentId: enrollment.enrollmentId,
     environmentId,
+    repository: "Jones-Systems/Jones-Code" as const,
     committedSource: input.targetSource,
+    committedTree: "c".repeat(40),
   };
   const pendingInstall = (f: Effect.Success<ReturnType<typeof fixture>>) =>
     f.install.mockImplementation((request) =>
@@ -678,6 +728,7 @@ describe("following host", () => {
       expect(f.follower()?.leader).toEqual({
         enrollmentId: enrollment.enrollmentId,
         committedSource: input.targetSource,
+        committedTree: leaderInput.committedTree,
         publishedAt: isoAt(0),
       });
       yield* f.service.follow;
@@ -770,6 +821,67 @@ describe("following host", () => {
       expect(f.follower()).toBeNull();
     }),
   );
+
+  it.effect("treats a laptop report recorded without its source tree as no report", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const stageExact = vi.spyOn(f.updates, "stageExact");
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      f.quiet.set({ lastInputAt: 0 });
+      f.setFollower({
+        schema: 1,
+        leader: {
+          enrollmentId: enrollment.enrollmentId,
+          committedSource: input.targetSource,
+          publishedAt: isoAt(0),
+        },
+        operation: null,
+        lastAutomaticActivationAt: null,
+      });
+      yield* f.service.follow;
+      expect((yield* f.service.status()).follower).toMatchObject({
+        leaderSource: null,
+        state: "waiting-for-leader",
+      });
+      expect(stageExact).not.toHaveBeenCalled();
+      // The laptop's next report carries its tree and replaces the record.
+      yield* f.service.leader(leaderInput);
+      expect(f.follower()?.leader?.committedTree).toBe(leaderInput.committedTree);
+      yield* f.service.follow;
+      expect(stageExact).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  it.effect("holds a host already installed ahead of the laptop instead of going back", () =>
+    Effect.gen(function* () {
+      const relations: Array<{ base: string; head: string }> = [];
+      const f = yield* fixture({
+        relation: (pair) =>
+          Effect.sync(() => {
+            relations.push(pair);
+            return {
+              repository: "Jones-Systems/Jones-Code" as const,
+              ...pair,
+              relation: "ahead" as const,
+              observedAt: isoAt(0),
+            };
+          }),
+      });
+      const stageExact = vi.spyOn(f.updates, "stageExact");
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.leader(leaderInput);
+      yield* f.service.follow;
+      expect(relations).toEqual([
+        { base: input.targetSource, head: input.expectedInstalledSource },
+      ]);
+      expect((yield* f.service.status()).follower).toMatchObject({
+        state: "waiting-for-leader",
+        reason: expect.stringContaining("does not go back"),
+      });
+      expect(stageExact).not.toHaveBeenCalled();
+      expect(f.install).not.toHaveBeenCalled();
+    }),
+  );
 });
 
 it.effect("backs off a refused retirement and retries it under the same identity", () =>
@@ -783,7 +895,9 @@ it.effect("backs off a refused retirement and retries it under the same identity
     yield* f.service.leader({
       enrollmentId: enrollment.enrollmentId,
       environmentId,
+      repository: "Jones-Systems/Jones-Code",
       committedSource: "c".repeat(40),
+      committedTree: "d".repeat(40),
     });
     yield* f.service.follow;
     yield* f.service.follow;

@@ -9,6 +9,7 @@ import * as JonesHttp from "./jones/http/registration.ts";
 import * as JonesUpdates from "./jones/updates/service.ts";
 import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
 import * as JonesSourceRelation from "./jones/updates/sourceRelation.ts";
+import * as UpdateAdmissionFence from "./jones/updates/UpdateAdmissionFence.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
@@ -87,6 +88,10 @@ import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceR
 import * as ProjectSettingsOverrideSweep from "./provider/ProjectSettingsOverrideSweep.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as McpHttpServer from "./mcp/McpHttpServer.ts";
+import * as PeerForwarding from "./peer/PeerForwarding.ts";
+import * as RemoteDelegation from "./peer/RemoteDelegation.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as PeerMcpClient from "./peer/PeerMcpClient.ts";
 import * as McpSessionRegistry from "./mcp/McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./mcp/PreviewAutomationBroker.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -708,6 +713,8 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
+  // Jones: one fence shared by the event sink and the update installer.
+  Layer.provideMerge(UpdateAdmissionFence.layer),
   Layer.provide(NetService.layer),
 );
 
@@ -728,6 +735,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(jonesUpdatesHttpApiLayer.pipe(Layer.provide(JonesSourceRelation.layer))),
       Layer.provide(fleetUpdatesHttpApiLayer),
       Layer.provide(importedHistoryHttpApiLayer),
+      Layer.provide(JonesHttp.remoteAdmissionHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
       Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
       JonesHttp.provideConversationAndVoiceReview,
@@ -751,28 +759,46 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),
-  McpHttpServer.layer.pipe(
-    Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
-    Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+  JonesHttp.remoteAdmissionResumeLayer
+    .pipe(Layer.provideMerge(McpHttpServer.layer))
+    .pipe(
+      Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
+      Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    ),
+  // Follows delegated tasks running in linked environments, including after a restart.
+  Layer.effectDiscard(
+    RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
 ).pipe(
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
+  // delegate_task to a linked environment, from /mcp and the follower above.
+  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Both transports consume the same service instance, so caches single-flight across clients
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(layerPullRequestService),
   Layer.provide(ServerBrowser.layer),
-  Layer.provide(JonesHttp.previewCompanionServicesLayer),
+  Layer.provide(
+    Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
+  ),
   Layer.provide(DesktopBrowserChannel.layer),
   Layer.provide(PreviewBrowser.layer),
   Layer.provide(workstreamGatewayLayerLive),
   Layer.provide(workstreamRegistrationContextLayerLive),
   // Same layer identity as the gateway's, so the config descriptor reads the same authority.
   Layer.provide(workstreamNativeAuthorityLayerLive),
+  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+  Layer.provide(
+    PeerForwarding.layer.pipe(
+      Layer.provideMerge(PeerMcpClient.layer),
+      Layer.provideMerge(PeerLinks.layer),
+    ),
+  ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(layerServerSelfUpdate),
-  Layer.provide(FleetUpdates.layer),
+  // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+  Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
   Layer.provide(layerJonesUpdates),
   Layer.provide(layerCommandReadiness),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),

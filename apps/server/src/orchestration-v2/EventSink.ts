@@ -1,5 +1,6 @@
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import {
   makeDeletionAdmission,
   type DeletionAdmissionInput,
@@ -12,8 +13,13 @@ import type {
 } from "../jones/cleanup/DeletionWorktreeRemovalTypes.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "../jones/cleanup/DeletionWorktreeRemoval.ts";
 import { captureNativeProviderSettlementProof } from "../jones/workstreams/nativeProvider/settlementProof.ts";
+import {
+  recordSelfSettlementProjectRemaining,
+  type SelfSettlementProjectRemaining,
+} from "../jones/settlementOrigins/projectRemaining.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { makeSettlementRestoreStore } from "../jones/settlementRestore/store.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
 import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
@@ -326,6 +332,8 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
+    readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
@@ -443,6 +451,9 @@ const layerBase: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
+    // Jones: keeps new provider work out of a process that is handing off to an update.
+    const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
+    if (Option.isSome(admission)) yield* admission.value.attach;
     const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
@@ -509,6 +520,7 @@ const layerBase: Layer.Layer<
     // lane is not blocked for long.
     const jonesTables = makeJonesTablePresence(sql);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
+    const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
@@ -714,6 +726,10 @@ const layerBase: Layer.Layer<
 
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
       Effect.gen(function* () {
+        // Jones: every settle path commits here; capture reads the target before replacement.
+        // Other batches skip the hook entirely, so this per-event path runs no extra effects.
+        if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
+          yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
@@ -767,6 +783,7 @@ const layerBase: Layer.Layer<
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(committed);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.linkEffects({
@@ -1163,6 +1180,7 @@ const layerBase: Layer.Layer<
             );
           }
           yield* applyStoredEvents(storedEvents);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
@@ -1186,6 +1204,28 @@ const layerBase: Layer.Layer<
               yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          const restored = input.settlementRestore
+            ? storedEvents.find(
+                (stored) =>
+                  stored.event.type === "thread.unsettled" &&
+                  stored.event.threadId === input.threadId,
+              )
+            : undefined;
+          if (input.settlementRestore && restored !== undefined)
+            yield* settlementRestores.recordRestore({
+              threadId: input.threadId,
+              settleCommandId: input.settlementRestore.settleCommandId,
+              restoreCommandId: input.commandId,
+              restoredAt: restored.event.occurredAt,
+              sequence: receipt.resultSequence,
+            });
+          if (input.selfSettlementProjectRemaining)
+            yield* recordSelfSettlementProjectRemaining(
+              sql,
+              jonesTables,
+              input,
+              input.selfSettlementProjectRemaining,
+            );
           if (imported !== undefined && choice !== undefined) {
             if (choice.duplicate)
               return yield* new ImportedChoice.ImportedHistoryChoiceError({

@@ -1,4 +1,5 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import * as DateTime from "effect/DateTime";
 import { deriveActiveWorkStartedAt } from "../session-logic.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -24,7 +25,6 @@ import {
   getSidebarThreadIdsToPrewarm,
   hasUnseenCompletion,
   isContextMenuPointerDown,
-  isSidebarSubagentThread,
   isSidebarThreadWorking,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -208,6 +208,7 @@ describe("filterSidebarOperatingThreads", () => {
     const visible = filterSidebarV2VisibleThreads(
       [running, child, match, archived, elsewhere],
       new Set([`${running.environmentId}:${running.projectId}`]),
+      new Set(),
     );
     const active = filterSidebarOperatingThreads(visible, true, isSidebarThreadOperating);
     expect(visible.filter(isSidebarThreadOperating)).toHaveLength(2);
@@ -581,26 +582,19 @@ describe("sidebar thread lineage helpers", () => {
       projectId: ProjectId.make("project-other"),
     });
 
-    expect(
-      filterSidebarV2VisibleThreads(
-        [root, subagent, fork, archived, otherProject],
-        new Set([`${environmentId}:${projectId}`]),
-      ).map((thread) => thread.id),
-    ).toEqual([parentId, fork.id]);
-  });
-
-  it("identifies subagent threads so the sidebar can hide them", () => {
-    const parentId = ThreadId.make("thread-parent");
-    const subagent = makeThreadFixture({
-      lineage: {
-        rootThreadId: parentId,
-        parentThreadId: parentId,
-        relationshipToParent: "subagent",
-      },
+    const delegated = makeThreadFixture({
+      id: ThreadId.make("thread-delegated-here"),
+      environmentId,
+      projectId,
     });
 
-    expect(isSidebarSubagentThread(subagent)).toBe(true);
-    expect(isSidebarSubagentThread(makeThreadFixture())).toBe(false);
+    expect(
+      filterSidebarV2VisibleThreads(
+        [root, subagent, fork, archived, otherProject, delegated],
+        new Set([`${environmentId}:${projectId}`]),
+        new Set([threadKey({ environmentId, threadId: delegated.id })]),
+      ).map((thread) => thread.id),
+    ).toEqual([parentId, fork.id]);
   });
 
   it("resolves the parent thread for fork sidebar affordances", () => {
@@ -1459,7 +1453,7 @@ describe("resolveThreadStatusPill", () => {
     ).toBeNull();
   });
 
-  it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
+  it("does not infer an input request from a settled plan turn with a proposed plan", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -1473,7 +1467,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Plan Ready", pulse: false });
+    ).toBeNull();
   });
 
   it("does not manufacture completed state without a client visit marker", () => {
@@ -2055,7 +2049,7 @@ describe("sortSidebarV2ProjectGroups", () => {
     ];
 
     expect(
-      sortSidebarV2ProjectGroups(projects, threads, "updated_at").map(
+      sortSidebarV2ProjectGroups(projects, threads, "updated_at", new Set()).map(
         (project) => project.projectKey,
       ),
     ).toEqual(["logical-newer", "logical-older"]);

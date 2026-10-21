@@ -42,6 +42,7 @@ export * from "./orchestrationProject.ts";
 export * from "./orchestrationV2.ts";
 export * from "./applicationEvent.ts";
 export * from "./orchestratorMcp.ts";
+export * from "./peerLink.ts";
 export * from "./threadMetadataMcp.ts";
 export * from "./threadPullRequest.ts";
 export * from "./threadSearch.ts";
@@ -107,4 +108,9 @@ export * from "./jones/workstreamsNativeOwner.ts";
 
 export * from "./jones/queuedSteerBatch.ts";
 
+export * from "./jones/threadGoal.ts";
 export * from "./jones/clientLaunch.ts";
+
+export * from "./jones/remoteAdmission.ts";
+
+export * from "./jones/remoteAdmissionHttp.ts";

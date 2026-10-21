@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 const branding = vi.hoisted(() => ({
   APP_VERSION: "0.0.45-preview.20261010.38048764253.1",
   APP_SOURCE_SHA: "a".repeat(40),
+  APP_BUILD_STARTED_AT: undefined,
 }));
 vi.mock("../../branding", () => branding);
 

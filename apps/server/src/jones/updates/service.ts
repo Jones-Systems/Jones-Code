@@ -41,14 +41,25 @@ import {
 } from "./launcherOperation.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
-import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
-import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
+import {
+  readCurrentJonesBuildStartedAt,
+  JonesUpdater,
+  type JonesStagedRetirementInput,
+} from "./JonesUpdater.ts";
+import {
+  makePreparationSupervisor,
+  resolvePreparationWorkerCommand,
+} from "./preparation/supervisor.ts";
+import { adoptPreparedStage, adoptVerifiedStage } from "./preparation/rebind.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
+import { awaitHandoffOutcome } from "./handoffOutcome.ts";
 import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
 import * as Launcher from "../../cloud/serviceLauncherClient.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
+import { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 
 export class JonesUpdates extends Context.Service<
@@ -104,9 +115,12 @@ export const layer = Layer.effect(
     const selfUpdate = yield* SelfUpdate.ServerSelfUpdate;
     const launcher = yield* Launcher.ServiceLauncherClient;
     const startup = yield* Startup.ServerRuntimeStartup;
+    const admissionFence = yield* UpdateAdmissionFence.UpdateAdmissionFence;
+    const orchestrator = yield* Effect.serviceOption(OrchestratorV2);
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
+    const currentBuildStartedAt = readCurrentJonesBuildStartedAt(packageJson, version);
     const receiptStarted = yield* Clock.currentTimeMillis;
     const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
@@ -190,7 +204,6 @@ export const layer = Layer.effect(
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
-      reconcileQualifiedOperation: reconcileOperation,
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
@@ -400,6 +413,65 @@ export const layer = Layer.effect(
     const supported =
       (platform === "linux" && (architecture === "x64" || architecture === "arm64")) ||
       (platform === "darwin" && architecture === "arm64");
+    const preparationHost =
+      (platform === "linux" || platform === "darwin") &&
+      (architecture === "x64" || architecture === "arm64")
+        ? { platform, architecture }
+        : undefined;
+    const cacheRoot = NodePath.join(config.baseDir, "runtime", "jones-actions");
+    // Download, archive and tree hashes, extraction and validation run in a low-priority worker
+    // started from this server's own build, one at a time per host; this process only
+    // supervises it and rebinds its bounded result.
+    const preparationCommand = resolvePreparationWorkerCommand({
+      isExecutable: yield* HostProcess.IsExecutable,
+      execPath: yield* HostProcess.ExecutablePath,
+      entryPath: (yield* HostProcess.Arguments)[1],
+    });
+    const preparation =
+      preparationCommand === undefined
+        ? undefined
+        : makePreparationSupervisor({
+            baseDir: config.baseDir,
+            cacheRoot,
+            command: preparationCommand,
+            env: yield* HostProcess.Environment,
+            observe: (exit) =>
+              void run(
+                Effect.logInfo("Jones update preparation worker exited", {
+                  jobId: exit.jobId,
+                  kind: exit.kind,
+                  pid: exit.pid,
+                  priority: exit.priority,
+                  code: exit.code,
+                  signal: exit.signal,
+                  stopped: exit.stopped,
+                  reaped: exit.reaped,
+                  durationMs: exit.durationMs,
+                }),
+              ),
+          });
+    const preparationUnavailable = () =>
+      new Error(
+        "bootstrap-required: This installation cannot start its update preparation worker.",
+      );
+    const verifyStaged: SelfUpdate.QualifiedStageVerifier = async ({
+      stagedHandle,
+      activeVersion,
+      signal,
+    }) => {
+      if (preparation === undefined || preparationHost === undefined)
+        throw preparationUnavailable();
+      const outcome = await preparation.run(
+        { kind: "verify", stagedHandle, activeVersion, host: preparationHost },
+        { signal },
+      );
+      return adoptVerifiedStage({
+        baseDir: config.baseDir,
+        activeVersion,
+        stagedHandle,
+        staged: outcome.staged,
+      });
+    };
     const terminal = launcher.qualifiedStartupOutcome;
     let restoreFailure: string | undefined;
     const restoreStarted = yield* Clock.currentTimeMillis;
@@ -491,6 +563,7 @@ export const layer = Layer.effect(
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: version,
+        ...(currentBuildStartedAt === undefined ? {} : { currentBuildStartedAt }),
         ...(installedSource === undefined ? {} : { installedSource }),
         ...(launcher.qualifiedUpdateMigrationPlan === undefined
           ? {}
@@ -512,15 +585,15 @@ export const layer = Layer.effect(
           qualifiedStaging: launcher.qualifiedStaging === true,
           qualifiedUpdates: launcher.qualifiedUpdates === true,
           hasCurrentVersion: launcher.currentVersion !== undefined,
-          hasStage: selfUpdate.stageQualified !== undefined,
-          hasInstall: qualifiedSelfUpdate.installQualified !== undefined,
+          hasStage: preparation !== undefined,
+          hasInstall:
+            qualifiedSelfUpdate.installQualified !== undefined && preparation !== undefined,
           hasEnvironment: environmentId !== undefined,
           restoreFailed: restoreFailure !== undefined,
         }),
       },
       platform: platform === "darwin" ? "darwin" : "linux",
       architecture: architecture === "arm64" ? "arm64" : "x64",
-      cacheRoot: NodePath.join(config.baseDir, "runtime", "jones-actions"),
       installedSource: async () =>
         runtimeReceipt?.sourceSha ??
         (
@@ -529,16 +602,48 @@ export const layer = Layer.effect(
             launcher.currentVersion ?? packageJson.version,
           )
         ).sourceSha,
-      stage: async (artifact) => {
-        if (selfUpdate.stageQualified === undefined)
-          throw new Error("bootstrap-required: Qualified staging is unavailable.");
-        const result = await run(selfUpdate.stageQualified(artifact));
-        const { migrationPlan, ...selection } = result;
+      prepare: async (candidate, { signal, onVerifying }) => {
+        if (preparation === undefined) throw preparationUnavailable();
+        const activeVersion = launcher.currentVersion;
+        if (!launcher.managed || launcher.qualifiedStaging !== true || activeVersion === undefined)
+          throw new Error(
+            "bootstrap-required: This host needs a qualified Jones runtime and launcher before installing Actions artifacts.",
+          );
+        if (preparationHost === undefined)
+          throw new Error(
+            "This service requires an Actions artifact matching its native platform.",
+          );
+        const outcome = await preparation.run(
+          {
+            kind: "stage",
+            candidate,
+            cacheRoot,
+            dbPath: config.dbPath,
+            activeVersion,
+            host: preparationHost,
+          },
+          { signal, onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined) },
+        );
+        const selection = await adoptPreparedStage({
+          baseDir: config.baseDir,
+          dbPath: config.dbPath,
+          activeVersion,
+          candidate,
+          host: preparationHost,
+          staged: outcome.staged,
+        });
         await retainStagedSelection(selection);
+        if (outcome.leftover !== undefined)
+          void run(
+            Effect.logWarning("Qualified staging left its scratch directory in place.", {
+              path: outcome.leftover,
+            }),
+          );
         return {
-          stagedHandle: result.stagedHandle,
-          version: result.receipt.version,
-          ...(migrationPlan === undefined ? {} : { migrationPlan }),
+          stagedHandle: selection.stagedHandle,
+          version: selection.receipt.version,
+          payloadSha256: selection.receipt.archiveSha256,
+          ...(outcome.migrationPlan === undefined ? {} : { migrationPlan: outcome.migrationPlan }),
         };
       },
       retireStaged: async (input) => {
@@ -554,40 +659,89 @@ export const layer = Layer.effect(
         const operationId =
           input.operationId ??
           (launcher.qualifiedOperations === true ? NodeCrypto.randomUUID() : undefined);
+        const installQualified = qualifiedSelfUpdate.installQualified;
+        const admit = input.admit;
         const accepted = await run(
-          qualifiedSelfUpdate.installQualified(
-            { ...input, ...(operationId === undefined ? {} : { operationId }) },
-            undefined,
-            (staged) =>
-              operationId === undefined
-                ? Effect.void
-                : startup.capturePlannedUpdate === undefined
-                  ? Effect.fail(
-                      new ServerSelfUpdateError({
-                        reason: "Planned update continuity is not configured.",
-                      }),
-                    )
-                  : admitted(input.admit).pipe(
-                      Effect.andThen(
-                        startup
-                          .capturePlannedUpdate({
-                            operationId,
-                            binding: operationBinding(staged),
-                            continueRunningThreads: input.continueRunningThreads === true,
-                          })
-                          .pipe(
-                            Effect.mapError(
-                              (cause) =>
-                                new ServerSelfUpdateError({
-                                  reason: "Could not capture planned update continuity.",
-                                  cause,
-                                }),
+          UpdateAdmissionFence.fencedInstall({
+            fence: admissionFence,
+            mode: input.origin === "fleet" ? "automatic" : "manual",
+            ...(admit === undefined
+              ? {}
+              : {
+                  finalCheck: Effect.promise(() =>
+                    admit().catch(() => "Running work on this host could not be read."),
+                  ),
+                }),
+            handoffOutcome: (cause) =>
+              awaitHandoffOutcome({
+                operationId,
+                cause,
+                reconcile: reconcileOperation,
+                ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
+                  ? { query: launcher.reconcileUpdate }
+                  : {}),
+              }).pipe(
+                Effect.tap((outcome) =>
+                  outcome === "rejected" && operationId !== undefined
+                    ? qualifiedSelfUpdate
+                        .releaseRejectedHandoff(operationId)
+                        .pipe(
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning(
+                              "Could not clear continuations of a rejected update handoff",
+                              { cause },
                             ),
                           ),
-                      ),
+                        )
+                    : Effect.void,
+                ),
+              ),
+            // Queued runs the fence refused to start stay queued; start them again here.
+            ...(Option.isNone(orchestrator)
+              ? {}
+              : {
+                  reopened: orchestrator.value.resumeQueuedRuns.pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning("Could not restart queued runs after an update stopped", {
+                        cause,
+                      }),
                     ),
-            (step) => Effect.sync(() => reportStep?.(step)),
-          ),
+                    Effect.asVoid,
+                  ),
+                }),
+            install: ({ onPrepared, onAccepted }) =>
+              installQualified(
+                { ...input, ...(operationId === undefined ? {} : { operationId }), verifyStaged },
+                () => onAccepted,
+                (staged) =>
+                  onPrepared(
+                    operationId === undefined
+                      ? Effect.void
+                      : startup.capturePlannedUpdate === undefined
+                        ? Effect.fail(
+                            new ServerSelfUpdateError({
+                              reason: "Planned update continuity is not configured.",
+                            }),
+                          )
+                        : startup
+                            .capturePlannedUpdate({
+                              operationId,
+                              binding: operationBinding(staged),
+                              continueRunningThreads: input.continueRunningThreads === true,
+                            })
+                            .pipe(
+                              Effect.mapError(
+                                (cause) =>
+                                  new ServerSelfUpdateError({
+                                    reason: "Could not capture planned update continuity.",
+                                    cause,
+                                  }),
+                              ),
+                            ),
+                  ),
+                (step) => Effect.sync(() => reportStep?.(step)),
+              ),
+          }),
         );
         return {
           ...(accepted.updateId === undefined ? {} : { updateId: accepted.updateId }),
@@ -603,13 +757,17 @@ export const layer = Layer.effect(
       if (enrollment === null || !enrollment.enabled || enrollment.environmentId !== environmentId)
         return undefined;
       const leader = (await fleetStore.readFollower())?.leader;
-      return {
-        role: "follower",
-        leaderSource:
-          leader !== null && leader !== undefined && leader.enrollmentId === enrollment.enrollmentId
-            ? leader.committedSource
-            : null,
-      };
+      // A leader recorded without its tree is not provenance; the host waits for a new report.
+      return leader !== null &&
+        leader !== undefined &&
+        leader.enrollmentId === enrollment.enrollmentId &&
+        leader.committedTree !== undefined
+        ? {
+            role: "follower",
+            leaderSource: leader.committedSource,
+            leaderTree: leader.committedTree,
+          }
+        : { role: "follower", leaderSource: null };
     };
     const refreshPolicy = Effect.tryPromise(readPolicy).pipe(
       Effect.map((policy) => updater.setPolicy(policy).policy),
@@ -630,6 +788,13 @@ export const layer = Layer.effect(
       ),
     );
     yield* refreshPolicy;
+    // Leftovers of a worker killed in an earlier server lifetime are removed by a fresh worker.
+    if (preparation !== undefined)
+      yield* Effect.sleep("10 seconds").pipe(
+        Effect.andThen(Effect.tryPromise(() => preparation.sweep())),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
     publishCapability(updater.snapshot());
     yield* Effect.promise(() => capabilityWrites.catch(() => {}));
     yield* Effect.sleep("15 seconds").pipe(
@@ -644,6 +809,8 @@ export const layer = Layer.effect(
     const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
       Effect.gen(function* () {
         const prior = yield* reconcileOperation(input.operationId);
+        if (prior.state === "rejected")
+          return blocked("The launcher refused this exact operation before accepting it.");
         if (prior.state !== "absent") {
           const binding = prior.binding;
           if (
@@ -690,7 +857,7 @@ export const layer = Layer.effect(
         isUpdateOperationId(input.operationId) &&
         launcher.qualifiedOperations === true &&
         launcher.qualifiedRetirement === true
-          ? Effect.promise(() => updater.stageExact(input.targetSource, "fleet"))
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
           : Effect.succeed(
               blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
             ),
@@ -721,7 +888,7 @@ export const layer = Layer.effect(
       download: (input) => Effect.promise(() => updater.download(input)),
       downloadExact: (input) =>
         updater.snapshot().capability.download
-          ? Effect.promise(() => updater.stageExact(input.targetSource, "manual"))
+          ? Effect.promise(() => updater.stageExact(input.targetSource))
           : Effect.succeed({
               ...updater.snapshot(),
               phase: "blocked" as const,
@@ -731,22 +898,3 @@ export const layer = Layer.effect(
     });
   }),
 );
-
-/** Fails before the launcher is asked when an automatic activation is no longer admitted. */
-function admitted(admit: (() => Promise<string | undefined>) | undefined) {
-  if (admit === undefined) return Effect.void;
-  return Effect.promise(() =>
-    admit().catch(() => "Running work on this host could not be read."),
-  ).pipe(
-    Effect.flatMap((reason) =>
-      reason === undefined
-        ? Effect.void
-        : Effect.fail(
-            new ServerSelfUpdateError({
-              reason: `The automatic update was withdrawn: ${reason}`,
-              cause: new AutomaticActivationWithdrawn(reason),
-            }),
-          ),
-    ),
-  );
-}

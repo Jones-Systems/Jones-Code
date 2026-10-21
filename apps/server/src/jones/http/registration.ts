@@ -4,6 +4,8 @@ import * as WorkQueueMetadataService from "../workQueueMetadata/WorkQueueMetadat
 import { workQueueMetadataHttpApiLayer } from "../workQueueMetadata/http.ts";
 import * as SettlementOrigins from "../settlementOrigins/SettlementOrigins.ts";
 import { settlementOriginsHttpApiLayer } from "../settlementOrigins/http.ts";
+import * as SettlementRestore from "../settlementRestore/SettlementRestore.ts";
+import { settlementRestoreHttpApiLayer } from "../settlementRestore/http.ts";
 import * as Layer from "effect/Layer";
 import { conversationLibraryHttpApiLayer } from "../../conversations/http.ts";
 import * as HostStatus from "../../hostStatus/HostStatus.ts";
@@ -18,6 +20,11 @@ export { voiceReviewResponseHeadersLayer } from "../../voiceReview/http.ts";
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
     Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
+    Layer.provide(
+      settlementRestoreHttpApiLayer.pipe(
+        Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+      ),
+    ),
     Layer.provide(
       workQueueMetadataHttpApiLayer.pipe(Layer.provide(WorkQueueMetadataService.layer)),
     ),
@@ -50,3 +57,9 @@ export {
   servicesLayer as previewCompanionServicesLayer,
 } from "../previewCompanion/registration.ts";
 export { previewCompanionHttpApiLayer } from "../previewCompanion/http.ts";
+
+export { remoteAdmissionHttpApiLayer } from "../remoteAdmissionIntegration/http.ts";
+export {
+  servicesLayer as remoteAdmissionServicesLayer,
+  resumeLayer as remoteAdmissionResumeLayer,
+} from "../remoteAdmissionIntegration/registration.ts";

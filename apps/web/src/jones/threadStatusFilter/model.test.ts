@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { makeThreadFixture } from "../../test-fixtures";
 import {
   filterSidebarV2VisibleThreads,
@@ -75,6 +76,31 @@ describe("sidebar status filter", () => {
     },
   );
 
+  it.each(["current", "legacy"] as const)(
+    "requires an explicit request despite a stale proposed plan in %s",
+    (layout) => {
+      const stalePlan = {
+        ...base,
+        interactionMode: "plan" as const,
+        hasActionableProposedPlan: true,
+        latestRun,
+        runtime: runtime("completed"),
+      };
+      for (const lastVisitedAt of [undefined, null, completed]) {
+        expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt }, layout)).toBeNull();
+      }
+      expect(classifyThreadStatus({ ...stalePlan, lastVisitedAt: visited }, layout)).toBe("done");
+      for (const request of [
+        { hasPendingUserInput: true },
+        { hasPendingApprovals: true },
+        { pendingSubagentRequest: "user_input" as const },
+        { pendingSubagentRequest: "approval" as const },
+      ]) {
+        expect(classifyThreadStatus({ ...stalePlan, ...request }, layout)).toBe("input");
+      }
+    },
+  );
+
   it("cycles every state, including empty states, back to all", () => {
     let filter: ThreadStatusFilter = "all";
     const seen = [];
@@ -113,7 +139,7 @@ describe("sidebar status filter", () => {
           { ...base, interactionMode: "plan", latestRun, hasActionableProposedPlan: true },
           layout,
         ),
-      ).toBe("input");
+      ).toBeNull();
     },
   );
 
@@ -181,6 +207,7 @@ describe("sidebar status filter", () => {
           relationshipToParent: "subagent",
         },
       }),
+      makeThreadFixture({ ...working, id: ThreadId.make("remote-task") }),
       makeThreadFixture({ ...working, projectId: ProjectId.make("other") }),
       makeThreadFixture({ ...working, environmentId: EnvironmentId.make("excluded") }),
     ];
@@ -190,6 +217,7 @@ describe("sidebar status filter", () => {
         new Set([EnvironmentId.make("excluded")]),
       ),
       new Set([`${environmentId}:${projectId}`]),
+      new Set([threadKey({ environmentId, threadId: ThreadId.make("remote-task") })]),
     );
     for (const filter of ["all", "working", "input", "done"] as const) {
       const selected = selectThreadStatus(scoped, filter, (thread) =>

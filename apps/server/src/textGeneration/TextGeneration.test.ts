@@ -5,7 +5,7 @@ import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import { describe, expect } from "vite-plus/test";
 
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, TextGenerationError } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -19,6 +19,8 @@ const makeStubTextGeneration = (
   overrides: Partial<TextGeneration.TextGeneration["Service"]>,
 ): TextGeneration.TextGeneration["Service"] =>
   TextGeneration.TextGeneration.of({
+    evaluateRemoteRequest: () =>
+      Effect.die("evaluateRemoteRequest stub not configured for this test"),
     generateCommitMessage: () =>
       Effect.die("generateCommitMessage stub not configured for this test"),
     generatePrContent: () => Effect.die("generatePrContent stub not configured for this test"),
@@ -62,6 +64,69 @@ const makeStubRegistry = (
 };
 
 describe("TextGeneration.make", () => {
+  it.effect.each(["pass", "hold", "missing", "unsupported"] as const)(
+    "routes remote evaluation and preserves %s outcomes without link resolution",
+    (outcome) =>
+      Effect.gen(function* () {
+        const instanceId = ProviderInstanceId.make("remote-evaluator");
+        const input = {
+          cwd: "/synthetic/workspace",
+          message: "Fix the parser",
+          context: "Parser repository",
+          modelSelection: createModelSelection(instanceId, "synthetic-model"),
+        };
+        const instances =
+          outcome === "missing"
+            ? []
+            : [
+                makeStubInstance(
+                  instanceId,
+                  makeStubTextGeneration({
+                    evaluateRemoteRequest: (received) => {
+                      expect(received).toEqual(input);
+                      if (outcome === "unsupported")
+                        return Effect.fail(
+                          new TextGenerationError({
+                            operation: "evaluateRemoteRequest",
+                            detail: "Unsupported synthetic evaluator.",
+                          }),
+                        );
+                      return Effect.succeed(
+                        outcome === "hold"
+                          ? { verdict: "hold", category: "risky", reason: "Owner input needed." }
+                          : { verdict: "pass", category: "none", reason: "Ordinary coding work." },
+                      );
+                    },
+                  }),
+                ),
+              ];
+        const generation = yield* TextGeneration.make.pipe(
+          Effect.provideService(
+            ProviderInstanceRegistry.ProviderInstanceRegistry,
+            makeStubRegistry(instances),
+          ),
+          Effect.provide(
+            Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
+              resolveLink: () => Effect.die("Evaluator must not investigate linked content"),
+            }),
+          ),
+        );
+        const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
+        if (outcome === "missing" || outcome === "unsupported") {
+          expect(Result.isFailure(result)).toBe(true);
+          if (Result.isFailure(result)) {
+            expect(result.failure.operation).toBe("evaluateRemoteRequest");
+            expect(result.failure.detail).toContain(
+              outcome === "missing" ? "No provider instance" : "Unsupported synthetic",
+            );
+          }
+        } else {
+          expect(Result.isSuccess(result)).toBe(true);
+          if (Result.isSuccess(result)) expect(result.success.verdict).toBe(outcome);
+        }
+      }),
+  );
+
   it.effect("retains supplied subject context in the provider prompt", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("codex");

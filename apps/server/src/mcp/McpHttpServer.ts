@@ -1,3 +1,9 @@
+import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
+import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
+import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
+import * as GoalControl from "../jones/goals/GoalControl.ts";
+import * as GoalStartDispatch from "../jones/goals/GoalStartDispatch.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -13,7 +19,12 @@ import * as Stream from "effect/Stream";
 import type * as Types from "effect/Types";
 import { AiError, McpProtocol, McpSchema, McpServer, Tool, type Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { OrchestratorMcpFailure, PreviewAutomationError } from "@t3tools/contracts";
+import {
+  OrchestratorMcpFailure,
+  PreviewAutomationError,
+  ProviderInteractionMode,
+  RuntimeMode,
+} from "@t3tools/contracts";
 
 import { DecisionSnapshotCollectorLive } from "../jones/mcp/decisionSnapshot/collector.ts";
 import {
@@ -23,6 +34,10 @@ import {
 import { DecisionSnapshotToolkit } from "../jones/mcp/decisionSnapshot/tools.ts";
 import { OrganizationMetadataHandlersLive } from "../jones/mcp/organizationMetadata/handlers.ts";
 import { OrganizationMetadataToolkit } from "../jones/mcp/organizationMetadata/tools.ts";
+import { SettlementRestoreHandlersLive } from "../jones/mcp/settlementRestore/handlers.ts";
+import { SettlementRestoreToolkit } from "../jones/mcp/settlementRestore/tools.ts";
+import * as SettlementRestore from "../jones/settlementRestore/SettlementRestore.ts";
+import * as ProjectionStoreV2 from "../orchestration-v2/ProjectionStore.ts";
 import * as OrganizationMetadata from "../jones/mcp/organizationMetadata/OrganizationMetadataMcpService.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -148,6 +163,35 @@ export const normalizeMcpHttpResponse = (
 // Session tokens are `<payload>.<signature>`; registry tokens are a bare base64url secret.
 const looksLikeProviderToken = (token: string) => token.length > 0 && !token.includes(".");
 
+const decodeModeLimit = Schema.decodeUnknownOption(
+  Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
+);
+const parseModeLimit = (value: string) => {
+  const [runtimeMode, interactionMode, ...rest] = value.trim().split("/");
+  return rest.length === 0 ? decodeModeLimit({ runtimeMode, interactionMode }) : Option.none();
+};
+
+const invalidModeLimit = HttpServerResponse.jsonUnsafe(
+  {
+    error: "invalid_mode_limit",
+    message: "T3-Mode-Limit must be <runtimeMode>/<interactionMode>, e.g. auto/default.",
+  },
+  { status: 400, headers: { "cache-control": "no-store" } },
+);
+
+/** Applies a client's requested mode limit; undefined when the header is malformed. */
+const withModeLimit = (
+  invocation: McpInvocationContext.McpInvocationScope,
+  request: HttpServerRequest.HttpServerRequest,
+): McpInvocationContext.McpInvocationScope | undefined => {
+  const header = request.headers[McpInvocationContext.MODE_LIMIT_HEADER];
+  if (header === undefined || invocation.client === undefined) return invocation;
+  const limit = parseModeLimit(header);
+  return Option.isNone(limit)
+    ? undefined
+    : { ...invocation, client: { ...invocation.client, narrowedTo: limit.value } };
+};
+
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
@@ -173,8 +217,10 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
         offerOAuth: Option.isSome(clients) && !looksLikeProviderToken(token),
       });
     }
+    const limited = withModeLimit(invocation, request);
+    if (limited === undefined) return invalidModeLimit;
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, limited),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
@@ -787,7 +833,11 @@ export const layerPreviewToolkit = Layer.mergeAll(
 export const layerOrchestratorToolkit = toolkitRegistration(
   OrchestratorToolkit,
   OrchestratorHandlers.layer,
-).pipe(Layer.provide(OrchestratorMcpService.layer), Layer.provide(ThreadMetadataMcpService.layer));
+).pipe(
+  Layer.provide(OrchestratorMcpService.layer),
+  Layer.provide(ThreadMetadataMcpService.layer),
+  Layer.provide(GoalControl.layer.pipe(Layer.provide(GoalStartDispatch.layer))),
+);
 
 export const layerThreadToolkit = toolkitRegistration(ThreadToolkit, ThreadHandlers.layer);
 
@@ -806,7 +856,7 @@ export const layerEnvironmentToolkit = toolkitRegistration(
   EnvironmentHandlers.layer,
 ).pipe(Layer.provide(ThreadCommandExecutor.layer));
 
-const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
+export const layerProjectRegistration = toolkitRegistration(ProjectToolkit, ProjectHandlers.layer);
 
 export const layerAttachmentToolkit = toolkitRegistration(
   AttachmentToolkit,
@@ -838,6 +888,11 @@ export const OrganizationMetadataRegistrationLive = toolkitRegistration(
   OrganizationMetadataHandlersLive,
 ).pipe(Layer.provide(OrganizationMetadata.layer));
 
+const SettlementRestoreRegistrationLive = toolkitRegistration(
+  SettlementRestoreToolkit,
+  SettlementRestoreHandlersLive,
+).pipe(Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))));
+
 const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
   DecisionSnapshotToolkit,
   DecisionSnapshotToolkitAccess,
@@ -855,7 +910,12 @@ export const layerMcpTransport = McpServer.layerHttp({
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
 export const layer = Layer.mergeAll(
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
+    Layer.provide(UserResponseRequest.layer),
+  ),
   OrganizationMetadataRegistrationLive,
+  SettlementRestoreRegistrationLive,
+  toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
   DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,

@@ -1,7 +1,9 @@
+import { controlCodexGoal } from "../../jones/goals/CodexGoalControl.ts";
 import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.ts";
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
+  CODEX_START_ACK_TIMEOUT_MS,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
@@ -2178,6 +2180,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly nativeContexts: Array<ActiveCodexTurnContext>;
           startDispatched: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
+          pendingStartCancelled?: Deferred.Deferred<void> | undefined;
           timer?: Fiber.Fiber<void> | undefined;
           recoveryEnabled: boolean;
           logicalTerminalEmitted: boolean;
@@ -2436,18 +2439,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly observed: ReturnType<typeof codexObservedRuntimeIdentity>;
           }
         >();
+        const canEmitFor = Effect.fnUntraced(function* (producer: CodexRuntimeProducer) {
+          return (
+            producer.eventProducer.accepting &&
+            (producer.active || (yield* CodexTerminatingProducer) === producer) &&
+            producer === currentProducer
+          );
+        });
         const emitProviderEvent = (
           event: ProviderAdapterV2Event,
           capturedTurn?: ActiveCodexTurnContext,
         ) =>
           Effect.gen(function* () {
             const producer = (yield* CodexProducerContext) ?? currentProducer;
-            if (
-              !producer.eventProducer.accepting ||
-              (!producer.active && (yield* CodexTerminatingProducer) !== producer) ||
-              producer !== currentProducer
-            )
-              return;
+            if (!(yield* canEmitFor(producer))) return;
             const providerThreadId =
               event.type === "provider_thread.updated"
                 ? event.providerThread.id
@@ -6512,6 +6517,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           const hold = goalHolds.get(nativeThreadId);
           if (hold === undefined || goalStops.has(nativeThreadId)) return;
           if (expected !== undefined && hold.event !== expected) return;
+          // A queued release must leave a dead producer's hold for termination to fail.
+          if (!(yield* canEmitFor((yield* CodexProducerContext) ?? currentProducer))) return;
           goalHolds.delete(nativeThreadId);
           yield* settleGoalHold(hold, "completed");
         });
@@ -7004,6 +7011,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (request.timer !== undefined && !fromTimer) yield* Fiber.interrupt(request.timer);
             if (pending) {
               yield* finishUnknownCapacityStart(request);
+              if (request.pendingStartCancelled !== undefined)
+                yield* Deferred.succeed(request.pendingStartCancelled, undefined);
               return;
             }
             reduceCapacity(request, { type: "cancel", reason });
@@ -7057,6 +7066,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             request.lateStartDispatch = dispatch;
             // Keep the original RPC waiter in its producer's scope after the caller
             // times out. A replacement producer cannot acknowledge this dispatch.
+            const startCancelled = yield* Deferred.make<void>();
+            request.pendingStartCancelled = startCancelled;
             const pendingStart = yield* producer.client
               .request(
                 "turn/start",
@@ -7071,7 +7082,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
                 Effect.forkIn(producer.scope, { startImmediately: true }),
               );
-            const started = yield* Fiber.join(pendingStart).pipe(Effect.timeout("30 seconds"));
+            // Stop ends only this caller's wait; the producer retains the original RPC
+            // so its exact acknowledgement and completion can reconcile the unknown effect.
+            const started = yield* Fiber.join(pendingStart).pipe(
+              Effect.raceFirst(
+                Deferred.await(startCancelled).pipe(
+                  Effect.andThen(
+                    toProtocolError(
+                      "Codex start was cancelled before acknowledgement; its native outcome remains unknown.",
+                    ),
+                  ),
+                ),
+              ),
+              Effect.timeout(CODEX_START_ACK_TIMEOUT_MS),
+            );
             if (
               request.state.phase !== "awaiting_start" ||
               request.state.retryOrdinal !== retryOrdinal ||
@@ -7615,7 +7639,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ...(held ? [hold.context] : []),
                   ]),
                 );
-                if (!held)
+                if (!held || !(yield* canEmitFor((yield* CodexProducerContext) ?? currentProducer)))
                   return { turnInput: { ...turnInput, providerTurnId }, goalTurns, goalPauseIssue };
                 goalHolds.delete(goalThreadId);
                 yield* settleGoalHold(hold, "interrupted");
@@ -8924,6 +8948,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
               ),
             ),
+          controlGoal: (controlInput) =>
+            Effect.suspend(() => {
+              const producer = currentProducer;
+              const nativeId = controlInput.providerThread.nativeThreadRef?.nativeId ?? "";
+              return controlCodexGoal(controlInput, {
+                client,
+                current: NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
+                  threadId: controlInput.providerThread.appThreadId,
+                  runtimeGeneration: producer.generation,
+                }).pipe(
+                  Effect.andThen(
+                    Effect.sync(
+                      () =>
+                        !capacityScopeClosed &&
+                        !hasUnknownNativeStart() &&
+                        producer.active &&
+                        currentProducer === producer &&
+                        controlInput.providerThread.runtimeIdentity?.runtimeGeneration ===
+                          producer.generation &&
+                        producer.bindings.get(nativeId)?.appThreadId ===
+                          controlInput.providerThread.appThreadId &&
+                        controlInput.providerThread.providerSessionId === input.providerSessionId &&
+                        controlInput.providerThread.providerInstanceId ===
+                          adapterOptions.instanceId &&
+                        producer.bindings.get(nativeId)?.id === controlInput.providerThread.id,
+                    ),
+                  ),
+                  Effect.orElseSucceed(() => false),
+                ),
+                beforeMutation: (action) =>
+                  Effect.sync(() => {
+                    if (action === "pause" || action === "clear") {
+                      const activation = goalActivations.get(nativeId);
+                      if (activation !== undefined) activation.stopped = true;
+                    }
+                  }),
+                observe: (goal) =>
+                  turnTerminalizationPermit.withPermits(1)(
+                    Effect.gen(function* () {
+                      goalsByNativeThread.set(nativeId, goal);
+                      yield* emitGoalUpdate(nativeId);
+                      if (goal?.status !== "active") yield* releaseGoalHold(nativeId);
+                    }),
+                  ),
+              });
+            }),
           readGoalState: (providerThread) =>
             Effect.gen(function* () {
               if (

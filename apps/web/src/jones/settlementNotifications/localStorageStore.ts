@@ -1,3 +1,5 @@
+import { SettlementProjectRemaining } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import type {
   SettlementEntry,
   SettlementInboxState,
@@ -6,6 +8,7 @@ import type {
 
 export const SETTLEMENT_STORAGE_PREFIX = "jones.settlementNotifications.v1.";
 const ENTRY_PREFIX = `${SETTLEMENT_STORAGE_PREFIX}entry.`;
+const PROJECT_REMAINING_PREFIX = `${SETTLEMENT_STORAGE_PREFIX}projectRemaining.`;
 const ACK_PREFIX = `${SETTLEMENT_STORAGE_PREFIX}ack.`;
 const BASELINE_PREFIX = `${SETTLEMENT_STORAGE_PREFIX}baseline.`;
 
@@ -16,6 +19,8 @@ function parse(json: string | null): unknown {
     return null;
   }
 }
+
+const isProjectRemaining = Schema.is(SettlementProjectRemaining);
 
 function isEntry(value: unknown): value is SettlementEntry {
   if (typeof value !== "object" || value === null) return false;
@@ -30,6 +35,7 @@ function isEntry(value: unknown): value is SettlementEntry {
     typeof row.detectedAtMs === "number" &&
     Number.isFinite(row.detectedAtMs) &&
     typeof row.threadGone === "boolean" &&
+    (row.projectRemaining === undefined || isProjectRemaining(row.projectRemaining)) &&
     row.id === `${row.environmentId}:${row.threadId}:${row.settledAtMs}`
   );
 }
@@ -85,6 +91,14 @@ export function createLocalStorageSettlementStore(
           acknowledged.add(row.id);
       }
     }
+    for (const [id, entry] of entries) {
+      const record = parse(storage.getItem(PROJECT_REMAINING_PREFIX + encodeURIComponent(id)));
+      if (typeof record !== "object" || record === null) continue;
+      const row = record as Record<string, unknown>;
+      if (row.version === 1 && row.id === id && isProjectRemaining(row.projectRemaining)) {
+        entries.set(id, { ...entry, projectRemaining: row.projectRemaining });
+      }
+    }
     return JSON.stringify({
       version: 1,
       entries: [...entries.values()],
@@ -104,6 +118,16 @@ export function createLocalStorageSettlementStore(
         if (storage.getItem(key) !== value) storage.setItem(key, value);
       }
       for (const entry of inbox.entries) {
+        // Older tabs replace whole v1 entries without these bullets; keep an additive copy.
+        if (entry.projectRemaining?.length) {
+          const key = PROJECT_REMAINING_PREFIX + encodeURIComponent(entry.id);
+          const value = JSON.stringify({
+            version: 1,
+            id: entry.id,
+            projectRemaining: entry.projectRemaining,
+          });
+          if (storage.getItem(key) !== value) storage.setItem(key, value);
+        }
         const key = ENTRY_PREFIX + encodeURIComponent(entry.id);
         const value = JSON.stringify({ version: 1, entry });
         if (storage.getItem(key) !== value) storage.setItem(key, value);
@@ -153,6 +177,7 @@ export function createLocalStorageSettlementStore(
           event.key !== null &&
           !event.key.startsWith(ENTRY_PREFIX) &&
           !event.key.startsWith(ACK_PREFIX) &&
+          !event.key.startsWith(PROJECT_REMAINING_PREFIX) &&
           event.key !== `${SETTLEMENT_STORAGE_PREFIX}inbox`
         )
           return;

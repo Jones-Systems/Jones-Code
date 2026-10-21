@@ -3,6 +3,8 @@ import type {
   PhysicalProcessLease,
   ProviderRuntimeObservation,
   ProviderGoalReadResult,
+  ProviderGoalControlInput,
+  ProviderGoalControlResult,
 } from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
@@ -780,6 +782,9 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly controlGoal?: (
+    input: ProviderGoalControlInput,
+  ) => Effect.Effect<ProviderGoalControlResult>;
   readonly readGoalState?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<ProviderGoalReadResult>;

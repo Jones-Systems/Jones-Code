@@ -366,11 +366,21 @@ it("keeps uncertain native acceptance occupying its host while observing it", as
 
 describe("hosts that follow the laptop themselves", () => {
   const laptopSource = "d".repeat(40);
+  const laptop = {
+    repository: "Jones-Systems/Jones-Code",
+    sha: laptopSource,
+    tree: "e".repeat(40),
+  };
   const followerHost = (f: ReturnType<typeof fixture>, leaderSource: string | null) => {
     const legacy = f.driver.host.getMockImplementation()!;
     const leaders: string[] = [];
     f.driver.host.mockImplementation(async (id, request) => {
       if (request.action === "leader") {
+        // The host checks this provenance against the repository before following it.
+        expect(request.input).toMatchObject({
+          repository: laptop.repository,
+          committedTree: laptop.tree,
+        });
         leaders.push(request.input.committedSource);
         leaderSource = request.input.committedSource;
       }
@@ -383,12 +393,12 @@ describe("hosts that follow the laptop themselves", () => {
   it("publishes the laptop's committed source and stops driving campaigns for them", async () => {
     const f = fixture(true);
     const leaders = followerHost(f, null);
-    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
     expect(leaders).toEqual([laptopSource]);
     expect(f.state().campaigns[0]!.members[0]).toMatchObject({ phase: "superseded" });
     expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("stage");
     expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("activate");
-    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
     expect(leaders).toEqual([laptopSource]);
   });
 
@@ -415,17 +425,23 @@ describe("hosts that follow the laptop themselves", () => {
       currentVersion: "preview-old",
       stagedHandle: "server-handle",
     });
-    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptopSource });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
     expect(f.state().campaigns[0]!.members[0]!.phase).toBe("committed");
   });
 
   it("keeps campaigns when the laptop cannot prove its committed source or the host is older", async () => {
     const unproven = fixture(true);
-    followerHost(unproven, null);
+    const published = followerHost(unproven, null);
     await advanceFleetCampaigns({ ...unproven.driver, committedSource: async () => undefined });
+    for (const malformed of [
+      { ...laptop, repository: "someone/else" },
+      { ...laptop, tree: "not-a-tree" },
+    ])
+      await advanceFleetCampaigns({ ...unproven.driver, committedSource: async () => malformed });
+    expect(published).toEqual([]);
     expect(unproven.operation()?.phase).toBe("pending");
     const older = fixture(true);
-    await advanceFleetCampaigns({ ...older.driver, committedSource: async () => laptopSource });
+    await advanceFleetCampaigns({ ...older.driver, committedSource: async () => laptop });
     expect(older.operation()?.phase).toBe("pending");
     expect(older.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain(
       "leader",

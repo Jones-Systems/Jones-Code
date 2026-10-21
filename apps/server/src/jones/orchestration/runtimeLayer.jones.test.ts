@@ -22,6 +22,8 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SettlementOrigins from "../settlementOrigins/SettlementOrigins.ts";
 import * as Fiber from "effect/Fiber";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as ConversationReselection from "../runtime/ProviderConversationReselection.ts";
@@ -188,7 +190,7 @@ const TestLayer = Layer.mergeAll(
 ).pipe(
   Layer.provide(McpSessionRegistryTestkit.layer),
   Layer.provide(McpProviderSessions.layer),
-  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provideMerge(SqlitePersistence.layerMemory),
   Layer.provide(CheckpointStoreTestLayer),
   Layer.provide(ServerConfigLayer),
   Layer.provide(ServerSettings.layerTest()),
@@ -1253,13 +1255,68 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
     { timeout: 6000 },
   );
 
+  it.effect("rolls back failed project-item acceptance and preserves empty original retries", () =>
+    Effect.gen(function* () {
+      const { orchestrator, threadId, request } = yield* selfSettlementFixture("items-rollback");
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TRIGGER fail_project_items BEFORE INSERT ON jones_self_settlement_project_items BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`;
+      yield* Effect.addFinalizer(() =>
+        sql`DROP TRIGGER IF EXISTS fail_project_items`.pipe(Effect.orDie),
+      );
+      const result = yield* Effect.exit(
+        orchestrator.requestSelfSettlement({ ...request, projectRemaining: ["Pending work"] }),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.isUndefined((yield* orchestrator.getThreadProjection(threadId)).thread.selfSettlement);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_command_receipts WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM orchestration_events WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+      yield* sql`DROP TRIGGER fail_project_items`;
+      const accepted = yield* orchestrator.requestSelfSettlement(request);
+      assert.deepEqual(
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Later replacement"],
+        }),
+        accepted,
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM jones_self_settlement_project_items WHERE command_id = ${request.commandId}`,
+        0,
+      );
+    }),
+  );
+
   it.effect(
     "defers self settlement through checkpoint completion and replays the original run after successor work",
     () =>
       Effect.gen(function* () {
         const { orchestrator, sink, threadId, run, provider, providerSession, request } =
           yield* selfSettlementFixture("runtime-self-settle");
-        const accepted = yield* orchestrator.requestSelfSettlement(request);
+        const projectRemaining = [
+          "Finish the separate project follow-up",
+          "Publish the other workstream",
+        ];
+        const accepted = yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining,
+        });
+        assert.deepEqual(
+          yield* orchestrator.requestSelfSettlement({
+            ...request,
+            projectRemaining: ["replacement"],
+          }),
+          accepted,
+        );
         assert.isTrue(
           Exit.isFailure(
             yield* Effect.exit(
@@ -1336,6 +1393,15 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const settled = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(settled.thread.settledOverride, "settled");
         assert.isNull(settled.thread.selfSettlement);
+        const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+          Effect.provide(SettlementOrigins.layer),
+        );
+        assert.deepEqual(
+          (yield* origins.resolve({
+            items: [{ threadId, settledAtMs: DateTime.toEpochMillis(settled.thread.settledAt!) }],
+          })).items[0]?.projectRemaining,
+          projectRemaining,
+        );
         assert.isFalse(
           settled.providerSessions.some((session) => session.id === provider.providerSessionId),
         );
@@ -1381,7 +1447,10 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
-        yield* orchestrator.requestSelfSettlement(request);
+        yield* orchestrator.requestSelfSettlement({
+          ...request,
+          projectRemaining: ["Cancelled project item"],
+        });
 
         const completeReaction = Effect.fnUntraced(function* (
           status: "cancelled" | "failed" | "completed",
@@ -1506,6 +1575,22 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           ),
           0,
         );
+        if (invalidation === "cancelled" || invalidation === "failed") {
+          yield* orchestrator.dispatch({
+            type: "thread.settle",
+            commandId: CommandId.make(`${prefix}-manual`),
+            threadId,
+          });
+          const later = yield* orchestrator.getThreadProjection(threadId);
+          const origins = yield* SettlementOrigins.SettlementOrigins.pipe(
+            Effect.provide(SettlementOrigins.layer),
+          );
+          assert.isUndefined(
+            (yield* origins.resolve({
+              items: [{ threadId, settledAtMs: DateTime.toEpochMillis(later.thread.settledAt!) }],
+            })).items[0]?.projectRemaining,
+          );
+        }
       }),
   );
 });

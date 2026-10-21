@@ -37,21 +37,28 @@ function EnvironmentObserver(props: { readonly environmentId: EnvironmentId }) {
 function SettlementTitle(props: { readonly entry: SettlementEntry }) {
   const linkTo = useLinkTo();
   return (
-    <Pressable
-      accessibilityRole="link"
-      accessibilityLabel={props.entry.title}
-      onPress={() => linkTo(encodeThreadDeepLink(props.entry))}
-      className="min-h-11 justify-center py-2"
-    >
-      <AppText textRole="footnote" className="text-primary" numberOfLines={2}>
-        {props.entry.title}
-      </AppText>
-      {props.entry.threadGone ? (
-        <AppText textRole="label" className="text-foreground-muted">
-          Thread no longer available
+    <View>
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={props.entry.title}
+        onPress={() => linkTo(encodeThreadDeepLink(props.entry))}
+        className="min-h-11 justify-center py-2"
+      >
+        <AppText textRole="footnote" className="text-primary" numberOfLines={2}>
+          {props.entry.title}
         </AppText>
-      ) : null}
-    </Pressable>
+        {props.entry.threadGone ? (
+          <AppText textRole="label" className="text-foreground-muted">
+            Thread no longer available
+          </AppText>
+        ) : null}
+      </Pressable>
+      {props.entry.projectRemaining?.map((item, index) => (
+        <AppText key={`${index}:${item}`} textRole="footnote" className="pl-2 pb-1">
+          • {item}
+        </AppText>
+      ))}
+    </View>
   );
 }
 
@@ -102,8 +109,7 @@ function SettlementBanner(props: { readonly entries: readonly SettlementEntry[] 
             onPress={() => controller.dismiss(shownIds)}
           />
         </View>
-        {single ? <SettlementTitle entry={single} /> : null}
-        {!single && expanded ? (
+        {single || expanded ? (
           <FlatList
             data={props.entries}
             keyExtractor={(entry) => entry.id}

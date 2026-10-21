@@ -18,7 +18,7 @@ describe("orchestrator MCP tool guidance", () => {
       readonly properties?: Readonly<Record<string, unknown>>;
       readonly required?: ReadonlyArray<string>;
     };
-    assert.deepEqual(Object.keys(schema.properties ?? {}), ["clientRequestId"]);
+    assert.deepEqual(Object.keys(schema.properties ?? {}), ["projectRemaining", "clientRequestId"]);
     assert.include(schema.required ?? [], "clientRequestId");
     assert.include(tool.description ?? "", "checkpoint");
   });
@@ -129,6 +129,7 @@ describe("orchestrator MCP tool guidance", () => {
 
     assert.equal(schema.type, "object");
     assert.hasAllKeys(schema.properties ?? {}, [
+      "environmentId",
       "threadId",
       "action",
       "title",

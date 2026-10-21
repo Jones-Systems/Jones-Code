@@ -720,6 +720,7 @@ export const layerWithOptions = (
           }),
       );
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
+      const drainingRuntimes = new WeakSet<ProviderAdapterV2SessionRuntime>();
       // One retry per released entry, so a later release with the same id
       // cannot drop cleanup for threads only the earlier session served.
       const releaseRecordRetries = yield* FiberSet.make();
@@ -1243,6 +1244,7 @@ export const layerWithOptions = (
       // it.
       const removeLiveEntry = (input: {
         readonly providerSessionId: ProviderSessionId;
+        readonly drainSubscribers?: boolean;
         readonly onlyIfIdleGeneration?: number;
         readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
       }): Effect.Effect<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> =>
@@ -1268,6 +1270,7 @@ export const layerWithOptions = (
               }
               const updated = new Map(current);
               updated.delete(key);
+              if (input.drainSubscribers === true) drainingRuntimes.add(existing.runtime);
               return ["removed", updated] as const;
             }),
             DateTime.now,
@@ -1329,7 +1332,11 @@ export const layerWithOptions = (
         readonly subscriberFailure?: Cause.Cause<ProviderAdapter.ProviderAdapterV2Error>;
       }) =>
         Effect.acquireUseRelease(
-          removeLiveEntry(input),
+          removeLiveEntry({
+            ...input,
+            drainSubscribers:
+              input.reason === "runtime_error" && input.subscriberFailure !== undefined,
+          }),
           ([entry, releasedAt]) =>
             Option.match(entry, {
               onNone: () => Effect.void,
@@ -1402,6 +1409,7 @@ export const layerWithOptions = (
                     return yield* Effect.failCause(closeExit.value.cause);
                   }
                 }).pipe(
+                  Effect.ensuring(Effect.sync(() => drainingRuntimes.delete(entry.runtime))),
                   withMetrics({
                     counter: providerSessionsTotal,
                     attributes: {
@@ -2158,7 +2166,15 @@ export const layerWithOptions = (
                   ? Effect.succeed(signal.event)
                   : Effect.failCause(signal.cause),
               ),
-              Stream.filterEffect((event) => validateProviderEvent(runtime, event)),
+              Stream.filterEffect((event) =>
+                // A replacement may open while this subscriber still owns queued events.
+                drainingRuntimes.has(runtime)
+                  ? ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime).pipe(
+                      Effect.as(true),
+                      Effect.catchCause(() => Effect.succeed(false)),
+                    )
+                  : validateProviderEvent(runtime, event),
+              ),
               Stream.ensuring(close),
             );
             return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;

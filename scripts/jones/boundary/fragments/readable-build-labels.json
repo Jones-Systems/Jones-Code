@@ -1,0 +1,51 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "readable-build-labels",
+  "jonesOwnedPaths": [
+    ".github/workflows/artifact-cli-linux.yml",
+    ".github/workflows/artifact-cli-mac.yml",
+    ".github/workflows/artifact-desktop-mac.yml",
+    "apps/mobile/src/jones/updates/JonesBuildVersion.tsx",
+    "apps/mobile/src/jones/updates/buildVersion.test.ts",
+    "apps/mobile/src/jones/updates/buildVersion.ts",
+    "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+    "apps/web/src/jones/updates/ClientServerBuildLabels.tsx",
+    "apps/web/src/jones/updates/buildPairs.ts",
+    "packages/shared/src/jones/buildTime.test.ts",
+    "packages/shared/src/jones/buildTime.ts",
+    "scripts/stamp-jones-build.test.ts",
+    "scripts/stamp-jones-build.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "apps/mobile/src/jones/updates/JonesBuildVersion.tsx"
+    },
+    {
+      "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
+      "to": "apps/mobile/src/jones/updates/buildVersion.ts"
+    },
+    {
+      "from": "apps/web/src/branding.ts",
+      "to": "packages/shared/src/jones/buildTime.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/updates/ClientServerBuildLabels.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/updates/buildPairs.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SettingsPanels.tsx",
+      "to": "apps/web/src/jones/updates/updateDisplay.tsx"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.test.ts",
+      "to": "scripts/jones/updates/build-provenance.ts"
+    }
+  ]
+}

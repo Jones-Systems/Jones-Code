@@ -1,0 +1,84 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "cross-host-integration",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/remoteAdmission/",
+    "apps/server/src/jones/remoteAdmissionIntegration/",
+    "apps/server/src/jones/remoteDelegation/",
+    "apps/server/src/jones/peerTransport/",
+    "apps/server/src/jones/peerPersistence/",
+    "apps/web/src/jones/remoteAdmission/",
+    "packages/client-runtime/src/jones/remoteAdmission/",
+    "packages/provider-core/src/server/jones/remoteRequestEvaluation.ts",
+    "packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/peer/PeerLinks.ts",
+    "apps/server/src/peer/PeerMcpClient.ts",
+    "packages/provider-core/src/server/textGeneration.ts",
+    "packages/provider-core/src/server/textGenerationOperations.ts",
+    "apps/server/src/peer/RemoteDelegation.ts"
+  ],
+  "tombstones": [
+    "apps/server/src/persistence/Migrations/064_PeerLinks.ts",
+    "apps/server/src/persistence/Migrations/065_PeerLinkFence.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/cancelTool.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpToolAccess.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/mcp.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerLinks.ts",
+      "to": "apps/server/src/jones/peerPersistence/table.ts"
+    },
+    {
+      "from": "apps/server/src/peer/PeerMcpClient.ts",
+      "to": "apps/server/src/jones/peerTransport/PeerMcpTransport.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/remoteAdmission/RemoteAdmissionAttention.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
+      "to": "apps/web/src/jones/remoteAdmission/RemoteAdmissionSettings.tsx"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/remoteAdmission.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/remoteAdmissionHttp.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/remoteAdmission.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/textGeneration.ts",
+      "to": "packages/provider-core/src/server/jones/remoteRequestEvaluation.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/textGenerationOperations.ts",
+      "to": "packages/provider-core/src/server/jones/remoteRequestEvaluation.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/remoteDelegation/Lifecycle.ts"
+    },
+    {
+      "from": "apps/server/src/peer/RemoteDelegation.ts",
+      "to": "apps/server/src/jones/remoteDelegation/PeerMonitor.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+      "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
+    }
+  ]
+}

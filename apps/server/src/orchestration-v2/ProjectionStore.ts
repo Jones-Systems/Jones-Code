@@ -355,12 +355,15 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
 >;
 
 export interface ProjectionTimelinePageOptions {
+  readonly tail?: boolean;
   readonly afterPosition?: number;
   readonly itemId?: TurnItemId;
   readonly view?: "messages" | "activity";
   readonly limit: number;
 }
 export interface ProjectionTimelinePage {
+  readonly snapshotSequence?: number;
+  readonly inProgress?: boolean;
   readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
   readonly totalItems: number;
   readonly hasMore: boolean;
@@ -468,6 +471,15 @@ export interface ProjectionStoreV2Shape {
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadPullRequests>, ProjectionStoreV2Error>;
   readonly getThreadWorktreePaths: () => Effect.Effect<
     ReadonlyArray<{ readonly threadId: ThreadId; readonly worktreePath: string }>,
+    ProjectionStoreV2Error
+  >;
+  /**
+   * Delegated tasks in a linked environment with work left for this one: no
+   * result yet, or cancelled or stopped here without that stop reaching there,
+   * including a Stop after the task had its result.
+   */
+  readonly getOpenRemoteDelegatedTasks: Effect.Effect<
+    ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
     ProjectionStoreV2Error
   >;
   readonly getTurnStartContext: (
@@ -1902,6 +1914,12 @@ export function threadShellFromProjection(
     ...(projection.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: projection.thread.historyOrigin }),
+    ...(projection.thread.linkOrigin === undefined
+      ? {}
+      : { linkOrigin: projection.thread.linkOrigin }),
+    ...(projection.thread.delegatedFrom === undefined
+      ? {}
+      : { delegatedFrom: projection.thread.delegatedFrom }),
     latestRunId: latestRun?.id ?? null,
     ...(latestRunProviderSettlement === undefined ? {} : { latestRunProviderSettlement }),
     latestRunRequestedAt: latestRun?.requestedAt ?? null,
@@ -2166,6 +2184,12 @@ function shellFromState(input: {
     ...(input.state.thread.historyOrigin === undefined
       ? {}
       : { historyOrigin: input.state.thread.historyOrigin }),
+    ...(input.state.thread.linkOrigin === undefined
+      ? {}
+      : { linkOrigin: input.state.thread.linkOrigin }),
+    ...(input.state.thread.delegatedFrom === undefined
+      ? {}
+      : { delegatedFrom: input.state.thread.delegatedFrom }),
     latestRunId: input.state.latestRunId,
     latestRunRequestedAt: input.state.latestRunRequestedAt,
     latestRunStartedAt: input.state.latestRunStartedAt,
@@ -5765,7 +5789,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       ))
                   : row.sourceItemId === options.itemId,
               );
-            const page = matching.slice(0, options.limit);
+            const page = options.tail
+              ? matching.slice(Math.max(0, matching.length - options.limit))
+              : matching.slice(0, options.limit);
+            const revisions = options.tail
+              ? yield* sql<{
+                  sequence: number | null;
+                }>`SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE application_event_version = 2`
+              : [];
+            if (options.tail && index.records.thread.deletedAt !== null)
+              return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const items = yield* Effect.forEach(page, (row) =>
               Effect.gen(function* () {
                 if (row.synthetic !== undefined)
@@ -5801,6 +5834,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             return {
               items,
               totalItems: index.visible.length,
+              ...(revisions[0]?.sequence == null
+                ? {}
+                : { snapshotSequence: revisions[0].sequence }),
+              ...(options.tail
+                ? {
+                    inProgress: index.records.runs.some((run) => activeRunStatuses.has(run.status)),
+                  }
+                : {}),
               hasMore: matching.length > page.length,
             };
           }),
@@ -6312,6 +6353,32 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         )
         .pipe(Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })));
 
+    const getOpenRemoteDelegatedTasks: ProjectionStoreV2Shape["getOpenRemoteDelegatedTasks"] = sql<{
+      readonly thread_id: string;
+      readonly subagent_id: string;
+    }>`
+      SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
+      WHERE origin = 'app_owned'
+        AND child_thread_id IS NULL
+        AND json_type(payload_json, '$.remoteChild') = 'object'
+        AND (
+          json_type(payload_json, '$.result') = 'null'
+          OR (
+            json_extract(payload_json, '$.status') IN ('cancelled', 'interrupted')
+            AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true'
+          )
+          OR json_type(payload_json, '$.remoteChild.stoppedThere') = 'false'
+        )
+    `.pipe(
+      Effect.map((rows) =>
+        rows.map((row) => ({
+          parentThreadId: ThreadId.make(row.thread_id),
+          taskId: NodeId.make(row.subagent_id),
+        })),
+      ),
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] = (
       threadId,
     ) =>
@@ -6777,6 +6844,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getSettlementCandidates,
       getThreadsWithPullRequests,
       getThreadWorktreePaths,
+      getOpenRemoteDelegatedTasks,
       getThreadProjection,
       getTurnStartContext,
       getTurnStartHistory,
@@ -7000,6 +7068,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             ),
           ),
         ),
+      getOpenRemoteDelegatedTasks: Effect.succeed([]),
       getThreadsWithPullRequests: (threadId) =>
         Ref.get(replayState).pipe(
           Effect.map((state) =>
@@ -7593,8 +7662,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           ),
         ),
       getTimelinePage: (threadId, options) =>
-        service.getThreadProjection(threadId).pipe(
-          Effect.map((projection) => {
+        service.getThreadSnapshot(threadId).pipe(
+          Effect.map(({ projection, snapshotSequence }) => {
             const matching = projection.visibleTurnItems.filter((row) =>
               options.itemId === undefined
                 ? row.position > (options.afterPosition ?? -1) &&
@@ -7603,8 +7672,16 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 : row.sourceItemId === options.itemId,
             );
             return {
-              items: matching.slice(0, options.limit),
+              items: options.tail
+                ? matching.slice(Math.max(0, matching.length - options.limit))
+                : matching.slice(0, options.limit),
               totalItems: projection.visibleTurnItems.length,
+              ...(options.tail
+                ? {
+                    snapshotSequence,
+                    inProgress: projection.runs.some((run) => activeRunStatuses.has(run.status)),
+                  }
+                : {}),
               hasMore: matching.length > options.limit,
             };
           }),

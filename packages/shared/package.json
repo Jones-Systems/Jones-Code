@@ -531,6 +531,10 @@
       "types": "./src/conversationLibrary.ts",
       "import": "./src/conversationLibrary.ts"
     },
+    "./jones/buildTime": {
+      "types": "./src/jones/buildTime.ts",
+      "import": "./src/jones/buildTime.ts"
+    },
     "./jones/jonesActions": {
       "types": "./src/jones/jonesActions.ts",
       "import": "./src/jones/jonesActions.ts"
@@ -538,6 +542,10 @@
     "./jones/threadAttention": {
       "types": "./src/jones/threadAttention.ts",
       "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
     }
   },
   "scripts": {

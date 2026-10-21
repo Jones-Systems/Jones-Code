@@ -67,6 +67,131 @@ describe("settlement notification controller", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
+  it("removes persisted subagents only after a live shell confirms lineage", async () => {
+    const h = harness();
+    const entries = [
+      entry("child"),
+      entry("deleted-child"),
+      entry("missing"),
+      entry("deleted-top"),
+      entry("child", 200, otherEnv),
+    ];
+    h.data.inbox = encodeSettlementInbox({ ...emptyInbox(), entries });
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    const lineage = {
+      rootThreadId: thread().id,
+      parentThreadId: thread().id,
+      relationshipToParent: "subagent" as const,
+    };
+    const rows = [
+      thread("child", 200, { lineage }),
+      thread("deleted-top", 200, { deletedAt: DateTime.makeUnsafe(300) }),
+    ];
+    const archived = [
+      thread("deleted-child", 200, {
+        lineage,
+        archivedAt: DateTime.makeUnsafe(300),
+        deletedAt: DateTime.makeUnsafe(300),
+      }),
+    ];
+    controller.observe(env, shell(2, rows, archived, "cached"));
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toHaveLength(5);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([]);
+    controller.observe(env, shell(2, rows, archived));
+    await controller.flush();
+    const persisted = decodeSettlementInbox(h.data.inbox!);
+    expect(persisted.acknowledged).toEqual([entries[0]!.id, entries[1]!.id]);
+    const retained = persisted.entries;
+    expect(retained.map((value) => value.id).sort()).toEqual(
+      [entries[2]!.id, entries[3]!.id, entries[4]!.id].sort(),
+    );
+    expect(
+      retained.filter((value) => value.environmentId === env).every((value) => value.threadGone),
+    ).toBe(true);
+  });
+
+  it("repairs missing child acknowledgements once and does not echo acknowledged external updates", async () => {
+    const h = harness();
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    controller.observe(
+      env,
+      shell(2, [
+        thread("child", 200, {
+          lineage: {
+            rootThreadId: thread().id,
+            parentThreadId: thread().id,
+            relationshipToParent: "subagent",
+          },
+        }),
+      ]),
+    );
+    await controller.flush();
+    const saves = h.store.saveInbox.mock.calls.length;
+    h.external(encodeSettlementInbox({ ...emptyInbox(), entries: [entry("child")] }));
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(h.store.saveInbox).toHaveBeenCalledTimes(saves + 1);
+    const acknowledged = decodeSettlementInbox(h.data.inbox!).acknowledged;
+    expect(acknowledged).toEqual([entry("child").id]);
+    h.external(encodeSettlementInbox({ ...emptyInbox(), entries: [entry("child")], acknowledged }));
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(h.store.saveInbox).toHaveBeenCalledTimes(saves + 1);
+  });
+
+  it("cannot restore a subagent when origin classification finishes after lineage correction", async () => {
+    const h = harness();
+    const held = deferred<readonly SettlementOrigin[]>();
+    const saved = deferred<void>();
+    const saveBaseline = h.store.saveBaseline.getMockImplementation()!;
+    h.store.saveBaseline.mockImplementation(async (id, json) => {
+      await saveBaseline(id, json);
+      if (decodeSettlementBaseline(json).snapshotSequence === 3) saved.resolve();
+    });
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    controller.observe(env, shell(2, [thread("child", 200)]), {
+      resolveOrigins: () => held.promise,
+    });
+    await controller.flush();
+    controller.observe(
+      env,
+      shell(3, [
+        thread("child", 200, {
+          lineage: {
+            rootThreadId: thread().id,
+            parentThreadId: thread().id,
+            relationshipToParent: "subagent",
+          },
+        }),
+      ]),
+    );
+    held.resolve(["other"]);
+    await saved.promise;
+    await controller.flush();
+    expect(controller.getSnapshot().visible).toEqual([]);
+    expect(decodeSettlementInbox(h.data.inbox!).entries).toEqual([]);
+    expect(decodeSettlementInbox(h.data.inbox!).acknowledged).toEqual([entry("child").id]);
+  });
+
+  it("keeps additive-storage child records hidden on hydration before any shell is available", async () => {
+    const h = harness();
+    const child = entry("child");
+    const top = entry("top");
+    h.data.inbox = encodeSettlementInbox({
+      ...emptyInbox(),
+      entries: [child, top],
+      acknowledged: [child.id],
+    });
+    const controller = createSettlementNotificationController({ store: h.store });
+    await controller.hydrate();
+    expect(controller.getSnapshot().visible.map((value) => value.id)).toEqual([top.id]);
+    await controller.flush();
+  });
+
   it("hydrates once, queues only the latest observation and retains pending/acks received before loading", async () => {
     const h = harness();
     const held = deferred<string | null>();

@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 
 export const JonesUpdatePhase = Schema.Literals([
@@ -30,6 +31,7 @@ export const JonesUpdateProvenance = Schema.Struct({
   platform: Schema.Literals(["linux", "darwin"]),
   architecture: Schema.Literals(["x64", "arm64"]),
   version: Schema.optionalKey(TrimmedNonEmptyString),
+  buildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   payloadSha256: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
@@ -56,12 +58,15 @@ export const JonesUpdateCapability = Schema.Struct({
 
 /**
  * Present only on a host enrolled to follow a laptop. Such a host offers, stages and installs
- * exactly `leaderSource`, the laptop's committed source; null means the laptop has not published
- * one yet, so the host holds. Hosts without a policy select their own builds.
+ * exactly `leaderSource`, the laptop's committed source, and only a build whose commit has
+ * `leaderTree`; null means the laptop has not published one yet, so the host holds. Hosts without
+ * a policy select their own builds.
  */
 export const JonesUpdatePolicy = Schema.Struct({
   role: Schema.Literal("follower"),
   leaderSource: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+  /** Sent with every published `leaderSource`. */
+  leaderTree: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
 });
 export type JonesUpdatePolicy = typeof JonesUpdatePolicy.Type;
 
@@ -78,6 +83,7 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
+  currentBuildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   installedSource: Schema.optionalKey(
     Schema.Struct({
       repository: Schema.Literal("Jones-Systems/Jones-Code"),

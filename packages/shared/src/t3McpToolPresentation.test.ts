@@ -8,6 +8,14 @@ import {
 } from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
+  it("presents durable owner response requests across provider tool names", () => {
+    for (const name of ["t3_request_user_response", "mcp__t3_code__t3_request_user_response"]) {
+      expect(resolveT3McpToolPresentation(name)).toEqual({
+        displayName: "Request owner response",
+        logo: "t3-code",
+      });
+    }
+  });
   it("presents deferred self-settlement as a request across provider name forms", () => {
     expect(T3_MCP_TOOL_NAMES.has("t3_thread_settle")).toBe(true);
     for (const prefix of ["", "mcp__t3-code__", "T3-code."]) {

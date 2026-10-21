@@ -29,6 +29,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: artifact-desktop-mac-${{ github.event.pull_request.number || github.ref }}
@@ -109,7 +110,32 @@ jobs:
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
       - name: Bind Jones source identity
-        run: node scripts/stamp-jones-build.ts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build_started_at=
+          if metadata=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"); then
+            if ! build_started_at=$(printf '%s' "$metadata" | node --input-type=module -e '
+              import fs from "node:fs";
+              try {
+                const value = JSON.parse(fs.readFileSync(0, "utf8")).run_started_at;
+                if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) ||
+                    !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value.replace(/Z$/, ".000Z")) {
+                  process.exit(1);
+                }
+                process.stdout.write(value);
+              } catch {
+                process.exit(1);
+              }
+            '); then
+              echo "::warning::Build time metadata invalid; omitting build time"
+              build_started_at=
+            fi
+          else
+            echo "::warning::Build time unavailable; omitting build time"
+          fi
+          JONES_BUILD_STARTED_AT="$build_started_at" node scripts/stamp-jones-build.ts
 
       - name: Build unsigned preview DMG
         env:
@@ -155,6 +181,26 @@ jobs:
             echo 'Gatekeeper acceptance and application launch have not been tested.'
             echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke-test packaged update preparation worker
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$TMPDIR/preparation-smoke-dmg"
+          mkdir -p "$mount"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+            "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          trap 'hdiutil detach "$mount" || hdiutil detach -force "$mount"' EXIT
+          apps=("$mount"/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          # The packaged service runs as Electron's Node, exactly as the qualified runtime wrapper starts it.
+          ELECTRON_RUN_AS_NODE=1 node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts \
+            --worker "$app/Contents/MacOS/$executable" \
+            --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
 
       - name: Upload DMG and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

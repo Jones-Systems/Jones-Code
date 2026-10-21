@@ -134,7 +134,9 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
-Threads settled by agents or automatically appear in a persistent notification.
+Top-level threads and user-created forks settled by agents or automatically
+appear in a persistent notification. Subagent threads stay in their parent's
+lineage and do not appear in settlement notifications.
 Threads you settle yourself through the app's buttons, menus, shortcuts or bulk
 actions stay quiet. This distinction requires an updated server; older servers
 continue notifying for all settlements. Expand a notification with multiple
@@ -143,6 +145,16 @@ until you dismiss it with **X**, including after a refresh or app restart. Each
 browser or mobile app keeps its own notifications. The first time you use this
 feature, existing settled threads are left in the settled shelf without notifying
 you about all of them.
+
+On web and desktop, a settled thread's menu has **Undo settle**, which still works
+after the notification is gone, the page reloads or the server restarts. An agent can
+do the same with the `t3_thread_settlement_restore` tool. Undo returns the
+thread to active work with the pin, pinned and active positions, and wake time it had
+before its most recent settlement. It does not resume watched pull requests, answer requests,
+queued work or agent sessions that the settlement stopped. Undo is refused once the
+thread has changed since it settled, for example after it is pinned, archived,
+snoozed or settled again. Threads settled before your server supported this have
+nothing to undo; use **Un-settle thread** instead.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a

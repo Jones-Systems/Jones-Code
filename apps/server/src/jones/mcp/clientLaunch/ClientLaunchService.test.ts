@@ -172,6 +172,7 @@ function makeHarness(options: HarnessOptions = {}) {
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
       delete: () => Effect.die("unused"),
+      listPage: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(
           id === projectId
@@ -283,7 +284,11 @@ function makeHarness(options: HarnessOptions = {}) {
 }
 
 const namespace = "synthetic-launch-service";
-const modes = { runtimeMode: "full-access", interactionMode: "default" } as const;
+const modes = {
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  linkOrigin: undefined,
+} as const;
 const gate: ThreadStartGate = {
   start: Effect.succeed(modes),
   continueWithin: (_target, effect) => effect,
@@ -369,6 +374,7 @@ it.effect.each(["runtime", "interaction"] as const)(
         const restricted = {
           runtimeMode: "approval-required",
           interactionMode: "plan",
+          linkOrigin: undefined,
         } as const;
         const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
         const guarded: ThreadStartGate = {
@@ -425,6 +431,44 @@ it.effect.each(["runtime", "interaction"] as const)(
         assert.equal(state.runId, null);
       }).pipe(Effect.provide(h.layer));
     }),
+);
+
+it.effect.each(["runtime", "interaction"] as const)(
+  "agent launch preserves a stricter inherited %s limit before its initial message",
+  (broaderMode) =>
+    Effect.gen(function* () {
+      const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const { commandId, threadId, messageId } = clientLaunchIds(namespace, "strict-inherited");
+      const error = yield* launches
+        .launch({
+          commandId,
+          threadId,
+          projectId,
+          title: "Inherited limit",
+          modelSelection,
+          runtimeMode: broaderMode === "runtime" ? "full-access" : "approval-required",
+          interactionMode: broaderMode === "interaction" ? "default" : "plan",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { messageId, text: "Task", attachments: [] },
+          createdBy: "agent",
+          creationSource: "mcp",
+        })
+        .pipe(
+          Effect.provideService(DispatchModeLimit, {
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            refused,
+          }),
+          Effect.flip,
+        );
+      assert.equal(error._tag, "ThreadLaunchError");
+      assert.equal((yield* Ref.get(refused))?.mode, broaderMode);
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const projection = yield* threads.getThreadProjection(threadId);
+      assert.lengthOf(projection.messages, 0);
+      assert.lengthOf(projection.runs, 0);
+    }).pipe(Effect.provide(makeHarness().layer)),
 );
 
 it.effect(

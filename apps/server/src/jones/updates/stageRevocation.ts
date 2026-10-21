@@ -12,6 +12,7 @@ import {
   operationBinding,
   reconcileUpdateOperation,
   sameOperationBinding,
+  settleAbandonedUpdateOperations,
   type NativeOperationBinding,
 } from "./launcherOperation.ts";
 
@@ -103,6 +104,7 @@ export async function retireNativeStage(
     throw new Error("Retirement does not match the active operation binding.");
   if ((await reconcileUpdateOperation(baseDir, input.operationId, current)).state !== "absent")
     throw new Error("The operation may have been accepted; retirement held.");
+  await settleAbandonedUpdateOperations(baseDir, current);
   await assertNoUnreconciledUpdateOperations(baseDir, current);
   if (current?.status === "pending") throw new Error("An update is pending; retirement held.");
   const staged = await verifyStagedQualifiedRuntime(baseDir, activeVersion, input.stagedHandle);

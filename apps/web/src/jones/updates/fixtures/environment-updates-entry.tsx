@@ -18,6 +18,7 @@ import {
   type FleetHostReadiness,
 } from "../../fleetUpdates/FleetEnrollmentStatus";
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
+import { BuildVersion } from "../updateDisplay";
 import type { JonesInstalledComparison } from "../installedSourceComparison";
 import { describeFollower } from "../../fleetUpdates/followerStatus";
 
@@ -29,6 +30,7 @@ const base = {
   source: "jones-actions",
   channel: "jones-main",
   currentVersion: "0.0.45-preview.20261013.38343490676.1",
+  currentBuildStartedAt: "2026-10-20T21:13:43Z",
   installedSource: { repository, sha: installedSha, tree: "e".repeat(40) },
   capability: { check: true, download: true, install: true },
 } as const;
@@ -36,6 +38,7 @@ const offered = {
   repository,
   sourceSha: offeredSha,
   artifactId: 4242,
+  buildStartedAt: "2026-10-20T21:13:47Z",
   version: "0.0.45-preview.20261016.38974945620.1",
 };
 const lastInstall = {
@@ -559,6 +562,15 @@ function FixtureScreen() {
                 commits are not consistent across rows.
               </p>
             </header>
+            <p className="text-sm text-muted-foreground">
+              Running build{" "}
+              <BuildVersion
+                label="fixture app version"
+                version={base.currentVersion}
+                startedAt={base.currentBuildStartedAt}
+                sourceSha={installedSha}
+              />
+            </p>
             <section aria-label="This machine">
               <h2 className="mb-2 text-sm text-muted-foreground">This machine</h2>
               <SettingsGroup>

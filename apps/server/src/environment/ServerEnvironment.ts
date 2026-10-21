@@ -6,10 +6,14 @@ import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   QUEUE_DISPATCH_CAPABILITY,
   SETTLEMENT_ORIGINS_CAPABILITY,
+  SETTLEMENT_RESTORE_CAPABILITY,
   type ExecutionEnvironmentDescriptor,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { readJonesBuildSource } from "@t3tools/contracts/jones/fleet-updates";
+import {
+  readJonesBuildSource,
+  readJonesBuildStartedAt,
+} from "@t3tools/contracts/jones/fleet-updates";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -211,6 +215,7 @@ export const make = Effect.gen(function* () {
     serverSelfUpdate === "desktop-managed" && serverConfig.desktopTelemetryControlFd !== undefined;
 
   const jonesSource = readJonesBuildSource(packageJson);
+  const jonesBuildStartedAt = readJonesBuildStartedAt(packageJson);
   const descriptor: ExecutionEnvironmentDescriptor = {
     environmentId,
     label,
@@ -221,6 +226,7 @@ export const make = Effect.gen(function* () {
     },
     serverVersion: packageJson.version,
     ...(jonesSource === undefined ? {} : { jonesSource }),
+    ...(jonesBuildStartedAt === undefined ? {} : { jonesBuildStartedAt }),
     orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
     capabilities: {
       queuedSteerBatch: QUEUED_STEER_BATCH_LIMITS,
@@ -228,6 +234,8 @@ export const make = Effect.gen(function* () {
       threadAttention: THREAD_ATTENTION_CAPABILITY,
       workQueueMetadata: true,
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
+      // Startup refuses to serve until Jones migrations, including the restore table, have run.
+      settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
       currentRuntimeStop: {
         targetRequired: true,
         supportedDrivers: ["codex", "claudeAgent"],
@@ -284,6 +292,9 @@ export const make = Effect.gen(function* () {
         : {}),
       ...(desktopAppUpdate ? { desktopAppUpdate: true } : {}),
       serverBrowser: true,
+      peerLinks: true,
+      mcpModeLimitHeader: true,
+      linkFence: true,
     },
   };
 

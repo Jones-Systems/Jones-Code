@@ -37,10 +37,16 @@ For each host, record these read-only observations before deployment:
 - Linux linger/user-manager availability, or macOS GUI-login and sleep state.
 
 Use the native updater's consistent recovery generation for routine updates, with
-state ownership held during its snapshot and restore. Completed current-attempt
-recovery payloads are removed after a durable terminal outcome, while small
-startup and timing receipts remain; older retained snapshots
-are left alone. Do not add a second full backup or
+state ownership held during its snapshot and restore. Qualified recovery payloads
+are removed after a durable commit or rollback, while small
+startup and timing receipts, restore journals and directories remain. Before the
+next qualified Install's capacity checks, the launcher retries the immediately
+previous committed or rolled-back payload; a safety mismatch refuses Install
+and keeps the current server active. Failed generations are never retried; only
+an accepted-phase launcher restart without restore evidence releases its copy
+before trial. Other failures and older snapshots remain held for explicit recovery. Launcher startup does not sweep terminal
+backups. Server Installs do not refresh the launcher; this cleanup behavior
+requires a launcher version that implements it. Do not add a second full backup or
 exhaustive database scan. For initial rollout or operator recovery, include the
 chosen recovery method in the approval. Retain the prior compatible binary, its
 provenance, host configuration, service definition, and recovery generation.

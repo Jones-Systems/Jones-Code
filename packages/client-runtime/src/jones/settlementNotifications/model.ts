@@ -1,4 +1,9 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  SettlementProjectRemaining,
+  SettlementOrigin as SettlementOriginSchema,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 export const BASELINE_DEBOUNCE_MS = 1_000;
@@ -14,6 +19,7 @@ export const SettlementEntry = Schema.Struct({
   settledAtMs: FiniteNumber,
   detectedAtMs: FiniteNumber,
   threadGone: Schema.Boolean,
+  projectRemaining: Schema.optional(SettlementProjectRemaining),
 });
 export type SettlementEntry = typeof SettlementEntry.Type;
 
@@ -37,9 +43,14 @@ export type EnvironmentSettlementBaseline = typeof EnvironmentSettlementBaseline
 export type SettlementArrival = Omit<SettlementEntry, "id" | "detectedAtMs" | "threadGone">;
 
 export type SettlementOrigin = "client" | "other" | "unknown";
+export const SettlementOriginDetails = Schema.Struct({
+  origin: SettlementOriginSchema,
+  projectRemaining: Schema.optional(SettlementProjectRemaining),
+});
+export type SettlementOriginDetails = typeof SettlementOriginDetails.Type;
 export type SettlementOriginResolver = (
   arrivals: readonly SettlementArrival[],
-) => Promise<readonly SettlementOrigin[] | null>;
+) => Promise<readonly (SettlementOrigin | SettlementOriginDetails)[] | null>;
 
 export function settlementEntryId(
   environmentId: EnvironmentId,

@@ -104,6 +104,8 @@ import { useUsageWindow } from "../../jones/usage/useUsageWindow";
 import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
 import { UsageProviderDetails, UsageProviderSummary } from "../../jones/usage/UsageProviderDetails";
 import { UsageModelRow } from "../../jones/usage/UsageModelRow";
+import { UsageTotals } from "../../jones/usage/UsageTotals";
+import { UsageModelTableHead } from "../../jones/usage/UsageModelTableHead";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -881,33 +883,7 @@ function UsageOverview({
       ) : (
         <section className="flex flex-col gap-2">
           <h2 className="text-sm font-medium text-foreground">Totals</h2>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-            <Metric
-              loading={loadingPartial}
-              label="Processed tokens"
-              value={formatTokens(merged.totalTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Cached input"
-              value={formatTokens(merged.cachedInputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Uncached input"
-              value={formatTokens(merged.uncachedInputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Output"
-              value={formatTokens(merged.outputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Cache savings"
-              value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-            />
-          </div>
+          <UsageTotals usage={merged} loading={loadingPartial} />
         </section>
       )}
 
@@ -985,43 +961,37 @@ function UsageOverview({
             : `Shares are within ${PROVIDER_PRESENTATION[focusedProvider].label}'s API estimate. The summary and chart include all providers.`}
         </p>
         {breakdown === "model" ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground">
-                <th className="py-2 pr-3 text-left font-normal">#</th>
-                <th className="w-full py-2 text-left font-normal">Model</th>
-                <th className="py-2 pl-6 font-normal">Cost</th>
-                <th className="hidden py-2 pl-6 font-normal sm:table-cell">Share</th>
-                <th className="py-2 pl-6 font-normal">Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownModels.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
-                    No activity in this window.
-                  </td>
-                </tr>
-              ) : (
-                breakdownModels.map((model, index) => {
-                  const key = `${model.provider}:${model.model}`;
-                  return (
-                    <UsageModelRow
-                      key={key}
-                      model={model}
-                      index={index}
-                      metric={metric}
-                      breakdownPeak={breakdownPeak}
-                      loading={loadingProviders.has(model.provider)}
-                      expanded={expandedModelKey === key}
-                      onSelect={() => onSelectModel(key)}
-                      onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
-                    />
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+          <div className="@container">
+            <table className="w-full text-sm">
+              <UsageModelTableHead />
+              <tbody>
+                {breakdownModels.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-6 text-center text-muted-foreground">
+                      No activity in this window.
+                    </td>
+                  </tr>
+                ) : (
+                  breakdownModels.map((model, index) => {
+                    const key = `${model.provider}:${model.model}`;
+                    return (
+                      <UsageModelRow
+                        key={key}
+                        model={model}
+                        index={index}
+                        metric={metric}
+                        breakdownPeak={breakdownPeak}
+                        loading={loadingProviders.has(model.provider)}
+                        expanded={expandedModelKey === key}
+                        onSelect={() => onSelectModel(key)}
+                        onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
+                      />
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <table className="w-full table-fixed text-sm">
             <colgroup>
@@ -1250,27 +1220,6 @@ function ProviderMark({
 
 function figureClass(loading: boolean) {
   return cn("transition-opacity", loading && "opacity-40 delay-150");
-}
-
-function Metric({
-  label,
-  value,
-  loading,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly loading: boolean;
-}) {
-  return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span
-        className={cn("text-base font-medium text-foreground tabular-nums", figureClass(loading))}
-      >
-        {value}
-      </span>
-    </div>
-  );
 }
 
 function UsageCoverageNotice({
@@ -1547,7 +1496,15 @@ function UsageSkeleton() {
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">Totals</h2>
         <MetricSkeletons
-          labels={["Processed tokens", "Cached input", "Uncached input", "Output", "Cache savings"]}
+          labels={[
+            "Processed tokens",
+            "Cached input",
+            "Uncached input",
+            "Cache write",
+            "Output",
+            "Cache savings",
+            "Cache %",
+          ]}
         />
       </section>
 
@@ -1572,7 +1529,7 @@ function UsageSkeleton() {
 
 function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+    <div className="flex flex-wrap justify-between gap-x-6 gap-y-4 py-1">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{label}</span>

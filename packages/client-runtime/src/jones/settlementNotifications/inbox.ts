@@ -15,9 +15,11 @@ function compareText(a: string, b: string): number {
 // as commutative. A confirmed shell observation refreshes labels after merging.
 function compareEntry(a: SettlementEntry, b: SettlementEntry): number {
   return (
+    Number((a.projectRemaining?.length ?? 0) > 0) - Number((b.projectRemaining?.length ?? 0) > 0) ||
     a.detectedAtMs - b.detectedAtMs ||
     compareText(a.title, b.title) ||
-    Number(a.threadGone) - Number(b.threadGone)
+    Number(a.threadGone) - Number(b.threadGone) ||
+    compareText(JSON.stringify(a.projectRemaining ?? []), JSON.stringify(b.projectRemaining ?? []))
   );
 }
 
@@ -57,17 +59,26 @@ export function refreshThreads(
   environmentId: EnvironmentId,
   titles: ReadonlyMap<ThreadId, string>,
   gone: ReadonlySet<ThreadId>,
+  excluded: ReadonlySet<ThreadId> = new Set(),
 ): SettlementInboxState {
   let changed = false;
-  const entries = inbox.entries.map((entry) => {
-    if (entry.environmentId !== environmentId) return entry;
+  const excludedIds: string[] = [];
+  const entries = inbox.entries.flatMap((entry) => {
+    if (entry.environmentId !== environmentId) return [entry];
+    if (excluded.has(entry.threadId)) {
+      excludedIds.push(entry.id);
+      changed = true;
+      return [];
+    }
     const title = titles.get(entry.threadId) ?? entry.title;
     const threadGone = gone.has(entry.threadId) || !titles.has(entry.threadId);
-    if (title === entry.title && threadGone === entry.threadGone) return entry;
+    if (title === entry.title && threadGone === entry.threadGone) return [entry];
     changed = true;
-    return { ...entry, title, threadGone };
+    return [{ ...entry, title, threadGone }];
   });
-  return changed ? { ...inbox, entries } : inbox;
+  if (!changed) return inbox;
+  const refreshed = { ...inbox, entries };
+  return excludedIds.length > 0 ? dismiss(refreshed, excludedIds) : refreshed;
 }
 
 export function dismiss(

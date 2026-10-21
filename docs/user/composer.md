@@ -283,6 +283,18 @@ row above the composer shows the goal and its progress.
 - Stopping Claude ends the current turn, but the goal stays set. Claude checks it
   again at the end of your next message.
 
+Agents can use `t3_thread_goal` to read a goal or control Codex without queuing
+behind its active run. Read first and reuse the returned control token with a
+stable request ID. Pause and clear let the current turn finish normally;
+replace edits only the objective, preserving status and usage without starting
+a turn. Resume on an idle thread starts an owned run; accepted dispatch still
+needs native readback. Request receipts are kept for the current server and
+session binding. Restart or a binding change expires old control tokens: read
+again and reconcile state before issuing another operation. An unknown result
+blocks further mutations until readback resolves it. Claude reads are transcript observations;
+its SDK does not expose these controls. Thread read/list goal fields are cached
+provider projections; use the goal tool for a fresh Codex observation.
+
 ## Context in your message
 
 Context you attach lands where your cursor is, as a chip inside your text: a terminal excerpt,
@@ -304,15 +316,29 @@ the repository by text. Choose a result to insert it as a chip.
 Another thread can be context too. Type `@` followed by part of its title to pick one from
 the same server, or on web and desktop drag a thread out of the sidebar and drop it on the
 composer; a multi-selection drops together. The chip shows the thread's current title and
-opens it when selected. Your prompt only carries a reference: the agent reads the thread's
-history on demand, so attaching a long thread costs nothing until the agent looks. Attaching a
-thread does not change it, and the agent cannot send messages to it unless you ask.
+opens it when selected, including threads from another connected environment. Your prompt
+carries the title, thread ID, and source environment. On web and desktop, adding a thread also
+captures a bounded excerpt of its recent conversation: up to three recent exchanges with tool
+activity, plus up to six earlier exchanges containing only the incoming message and last
+recorded assistant reply, presented chronologically. Historical replies are labeled as recorded
+replies because the source does not retain final-channel metadata. Incoming messages can come
+from you, another agent, or a scheduled task.
 
-Dropping a thread from another environment attaches a saved transcript file. The source
-environment must be connected and up to date. The transcript includes the visible history and
-saved text context at the time of the drop; later messages and the contents of attached files
-are not copied. The agent can read the saved transcript after the source disconnects. Normal
-file attachment limits apply.
+The excerpt is extracted automatically, without a model-generated summary or a transcript file.
+Long messages and tool results are shortened, with omissions marked. Each thread excerpt is
+limited to 16,000 characters; excerpts across a message share a 32,000-character budget and may
+be omitted when the rest of the prompt leaves too little room. Reasoning and attached file
+contents are excluded. Selected text and tool output are copied into the receiving conversation.
+
+The excerpt reflects the source when you attach it. Adding the same reference again does not
+refresh it. If the source is disconnected or cannot provide an excerpt, the identity reference
+still works and the missing context is identified. The agent can read more history on demand.
+Reading another environment requires a tool that supports its environment ID and an accessible
+linked source; attaching a reference does not grant that access.
+Attaching a thread does not change it or authorize the agent to message it.
+
+Dropping or pasting a thread reference preserves its source environment. Existing transcript
+files you attached previously remain ordinary file attachments; this does not remove them.
 
 Images keep their thumbnail shelf above the text and also get a chip at your cursor, so you can
 say exactly which image you mean. Deleting an image chip leaves the image on the shelf; removing

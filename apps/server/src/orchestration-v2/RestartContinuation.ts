@@ -11,6 +11,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
 import * as ServerSettings from "../serverSettings.ts";
+import { isWorkModeKeepWarm } from "../jones/provider/workModePrompt.ts";
 import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { restartContinuationBlocked } from "./RestartContinuationPolicy.ts";
@@ -108,7 +109,11 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     const sourceMessage = sourceRecords.messages.find(
       (message) => message.id === source.userMessageId,
     );
-    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) return;
+    if (
+      sourceMessage !== undefined &&
+      (isNativeMaintenanceCommand(sourceMessage) || isWorkModeKeepWarm(sourceMessage))
+    )
+      return;
     const note = restartContinuationNote(
       source,
       projection.runs,

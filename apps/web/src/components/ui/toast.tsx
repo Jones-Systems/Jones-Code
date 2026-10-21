@@ -53,6 +53,7 @@ export type ThreadToastData = {
     | "outline"
     | "secondary";
   expandableContent?: ReactNode;
+  expandableFitWidth?: boolean;
   expandableLabels?: { expand?: string; collapse?: string };
   expandableDescriptionTrigger?: boolean;
   actionLayout?: "inline" | "stacked-end";
@@ -162,7 +163,11 @@ function ToastExpandableSection({
         />
         {open ? collapseLabel : expandLabel}
       </button>
-      {open ? <div className={toastExpandablePanelClassName}>{children}</div> : null}
+      {open ? (
+        <div data-slot="toast-expandable-panel" className={toastExpandablePanelClassName}>
+          {children}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -248,7 +253,11 @@ function ToastDescriptionAndExpandable({
         </TooltipTrigger>
         <TooltipPopup side="top">{open ? collapseLabel : expandLabel}</TooltipPopup>
       </Tooltip>
-      {open ? <div className={toastExpandablePanelClassName}>{expandableContent}</div> : null}
+      {open ? (
+        <div data-slot="toast-expandable-panel" className={toastExpandablePanelClassName}>
+          {expandableContent}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -565,6 +574,8 @@ function Toasts({ position }: { position: ToastPosition }) {
             <Toast.Root
               className={cn(
                 "dropdown-glass absolute z-[calc(9999-var(--toast-index))] w-full overflow-visible select-none rounded-lg text-popover-foreground shadow-xl shadow-black/25 [transition:transform_.5s_cubic-bezier(.22,1,.36,1),opacity_.5s,height_.15s]",
+                toast.data?.expandableFitWidth &&
+                  "has-data-[slot=toast-expandable-panel]:w-max has-data-[slot=toast-expandable-panel]:min-w-full has-data-[slot=toast-expandable-panel]:max-w-[min(200%,calc(100vw-var(--toast-inset)*2))] data-[position*=center]:has-data-[slot=toast-expandable-panel]:left-1/2 data-[position*=center]:has-data-[slot=toast-expandable-panel]:right-auto data-[position*=center]:has-data-[slot=toast-expandable-panel]:-translate-x-1/2",
                 "data-[position*=right]:right-0 data-[position*=right]:left-auto",
                 "data-[position*=left]:right-auto data-[position*=left]:left-0",
                 "data-[position*=center]:right-0 data-[position*=center]:left-0",

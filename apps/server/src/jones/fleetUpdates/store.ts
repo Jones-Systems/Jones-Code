@@ -24,6 +24,8 @@ export const FleetFollowerRecord = Schema.Struct({
     Schema.Struct({
       enrollmentId: FleetOperationId,
       committedSource: FleetSourceSha,
+      /** Absent on a record written before the laptop sent provenance; it waits for a new one. */
+      committedTree: Schema.optionalKey(FleetSourceSha),
       publishedAt: Schema.String,
     }),
   ),

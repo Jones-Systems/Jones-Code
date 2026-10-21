@@ -159,22 +159,6 @@ export function shellAttentionInput(
   };
 }
 
-function isLatestRunSettled(
-  latestRun: Pick<ThreadRunSummary, "runId" | "startedAt" | "completedAt" | "status"> | null,
-  runtime: Pick<ThreadRuntimeSummary, "status" | "activeRunId"> | null,
-): boolean {
-  if (latestRun === null) return false;
-  if (
-    latestRun.status === "preparing" ||
-    latestRun.status === "queued" ||
-    latestRun.status === "starting" ||
-    latestRun.status === "running" ||
-    latestRun.status === "waiting"
-  )
-    return false;
-  return runtime?.activeRunId !== latestRun.runId;
-}
-
 export function hasUnseenCompletion(thread: ThreadAttentionInput): boolean {
   if (!thread.latestRun?.completedAt) return false;
   const completedAt = Date.parse(thread.latestRun.completedAt);
@@ -242,15 +226,6 @@ export function resolveThreadAttentionPill(input: {
     return "Waiting";
   }
 
-  const hasPlanReadyPrompt =
-    !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
-    isLatestRunSettled(thread.latestRun, thread.runtime) &&
-    thread.hasActionableProposedPlan;
-  if (hasPlanReadyPrompt) {
-    return "Plan Ready";
-  }
-
   if (hasUnseenCompletion(thread)) {
     return "Completed";
   }
@@ -279,7 +254,7 @@ export function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSuba
   if (
     kind === undefined ||
     kind === "auth_refresh" ||
-    thread.lineage.relationshipToParent !== "subagent" ||
+    (thread.lineage.relationshipToParent !== "subagent" && thread.delegatedFrom === undefined) ||
     isProviderNativeSubagentThread(thread) ||
     !isChildRunLive(thread)
   ) {
@@ -288,24 +263,40 @@ export function subagentRequest(thread: OrchestrationV2ThreadShell): PendingSuba
   return kind === "user_input" ? "user_input" : "approval";
 }
 
+/**
+ * The threads to flag for a subagent's live question or approval, up its
+ * subagent chain. `delegated` are tasks this environment's threads delegated
+ * to linked environments, with what each one, or its own subagents, asks.
+ */
 export function pendingSubagentRequestsByThread(
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
+  delegated: ReadonlyArray<{
+    readonly parentThreadId: ThreadId;
+    readonly request: PendingSubagentRequest;
+  }> = [],
 ): ReadonlyMap<ThreadId, PendingSubagentRequest> {
   const requests = new Map<ThreadId, PendingSubagentRequest>();
   let byId: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> | undefined;
-  for (const child of threads) {
-    const request = subagentRequest(child);
-    if (request === null) continue;
+  const flag = (
+    firstParentId: ThreadId | null,
+    request: PendingSubagentRequest,
+    seen: Set<ThreadId>,
+  ) => {
     byId ??= new Map(threads.map((thread) => [thread.id, thread] as const));
-    const seen = new Set<ThreadId>([child.id]);
-    let current: OrchestrationV2ThreadShell | undefined = child;
-    while (current?.lineage.relationshipToParent === "subagent") {
-      const parentId: ThreadId | null = current.lineage.parentThreadId;
-      if (parentId === null || seen.has(parentId)) break;
+    let parentId = firstParentId;
+    while (parentId !== null && !seen.has(parentId)) {
       seen.add(parentId);
       if (requests.get(parentId) !== "approval") requests.set(parentId, request);
-      current = byId.get(parentId);
+      const parent = byId.get(parentId);
+      parentId =
+        parent?.lineage.relationshipToParent === "subagent" ? parent.lineage.parentThreadId : null;
     }
+  };
+  for (const child of threads) {
+    if (child.lineage.relationshipToParent !== "subagent") continue;
+    const request = subagentRequest(child);
+    if (request !== null) flag(child.lineage.parentThreadId, request, new Set([child.id]));
   }
+  for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
   return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
 }

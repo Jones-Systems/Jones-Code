@@ -12,6 +12,7 @@ import {
   type JonesActionsCandidate,
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -48,6 +49,8 @@ import {
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const BuildMetadata = Schema.Struct({
+  version: Schema.optionalKey(Schema.Unknown),
+  jonesBuildStartedAt: Schema.optionalKey(Schema.Unknown),
   t3codeCommitHash: Schema.optionalKey(SourceHash),
   jonesSource: Schema.optionalKey(
     Schema.Struct({
@@ -173,7 +176,7 @@ function nativeFailureReason(cause: unknown): string {
   return text.length === 0 ? "unexpected error" : text.replace(/\.$/, "");
 }
 
-function provenance(candidate: JonesActionsCandidate) {
+function provenance(candidate: JonesActionsCandidate, buildStartedAt: string | undefined) {
   return {
     repository: candidate.repository,
     sourceSha: candidate.source,
@@ -186,6 +189,7 @@ function provenance(candidate: JonesActionsCandidate) {
     platform: candidate.platform,
     architecture: candidate.architecture,
     version: candidate.version,
+    ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
   } as const;
 }
 
@@ -281,11 +285,14 @@ export class JonesDesktopUpdateController {
   #source: string | undefined;
   #installedSource: JonesUpdateState["installedSource"];
   #candidate: JonesActionsCandidate | undefined;
+  #candidateBuildStartedAt: string | undefined;
+  #currentBuildStartedAt: string | undefined;
   #staged: StagedMacApp | undefined;
   #selectedAttempt: { readonly stagedHandle: string; readonly transactionId: string } | undefined;
   #busy: "check" | "download" | "install" | "discard" | "reclaim" | null = null;
   /** The newest build the last check offered, even while an older one stays staged. */
   #latest: JonesActionsCandidate | undefined;
+  #latestBuildStartedAt: string | undefined;
   #bootstrap: ActiveInstall | undefined;
   #activationBlocked = false;
   #candidateStartupGateUnavailable = false;
@@ -518,6 +525,7 @@ export class JonesDesktopUpdateController {
     )
       throw new Error("Native app receipt bindings changed.");
     this.#candidate = artifact.candidate;
+    this.#candidateBuildStartedAt = undefined;
     this.#staged = selection.app;
   }
 
@@ -600,13 +608,18 @@ export class JonesDesktopUpdateController {
         install: reason === undefined && phase !== "installing",
         ...(reason === undefined ? {} : { reason }),
       },
-      ...(this.#candidate === undefined ? {} : { provenance: provenance(this.#candidate) }),
+      ...(this.#candidate === undefined
+        ? {}
+        : { provenance: provenance(this.#candidate, this.#candidateBuildStartedAt) }),
       ...(this.#staged === undefined ? {} : { stagedHandle: this.#staged.handle }),
       ...(this.#bootstrap === undefined
         ? {}
         : {
             environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
             currentVersion: this.#state.currentVersion,
+            ...(this.#currentBuildStartedAt === undefined
+              ? {}
+              : { currentBuildStartedAt: this.#currentBuildStartedAt }),
           }),
       ...(message === undefined ? {} : { message }),
       ...(checkedAt === null ? {} : { checkedAt }),
@@ -751,6 +764,10 @@ export class JonesDesktopUpdateController {
       ),
     );
     this.#source = metadata.jonesSource?.sha;
+    this.#currentBuildStartedAt =
+      metadata.version === this.#state.currentVersion
+        ? readJonesBuildStartedAt(metadata)
+        : undefined;
     this.#installedSource = undefined;
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
@@ -1002,7 +1019,11 @@ export class JonesDesktopUpdateController {
       });
       if (result.state === "available") {
         this.#latest = result.candidate;
-        if (this.#staged === undefined) this.#candidate = result.candidate;
+        this.#latestBuildStartedAt = result.buildStartedAt;
+        if (this.#staged === undefined) {
+          this.#candidate = result.candidate;
+          this.#candidateBuildStartedAt = result.buildStartedAt;
+        }
         await this.#publish(
           this.#staged === undefined ? "available" : "staged",
           this.#staged === undefined ? "available" : "downloaded",
@@ -1014,7 +1035,10 @@ export class JonesDesktopUpdateController {
           `Jones main check blocked: ${result.reason}.`,
         );
       else {
-        if (result.state === "no-new") this.#latest = undefined;
+        if (result.state === "no-new") {
+          this.#latest = undefined;
+          this.#latestBuildStartedAt = undefined;
+        }
         await this.#publish(
           this.#staged === undefined
             ? result.state === "no-new"
@@ -1208,6 +1232,7 @@ export class JonesDesktopUpdateController {
       }
       this.#staged = undefined;
       this.#candidate = undefined;
+      this.#candidateBuildStartedAt = undefined;
       this.#selectedAttempt = undefined;
       this.#candidateStartupGateUnavailable = false;
       await this.#publish(
@@ -1289,6 +1314,7 @@ export class JonesDesktopUpdateController {
       this.#bootstrap === undefined
     )
       return "refused";
+    const nextBuildStartedAt = this.#latestBuildStartedAt;
     this.#busy = "discard";
     const dispatch = { dispatched: false };
     let discarded: "discarded" | "refused" | "failed";
@@ -1314,6 +1340,7 @@ export class JonesDesktopUpdateController {
     }
     this.#staged = undefined;
     this.#candidate = next;
+    this.#candidateBuildStartedAt = nextBuildStartedAt;
     this.#selectedAttempt = undefined;
     this.#candidateStartupGateUnavailable = false;
     if (reclaim !== undefined) {
