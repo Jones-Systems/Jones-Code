@@ -115,7 +115,7 @@ export function settlementRestoreMessage(
   }
 }
 
-export class SettlementRestoreNotAppliedError extends Data.TaggedError(
+class SettlementRestoreNotAppliedError extends Data.TaggedError(
   "SettlementRestoreNotAppliedError",
 )<{
   readonly outcome: Exclude<SettlementRestoreOutcome, { readonly type: "restored" }>;
