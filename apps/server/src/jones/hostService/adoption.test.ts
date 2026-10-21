@@ -213,14 +213,14 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const runtime = NodePath.join(base, "runtime");
   const active = NodePath.join(runtime, "versions", oldVersion);
   await NodeFSP.mkdir(active, { recursive: true, mode: 0o700 });
-  await NodeFSP.mkdir(NodePath.join(base, "userdata"));
+  await NodeFSP.mkdir(NodePath.join(base, "userdata"), { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(active, "t3"), runtimeExecutable(oldVersion), {
     mode: 0o755,
   });
-  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion);
+  await NodeFSP.writeFile(NodePath.join(active, ".install-complete"), oldVersion, { mode: 0o600 });
   if (options.privateSetup) {
     for (const name of ["client", "node_modules", "resource-monitor"])
-      await NodeFSP.mkdir(NodePath.join(active, name));
+      await NodeFSP.mkdir(NodePath.join(active, name), { mode: 0o700 });
   }
   if (!options.legacy && !options.privateSetup && !options.legacyMac)
     await NodeFSP.writeFile(
@@ -240,7 +240,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const unit = options.legacyMac
     ? NodePath.join(home, "Library/LaunchAgents/com.t3tools.t3code.service.plist")
     : NodePath.join(home, ".config/systemd/user", serviceUnit);
-  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true });
+  await NodeFSP.mkdir(NodePath.dirname(unit), { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(
     unit,
     renderBootServiceUnit(
@@ -253,6 +253,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
       },
       { ...JONES_BOOT_SERVICE_IDENTITY, systemdUnitFile: serviceUnit },
     ),
+    { mode: 0o600 },
   );
   const metadata = new Map<string, Record<string, unknown>>();
   const artifacts = new Map<
@@ -380,7 +381,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   ];
   const directExecutable = NodePath.join(home, "Jones-Code-Install-20261016", "t3");
   if (options.legacyMac) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true });
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { recursive: true, mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
     await NodeFSP.writeFile(
       unit,
@@ -401,9 +402,9 @@ async function populateFixture(root: string, options: FixtureOptions) {
     await NodeFSP.rm(active, { recursive: true });
   }
   if (options.legacy) {
-    await NodeFSP.mkdir(NodePath.dirname(directExecutable));
+    await NodeFSP.mkdir(NodePath.dirname(directExecutable), { mode: 0o700 });
     await NodeFSP.writeFile(directExecutable, runtimeExecutable(oldVersion), { mode: 0o755 });
-    await NodeFSP.mkdir(`${unit}.d`);
+    await NodeFSP.mkdir(`${unit}.d`, { mode: 0o700 });
     for (const name of preserveDropin)
       await NodeFSP.writeFile(
         NodePath.join(`${unit}.d`, name),
