@@ -46,6 +46,14 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import {
+  SETTLEMENT_RESTORE_MENU_ID,
+  withSettlementRestoreMenuItem,
+} from "../jones/settlementRestore/menu";
+import {
+  readEnvironmentSupportsSettlementRestore,
+  restoreCurrentSettlement,
+} from "../jones/settlementRestore/settlementRestore";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -131,12 +139,17 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat);
-      const items = buildThreadActionMenuItems({
-        canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+      const canOperate = readEnvironmentScope(
+        threadRef.environmentId,
+        AuthOrchestrationOperateScope,
+      );
+      const isSettled = supports.settlement && thread.settledOverride === "settled";
+      const menuItems = buildThreadActionMenuItems({
+        canOperate,
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
-        isSettled: supports.settlement && thread.settledOverride === "settled",
+        isSettled,
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
         canSnoozeNow: canSnooze(thread, { now: now.toISOString() }),
@@ -145,9 +158,22 @@ export function useThreadActionMenu(input: {
         supports,
         snoozePresets,
       });
+      // Jones: persistent Undo settle, for servers that keep a restore record.
+      const items = withSettlementRestoreMenuItem(menuItems, {
+        available: isSettled && readEnvironmentSupportsSettlementRestore(threadRef.environmentId),
+        canOperate,
+      });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
-      const action: ThreadActionMenuId = clicked.value;
+      const choice = clicked.value;
+      if (choice === SETTLEMENT_RESTORE_MENU_ID) {
+        const result = await restoreCurrentSettlement(threadRef);
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+          failureToast("Failed to undo settle", squashAtomCommandFailure(result));
+        }
+        return;
+      }
+      const action: ThreadActionMenuId = choice;
       if (
         threadActionRequiresOperate(action) &&
         !readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
