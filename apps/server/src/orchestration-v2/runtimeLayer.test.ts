@@ -1785,7 +1785,10 @@ it.layer(layerLegacyImportTest)("OrchestrationV2 legacy import", (it) => {
   );
 });
 
-it.layer(Layer.fresh(layerTest))("planned-update terminal continuity", (it) => {
+const layerPlannedUpdateTerminalTest = Layer.fresh(
+  layerTest.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+);
+it.layer(layerPlannedUpdateTerminalTest)("planned-update terminal continuity", (it) => {
   it.effect("terminal observation releases the exact planned-update held queue", () =>
     Effect.gen(function* () {
       const f = yield* queueGuardFixture("planned-update-terminal");
