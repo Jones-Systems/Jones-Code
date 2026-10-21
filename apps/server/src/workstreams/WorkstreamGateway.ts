@@ -572,7 +572,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     });
     const readMetadata: WorkstreamGateway["Service"]["readMetadata"] = (input = {}) =>
       {
-const runEffect = Effect.fn("WorkstreamGateway.readMetadata")(function* () {
+const runEffect = Effect.fn("WorkstreamGateway.readMetadata")(function* (): Effect.fn.Return<T3WorkstreamListResult, WorkstreamGatewayError> {
         const authorized = yield* authorize("workstreams:read");
         const request = yield* Effect.try({
           try: () => pageInput(input),
