@@ -208,6 +208,11 @@ export const OpenCodeDriver: ProviderDriver<
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const crypto = yield* Crypto.Crypto;
     const host = yield* ProviderHost.ProviderHost;
+
+    const authorityOption = yield* Effect.serviceOption(OpenCodeCreationPolicy.OpenCodeAuthority);
+    const authority = Option.isSome(authorityOption)
+      ? authorityOption.value.forInstance(instanceId)
+      : undefined;
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
     const continuationIdentity = defaultProviderContinuationIdentity({
       driverKind: DRIVER_KIND,
@@ -278,6 +283,7 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     );
     const openCode2Server = yield* OpenCode2Server.make({
+      ...(authority !== undefined ? { authority } : {}),
       binaryPath: effectiveConfig.binaryPath,
       serverUrl: effectiveConfig.serverUrl,
       serverPassword: effectiveConfig.serverPassword,
@@ -298,42 +304,51 @@ export const OpenCodeDriver: ProviderDriver<
       ),
     });
     const loadOpenCode2Models = yield* makeOpenCode2ModelLoader(
-      openCode2Server.withConnection(({ client }) => loadOpenCode2Catalog(client, host.paths.cwd)),
+      openCode2Server.withConnection(
+        ({ client }) => loadOpenCode2Catalog(client, host.paths.cwd),
+        undefined,
+        "models",
+      ),
     );
     const listOpenCode2Workspace = (cwd: string) =>
-      openCode2Server.withConnection(({ client, events }) =>
-        Effect.gen(function* () {
-          const location = { directory: cwd };
-          const scanned = yield* Deferred.make<void>();
-          const pending = new Set(["command.updated", "skill.updated"]);
-          const stream = yield* events.pipe(Effect.option);
-          if (stream._tag === "Some") {
-            yield* stream.value.pipe(
-              Stream.runForEach((event) =>
-                "location" in event &&
-                event.location?.directory === cwd &&
-                pending.delete(event.type) &&
-                pending.size === 0
-                  ? Deferred.succeed(scanned, undefined)
-                  : Effect.void,
+      openCode2Server.withConnection(
+        ({ client, events }) =>
+          Effect.gen(function* () {
+            const location = { directory: cwd };
+            const scanned = yield* Deferred.make<void>();
+            const pending = new Set(["command.updated", "skill.updated"]);
+            const stream = yield* events.pipe(Effect.option);
+            if (stream._tag === "Some") {
+              yield* stream.value.pipe(
+                Stream.runForEach((event) =>
+                  "location" in event &&
+                  event.location?.directory === cwd &&
+                  pending.delete(event.type) &&
+                  pending.size === 0
+                    ? Deferred.succeed(scanned, undefined)
+                    : Effect.void,
+                ),
+                Effect.ignore,
+                Effect.forkScoped,
+              );
+            }
+            return yield* loadOpenCode2Workspace(
+              Effect.all(
+                {
+                  skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
+                  commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
+                },
+                { concurrency: "unbounded" },
               ),
-              Effect.ignore,
-              Effect.forkScoped,
+              Deferred.await(scanned),
             );
-          }
-          return yield* loadOpenCode2Workspace(
-            Effect.all(
-              {
-                skills: client.skill.list({ location }).pipe(Effect.map((list) => list.data)),
-                commands: client.command.list({ location }).pipe(Effect.map((list) => list.data)),
-              },
-              { concurrency: "unbounded" },
-            ),
-            Deferred.await(scanned),
-          );
-        }).pipe(Effect.scoped),
+          }).pipe(Effect.scoped),
+
+        undefined,
+        "inventory",
       );
     const serverOwner = yield* OpenCodeServerOwner.make({
+      ...(authority !== undefined ? { authority } : {}),
       binaryPath: effectiveConfig.binaryPath,
       directory: host.paths.cwd,
       ...(effectiveConfig.serverPassword ? { serverPassword: effectiveConfig.serverPassword } : {}),
@@ -427,16 +442,20 @@ export const OpenCodeDriver: ProviderDriver<
               return yield* loadWorkspaceInventory(client);
             }),
           )
-        : serverOwner.withServer((server) =>
-            loadWorkspaceInventory(
-              openCodeRuntime.createOpenCodeSdkClient({
-                baseUrl: server.url,
-                directory: cwd,
-                ...(server.serverPassword !== undefined
-                  ? { serverPassword: server.serverPassword }
-                  : {}),
-              }),
-            ),
+        : serverOwner.withServer(
+            (server) =>
+              loadWorkspaceInventory(
+                openCodeRuntime.createOpenCodeSdkClient({
+                  baseUrl: server.url,
+                  directory: cwd,
+                  ...(server.serverPassword !== undefined
+                    ? { serverPassword: server.serverPassword }
+                    : {}),
+                }),
+              ),
+
+            undefined,
+            "inventory",
           );
 
     const snapshotSettings = yield* makeProviderSnapshotSettingsSource(effectiveConfig);

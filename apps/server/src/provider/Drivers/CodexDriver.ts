@@ -120,6 +120,7 @@ export const CodexDriver: ProviderDriver<
     enabled,
     config,
   }) {
+    resetQuotaBinding(instanceId);
     if (config.setupMode === "managed")
       return yield* makeManagedCodexProvider({
         instanceId,
@@ -187,7 +188,12 @@ export const CodexDriver: ProviderDriver<
         enabled,
         config,
       },
-      { onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+      {
+        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        getModelCatalog: Effect.suspend(() =>
+          snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+        ),
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>
@@ -205,7 +211,7 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+          checkCodexProviderStatus(effectiveConfig, undefined, processEnv, undefined, instanceId),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },

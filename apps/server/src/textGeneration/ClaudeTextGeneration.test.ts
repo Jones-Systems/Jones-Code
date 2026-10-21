@@ -1,3 +1,4 @@
+import { SYNTHETIC_CLAUDE_THINKING_MODEL } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -197,6 +198,120 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
+  it.effect.each(["pass", "hold", "malformed"] as const)(
+    "evaluates remote requests with tools disabled and preserves %s output",
+    (outcome) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({
+            structured_output: {
+              verdict: outcome === "malformed" ? "pass" : outcome,
+              category: outcome === "pass" ? "none" : "risky",
+              reason: "Synthetic evaluation.",
+            },
+          }),
+          argsMustContain: "--disallowedTools mcp__*",
+          stdinMustContain: "Untrusted request JSON:",
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.result);
+            if (outcome === "malformed") {
+              expect(Result.isFailure(result)).toBe(true);
+              if (Result.isFailure(result)) {
+                expect(result.failure.operation).toBe("evaluateRemoteRequest");
+                expect(result.failure.detail).toContain("invalid structured output");
+              }
+            } else {
+              expect(Result.isSuccess(result)).toBe(true);
+              if (Result.isSuccess(result)) expect(result.success.verdict).toBe(outcome);
+            }
+          }),
+      ),
+  );
+
+  it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            subject: "Add important change",
+            body: "",
+          },
+        }),
+        argsMustContain: '--settings {"disableAllHooks":true,"alwaysThinkingEnabled":false}',
+        argsMustNotContain: "--effort",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generateCommitMessage({
+            cwd: process.cwd(),
+            branch: "feature/claude-effect",
+            stagedSummary: "M README.md",
+            stagedPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_THINKING_MODEL,
+                [
+                  { id: "thinking", value: false },
+                  { id: "effort", value: "high" },
+                ],
+              ),
+            },
+          });
+
+          expect(generated.subject).toBe("Add important change");
+        }),
+    ),
+  );
+
+  it.effect("keeps a configured custom alias opaque to the Claude CLI", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Keep custom model",
+            body: "",
+          },
+        }),
+        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --settings`,
+        claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/custom-model",
+            commitSummary: "Keep custom model",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: createModelSelection(
+              ProviderInstanceId.make("claudeAgent"),
+              SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
+              [
+                { id: "effort", value: "max" },
+                { id: "fastMode", value: true },
+                { id: "contextWindow", value: "expanded" },
+              ],
+            ),
+          });
+
+          expect(generated.title).toBe("Keep custom model");
+        }),
+    ),
+  );
+
   it.effect(
     "keeps canonical built-in capabilities when a custom model collides with its alias",
     () =>

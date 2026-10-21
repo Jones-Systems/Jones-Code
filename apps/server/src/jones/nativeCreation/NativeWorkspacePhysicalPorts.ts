@@ -241,23 +241,35 @@ const make = Effect.gen(function* () {
         .split("\n")
         .filter(Boolean)
         .sort((a, b) => b.length - a.length);
-      const prefix = remotes.find((remote) => claim.binding.baseBranch.startsWith(`${remote}/`));
+      const selectedBase = claim.binding.baseBranch.replace(/^refs\/remotes\//, "");
+      const prefix = remotes.find((remote) => selectedBase.startsWith(`${remote}/`));
       const baseBranch =
         prefix === undefined
-          ? claim.binding.baseBranch
-          : claim.binding.baseBranch.slice(prefix.length + 1);
+          ? claim.binding.baseBranch.replace(/^refs\/heads\//, "")
+          : selectedBase.slice(prefix.length + 1);
       const baseConfiguration = {
         key: `branch.${claim.resources.branch}.gh-merge-base`,
         value: baseBranch,
       };
+      const baseConfigurations = [
+        baseConfiguration,
+        ...(prefix === undefined
+          ? []
+          : [
+              {
+                key: `branch.${claim.resources.branch}.t3-merge-base-ref`,
+                value: `refs/remotes/${selectedBase}`,
+              },
+            ]),
+      ];
       return {
         script,
         revision,
         oid,
         mode,
         submodules: canonical({ mode, modules, projectFile }),
-        baseConfiguration,
-        base: canonical(baseConfiguration),
+        baseConfigurations,
+        base: canonical(baseConfigurations),
       };
     });
   const materialBirth = (worktreePath: string) =>
@@ -342,10 +354,12 @@ const make = Effect.gen(function* () {
         proof.baseConfigurationDigest !== digest(basis.baseConfigurationDefinition)
       )
         return yield* conflict();
-      const config = yield* git
-        .readConfigValue(basis.projectCwd, definition.baseConfiguration.key)
-        .pipe(Effect.mapError(conflict));
-      if (config !== definition.baseConfiguration.value) return yield* conflict();
+      for (const configuration of definition.baseConfigurations) {
+        const config = yield* git
+          .readConfigValue(basis.projectCwd, configuration.key)
+          .pipe(Effect.mapError(conflict));
+        if (config !== configuration.value) return yield* conflict();
+      }
     });
   const inspect: Workspace.NativeWorkspacePorts["Service"]["inspect"] = (claim, expected) =>
     Effect.gen(function* () {
@@ -405,13 +419,17 @@ const make = Effect.gen(function* () {
           "--format=%(refname)",
           `refs/heads/${claim.resources.branch}`,
         ]);
-        const config = yield* git
-          .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.gh-merge-base`)
-          .pipe(Effect.mapError(conflict));
+        const configurations = yield* Effect.forEach(
+          ["gh-merge-base", "t3-merge-base-ref"],
+          (key) =>
+            git
+              .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.${key}`)
+              .pipe(Effect.mapError(conflict)),
+        );
         if (
           registration.split("\0").includes(`worktree ${basis.worktreePath}`) ||
           refs.trim() !== "" ||
-          config !== null
+          configurations.some((value) => value !== null)
         )
           return yield* conflict();
       }
@@ -427,8 +445,14 @@ const make = Effect.gen(function* () {
       if (branch !== claim.resources.branch) return yield* conflict();
       const definition = yield* definitions(claim);
       let proof: NativeWorkspaceProof | undefined;
-      let pending: Git.LegacyWorktreePreparationStep["kind"] | undefined;
-      const completed = new Set<Git.LegacyWorktreePreparationStep["kind"]>();
+      let pending: string | undefined;
+      const completed = new Set<string>();
+      const stepIdentity = (step: Git.LegacyWorktreePreparationStep) =>
+        step.kind === "worktree.base-config" ? `${step.kind}:${step.args[1]}` : step.kind;
+      const checkoutWorkers =
+        (yield* git
+          .readConfigValue(basis.projectCwd, "checkout.workers")
+          .pipe(Effect.mapError(conflict))) ?? "0";
       yield* git
         .createWorktree(
           {
@@ -446,7 +470,7 @@ const make = Effect.gen(function* () {
                   yield* revalidate;
                   if (
                     pending !== undefined ||
-                    completed.has(step.kind) ||
+                    completed.has(stepIdentity(step)) ||
                     step.worktreePath !== basis.worktreePath ||
                     step.commonDirectory !== basis.gitCommonDirectory ||
                     step.targetRef !== `refs/heads/${branch}` ||
@@ -455,7 +479,17 @@ const make = Effect.gen(function* () {
                     return yield* conflict();
                   const expectedArgs =
                     step.kind === "worktree.add"
-                      ? ["worktree", "add", "-b", branch, basis.worktreePath, definition.oid]
+                      ? [
+                          "-c",
+                          `checkout.workers=${checkoutWorkers}`,
+                          "worktree",
+                          "add",
+                          "-b",
+                          branch,
+                          "--",
+                          basis.worktreePath,
+                          definition.oid,
+                        ]
                       : step.kind === "worktree.submodules"
                         ? [
                             "submodule",
@@ -463,13 +497,17 @@ const make = Effect.gen(function* () {
                             "--init",
                             ...(definition.mode === "recursive" ? ["--recursive"] : []),
                           ]
-                        : [
-                            "config",
-                            `branch.${branch}.gh-merge-base`,
-                            definition.baseConfiguration.value,
-                          ];
-                  const actualArgs = step.kind === "worktree.add" ? step.args.slice(-6) : step.args;
+                        : (() => {
+                            const configuration = definition.baseConfigurations.find(
+                              (entry) => entry.key === step.args[1],
+                            );
+                            return configuration === undefined
+                              ? undefined
+                              : ["config", configuration.key, configuration.value];
+                          })();
+                  const actualArgs = step.args;
                   if (
+                    expectedArgs === undefined ||
                     canonical(actualArgs) !== canonical(expectedArgs) ||
                     step.cwd !==
                       (step.kind === "worktree.submodules"
@@ -478,12 +516,12 @@ const make = Effect.gen(function* () {
                     (step.kind !== "worktree.add" && !completed.has("worktree.add"))
                   )
                     return yield* conflict();
-                  pending = step.kind;
+                  pending = canonical(step);
                 }),
               afterEffect: (step, result, material) =>
                 Effect.gen(function* () {
                   if (
-                    pending !== step.kind ||
+                    pending !== canonical(step) ||
                     result !== "settled_success" ||
                     material === undefined ||
                     material.path !== basis.worktreePath ||
@@ -516,7 +554,7 @@ const make = Effect.gen(function* () {
                     baseConfigurationDigest: digest(basis.baseConfigurationDefinition),
                   };
                   inFlight.set(claim.claimId, proof);
-                  completed.add(step.kind);
+                  completed.add(stepIdentity(step));
                   pending = undefined;
                 }),
             },
@@ -532,7 +570,9 @@ const make = Effect.gen(function* () {
         proof === undefined ||
         pending !== undefined ||
         !completed.has("worktree.add") ||
-        !completed.has("worktree.base-config") ||
+        definition.baseConfigurations.some(
+          (entry) => !completed.has(`worktree.base-config:${entry.key}`),
+        ) ||
         (definition.mode !== "none" && !completed.has("worktree.submodules"))
       )
         return yield* deny(

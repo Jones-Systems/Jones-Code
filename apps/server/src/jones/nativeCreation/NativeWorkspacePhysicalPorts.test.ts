@@ -64,12 +64,20 @@ const scenario = (
     badMaterial?: boolean;
     failConfig?: boolean;
     failSubmodules?: boolean;
+    remoteBase?: boolean;
+    comparison?: "omit" | "fail" | "foreign" | "duplicate";
+    foreignAddOption?: boolean;
   } = {},
 ) => {
-  const claim = fixtureClaim(options.setup);
+  const originalClaim = fixtureClaim(options.setup);
+  const claim = {
+    ...originalClaim,
+    binding: { ...originalClaim.binding, baseBranch: options.remoteBase ? "origin/main" : "main" },
+  };
   const calls: string[] = [];
   let created = false;
   let configured = false;
+  let comparisonConfigured = false;
   let admitted: NativeWorkspaceBasis | undefined;
   const birth = (name: string) =>
     canonical({ device: "fixture-device", inode: name, birthtime: 1 });
@@ -116,7 +124,18 @@ const scenario = (
         } as Git.ExecuteGitResult;
       }),
     resolveCommit: () => Effect.succeed({ commitSha: "a".repeat(40) }),
-    readConfigValue: () => Effect.succeed(configured ? "main" : null),
+    readConfigValue: (_cwd: string, key: string) =>
+      Effect.succeed(
+        key === "checkout.workers"
+          ? null
+          : key.endsWith(".t3-merge-base-ref")
+            ? comparisonConfigured
+              ? "refs/remotes/origin/main"
+              : null
+            : configured
+              ? "main"
+              : null,
+      ),
     fetchRemote: () =>
       Effect.sync(() => {
         calls.push("fetch");
@@ -134,6 +153,7 @@ const scenario = (
             "add",
             "-b",
             "fixture-branch",
+            "--",
             claim.resources.worktreePath,
             "a".repeat(40),
           ],
@@ -142,6 +162,7 @@ const scenario = (
           baseCommitOid: "a".repeat(40),
           targetRef: "refs/heads/fixture-branch",
         };
+        if (scenarioOptions.foreignAddOption) step.args.unshift("-c", "core.hooksPath=/foreign");
         yield* hooks.beforeEffect({ ...step, kind: "worktree.add" });
         calls.push("add");
         created = true;
@@ -219,6 +240,28 @@ const scenario = (
           "settled_success",
           material,
         );
+        if (scenarioOptions.remoteBase && scenarioOptions.comparison !== "omit") {
+          const comparisonStep = {
+            ...step,
+            args: [
+              "config",
+              scenarioOptions.comparison === "foreign"
+                ? "branch.foreign.t3-merge-base-ref"
+                : "branch.fixture-branch.t3-merge-base-ref",
+              "refs/remotes/origin/main",
+            ],
+            kind: "worktree.base-config" as const,
+          };
+          yield* hooks.beforeEffect(comparisonStep);
+          calls.push("comparison-config");
+          comparisonConfigured = true;
+          yield* hooks.afterEffect(
+            comparisonStep,
+            scenarioOptions.comparison === "fail" ? "failed_or_unknown" : "settled_success",
+            material,
+          );
+          if (scenarioOptions.comparison === "duplicate") yield* hooks.beforeEffect(comparisonStep);
+        }
         return {
           worktree: { path: claim.resources.worktreePath, refName: claim.resources.branch },
         };
@@ -374,5 +417,40 @@ it.effect("failed submodule completion prevents base configuration and workspace
       value.calls.filter((call) => !call.startsWith("read:")),
       ["add", "submodules"],
     );
+  }).pipe(Effect.provide(value.layer));
+});
+
+it.effect(
+  "remote workspace admission requires and verifies both exact base configuration keys",
+  () => {
+    const value = scenario({ remoteBase: true });
+    return Effect.gen(function* () {
+      const result = yield* value.prepare;
+      assert.equal(result.proof.baseRef, "origin/main");
+      assert.deepEqual(
+        value.calls.filter((call) => !call.startsWith("read:")),
+        ["add", "config", "comparison-config"],
+      );
+      yield* result.ports.verify(result.basis, result.proof);
+    }).pipe(Effect.provide(value.layer));
+  },
+);
+it.effect.each(["omit", "fail", "foreign", "duplicate"] as const)(
+  "remote comparison config %s cannot prove workspace completion",
+  (comparison) => {
+    const value = scenario({ remoteBase: true, comparison });
+    return Effect.gen(function* () {
+      const result = yield* value.prepare.pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      assert.isFalse(value.calls.includes("cleanup"));
+    }).pipe(Effect.provide(value.layer));
+  },
+);
+it.effect("extra Git options cannot cross exact worktree admission", () => {
+  const value = scenario({ foreignAddOption: true });
+  return Effect.gen(function* () {
+    const result = yield* value.prepare.pipe(Effect.result);
+    assert.equal(result._tag, "Failure");
+    assert.isFalse(value.calls.includes("add"));
   }).pipe(Effect.provide(value.layer));
 });

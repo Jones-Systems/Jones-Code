@@ -2326,7 +2326,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       pendingUpdates.push(update);
                     });
                   }
-                  return handleInteractionUpdate(context, update);
+                  return handleInteractionUpdate(context, update).pipe(
+                    Effect.provideService(CursorEventProducerContext, agent.eventProducer.origin),
+                  );
                 },
               })
               .pipe(Effect.mapError(classifyCursorModelRejection(turnInput.modelSelection)));

@@ -188,8 +188,7 @@ export function mapCodexModelCapabilities(
       ? "medium"
       : model.defaultReasoningEffort;
   const reasoningOptions = model.supportedReasoningEfforts.map(({ reasoningEffort }) =>
-    reasoningEffort ===
-    (codexDefaultReasoningEffortOverride(model.model) ?? model.defaultReasoningEffort)
+    reasoningEffort === preferredReasoning
       ? {
           id: reasoningEffort,
           label: reasoningEffortLabel(reasoningEffort),
@@ -589,15 +588,21 @@ const probeCodexAppServerProvider = Effect.fn("probeCodexAppServerProvider")(fun
             deadlineMs,
             RATE_LIMITS_PROBE_TIMEOUT_MS,
           ).pipe(
-            Effect.map((response): CodexRateLimitsProbe =>
-              response
-                ? {
-                    snapshot: response.rateLimits,
-                    rateLimitsByLimitId: response.rateLimitsByLimitId,
-                    resetCredits: response.rateLimitResetCredits,
-                    accountId: response.accountId,
-                  }
-                : { failure: "Codex did not answer the usage request." },
+            Effect.flatMap((response) =>
+              DateTime.now.pipe(
+                Effect.map((receivedAt): CodexRateLimitsProbe =>
+                  response
+                    ? {
+                        snapshot: response.rateLimits,
+                        rateLimitsByLimitId: response.rateLimitsByLimitId,
+                        resetCredits: response.rateLimitResetCredits,
+                        accountId: response.accountId,
+                        ordinaryUsageAllowed: response.ordinaryUsageAllowed,
+                        quotaReceivedAt: DateTime.formatIso(receivedAt),
+                      }
+                    : { failure: "Codex did not answer the usage request." },
+                ),
+              ),
             ),
             Effect.catch((error) =>
               Effect.logDebug("Codex rate-limit read failed.", { cause: error }).pipe(

@@ -738,7 +738,12 @@ const layerBase: Layer.Layer<
 
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-      Effect.fnUntraced(function* (storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>) {
+      Effect.fnUntraced(function* (
+        storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+      ) {
+        // Jones: capture settlement before the projection replaces the prior state.
+        if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
+          yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
@@ -816,10 +821,12 @@ const layerBase: Layer.Layer<
                 }),
               )
             : input.events;
+          const identityEvents = yield* guardRuntimeIdentity({ ...input, events });
+          if (identityEvents === null) return [];
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
-              ? yield* guardUserInputCancellations(events)
-              : events,
+              ? yield* guardUserInputCancellations(identityEvents)
+              : identityEvents,
           );
           const committed = yield* eventStore
             .append({

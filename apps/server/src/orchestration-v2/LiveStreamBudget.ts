@@ -221,7 +221,7 @@ const retainLiveStream = Effect.fn("LiveStreamBudget.retainLiveStream")(function
   const close = Effect.fn("LiveStreamBudget.close")(function* (error?: LiveStreamBufferError) {
     if (closed) return;
     closed = true;
-    budget.release(yield* Queue.clear(queue).pipe(Effect.orElseSucceed(() => [])));
+    budget.release(yield* Queue.clear(queue).pipe(Effect.catchCause(() => Effect.succeed([]))));
     if (error) yield* Queue.fail(queue, error);
     yield* Queue.shutdown(queue);
   });

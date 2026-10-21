@@ -12,10 +12,6 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Predicate from "effect/Predicate";
-import * as Path from "effect/Path";
-import * as PlatformError from "effect/PlatformError";
-import * as Schema from "effect/Schema";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { ClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
 import { CodexOrchestratorReplayHarness } from "../Adapters/CodexAdapterV2.testkit.ts";
@@ -100,6 +96,193 @@ function userAndAssistantText(
 }
 
 describe("orchestration V2 thread fork", () => {
+  it.effect(
+    "creates an idle app fork and resolves it with Codex native thread/fork on first dispatch",
+    () =>
+      Effect.gen(function* () {
+        const rawTranscript = yield* readTranscript();
+        const cwd = yield* Effect.acquireRelease(makeCheckpointWorkspace, (directory) =>
+          Effect.service(FileSystem.FileSystem).pipe(
+            Effect.flatMap((fs) => fs.remove(directory, { recursive: true, force: true })),
+            Effect.orDie,
+          ),
+        );
+        const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
+          materializeReplayTranscriptWorkspace(rawTranscript, cwd),
+        );
+
+        const materialized = yield* Effect.gen(function* () {
+          const ids = yield* IdAllocator.IdAllocatorV2;
+          const projectId = yield* ids.allocate.project({ fixtureName: "thread-fork-native" });
+          const sourceThreadId = yield* ids.allocate.thread({
+            fixtureName: "thread-fork-native-source",
+            projectId,
+          });
+          const targetThreadId = ThreadId.make("thread-fork-native-target");
+
+          const commands = [
+            {
+              type: "thread.create",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: yield* ids.allocate.command({
+                fixtureName: "thread-fork-native",
+                commandName: "thread-create-source",
+              }),
+              threadId: sourceThreadId,
+              projectId,
+              title: "Source thread",
+              modelSelection: CODEX_MODEL_SELECTION,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+            },
+            {
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: yield* ids.allocate.command({
+                fixtureName: "thread-fork-native",
+                commandName: "source-message",
+              }),
+              threadId: sourceThreadId,
+              messageId: MessageId.make("message-thread-fork-native-source"),
+              text: THREAD_FORK_NATIVE_SOURCE_PROMPT,
+              attachments: [],
+              modelSelection: CODEX_MODEL_SELECTION,
+              dispatchMode: { type: "start_immediately" },
+            },
+            {
+              type: "thread.fork",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make("command-thread-fork-native"),
+              sourceThreadId,
+              targetThreadId,
+              sourcePoint: { type: "latest_stable" },
+              title: "Forked thread",
+            },
+            {
+              type: "thread.fork",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: CommandId.make("command-thread-fork-native"),
+              sourceThreadId,
+              targetThreadId,
+              sourcePoint: { type: "latest_stable" },
+              title: "Forked thread",
+            },
+            {
+              type: "message.dispatch",
+              createdBy: "user",
+              creationSource: "web",
+              commandId: yield* ids.allocate.command({
+                fixtureName: "thread-fork-native",
+                commandName: "target-message",
+              }),
+              threadId: targetThreadId,
+              messageId: MessageId.make("message-thread-fork-native-target"),
+              text: THREAD_FORK_NATIVE_TARGET_PROMPT,
+              attachments: [],
+              modelSelection: CODEX_MODEL_SELECTION,
+              dispatchMode: { type: "start_immediately" },
+            },
+          ] satisfies ReadonlyArray<OrchestrationV2Command>;
+
+          return {
+            sourceThreadId,
+            targetThreadId,
+            commands,
+          };
+        }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
+
+        const result = yield* runOrchestratorV2ProviderReplayScenario(
+          {
+            name: "thread_fork_native/codex",
+            transcript,
+            commands: materialized.commands,
+            steps: [
+              { type: "dispatch", command: materialized.commands[0]!, await: true },
+              { type: "advance_clock", duration: "1 millis" },
+              { type: "dispatch", command: materialized.commands[1]!, await: true },
+              { type: "await_thread_idle", threadId: materialized.sourceThreadId },
+              { type: "dispatch", command: materialized.commands[2]!, await: true },
+              { type: "dispatch", command: materialized.commands[3]!, await: true },
+              { type: "dispatch", command: materialized.commands[4]!, await: true },
+              { type: "await_thread_idle", threadId: materialized.targetThreadId },
+            ],
+            projectionThreadIds: [materialized.sourceThreadId, materialized.targetThreadId],
+            runtimePolicyOverride: { cwd },
+          },
+          CodexOrchestratorReplayHarness,
+        ).pipe(provideDeterministicTestRuntime);
+
+        const sourceProjection = result.projections.get(materialized.sourceThreadId);
+        const targetProjection = result.projections.get(materialized.targetThreadId);
+        assert.isDefined(sourceProjection);
+        assert.isDefined(targetProjection);
+        assert.isString(sourceProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration);
+        assert.isString(targetProjection.providerThreads[0]?.runtimeIdentity?.runtimeGeneration);
+        assert.notEqual(
+          targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
+          sourceProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
+        );
+        assert.equal(
+          targetProjection.providerThreads[0]?.runtimeIdentity?.requested.providerInstanceId,
+          targetProjection.thread.modelSelection.instanceId,
+        );
+        assert.equal(targetProjection.thread.lineage.parentThreadId, materialized.sourceThreadId);
+        assert.equal(targetProjection.thread.lineage.relationshipToParent, "fork");
+        assert.lengthOf(targetProjection.providerSessions, 1);
+        assert.lengthOf(targetProjection.providerThreads, 1);
+        assert.equal(
+          targetProjection.providerThreads[0]?.nativeThreadRef?.nativeId,
+          "native-fork-thread",
+        );
+        assert.equal(
+          targetProjection.providerThreads[0]?.forkedFrom?.providerThreadId,
+          sourceProjection.providerThreads[0]?.id,
+        );
+
+        const transfers = targetProjection.contextTransfers.filter(
+          (transfer) => transfer.targetThreadId === materialized.targetThreadId,
+        );
+        assert.lengthOf(transfers, 1);
+        assert.equal(transfers[0]?.status, "consumed");
+        assert.equal(transfers[0]?.resolution?.strategy, "native_fork");
+        assert.equal(transfers[0]?.targetRunId, targetProjection.runs[0]?.id);
+
+        const transferCreatedIndex = result.domainEvents.findIndex(
+          (event) => event.type === "context-transfer.created",
+        );
+        const targetProviderSessionIndex = result.domainEvents.findIndex(
+          (event) =>
+            event.threadId === materialized.targetThreadId &&
+            event.type === "provider-session.updated",
+        );
+        const targetRunCreatedIndex = result.domainEvents.findIndex(
+          (event) => event.threadId === materialized.targetThreadId && event.type === "run.created",
+        );
+        assert.isAtLeast(transferCreatedIndex, 0);
+        assert.isAbove(targetProviderSessionIndex, transferCreatedIndex);
+        assert.isAbove(
+          targetProviderSessionIndex,
+          targetRunCreatedIndex,
+          "provider runtime state must be materialized only after the target run commits",
+        );
+
+        const forkEvents = result.domainEvents.filter(
+          (event) => event.type === "context-transfer.created",
+        );
+        assert.lengthOf(
+          forkEvents,
+          1,
+          "duplicate fork command must return the receipt without creating another transfer",
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect(
     "creates an idle app fork and resolves it with Claude native session fork on first dispatch",
     () =>

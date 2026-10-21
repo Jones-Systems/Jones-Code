@@ -720,10 +720,17 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     // Scopes close in reverse order. Forking this before the group kill is
     // registered forgets the ledger entry only once the group is stopped.
     const ledgerScope = yield* Scope.fork(runtimeScope);
+
+    const capture =
+      input.creationHooks === undefined
+        ? undefined
+        : yield* OpenCodeCreationPolicy.prepareGeneration(input.directory, input.creationHooks);
     const child = yield* spawner
       .spawn(
         ChildProcess.make(spawnCommand.command, spawnCommand.args, {
           detached: hostPlatform !== "win32",
+
+          cwd: input.directory,
           shell: spawnCommand.shell,
           env: {
             ...input.environment,
@@ -884,6 +891,15 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
     return {
+      ...(capture !== undefined
+        ? {
+            runtimeGeneration: capture.runtimeGeneration,
+            ownedProcess: Object.freeze({
+              incarnation: Object.freeze({ ...capture, pid: Number(child.pid), url }),
+              isCurrent: child.isRunning.pipe(Effect.orElseSucceed(() => false)),
+            }),
+          }
+        : {}),
       url,
       ...(serverPassword !== undefined ? { serverPassword } : {}),
       version,

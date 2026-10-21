@@ -1409,12 +1409,14 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           ...(options.spawn.env ? { env: options.spawn.env } : {}),
           extendEnv: options.spawn.extendEnv ?? true,
         });
+
+  const defaultLinuxCgroupController = yield* AcpLinuxCgroupControllerRef;
   const linuxCgroupLease =
     options.ownDescendantProcessGroups === true && options.processGroupPlatform === "linux"
       ? yield* Effect.sync(() => {
           try {
             if (options.linuxCgroupController === null) return undefined;
-            return (options.linuxCgroupController ?? makeLinuxCgroupController()).create();
+            return (options.linuxCgroupController ?? defaultLinuxCgroupController).create();
           } catch {
             return undefined;
           }
@@ -1445,7 +1447,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             cause: new Error("Contained ACP command was not found on PATH"),
           });
         });
-  const scopedSpawnCommand =
+  const scopedSpawnCommand: AgentScopeCommand & { readonly shell: boolean } =
     linuxCgroupLease !== undefined || spawnCommand.shell
       ? spawnCommand
       : {
@@ -1458,6 +1460,16 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
           })),
           shell: false,
         };
+
+  const stopAgentScope = scopedSpawnCommand.stop?.pipe(
+    Effect.mapError(
+      (cause) =>
+        new AcpProcessGroupTerminationError({
+          detail: "Agent scope retirement remains unknown",
+          cause,
+        }),
+    ),
+  );
   const containedSpawnCommand =
     linuxCgroupLease === undefined
       ? scopedSpawnCommand
@@ -1617,6 +1629,9 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       if (grace !== 0) yield* Effect.sleep(grace);
       return yield* terminateLinuxCgroupLease(linuxCgroupLease);
     }
+
+    if (options.ownDescendantProcessGroups === true && stopAgentScope !== undefined)
+      return yield* stopAgentScope;
     if (options.ownDescendantProcessGroups === true) {
       return yield* terminatePosixProcessTree(options.processGroupTerminationGrace ?? "1 second");
     }
@@ -1641,7 +1656,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
         : linuxCgroupLease !== undefined
           ? terminateLinuxCgroupLease(linuxCgroupLease)
           : options.ownDescendantProcessGroups === true
-            ? terminatePosixProcessTree(0, hostPlatform)
+            ? (stopAgentScope ?? terminatePosixProcessTree(0, hostPlatform))
             : signalOwnedProcessGroup("SIGKILL").pipe(Effect.asVoid);
     yield* Scope.addFinalizer(
       runtimeScope,

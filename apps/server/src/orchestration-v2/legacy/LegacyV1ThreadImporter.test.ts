@@ -1,3 +1,5 @@
+import { CommandId, MessageId, ProjectId } from "@t3tools/contracts";
+
 import { assert, it } from "@effect/vitest";
 import {
   ComposerContextId,

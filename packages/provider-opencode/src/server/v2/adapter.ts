@@ -3242,7 +3242,11 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         if (mcpAvailable) state.mcp = wanted;
       }
       const instructions = [
-        buildRuntimeInstructions({ harness: "OpenCode", model: turnInput.modelSelection.model }),
+        buildRuntimeInstructions({
+          ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
+          harness: "OpenCode",
+          model: turnInput.modelSelection.model,
+        }),
         t3OrchestrationSystemPrompt(mcpAvailable),
       ]
         .filter((part) => part !== undefined && part.length > 0)
@@ -3558,6 +3562,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           : undefined,
       ensureThread: Effect.fn("OpenCode2Adapter.ensureThread")(
         function* (threadInput) {
+          yield* requireAdoption;
           if (threadInput.existingProviderThread?.nativeThreadRef != null) {
             return yield* runtime.resumeThread({
               providerThread: threadInput.existingProviderThread,
@@ -3639,6 +3644,7 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
       ),
       resumeThread: Effect.fn("OpenCode2Adapter.resumeThread")(
         function* (threadInput) {
+          yield* requireAdoption;
           const sessionId = yield* sessionIdOf(threadInput.providerThread);
           if (threadInput.runtimePolicy !== undefined) {
             yield* readModelsOnce(threadInput.runtimePolicy.cwd);

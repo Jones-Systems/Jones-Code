@@ -177,7 +177,14 @@ export const layer: Layer.Layer<
           cause: `Provider session ${input.providerSessionId} is not active.`,
         });
       }
-      return { context, providerThread: interruptProviderThread, providerTurn, session };
+      return {
+        context,
+        providerThread: targetsRecordedSession
+          ? providerThread
+          : { ...interruptProviderThread, providerInstanceId: session.value.instanceId },
+        providerTurn,
+        session,
+      };
     });
 
     return ProviderTurnControlServiceV2.of({
@@ -276,10 +283,13 @@ export const layer: Layer.Layer<
             return;
           }
 
-          yield* loaded.session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-          });
+          yield* loaded.session.value
+            .interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              preserveGoal: true,
+            })
+            .pipe(Effect.timeout("14 seconds"));
 
           for (let remaining = 1_000; remaining > 0; remaining -= 1) {
             const { providerTurn, attempt } = yield* projections.getProviderControlContext(

@@ -7003,9 +7003,14 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           context: ActiveAcpTurn,
           status: "completed" | "interrupted" | "failed" | "cancelled",
           failure?: OrchestrationV2ProviderFailure,
+          evidenceKind: "provider_result" | "attributed_abort" | "local_failure" = "local_failure",
         ): Effect.fn.Return<void> {
           if (context.finalized) return;
           const settledStatus = context.interrupted ? "interrupted" : status;
+          const terminalEvidenceKind =
+            settledStatus === "interrupted" && evidenceKind === "provider_result"
+              ? "attributed_abort"
+              : evidenceKind;
           context.finalizedStatus = settledStatus;
           context.finalized = true;
           const directStopQuarantine = yield* Ref.get(stoppedRunQuarantine);
@@ -7277,6 +7282,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             prompt.push({
               type: "text",
               text: buildRuntimeInstructions({
+                ...(host.appIdentity === undefined ? {} : { appIdentity: host.appIdentity }),
                 harness: flavor.runtimeHarness ?? driver,
                 model: turnInput.modelSelection.model,
               }),

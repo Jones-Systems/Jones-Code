@@ -872,7 +872,7 @@ export const layerWithOptions = (
         const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
         yield* Effect.forEach(
           subscribers.values(),
-          (queue) =>
+          ({ queue }) =>
             Queue.offer(queue, {
               type: "failure",
               cause: Cause.fail(error),
@@ -901,7 +901,7 @@ export const layerWithOptions = (
         entry: LiveSessionEntry,
       ) {
         const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-        yield* Effect.forEach(subscribers.values(), (queue) => Queue.end(queue), {
+        yield* Effect.forEach(subscribers.values(), ({ queue }) => Queue.end(queue), {
           discard: true,
         });
       });
@@ -1256,6 +1256,8 @@ export const layerWithOptions = (
         function* (input: {
           readonly providerSessionId: ProviderSessionId;
           readonly onlyIfIdleGeneration?: number;
+          readonly drainSubscribers?: boolean;
+          readonly onlyIfRuntime?: ProviderAdapterV2SessionRuntime;
         }): Effect.fn.Return<readonly [Option.Option<LiveSessionEntry>, DateTime.Utc]> {
           const key = sessionKey(input.providerSessionId);
           const candidate = (yield* Ref.get(sessions)).get(key);
@@ -1303,12 +1305,12 @@ export const layerWithOptions = (
           Effect.forkDetach({ startImmediately: true }),
         );
         const closeExit = yield* Fiber.join(closeFiber).pipe(
-          Effect.timeoutOption(RELEASE_SCOPE_CLOSE_TIMEOUT_MS),
+          Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
         );
         if (Option.isNone(closeExit)) {
           yield* Effect.logWarning("orchestration-v2.provider-session-scope-close-timeout", {
             ...annotations,
-            timeoutMs: RELEASE_SCOPE_CLOSE_TIMEOUT_MS,
+            timeoutMs: PROVIDER_SCOPE_CLOSE_TIMEOUT_MS,
           });
           yield* Fiber.join(closeFiber).pipe(
             Effect.flatMap((exit) =>
@@ -1474,6 +1476,34 @@ export const layerWithOptions = (
             ),
           ),
         );
+
+      const retainThreadForWorkMode = (
+        threadId: ThreadId,
+        providerSessionId: ProviderSessionId,
+        providerInstanceId: ProviderInstanceId,
+      ) =>
+        Effect.gen(function* () {
+          if (Option.isNone(serverSettings)) return false;
+          const settings = yield* serverSettings.value.getSettings;
+          if (!settings.workModeEnabled) return false;
+          const thread = yield* projectionStore.getThread(threadId);
+          if (
+            thread.archivedAt !== null ||
+            thread.deletedAt !== null ||
+            thread.settledAt !== null ||
+            thread.settledOverride === "settled" ||
+            thread.lineage.parentThreadId !== null ||
+            thread.lineage.relationshipToParent !== null ||
+            thread.activeProviderThreadId === null
+          )
+            return false;
+          return WorkModeRetention.workModeRetainsSession({
+            projection: yield* projectionStore.getThreadProjection(threadId),
+            providerSessionId,
+            providerInstanceId,
+            nowMs: yield* Clock.currentTimeMillis,
+          });
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
 
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
@@ -2087,43 +2117,79 @@ export const layerWithOptions = (
           ),
         );
 
+      const validateProviderEvent = (
+        runtime: ProviderAdapterV2SessionRuntime,
+        event: ProviderAdapterV2Event,
+      ) =>
+        Effect.gen(function* () {
+          const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+          if (current !== undefined && current.runtime !== runtime) return false;
+          yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime);
+          const latest = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+          return latest === undefined || latest.runtime === runtime;
+        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+
       const makeEventSubscription = Effect.fn("ProviderSessionManager.makeEventSubscription")(
-        function* (
-          subscribers: Ref.Ref<
-            ReadonlyMap<number, Queue.Queue<ProviderSessionEventSignal, Cause.Done>>
-          >,
-        ): Effect.fn.Return<ProviderAdapter.ProviderAdapterV2EventSubscription> {
-          const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
-          const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
-          yield* Ref.update(subscribers, (current) => {
-            const updated = new Map(current);
-            updated.set(subscriberId, queue);
-            return updated;
-          });
-          const close = Ref.modify(subscribers, (current) => {
-            if (!current.has(subscriberId)) {
-              return [false, current] as const;
-            }
-            const updated = new Map(current);
-            updated.delete(subscriberId);
-            return [true, updated] as const;
-          }).pipe(
-            Effect.flatMap((removed) =>
-              removed
-                ? Queue.clear(queue).pipe(Effect.andThen(Queue.end(queue)), Effect.asVoid)
-                : Effect.void,
-            ),
-          );
-          const events = Stream.fromQueue(queue).pipe(
-            Stream.mapEffect((signal) =>
-              signal.type === "event"
-                ? Effect.succeed(signal.event)
-                : Effect.failCause(signal.cause),
-            ),
-            Stream.ensuring(close),
-          );
-          return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
-        },
+        (
+          runtime: ProviderAdapterV2SessionRuntime,
+          subscribers: Ref.Ref<ReadonlyMap<number, ProviderSessionEventSubscriber>>,
+          requestEventPermit: Semaphore.Semaphore,
+        ): Effect.Effect<ProviderAdapter.ProviderAdapterV2EventSubscription> =>
+          requestEventPermit.withPermits(1)(
+            Effect.gen(function* () {
+              const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+              if (current?.runtime !== runtime)
+                return {
+                  events: Stream.fail(
+                    new ProviderAdapter.ProviderAdapterEventStreamError({
+                      driver: runtime.driver,
+                      providerSessionId: runtime.providerSessionId,
+                      cause: "Provider session is no longer live.",
+                    }),
+                  ),
+                  close: Effect.void,
+                };
+              const settled = yield* Deferred.make<void>();
+              const queue = yield* Queue.unbounded<ProviderSessionEventSignal, Cause.Done>();
+              const subscriberId = yield* Ref.getAndUpdate(nextSubscriberId, (value) => value + 1);
+              yield* Ref.update(subscribers, (current) => {
+                const updated = new Map(current);
+                updated.set(subscriberId, { queue, settled });
+                return updated;
+              });
+              const close = Ref.modify(subscribers, (current) => {
+                if (!current.has(subscriberId)) {
+                  return [false, current] as const;
+                }
+                const updated = new Map(current);
+                updated.delete(subscriberId);
+                return [true, updated] as const;
+              }).pipe(
+                Effect.andThen(Queue.clear(queue)),
+                Effect.andThen(Queue.end(queue)),
+                Effect.asVoid,
+                Effect.ensuring(Deferred.succeed(settled, undefined)),
+              );
+              const events = Stream.fromQueue(queue).pipe(
+                Stream.mapEffect((signal) =>
+                  signal.type === "event"
+                    ? Effect.succeed(signal.event)
+                    : Effect.failCause(signal.cause),
+                ),
+                Stream.filterEffect((event) =>
+                  // A replacement may open while this subscriber still owns queued events.
+                  drainingRuntimes.has(runtime)
+                    ? ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime).pipe(
+                        Effect.as(true),
+                        Effect.catchCause(() => Effect.succeed(false)),
+                      )
+                    : validateProviderEvent(runtime, event),
+                ),
+                Stream.ensuring(close),
+              );
+              return { events, close } satisfies ProviderAdapter.ProviderAdapterV2EventSubscription;
+            }),
+          ),
       );
 
       const decorateRuntime = (

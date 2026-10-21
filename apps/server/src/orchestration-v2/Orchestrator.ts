@@ -1,3 +1,4 @@
+import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
 import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import {
   queuedSteerBatchCandidates,
@@ -1590,9 +1591,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
     function* (
       threadId: ThreadId,
-      options?: { readonly failedRunId?: RunId; readonly endedRunId?: RunId },
+      options?: {
+        readonly failedRunId?: RunId;
+        readonly endedRunId?: RunId;
+        readonly reviewed?: {
+          readonly commandId: CommandId;
+          readonly runId: RunId;
+          readonly messageId: MessageId;
+          readonly events: Ref.Ref<Array<OrchestrationV2DomainEvent>>;
+          readonly effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>;
+        };
+      },
     ) {
-      if (!(yield* projectionStore.canStartQueuedRun(threadId))) return;
+      if (options?.reviewed === undefined && !(yield* projectionStore.canStartQueuedRun(threadId)))
+        return;
       const projection = yield* readCommandProjection(threadId);
       if (
         projection.thread.archivedAt !== null ||
@@ -1602,7 +1614,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
-      const storedQueuedRun = nextQueuedRun(projection);
+      const storedQueuedRun =
+        options?.reviewed === undefined
+          ? nextQueuedRun(projection)
+          : queuedRunsInDeliveryOrder(projection)[0];
       if (storedQueuedRun === undefined) {
         return;
       }
@@ -2322,8 +2337,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ],
       );
     },
-    (effect, threadId, _options?) =>
-      effect.pipe(Effect.catch((cause) => failQueuedRunStart(threadId, cause))),
+    (effect, threadId, options?) =>
+      effect.pipe(
+        Effect.catch((cause) =>
+          options?.reviewed === undefined
+            ? failQueuedRunStart(threadId, cause)
+            : Effect.fail(cause),
+        ),
+      ),
   );
 
   const resumeQueuedRuns = Effect.gen(function* () {
@@ -4454,6 +4475,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const session = sessionOption.value;
+
+    const automaticBoundary = yield* AutomaticQueuedToolBoundary;
+    if (
+      automaticBoundary !== undefined &&
+      (session.providerSession.capabilities.turns.supportsActiveSteering !== true ||
+        !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection))
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: input.command.commandId,
+        commandType: input.command.type,
+        cause: "Automatic queue delivery requires unchanged active steering.",
+      });
+    }
     const now = yield* DateTime.now;
     const emitEvent = emit(input.events, input.command);
     const selectionChanged = !modelSelectionsEqual(targetRun.modelSelection, input.modelSelection);
@@ -4880,6 +4914,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: input.modelSelection.instanceId,
       providerThreadId: restartProviderThread.id,
       providerTurnId: null,
+
+      providerSettlement: null,
       reason: "steering_restart",
       status: "pending",
       startedAt: null,
@@ -5048,6 +5084,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+
+    if (
+      (command.runtimeMode !== undefined &&
+        command.runtimeMode !== projection.thread.runtimeMode) ||
+      (command.interactionMode !== undefined &&
+        command.interactionMode !== projection.thread.interactionMode)
+    ) {
+      const now = yield* DateTime.now;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: projection.thread.providerInstanceId,
+        occurredAt: now,
+        payload: {
+          ...projection.thread,
+          runtimeMode: command.runtimeMode ?? projection.thread.runtimeMode,
+          interactionMode: command.interactionMode ?? projection.thread.interactionMode,
+          updatedAt: now,
+        },
+      });
+      projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+    }
     if (command.manualContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
       const limited = latestRootProviderFailure(source ?? null, projection.turnItems);
@@ -5631,10 +5692,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
+        ...(command.queuedToolBoundaryEligible === undefined
+          ? {}
+          : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
         ...(worktreeMissingRun !== undefined ||
         (heldRunsToRelease.length === 0 &&
           projection.runs.some(
-            (candidate) => candidate.status === "queued" && candidate.queueHeld === true,
+            (candidate) =>
+              candidate.status === "queued" &&
+              candidate.queueHeld === true &&
+              candidate.ordinal > queueBehindRun.ordinal,
           ))
           ? { queueHeld: true }
           : {}),
@@ -5852,8 +5919,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // Account overlays share native history. Selection commands may already
     // have updated the app thread, so classify against the native thread's owner.
     const canResumeAcrossInstances =
-      isProviderSwitch &&
-      activeProviderThread.nativeThreadRef !== null &&
+      (isProviderSwitch ||
+        projection.thread.modelSelection.instanceId !== modelSelection.instanceId) &&
       (yield* providerSwitchService
         .plan({
           projection: {
@@ -5862,13 +5929,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ...projection.thread,
               modelSelection: {
                 ...projection.thread.modelSelection,
-                instanceId: activeProviderThread.providerInstanceId,
+                instanceId:
+                  activeProviderThread?.providerInstanceId ??
+                  projection.thread.modelSelection.instanceId,
               },
             },
           },
           targetModelSelection: modelSelection,
         })
-        .pipe(mapDispatchError(command))).transition.type === "restart_and_resume";
+        .pipe(mapDispatchError(command))).transition.type === "restart_and_resume" &&
+      activeProviderThread !== undefined &&
+      activeProviderThread.nativeThreadRef !== null;
 
     if (
       pendingForkTransfer === undefined &&
@@ -5995,6 +6066,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? { workspacePreparation: dispatchMode.workspaceStrategy }
           : {}),
         ...(continuedTaskId === undefined ? {} : { delegatedTaskId: continuedTaskId }),
+        ...(dispatchMode.type === "defer_start" && dispatchMode.runSetupScript !== undefined
+          ? { workspaceRunSetupScript: dispatchMode.runSetupScript }
+          : {}),
+        ...(command.legacyBootstrap === undefined
+          ? {}
+          : { legacyBootstrap: { ...command.legacyBootstrap, runId } }),
         ...wakeWorkStartedAt(projection.runs, command),
       };
       const attempt: OrchestrationV2RunAttempt = {
@@ -6005,6 +6082,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         providerInstanceId: modelSelection.instanceId,
         providerThreadId,
         providerTurnId: null,
+
+        providerSettlement: null,
         reason: "initial",
         status: "pending",
         startedAt: null,
@@ -6692,6 +6771,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       providerInstanceId: modelSelection.instanceId,
       providerThreadId: providerThread.id,
       providerTurnId: null,
+
+      providerSettlement: null,
       reason: "initial",
       status: "pending",
       startedAt: null,
@@ -8724,24 +8805,57 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
   ) {
-    const projection = yield* projectionStore
-      .getThreadRecords(
-        command.threadId,
-        [
-          "runs",
-          "nodes",
-          "attempts",
-          "messages",
-          "providerThreads",
-          "providerTurns",
-          "providerSessions",
-          "turnItems",
-          "runtimeRequests",
-          "subagents",
-        ],
-        { turnItemTypes: [], messageRoles: ["user"] },
-      )
-      .pipe(Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })));
+    const automatic = yield* AutomaticQueuedToolBoundary;
+    const boundary = automatic?.stored;
+    const projection = yield* (
+      boundary?.event.type === "node.updated"
+        ? projectionStore.getQueuedToolBoundaryContext(command.threadId, boundary.event.payload)
+        : projectionStore.getThreadRecords(
+            command.threadId,
+            [
+              "runs",
+              "nodes",
+              "attempts",
+              "messages",
+              "providerThreads",
+              "providerTurns",
+              "providerSessions",
+              "turnItems",
+              "runtimeRequests",
+              "subagents",
+            ],
+            { turnItemTypes: [], messageRoles: ["user"] },
+          )
+    ).pipe(Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })));
+    if (boundary !== undefined) {
+      const target =
+        boundary.event.type === "node.updated"
+          ? queuedToolBoundaryTarget(projection, boundary.event.payload)
+          : null;
+      if (
+        target === null ||
+        target.queuedRun.id !== command.queuedRunId ||
+        target.activeRun.id !== command.targetRunId ||
+        !(yield* eventSink
+          .canPromoteQueuedAtToolBoundary({
+            threadId: command.threadId,
+            queuedRunId: target.queuedRun.id,
+            activeRunId: target.activeRun.id,
+            messageId: target.queuedRun.userMessageId,
+            boundary,
+            ...(automatic === undefined ? {} : { births: automatic.births }),
+            runtimeMode: projection.thread.runtimeMode,
+            interactionMode: projection.thread.interactionMode,
+          })
+          .pipe(mapDispatchError(command)))
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Queued message no longer belongs to this safe tool boundary.",
+        });
+      }
+    }
     if (projection.thread.archivedAt !== null || projection.thread.deletedAt !== null) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
@@ -9032,6 +9146,133 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
   });
+
+  const dispatchQueuedMessagePromoteBatchToSteer = (
+    command: Extract<
+      OrchestrationV2Command,
+      { readonly type: "queued-message.promote-batch-to-steer" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+  ) =>
+    Effect.gen(function* () {
+      const projection = yield* projectionStore
+        .getThreadRecords(
+          command.threadId,
+          [
+            "runs",
+            "nodes",
+            "attempts",
+            "messages",
+            "providerThreads",
+            "providerTurns",
+            "providerSessions",
+            "turnItems",
+            "runtimeRequests",
+            "subagents",
+          ],
+          { turnItemTypes: [], messageRoles: ["user"] },
+        )
+        .pipe(
+          Effect.mapError(() => new OrchestratorProjectionError({ threadId: command.threadId })),
+        );
+      const automatic = yield* AutomaticQueuedToolBoundary;
+      const batch = validateQueuedSteerBatch(projection, command, automatic !== undefined);
+      if ("error" in batch)
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: batch.error,
+        });
+      const liveSession = yield* providerSessions
+        .get(batch.session.id)
+        .pipe(mapDispatchError(command));
+      if (Option.isNone(liveSession))
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The active provider session is no longer available.",
+        });
+      const policy = yield* enforceCommandPolicy(command)(
+        commandPolicy.decideSteeringExecution({
+          commandId: command.commandId,
+          threadId: command.threadId,
+          providerInstanceId: batch.target.providerInstanceId,
+          capabilities: liveSession.value.providerSession.capabilities,
+          forceRestart: false,
+        }),
+      );
+      if (policy !== "active_steering")
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause:
+            "Batch steering requires active steering; use the individual action for restart providers.",
+        });
+      if (automatic !== undefined) {
+        const boundary = automatic.stored;
+        const first =
+          boundary.event.type === "node.updated"
+            ? queuedToolBoundaryTarget(projection, boundary.event.payload)
+            : null;
+        if (
+          first?.queuedRun.id !== command.items[0]?.queuedRunId ||
+          first?.activeRun.id !== command.targetRunId
+        )
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "The safe tool boundary changed.",
+          });
+        for (const entry of batch.selected) {
+          if (
+            entry.run.queueHeld === true ||
+            entry.run.queuedToolBoundaryEligible !== true ||
+            entry.message?.scheduledTaskId !== undefined ||
+            !(yield* eventSink
+              .canPromoteQueuedAtToolBoundary({
+                threadId: command.threadId,
+                queuedRunId: entry.run.id,
+                activeRunId: batch.target.id,
+                messageId: entry.run.userMessageId,
+                boundary,
+                births: automatic.births,
+                runtimeMode: projection.thread.runtimeMode,
+                interactionMode: projection.thread.interactionMode,
+              })
+              .pipe(mapDispatchError(command)))
+          )
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: "Queued message no longer belongs to this safe tool boundary.",
+            });
+        }
+      }
+      const now = yield* DateTime.now;
+      const emitEvent = emit(events, command);
+      const ordinal = yield* nextTurnItemOrdinal(projection);
+      for (const event of queuedSteerBatchEvents(batch, command, now, ordinal, (messageId) =>
+        idAllocator.derive.userTurnItem({ messageId }),
+      ))
+        yield* emitEvent<OrchestrationV2DomainEvent>(event);
+      yield* Ref.update(effects, (existing) => [
+        ...existing,
+        {
+          id: `effect:${command.commandId}:provider-turn.steer-batch:${batch.turn.id}`,
+          commandId: command.commandId,
+          threadId: command.threadId,
+          request: {
+            type: "provider-turn.steer-batch",
+            providerSessionId: batch.session.id,
+            providerThreadId: batch.provider.id,
+            providerTurnId: batch.turn.id,
+            messageId: command.items[0]!.messageId,
+            messageIds: command.items.map((item) => item.messageId),
+          },
+        } satisfies PendingOrchestrationEffectV2,
+      ]);
+    });
 
   const dispatchQueuedRunEdit = Effect.fn("Orchestrator.dispatchQueuedRunEdit")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "queued-run.edit" }>,
@@ -10950,15 +11191,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
       }).length > 0;
+    const retainedGoalStop =
+      command.holdQueue === true &&
+      hasRetainedGoalStopTarget(
+        run,
+        projection.providerThreads,
+        projection.thread.activeProviderThreadId,
+      );
     // A failed start has no provider turn. Background work still belongs
     // to the provider thread, so Stop reaches its latest accepted turn.
     const providerTurn =
       projection.providerTurns.findLast(
         (candidate) =>
           candidate.runAttemptId === run?.activeAttemptId &&
-          (run?.status === "running" || candidate.status === "running" || hasBackgroundWork),
+          (run?.status === "running" ||
+            candidate.status === "running" ||
+            hasBackgroundWork ||
+            retainedGoalStop),
       ) ??
-      (hasBackgroundWork
+      (hasBackgroundWork || retainedGoalStop
         ? projection.providerTurns.findLast(
             (candidate) => candidate.providerThreadId === run?.providerThreadId,
           )
@@ -11418,7 +11669,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const target =
       projection.runs.findLast(
         (run) =>
-          run.status === "preparing" || run.status === "starting" || run.status === "running",
+          run.status === "preparing" ||
+          run.status === "starting" ||
+          run.status === "running" ||
+          run.status === "waiting",
       ) ??
       (derivePendingBackgroundWork({
         latestRun,
@@ -11426,7 +11680,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItems: projection.turnItems,
         activeProviderThreadId: projection.thread.activeProviderThreadId,
         runs: projection.runs,
-      }).length > 0
+      }).length > 0 ||
+      hasRetainedGoalStopTarget(
+        latestRun,
+        projection.providerThreads,
+        projection.thread.activeProviderThreadId,
+      )
         ? latestRun
         : undefined);
     if (target !== undefined) {

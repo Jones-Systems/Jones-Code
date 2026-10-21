@@ -57,7 +57,6 @@ import {
   ProjectId,
   type RunId,
   type RuntimeMode,
-  type VcsRef,
   type ScheduledTaskId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -65,7 +64,7 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
+
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -1372,14 +1371,37 @@ const make = Effect.gen(function* () {
             })
             .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
         }
-        let startRef = input.workspaceStrategy.baseRef;
-        let baseRefName = input.workspaceStrategy.baseRef;
+        let baseRef = input.workspaceStrategy.baseRef;
+        if (baseRef === undefined) {
+          const refs = yield* git
+            .listRefs({ cwd: project.workspaceRoot, limit: 100 })
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          const automaticBase = resolveDefaultWorktreeBaseBranch(refs.refs);
+          if (!refs.isRepo || automaticBase === null) {
+            return yield* mapError(
+              input,
+              "provision-worktree",
+              threadId,
+            )(
+              refs.isRepo
+                ? "No default or checked-out branch is available. Select a base branch before retrying."
+                : "New worktree mode requires a Git repository.",
+            );
+          }
+          baseRef = automaticBase;
+          yield* setupTracker.update(threadId, (snapshot) => ({
+            ...snapshot,
+            baseRef: automaticBase,
+          }));
+        }
+        let startRef = baseRef;
+        let baseRefName = baseRef;
         const shouldFetch =
           input.workspaceStrategy.startFromOrigin === true &&
           (yield* git
             .resolveWorktreeBaseRemote({
               cwd: project.workspaceRoot,
-              refName: input.workspaceStrategy.baseRef,
+              refName: baseRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)))) !== null;
         yield* setupTracker.stageStatus(threadId, "fetch", shouldFetch ? "running" : "skipped");
@@ -1387,7 +1409,7 @@ const make = Effect.gen(function* () {
           const remoteBase = yield* git
             .fetchWorktreeBaseCommit({
               cwd: project.workspaceRoot,
-              refName: input.workspaceStrategy.baseRef,
+              refName: baseRef,
             })
             .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
           if (remoteBase !== null) {

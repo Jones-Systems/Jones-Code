@@ -17,7 +17,7 @@ import {
   type OrchestrationV2TurnItem,
   ProviderDriverKind,
   ProviderInstanceId,
-  type ProviderThreadId,
+  ProviderThreadId,
   ProviderTurnId,
   RunAttemptId,
   RunId,

@@ -3073,6 +3073,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           hasPendingBackgroundWork: Effect.sync(() => busySessionIds.size > 0),
           ensureThread: Effect.fn("OpencodeAdapter.ensureThread")(
             function* (threadInput) {
+              yield* requireAdoption;
               if (threadInput.existingProviderThread?.nativeThreadRef != null) {
                 return yield* runtimeSession.resumeThread({
                   providerThread: threadInput.existingProviderThread,
@@ -3110,8 +3111,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       status: created.status,
                       updatedAt: created.updatedAt,
                     };
-              registerThread(nativeSession, providerThread, null);
-              return providerThread;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null);
+              return bound;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -3127,6 +3129,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
           ),
           resumeThread: Effect.fn("OpencodeAdapter.resumeThread")(
             function* (threadInput) {
+              yield* requireAdoption;
               const sessionId = nativeThreadId(threadInput.providerThread);
               const response = yield* sdkCall("session.get", { sessionID: sessionId }, () =>
                 client.session.get({ sessionID: sessionId }),
@@ -3139,8 +3142,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
               };
-              registerThread(nativeSession, providerThread, null);
-              return providerThread;
+              const bound = yield* bindAdoption(providerThread);
+              registerThread(nativeSession, bound, null);
+              return bound;
             },
             (effect, threadInput) =>
               effect.pipe(
@@ -3162,6 +3166,11 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
             }),
           startTurn: Effect.fn("OpencodeAdapter.startTurn")(
             function* (turnInput) {
+              if (adoption !== undefined)
+                yield* OpenCodeCreationPolicy.requireCurrent({
+                  incarnation: adoption.capture.parent,
+                  isCurrent: adoption.isCurrent,
+                });
               if (nativeStreamFailure !== null) {
                 return yield* protocolError(
                   "OpenCode event stream has ended; reconnect the provider session before starting another turn.",

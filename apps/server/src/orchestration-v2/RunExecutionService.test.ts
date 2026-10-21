@@ -1,3 +1,7 @@
+import { EventId } from "@t3tools/contracts";
+
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CheckpointScopeId,
@@ -55,6 +59,23 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as TurnItemPositionStore from "./TurnItemPositionStore.ts";
 
+function executionEventSinkLayer(overrides: Partial<EventSink.EventSinkV2Shape>) {
+  return Layer.mock(EventSink.EventSinkV2)({
+    ...overrides,
+    writeIfRunCurrent:
+      overrides.writeIfRunCurrent ??
+      ((input) => {
+        const write = overrides.writeWithEffects;
+        return write === undefined
+          ? Effect.die("Unexpected guarded finalization")
+          : write({
+              ...input,
+              effects: input.effects ?? [],
+            }).pipe(Effect.map((storedEvents) => ({ committed: true, storedEvents })));
+      }),
+  });
+}
+
 const driver = ProviderDriverKind.make("codex");
 
 const layerTurnItemPositionsTest = Layer.mock(TurnItemPositionStore.TurnItemPositionStoreV2)({
@@ -67,7 +88,7 @@ const layerRunExecutionTest = RunExecutionService.layer.pipe(
       McpAppModelContext.layerEmpty,
       Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
       layerTurnItemPositionsTest,
-      Layer.mock(EventSink.EventSinkV2)({}),
+      executionEventSinkLayer({}),
       IdAllocator.layer,
       Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
         ingestNormalized: () => Effect.succeed([]),
@@ -893,7 +914,7 @@ it.effect("passes the thread's MCP app context to the provider under a safe key"
               captureBaseline: () => Effect.void,
             }),
             layerTurnItemPositionsTest,
-            Layer.mock(EventSink.EventSinkV2)({}),
+            executionEventSinkLayer({}),
             IdAllocator.layer,
             Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
               ingestNormalized: () => Effect.succeed([]),
@@ -921,7 +942,7 @@ it.effect("fails the run when its ownership check cannot be read before calling 
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             writeIfRunCurrent: (input) =>
               Ref.update(writes, (current) => [...current, ...input.events]).pipe(
                 Effect.as({ committed: true, storedEvents: [] }),
@@ -1131,7 +1152,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
               ),
           }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             writeWithEffects: (input) =>
               Ref.update(writes, (current) => [
                 ...current,
@@ -1244,7 +1265,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
                 scenario === "start-guard" ? Effect.void : Effect.die("not reached"),
             }),
             layerTurnItemPositionsTest,
-            Layer.mock(EventSink.EventSinkV2)({
+            executionEventSinkLayer({
               writeIfRunCurrent: (input) =>
                 Effect.gen(function* () {
                   assert.equal(input.threadId, threadId);
@@ -1411,7 +1432,7 @@ it.effect("ingests new member threads of an owned child after the root turn term
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             write: () => Effect.succeed([]),
             writeWithEffects: (input) =>
               Effect.gen(function* () {
@@ -1640,7 +1661,7 @@ it.effect("ends a nested native subagent and its thread when the root run is int
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             write: () => Effect.succeed([]),
             writeWithEffects: (input) =>
               Effect.as(
@@ -1913,6 +1934,757 @@ it.effect("refreshes inherited background items after event subscription", () =>
 );
 
 it.effect(
+  "keeps ingesting a late empty provider-thread roster while thread-scoped pending work is true",
+  () =>
+    Effect.gen(function* () {
+      const key = "bg-roster-pending-work";
+      const ids = backgroundScenarioIds(key);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const now = yield* DateTime.now;
+      const observed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const pendingByProviderThreadId = yield* Ref.make(new Map([[ids.providerThreadId, true]]));
+      const scopedProbeArgs = yield* Ref.make<ReadonlyArray<ProviderThreadId>>([]);
+      const ingestCalls = yield* Ref.make<
+        ReadonlyArray<{
+          readonly activeAttemptId: RunAttemptId | null;
+          readonly eventType: string;
+          readonly hasWriteIfRunCurrent: boolean;
+          readonly hasWriteIfProviderThreadOwner: boolean;
+          readonly expectedLastRunOrdinal: number | null;
+          readonly runId: RunId | null;
+          readonly rosterLength: number | null;
+        }>
+      >([]);
+      const ingestionDone = yield* Deferred.make<void>();
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            McpAppModelContext.layerEmpty,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            executionEventSinkLayer({
+              write: () => Effect.succeed([]),
+              writeWithEffects: (input) =>
+                Effect.gen(function* () {
+                  if (
+                    input.events.some(
+                      (event) => event.type === "run.updated" && event.runId === ids.runId,
+                    )
+                  ) {
+                    yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  }
+                  return [];
+                }),
+              writeIfProviderThreadOwner: () =>
+                Effect.succeed({ committed: true, storedEvents: [] }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: (input) =>
+                Effect.gen(function* () {
+                  const event = input.event;
+                  const rosterLength =
+                    event.type === "provider_thread.updated"
+                      ? (event.providerThread.pendingBackgroundTasks?.length ?? 0)
+                      : null;
+                  yield* Ref.update(ingestCalls, (current) => [
+                    ...current,
+                    {
+                      activeAttemptId: input.writeIfProviderThreadOwner?.activeAttemptId ?? null,
+                      eventType: event.type,
+                      hasWriteIfRunCurrent: input.writeIfRunCurrent !== undefined,
+                      hasWriteIfProviderThreadOwner: input.writeIfProviderThreadOwner !== undefined,
+                      expectedLastRunOrdinal:
+                        input.writeIfProviderThreadOwner?.expectedLastRunOrdinal ?? null,
+                      runId: input.writeIfProviderThreadOwner?.runId ?? null,
+                      rosterLength,
+                    },
+                  ]);
+                  if (event.type === "provider_thread.updated" && rosterLength === 0) {
+                    yield* Ref.update(pendingByProviderThreadId, (current) => {
+                      const next = new Map(current);
+                      next.set(event.providerThread.id, false);
+                      return next;
+                    });
+                    yield* Ref.update(observed, (current) => [...current, "roster-cleared"]);
+                  }
+                  if (event.type === "turn.terminal") {
+                    yield* Ref.update(observed, (current) => [...current, "terminal"]);
+                  }
+                  return [];
+                }),
+            }),
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+
+      const providerThreadBase = {
+        id: ids.providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: ProviderSessionId.make(`session:${key}`),
+        appThreadId: ids.threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make(`command:${key}`),
+          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          providerSessionId: ProviderSessionId.make(`session:${key}`),
+          session: {
+            events: Stream.empty,
+            hasPendingBackgroundWork: Effect.succeed(true),
+            hasPendingBackgroundWorkForThread: (providerThread: OrchestrationV2ProviderThread) =>
+              Effect.gen(function* () {
+                yield* Ref.update(scopedProbeArgs, (current) => [...current, providerThread.id]);
+                return (yield* Ref.get(pendingByProviderThreadId)).get(providerThread.id) === true;
+              }),
+            subscribeEvents: Effect.succeed({
+              events: Stream.fromIterable([
+                {
+                  type: "provider_thread.updated",
+                  driver,
+                  providerThread: {
+                    ...providerThreadBase,
+                    status: "active" as const,
+                    pendingBackgroundTasks: [
+                      { taskId: "bg-1", description: "sleep 20", kind: "command" },
+                    ],
+                    updatedAt: now,
+                  },
+                } as ProviderAdapter.ProviderAdapterV2Event,
+                rootTerminalEvent(ids, "completed"),
+                {
+                  type: "provider_thread.updated",
+                  driver,
+                  providerThread: {
+                    ...providerThreadBase,
+                    status: "idle" as const,
+                    pendingBackgroundTasks: [],
+                    updatedAt: now,
+                  },
+                } as ProviderAdapter.ProviderAdapterV2Event,
+              ]),
+              close: Deferred.succeed(ingestionDone, undefined),
+            }),
+            startTurn: () => Effect.void,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          run: {
+            id: ids.runId,
+            threadId: ids.threadId,
+            ordinal: 1,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          rootNode: { id: ids.rootNodeId } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: providerThreadBase as OrchestrationV2ProviderThread,
+          attempt: {
+            id: ids.attemptId,
+            providerTurnId: ids.rootProviderTurnId,
+          } as OrchestrationV2RunAttempt,
+          attemptId: ids.attemptId,
+          providerTurnOrdinal: 1,
+          message: {
+            messageId: MessageId.make(`message:${key}:user`),
+            text: "Start background work and settle.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
+            },
+          },
+        });
+      }).pipe(Effect.provide(layerTest));
+
+      const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
+      assert.isTrue(Option.isSome(closed), "event subscription did not release");
+      assert.deepEqual(yield* Ref.get(observed), ["terminal", "root-finalized", "roster-cleared"]);
+      assert.isTrue((yield* Ref.get(scopedProbeArgs)).includes(ids.providerThreadId));
+
+      const calls = yield* Ref.get(ingestCalls);
+      const preTerminalRoster = calls.find(
+        (call) => call.eventType === "provider_thread.updated" && call.rosterLength === 1,
+      );
+      const lateClear = calls.find(
+        (call) => call.eventType === "provider_thread.updated" && call.rosterLength === 0,
+      );
+      assert.isDefined(preTerminalRoster);
+      assert.isTrue(preTerminalRoster?.hasWriteIfRunCurrent);
+      assert.isFalse(preTerminalRoster?.hasWriteIfProviderThreadOwner);
+      assert.isDefined(lateClear);
+      assert.isFalse(
+        lateClear?.hasWriteIfRunCurrent,
+        "late empty roster must not use stale writeIfRunCurrent running-gate",
+      );
+      assert.isTrue(
+        lateClear?.hasWriteIfProviderThreadOwner,
+        "late empty roster must gate on provider-thread ownership",
+      );
+      assert.equal(lateClear?.expectedLastRunOrdinal, 1);
+      assert.equal(lateClear?.runId, ids.runId);
+      assert.equal(lateClear?.activeAttemptId, ids.attemptId);
+    }),
+);
+
+it.effect("drops late root provider-thread writes from a superseded attempt", () =>
+  Effect.gen(function* () {
+    const key = "bg-roster-attempt-owner-lost";
+    const ids = backgroundScenarioIds(key);
+    const replacementAttemptId = RunAttemptId.make(`attempt:${key}:replacement`);
+    const providerInstanceId = ProviderInstanceId.make("codex");
+    const now = yield* DateTime.now;
+    const observed = yield* Ref.make<ReadonlyArray<string>>([]);
+    const ingestionDone = yield* Deferred.make<void>();
+    const ingestCalls = yield* Ref.make<
+      ReadonlyArray<{
+        readonly activeAttemptId: RunAttemptId | null;
+        readonly eventType: string;
+        readonly hasWriteIfProviderThreadOwner: boolean;
+        readonly expectedLastRunOrdinal: number | null;
+        readonly rosterLength: number | null;
+        readonly committed: boolean;
+      }>
+    >([]);
+    const layerTest = RunExecutionService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          McpAppModelContext.layerEmpty,
+          Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
+          executionEventSinkLayer({
+            write: () => Effect.succeed([]),
+            writeWithEffects: (input) =>
+              Effect.gen(function* () {
+                if (
+                  input.events.some(
+                    (event) => event.type === "run.updated" && event.runId === ids.runId,
+                  )
+                ) {
+                  yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                }
+                return [];
+              }),
+            writeIfProviderThreadOwner: () =>
+              Effect.succeed({ committed: false, storedEvents: [] }),
+          }),
+          IdAllocator.layer,
+          Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+            ingestNormalized: (input) =>
+              Effect.gen(function* () {
+                const event = input.event;
+                const rosterLength =
+                  event.type === "provider_thread.updated"
+                    ? (event.providerThread.pendingBackgroundTasks?.length ?? 0)
+                    : null;
+                const ownerGate = input.writeIfProviderThreadOwner;
+                const rejectAsStaleOwner =
+                  ownerGate !== undefined && ownerGate.activeAttemptId !== replacementAttemptId;
+                yield* Ref.update(ingestCalls, (current) => [
+                  ...current,
+                  {
+                    activeAttemptId: ownerGate?.activeAttemptId ?? null,
+                    eventType: event.type,
+                    hasWriteIfProviderThreadOwner: ownerGate !== undefined,
+                    expectedLastRunOrdinal: ownerGate?.expectedLastRunOrdinal ?? null,
+                    rosterLength,
+                    committed: !rejectAsStaleOwner,
+                  },
+                ]);
+                if (event.type === "turn.terminal") {
+                  yield* Ref.update(observed, (current) => [...current, "terminal"]);
+                }
+                if (event.type === "provider_thread.updated" && rejectAsStaleOwner) {
+                  yield* Ref.update(observed, (current) => [...current, "stale-owner-rejected"]);
+                  return [];
+                }
+                if (event.type === "provider_thread.updated") {
+                  yield* Ref.update(observed, (current) => [...current, "roster-written"]);
+                }
+                return [];
+              }),
+          }),
+          ServerSettings.layerTest(),
+        ),
+      ),
+    );
+
+    const providerThreadBase = {
+      id: ids.providerThreadId,
+      driver,
+      providerInstanceId,
+      providerSessionId: ProviderSessionId.make(`session:${key}`),
+      appThreadId: ids.threadId,
+      ownerNodeId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+      status: "idle" as const,
+      firstRunOrdinal: 1,
+      lastRunOrdinal: 1,
+      handoffIds: [],
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    yield* Effect.gen(function* () {
+      const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+      yield* runExecution.startRootRun({
+        commandId: CommandId.make(`command:${key}`),
+        appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+        providerSessionId: ProviderSessionId.make(`session:${key}`),
+        session: {
+          events: Stream.empty,
+          hasPendingBackgroundWork: Effect.succeed(true),
+          hasPendingBackgroundWorkForThread: () => Effect.succeed(true),
+          subscribeEvents: Effect.succeed({
+            events: Stream.fromIterable([
+              {
+                type: "provider_thread.updated",
+                driver,
+                providerThread: {
+                  ...providerThreadBase,
+                  status: "active" as const,
+                  pendingBackgroundTasks: [
+                    { taskId: "bg-stale", description: "sleep 20", kind: "command" },
+                  ],
+                  updatedAt: now,
+                },
+              } as ProviderAdapter.ProviderAdapterV2Event,
+              rootTerminalEvent(ids, "completed"),
+              {
+                type: "provider_thread.updated",
+                driver,
+                providerThread: {
+                  ...providerThreadBase,
+                  status: "idle" as const,
+                  lastRunOrdinal: 1,
+                  pendingBackgroundTasks: [
+                    { taskId: "bg-stale", description: "sleep 20", kind: "command" },
+                  ],
+                  updatedAt: now,
+                },
+              } as ProviderAdapter.ProviderAdapterV2Event,
+            ]),
+            close: Deferred.succeed(ingestionDone, undefined),
+          }),
+          startTurn: () => Effect.void,
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+        run: {
+          id: ids.runId,
+          threadId: ids.threadId,
+          ordinal: 1,
+          providerInstanceId,
+        } as OrchestrationV2Run,
+        rootNode: { id: ids.rootNodeId } as OrchestrationV2ExecutionNode,
+        checkpointScope: {
+          id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+        } as OrchestrationV2CheckpointScope,
+        providerThread: providerThreadBase as OrchestrationV2ProviderThread,
+        attempt: {
+          id: ids.attemptId,
+          providerTurnId: ids.rootProviderTurnId,
+        } as OrchestrationV2RunAttempt,
+        attemptId: ids.attemptId,
+        providerTurnOrdinal: 1,
+        message: {
+          messageId: MessageId.make(`message:${key}:user`),
+          text: "Background work that loses ownership.",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+        modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+        runtimePolicy: {
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: process.cwd(),
+          approvalPolicy: "never",
+          sandboxPolicy: {
+            type: "readOnly",
+            access: { type: "fullAccess" },
+            networkAccess: false,
+          },
+        },
+      });
+    }).pipe(Effect.provide(layerTest));
+
+    const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
+    assert.isTrue(
+      Option.isSome(closed),
+      "subscription must release after ownership-loss reject even when probe stays true",
+    );
+    assert.deepEqual(yield* Ref.get(observed), [
+      "roster-written",
+      "terminal",
+      "root-finalized",
+      "stale-owner-rejected",
+    ]);
+
+    const calls = yield* Ref.get(ingestCalls);
+    const lateStale = calls.find(
+      (call) =>
+        call.eventType === "provider_thread.updated" &&
+        call.hasWriteIfProviderThreadOwner &&
+        call.rosterLength === 1,
+    );
+    assert.isDefined(lateStale);
+    assert.equal(lateStale?.expectedLastRunOrdinal, 1);
+    assert.equal(lateStale?.activeAttemptId, ids.attemptId);
+    assert.isFalse(lateStale?.committed);
+  }),
+);
+
+it.effect(
+  "keeps ingesting a late background turn-item completion after ownership-loss rejects roster writes",
+  () =>
+    Effect.gen(function* () {
+      const key = "bg-item-after-owner-lost";
+      const ids = backgroundScenarioIds(key);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const now = yield* DateTime.now;
+      const observed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const ingestionDone = yield* Deferred.make<void>();
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            McpAppModelContext.layerEmpty,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            executionEventSinkLayer({
+              write: () => Effect.succeed([]),
+              writeWithEffects: (input) =>
+                Effect.gen(function* () {
+                  if (
+                    input.events.some(
+                      (event) => event.type === "run.updated" && event.runId === ids.runId,
+                    )
+                  ) {
+                    yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  }
+                  return [];
+                }),
+              writeIfProviderThreadOwner: () =>
+                Effect.succeed({ committed: false, storedEvents: [] }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: (input) =>
+                Effect.gen(function* () {
+                  const event = input.event;
+                  if (event.type === "turn.terminal") {
+                    yield* Ref.update(observed, (current) => [...current, "terminal"]);
+                  }
+                  if (
+                    event.type === "provider_thread.updated" &&
+                    input.writeIfProviderThreadOwner !== undefined
+                  ) {
+                    yield* Ref.update(observed, (current) => [...current, "stale-owner-rejected"]);
+                    return [];
+                  }
+                  if (event.type === "turn_item.updated") {
+                    yield* Ref.update(observed, (current) => [
+                      ...current,
+                      `turn_item:${event.turnItem.status}`,
+                    ]);
+                  }
+                  return [];
+                }),
+            }),
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+
+      const providerThreadBase = {
+        id: ids.providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: ProviderSessionId.make(`session:${key}`),
+        appThreadId: ids.threadId,
+        ownerNodeId: null,
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make(`command:${key}`),
+          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          providerSessionId: ProviderSessionId.make(`session:${key}`),
+          session: {
+            events: Stream.empty,
+            hasPendingBackgroundWork: Effect.succeed(true),
+            hasPendingBackgroundWorkForThread: () => Effect.succeed(true),
+            subscribeEvents: Effect.succeed({
+              events: Stream.fromIterable([
+                backgroundTurnItemEvent(ids, "command_execution", "running", 1),
+                rootTerminalEvent(ids, "completed"),
+                {
+                  type: "provider_thread.updated",
+                  driver,
+                  providerThread: {
+                    ...providerThreadBase,
+                    status: "idle" as const,
+                    lastRunOrdinal: 1,
+                    pendingBackgroundTasks: [
+                      { taskId: "bg-stale", description: "sleep 20", kind: "command" },
+                    ],
+                    updatedAt: now,
+                  },
+                } as ProviderAdapter.ProviderAdapterV2Event,
+                backgroundTurnItemEvent(ids, "command_execution", "completed", 2),
+              ]),
+              close: Deferred.succeed(ingestionDone, undefined),
+            }),
+            startTurn: () => Effect.void,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          run: {
+            id: ids.runId,
+            threadId: ids.threadId,
+            ordinal: 1,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          rootNode: { id: ids.rootNodeId } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: providerThreadBase as OrchestrationV2ProviderThread,
+          attempt: {
+            id: ids.attemptId,
+            providerTurnId: ids.rootProviderTurnId,
+          } as OrchestrationV2RunAttempt,
+          attemptId: ids.attemptId,
+          providerTurnOrdinal: 1,
+          message: {
+            messageId: MessageId.make(`message:${key}:user`),
+            text: "Background item after ownership loss.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
+            },
+          },
+        });
+      }).pipe(Effect.provide(layerTest));
+
+      const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
+      assert.isTrue(
+        Option.isSome(closed),
+        "subscription must release after background item completes past ownership loss",
+      );
+      assert.deepEqual(yield* Ref.get(observed), [
+        "turn_item:running",
+        "terminal",
+        "root-finalized",
+        "stale-owner-rejected",
+        "turn_item:completed",
+      ]);
+    }),
+);
+
+it.effect(
+  "does not pin ingestion on a sibling session-wide pending state when this thread has no roster",
+  () =>
+    Effect.gen(function* () {
+      const key = "bg-roster-sibling-not-pin";
+      const ids = backgroundScenarioIds(key);
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const now = yield* DateTime.now;
+      const observed = yield* Ref.make<ReadonlyArray<string>>([]);
+      const ingestionDone = yield* Deferred.make<void>();
+      const scopedProbeArgs = yield* Ref.make<ReadonlyArray<ProviderThreadId>>([]);
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            McpAppModelContext.layerEmpty,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            executionEventSinkLayer({
+              write: () => Effect.succeed([]),
+              writeWithEffects: (input) =>
+                Effect.gen(function* () {
+                  if (
+                    input.events.some(
+                      (event) => event.type === "run.updated" && event.runId === ids.runId,
+                    )
+                  ) {
+                    yield* Ref.update(observed, (current) => [...current, "root-finalized"]);
+                  }
+                  return [];
+                }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: (input) =>
+                Effect.gen(function* () {
+                  if (input.event.type === "turn.terminal") {
+                    yield* Ref.update(observed, (current) => [...current, "terminal"]);
+                  }
+                  return [];
+                }),
+            }),
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+
+      const providerThreadBase = {
+        id: ids.providerThreadId,
+        driver,
+        providerInstanceId,
+        providerSessionId: ProviderSessionId.make(`session:${key}`),
+        appThreadId: ids.threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver,
+          nativeId: "native-self",
+          strength: "strong" as const,
+        },
+        nativeConversationHeadRef: null,
+        status: "idle" as const,
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const siblingProviderThreadId = ProviderThreadId.make(`provider-thread:${key}:sibling`);
+
+      yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make(`command:${key}`),
+          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          providerSessionId: ProviderSessionId.make(`session:${key}`),
+          session: {
+            events: Stream.empty,
+            hasPendingBackgroundWork: Effect.succeed(true),
+            hasPendingBackgroundWorkForThread: (providerThread: OrchestrationV2ProviderThread) =>
+              Effect.gen(function* () {
+                yield* Ref.update(scopedProbeArgs, (current) => [...current, providerThread.id]);
+                return providerThread.id !== ids.providerThreadId;
+              }),
+            subscribeEvents: Effect.succeed({
+              events: Stream.fromIterable([
+                rootTerminalEvent(ids, "completed"),
+                {
+                  type: "provider_thread.updated",
+                  driver,
+                  providerThread: {
+                    ...providerThreadBase,
+                    id: siblingProviderThreadId,
+                    appThreadId: ThreadId.make(`thread:${key}:sibling`),
+                    nativeThreadRef: {
+                      driver,
+                      nativeId: "native-sibling",
+                      strength: "strong" as const,
+                    },
+                    pendingBackgroundTasks: [
+                      { taskId: "sibling-bg", description: "other thread", kind: "command" },
+                    ],
+                    updatedAt: now,
+                  },
+                } as ProviderAdapter.ProviderAdapterV2Event,
+              ]),
+              close: Deferred.succeed(ingestionDone, undefined),
+            }),
+            startTurn: () => Effect.void,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          run: {
+            id: ids.runId,
+            threadId: ids.threadId,
+            ordinal: 1,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          rootNode: { id: ids.rootNodeId } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make(`checkpoint-scope:${key}`),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: providerThreadBase as OrchestrationV2ProviderThread,
+          attempt: {
+            id: ids.attemptId,
+            providerTurnId: ids.rootProviderTurnId,
+          } as OrchestrationV2RunAttempt,
+          attemptId: ids.attemptId,
+          providerTurnOrdinal: 1,
+          message: {
+            messageId: MessageId.make(`message:${key}:user`),
+            text: "Settle without local pending work.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
+            },
+          },
+        });
+      }).pipe(Effect.provide(layerTest));
+
+      const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
+      assert.isTrue(Option.isSome(closed), "event subscription did not release");
+      const observedEvents = [...(yield* Ref.get(observed))];
+      assert.includeMembers(observedEvents, ["terminal", "root-finalized"]);
+      const probedIds = yield* Ref.get(scopedProbeArgs);
+      assert.isTrue(probedIds.includes(ids.providerThreadId));
+      assert.isFalse(probedIds.includes(siblingProviderThreadId));
+    }),
+);
+
+it.effect(
   "cascade-terminalizes run-owned subagent rows on interrupt before root finalization",
   () =>
     Effect.gen(function* () {
@@ -1933,7 +2705,7 @@ it.effect(
               captureBaseline: () => Effect.void,
             }),
             layerTurnItemPositionsTest,
-            Layer.mock(EventSink.EventSinkV2)({
+            executionEventSinkLayer({
               write: () => Effect.succeed([]),
               writeWithEffects: (input) =>
                 Effect.gen(function* () {
@@ -2353,6 +3125,484 @@ it.effect(
     }),
 );
 
+it.effect(
+  "cascades linked child-thread nodes after run-owned subagent and turn-item terminalize",
+  () =>
+    Effect.gen(function* () {
+      const ids = backgroundScenarioIds("subagent-link-survives-terminal");
+      const childThreadId = ids.childThreadId;
+      const unrelatedChildThreadId = ThreadId.make(
+        "thread:subagent-link-survives-terminal:unrelated-child",
+      );
+      const providerInstanceId = ProviderInstanceId.make("codex");
+      const written = yield* Ref.make<ReadonlyArray<OrchestrationV2DomainEvent>>([]);
+      const ingestionDone = yield* Deferred.make<void>();
+      const layerTest = RunExecutionService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            McpAppModelContext.layerEmpty,
+            Layer.mock(CheckpointService.CheckpointServiceV2)({
+              captureBaseline: () => Effect.void,
+            }),
+            executionEventSinkLayer({
+              write: () => Effect.succeed([]),
+              writeWithEffects: (input) =>
+                Effect.gen(function* () {
+                  yield* Ref.update(written, (current) => [...current, ...input.events]);
+                  return [];
+                }),
+            }),
+            IdAllocator.layer,
+            Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
+              ingestNormalized: () => Effect.succeed([]),
+            }),
+            ServerSettings.layerTest(),
+          ),
+        ),
+      );
+
+      const runningSubagent = makeRunOwnedSubagentFixture({
+        ids,
+        providerInstanceId,
+        childThreadId,
+        driver,
+        status: "running",
+      });
+      const runningTurnItem = makeRunOwnedSubagentTurnItemFixture({
+        ids,
+        providerInstanceId,
+        childThreadId,
+        driver,
+        status: "running",
+      });
+      const runningNode = makeRunOwnedSubagentNodeFixture({
+        ids,
+        status: "running",
+      });
+      const runningChildNode = makeRunOwnedSubagentChildNodeFixture({
+        ids,
+        status: "running",
+      });
+      const unrelatedChildNode = {
+        ...runningChildNode,
+        id: NodeId.make("node:subagent-link-survives-terminal:unrelated-child"),
+        threadId: unrelatedChildThreadId,
+        runId: ids.runId,
+        rootNodeId: NodeId.make("node:subagent-link-survives-terminal:unrelated-child"),
+      };
+      const completedAt = runningSubagent.updatedAt;
+
+      yield* Effect.gen(function* () {
+        const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
+        yield* runExecution.startRootRun({
+          commandId: CommandId.make("command:subagent-link-survives-terminal"),
+          appThread: { id: ids.threadId } as OrchestrationV2AppThread,
+          providerSessionId: ProviderSessionId.make("session:subagent-link-survives-terminal"),
+          session: {
+            events: Stream.empty,
+            subscribeEvents: Effect.succeed({
+              events: Stream.fromIterable([
+                childThreadCreatedEvent(ids),
+                {
+                  type: "subagent.updated",
+                  driver,
+                  subagent: runningSubagent,
+                },
+                {
+                  type: "node.updated",
+                  driver,
+                  node: runningNode,
+                },
+                {
+                  type: "node.updated",
+                  driver,
+                  node: runningChildNode,
+                },
+                {
+                  type: "node.updated",
+                  driver,
+                  node: unrelatedChildNode,
+                },
+                {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: runningTurnItem,
+                },
+                {
+                  type: "subagent.updated",
+                  driver,
+                  subagent: {
+                    ...runningSubagent,
+                    status: "completed" as const,
+                    result: "subagent finished first",
+                    completedAt,
+                  },
+                },
+                {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    ...runningTurnItem,
+                    status: "completed" as const,
+                    result: "turn item finished first",
+                    completedAt,
+                    updatedAt: completedAt,
+                  },
+                },
+                {
+                  type: "node.updated",
+                  driver,
+                  node: {
+                    ...runningNode,
+                    status: "completed" as const,
+                    completedAt,
+                  },
+                },
+                rootTerminalEvent(ids, "interrupted"),
+              ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>),
+              close: Deferred.succeed(ingestionDone, undefined),
+            }),
+            startTurn: () => Effect.void,
+          } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
+          run: {
+            id: ids.runId,
+            threadId: ids.threadId,
+            ordinal: 1,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          rootNode: { id: ids.rootNodeId } as OrchestrationV2ExecutionNode,
+          checkpointScope: {
+            id: CheckpointScopeId.make("checkpoint-scope:subagent-link-survives-terminal"),
+          } as OrchestrationV2CheckpointScope,
+          providerThread: {
+            id: ids.providerThreadId,
+            driver,
+          } as OrchestrationV2ProviderThread,
+          attempt: {
+            id: ids.attemptId,
+            providerTurnId: ids.rootProviderTurnId,
+          } as OrchestrationV2RunAttempt,
+          attemptId: ids.attemptId,
+          relatedThreadIds: [unrelatedChildThreadId],
+          providerTurnOrdinal: 1,
+          message: {
+            messageId: MessageId.make("message:subagent-link-survives-terminal:user"),
+            text: "Subagent settles before root interrupt.",
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+          },
+          modelSelection: { instanceId: providerInstanceId, model: "gpt-5.4" },
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: process.cwd(),
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              access: { type: "fullAccess" },
+              networkAccess: false,
+            },
+          },
+        });
+      }).pipe(Effect.provide(layerTest));
+
+      const closed = yield* Deferred.await(ingestionDone).pipe(Effect.timeoutOption("2 seconds"));
+      assert.isTrue(Option.isSome(closed), "event ingestion fiber did not finish");
+
+      const events = yield* Ref.get(written);
+      const runUpdatedIndex = events.findIndex((event) => event.type === "run.updated");
+      assert.isAtLeast(runUpdatedIndex, 0, "root run.updated must be written");
+
+      const cascadedChildNodeEvents = events.flatMap((event, index) =>
+        event.type === "node.updated" &&
+        event.payload.id === runningChildNode.id &&
+        event.payload.status === "interrupted"
+          ? [{ event, index }]
+          : [],
+      );
+      assert.lengthOf(
+        cascadedChildNodeEvents,
+        1,
+        "open linked child-thread node must cascade after subagent/turn-item terminalize",
+      );
+      const cascadedChild = cascadedChildNodeEvents[0];
+      assert.isDefined(cascadedChild);
+      assert.isTrue(
+        cascadedChild.index < runUpdatedIndex,
+        "child-thread cascade must precede run.updated",
+      );
+      assert.equal(cascadedChild.event.payload.threadId, childThreadId);
+      assert.equal(cascadedChild.event.payload.kind, "root_turn");
+      assert.isFalse(
+        events.some(
+          (event) =>
+            event.type === "node.updated" &&
+            event.payload.id === unrelatedChildNode.id &&
+            event.payload.status === "interrupted",
+        ),
+        "related but unlinked child threads must not cascade",
+      );
+      assert.isFalse(
+        events.some(
+          (event) => event.type === "subagent.updated" && event.payload.status === "interrupted",
+        ),
+        "already-terminal subagent rows must not be re-cascaded",
+      );
+      assert.isFalse(
+        events.some(
+          (event) =>
+            event.type === "turn-item.updated" &&
+            event.payload.type === "subagent" &&
+            event.payload.status === "interrupted",
+        ),
+        "already-terminal subagent turn items must not be re-cascaded",
+      );
+    }),
+);
+
+it.effect("cascade helper is provider-neutral for Claude and Codex-shaped child projections", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    let nextId = 0;
+    const allocateEventId = () =>
+      Effect.sync(() => EventId.make(`event:cascade-helper:${nextId++}`));
+
+    for (const driverKind of [
+      ProviderDriverKind.make("claudeAgent"),
+      ProviderDriverKind.make("codex"),
+    ] as const) {
+      const runId = RunId.make(`run:cascade-helper:${driverKind}`);
+      const threadId = ThreadId.make(`thread:cascade-helper:${driverKind}`);
+      const childThreadId = ThreadId.make(`thread:cascade-helper:${driverKind}:child`);
+      const subagentId = NodeId.make(`node:cascade-helper:${driverKind}:subagent`);
+      const childNodeId = NodeId.make(`node:cascade-helper:${driverKind}:child-root`);
+      const providerInstanceId = ProviderInstanceId.make(String(driverKind));
+      const terminalStatus = driverKind === "claudeAgent" ? "failed" : "cancelled";
+      const subagent: OrchestrationV2Subagent = {
+        id: subagentId,
+        threadId,
+        runId,
+        parentNodeId: NodeId.make(`node:cascade-helper:${driverKind}:root`),
+        origin: "provider_native",
+        createdBy: "agent",
+        driver: driverKind,
+        providerInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: {
+          driver: driverKind,
+          nativeId: `native-${driverKind}`,
+          strength: "strong",
+        },
+        prompt: "hold",
+        title: "hold",
+        model: null,
+        status: "running",
+        progress: "partial progress",
+        result: "partial result",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+      };
+      const turnItem = {
+        id: TurnItemId.make(`turn-item:cascade-helper:${driverKind}`),
+        threadId,
+        runId,
+        nodeId: subagentId,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: subagent.nativeTaskRef,
+        parentItemId: null,
+        ordinal: 3,
+        status: "running" as const,
+        title: "hold",
+        startedAt: now,
+        completedAt: null,
+        updatedAt: now,
+        type: "subagent" as const,
+        subagentId,
+        origin: "provider_native" as const,
+        driver: driverKind,
+        providerInstanceId,
+        childThreadId,
+        prompt: "hold",
+        progress: "partial progress",
+        result: "partial result",
+      } satisfies Extract<OrchestrationV2TurnItem, { type: "subagent" }>;
+      const node: OrchestrationV2ExecutionNode = {
+        id: subagentId,
+        threadId,
+        runId,
+        parentNodeId: NodeId.make(`node:cascade-helper:${driverKind}:root`),
+        rootNodeId: NodeId.make(`node:cascade-helper:${driverKind}:root`),
+        kind: "subagent",
+        status: "running",
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: subagent.nativeTaskRef,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      };
+      const openChildNode: OrchestrationV2ExecutionNode = {
+        id: childNodeId,
+        threadId: childThreadId,
+        runId: null,
+        parentNodeId: null,
+        rootNodeId: childNodeId,
+        kind: "root_turn",
+        status: "running",
+        countsForRun: false,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        runtimeRequestId: null,
+        checkpointScopeId: null,
+        startedAt: now,
+        completedAt: null,
+      };
+      const childTurnItem: OrchestrationV2TurnItem =
+        driverKind === "claudeAgent"
+          ? {
+              id: TurnItemId.make(`turn-item:cascade-helper:${driverKind}:child-reasoning`),
+              threadId: childThreadId,
+              runId: null,
+              nodeId: childNodeId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "running",
+              title: "Working",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+              type: "reasoning",
+              text: "partial progress",
+              streaming: true,
+            }
+          : {
+              id: TurnItemId.make(`turn-item:cascade-helper:${driverKind}:child-command`),
+              threadId: childThreadId,
+              runId: null,
+              nodeId: childNodeId,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "running",
+              title: "sleep 300",
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+              type: "command_execution",
+              input: "sleep 300",
+            };
+
+      const events = yield* RunExecutionService.cascadeTerminalizeRunOwnedSubagents({
+        run: {
+          id: runId,
+          threadId,
+          ordinal: 1,
+          providerInstanceId,
+        } as OrchestrationV2Run,
+        open: {
+          subagents: new Map([[subagentId, subagent]]),
+          turnItems: new Map([[subagentId, turnItem]]),
+          childTurnItems: new Map(),
+          nodes: new Map([[subagentId, node]]),
+          linkedChildThreadIds: new Set([childThreadId]),
+        },
+        status: terminalStatus,
+        completedAt: now,
+        allocateEventId,
+      });
+
+      assert.equal(events.length, 3, `${driverKind}: subagent + node + turn item`);
+      const terminalSubagent = events.find((event) => event.type === "subagent.updated");
+      assert.isDefined(terminalSubagent);
+      if (terminalSubagent?.type !== "subagent.updated") {
+        assert.fail("expected subagent.updated event");
+        return;
+      }
+      assert.equal(terminalSubagent.payload.status, terminalStatus);
+      assert.equal(terminalSubagent.payload.childThreadId, childThreadId);
+      assert.equal(terminalSubagent.payload.progress, "partial progress");
+      assert.equal(terminalSubagent.payload.result, "partial result");
+      assert.equal(terminalSubagent.payload.driver, driverKind);
+
+      const terminalItem = events.find(
+        (event) => event.type === "turn-item.updated" && event.payload.type === "subagent",
+      );
+      assert.isDefined(terminalItem);
+      if (terminalItem?.type !== "turn-item.updated" || terminalItem.payload.type !== "subagent") {
+        assert.fail("expected subagent turn-item.updated event");
+        return;
+      }
+      assert.equal(terminalItem.payload.status, terminalStatus);
+      assert.equal(terminalItem.payload.childThreadId, childThreadId);
+      assert.equal(terminalItem.payload.progress, "partial progress");
+      assert.equal(terminalItem.payload.result, "partial result");
+
+      const afterTerminalLinkEvents =
+        yield* RunExecutionService.cascadeTerminalizeRunOwnedSubagents({
+          run: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId,
+          } as OrchestrationV2Run,
+          open: {
+            subagents: new Map(),
+            turnItems: new Map(),
+            childTurnItems: new Map([[childTurnItem.id, childTurnItem]]),
+            nodes: new Map([[childNodeId, openChildNode]]),
+            linkedChildThreadIds: new Set([childThreadId]),
+          },
+          status: terminalStatus,
+          completedAt: now,
+          allocateEventId,
+        });
+      assert.equal(
+        afterTerminalLinkEvents.length,
+        2,
+        `${driverKind}: linked child node and turn item cascade after link rows terminalize`,
+      );
+      const cascadedChild = afterTerminalLinkEvents.find((event) => event.type === "node.updated");
+      assert.isDefined(cascadedChild);
+      if (cascadedChild?.type !== "node.updated") {
+        assert.fail("expected node.updated for linked child thread");
+        return;
+      }
+      assert.equal(cascadedChild.payload.id, childNodeId);
+      assert.equal(cascadedChild.payload.threadId, childThreadId);
+      assert.equal(cascadedChild.payload.status, terminalStatus);
+      assert.equal(cascadedChild.payload.kind, "root_turn");
+      const cascadedChildTurnItem = afterTerminalLinkEvents.find(
+        (event) => event.type === "turn-item.updated",
+      );
+      assert.isDefined(cascadedChildTurnItem);
+      if (cascadedChildTurnItem?.type !== "turn-item.updated") {
+        assert.fail("expected turn-item.updated for linked child thread");
+        return;
+      }
+      assert.equal(cascadedChildTurnItem.threadId, childThreadId);
+      assert.equal(cascadedChildTurnItem.payload.id, childTurnItem.id);
+      assert.equal(cascadedChildTurnItem.payload.status, terminalStatus);
+      assert.equal(cascadedChildTurnItem.payload.runId, null);
+      assert.equal(cascadedChildTurnItem.payload.type, childTurnItem.type);
+      if (cascadedChildTurnItem.payload.type === "reasoning") {
+        assert.isFalse(cascadedChildTurnItem.payload.streaming);
+      }
+    }
+  }),
+);
+
 it.effect("omits interrupt results and subagent cascade for a superseded attempt", () =>
   Effect.gen(function* () {
     const { written, observed } = yield* captureRootRunTermination({
@@ -2622,7 +3872,7 @@ function captureRootRunTermination(input: {
           }),
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             write: (payload) =>
               Effect.gen(function* () {
                 for (const event of payload.events) {
@@ -3128,7 +4378,7 @@ function runBackgroundItemScenario(
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           layerTurnItemPositionsTest,
-          Layer.mock(EventSink.EventSinkV2)({
+          executionEventSinkLayer({
             write: () => Effect.succeed([]),
             writeWithEffects: (input) =>
               Effect.gen(function* () {

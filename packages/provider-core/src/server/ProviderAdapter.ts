@@ -610,6 +610,8 @@ export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
   readonly requestRuntimeRestart?: boolean;
+  /** Internal recovery preserves the native goal; user Stop pauses it before interruption. */
+  readonly preserveGoal?: boolean;
 }
 
 export interface ProviderAdapterV2RuntimeRequestResponseInput {

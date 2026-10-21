@@ -295,54 +295,40 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       }),
   });
 
-  const verifyRefreshedProvider = (
-    provider: ProviderDriverKind,
-    maintenanceCapabilities: ProviderMaintenanceCapabilities,
-    instanceId: ProviderInstanceId,
-  ): Effect.Effect<VerifiedProviderRefresh> =>
-    providerRegistry.refreshAfterUpdate(provider, instanceId).pipe(
-      Effect.flatMap((providers) => {
-        const refreshedProviders = providers.filter(
-          (candidate) => candidate.driver === provider && candidate.instanceId === instanceId,
-        );
-        if (refreshedProviders.length === 0) {
-          return Effect.succeed<VerifiedProviderRefresh>({
-            providers,
-            verifiedProviders: [],
-          });
-        }
-        return Effect.forEach(
-          refreshedProviders,
-          (refreshedProvider) =>
-            enrichProviderSnapshotWithVersionAdvisory(
-              refreshedProvider,
-              maintenanceCapabilities,
-            ).pipe(
-              Effect.provideService(HttpClient.HttpClient, httpClient),
-              Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
-            ),
-          {
-            concurrency: "unbounded",
-          },
-        ).pipe(
-          Effect.map((verifiedProviders): VerifiedProviderRefresh => ({
-            providers,
-            verifiedProviders,
-          })),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Provider post-update version verification failed", {
-              provider,
-              cause: Cause.pretty(cause),
-            }).pipe(
-              Effect.as<VerifiedProviderRefresh>({
-                providers,
-                verifiedProviders: refreshedProviders,
-              }),
-            ),
+  const verifyRefreshedProvider = Effect.fn("ProviderMaintenanceRunner.verifyRefreshedProvider")(
+    function* (
+      provider: ProviderDriverKind,
+      maintenanceCapabilities: ProviderMaintenanceCapabilities,
+      instanceId: ProviderInstanceId,
+    ): Effect.fn.Return<VerifiedProviderRefresh> {
+      const providers = yield* providerRegistry.refreshAfterUpdate(provider, instanceId);
+      const refreshedProvider = providers.find(
+        (candidate) => candidate.driver === provider && candidate.instanceId === instanceId,
+      );
+      if (!refreshedProvider) {
+        return { provider: undefined, advisoryRefreshed: false };
+      }
+      return yield* enrichProviderSnapshotWithVersionAdvisory(
+        refreshedProvider,
+        maintenanceCapabilities,
+      ).pipe(
+        Effect.provideService(HttpClient.HttpClient, httpClient),
+        Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+        Effect.map((provider): VerifiedProviderRefresh => ({ provider, advisoryRefreshed: true })),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Provider post-update version verification failed", {
+            provider,
+            cause: Cause.pretty(cause),
+          }).pipe(
+            Effect.as<VerifiedProviderRefresh>({
+              provider: refreshedProvider,
+              advisoryRefreshed: false,
+            }),
           ),
-        );
-      }),
-    );
+        ),
+      );
+    },
+  );
 
   const updateProvider: ProviderMaintenanceRunnerShape["updateProvider"] = Effect.fn(
     "ProviderMaintenanceRunner.updateProvider",
@@ -487,32 +473,22 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             yield* invalidateLatestProviderVersion(verified).pipe(
               Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
             );
-            const { verifiedProviders } = yield* verifyRefreshedProvider(
-              provider,
-              verified,
-              instanceId,
-            );
-            // A missing version alone is not held against it, since Cursor's `about` probe can
-            // fail transiently on a healthy binary.
-            const couldNotVerify =
-              verifiedProviders.length === 0 ||
-              verifiedProviders.some((verifiedProvider) => {
-                const installedVersion =
-                  verifiedProvider.installedVersion !== undefined
-                    ? verifiedProvider.installedVersion
-                    : verifiedProvider.version;
-                return (
-                  !isStillInstalled(verifiedProvider) ||
-                  (verifiedProvider.status === "error" &&
-                    (verifiedProvider.auth.status !== "unauthenticated" ||
-                      !verifiedProvider.version)) ||
-                  (targetVersion !== undefined &&
-                    installedVersion?.replace(/^v/, "") !== targetVersion)
-                );
-              });
-            const stillOutdated =
-              targetVersion === undefined &&
-              verifiedProviders.some((verifiedProvider) => isOutdatedProvider(verifiedProvider));
+            const verification = yield* verifyRefreshedProvider(provider, verified, instanceId);
+            // An unreadable version is uncertain even after an updater exits successfully.
+            const outcome = resolveProviderUpdateVerification({
+              ...verification,
+              provider:
+                verification.provider === undefined
+                  ? undefined
+                  : {
+                      ...verification.provider,
+                      version:
+                        verification.provider.installedVersion !== undefined
+                          ? verification.provider.installedVersion
+                          : verification.provider.version,
+                    },
+              targetVersion,
+            });
             return yield* finish(
               makeUpdateState({
                 ...outcome,
