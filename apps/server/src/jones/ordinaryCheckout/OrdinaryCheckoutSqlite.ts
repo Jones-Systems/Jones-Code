@@ -170,7 +170,7 @@ const make = Effect.gen(function* () {
     row.git_common_directory === target.gitCommonDirectory &&
     row.branch === target.branch;
   const currentOwner = (row: Admission, allowUnknown = false) =>
-    Effect.fn("OrdinaryCheckoutSqlite.currentOwner")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentOwner")(function* () {
       const lease = yield* owner(row.checkout_key);
       if (
         lease === null ||
@@ -184,18 +184,18 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "stale" });
       return lease;
-    })();
+    }); return runCaptured(); };
   const liveAdmission = (id: string, allowUnknown = false) =>
-    Effect.fn("OrdinaryCheckoutSqlite.liveAdmission")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.liveAdmission")(function* () {
       const row = yield* admission(id);
       if (row === null || !(yield* accepted(row)))
         return yield* new CheckoutError({ reason: "unavailable" });
       yield* currentBirth(row.subject_thread_id, row.birth_event_id, row.birth_sequence);
       yield* currentOwner(row, allowUnknown);
       return row;
-    })();
+    }); return runCaptured(); };
   const replay = (input: CommandIdentity, allowNewSubject = false) =>
-    Effect.fn("OrdinaryCheckoutSqlite.replay")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.replay")(function* () {
       const rows =
         yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${input.commandId}`;
       const r = yield* receipt(input.commandId);
@@ -235,7 +235,7 @@ const make = Effect.gen(function* () {
         return yield* new CheckoutError({ reason: "replay" });
       // Deliberately no current-target, expiry, renewal or executor check on exact replay.
       return { kind: "accepted" as const, admissions: selected };
-    })();
+    }); return runCaptured(); };
   const conflicts = Effect.fn("OrdinaryCheckoutSqlite.conflicts")(function* (key: string) {
       if (!path.isAbsolute(key) || path.normalize(key) !== key)
         return yield* new CheckoutError({ reason: "identity" });
@@ -489,7 +489,7 @@ const make = Effect.gen(function* () {
         row.claim_expires_at === source.claimExpiresAt
       : row.producer_id === source.producerId);
   const verifyBinding = (row: Use, binding: Binding, a: Admission, joining = false) =>
-    Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
       yield* decode(Binding, binding);
       if (
         binding.operationId !== row.operation_id ||
@@ -514,7 +514,7 @@ const make = Effect.gen(function* () {
           binding.relation.messageId !== a.message_id)
       )
         return yield* new CheckoutError({ reason: "identity" });
-    })();
+    }); return runCaptured(); };
   const verifyLinkedSource = Effect.fn("OrdinaryCheckoutSqlite.verifyLinkedSource")(function* (a: Admission, source: Source) {
       if (source.kind !== "outbox") return;
       const actual = yield* effectRequest(source.effectId);
@@ -545,7 +545,7 @@ const make = Effect.gen(function* () {
     kind: LifecycleEvent["event_kind"],
     state: Use["state"] = row.state,
   ) =>
-    Effect.fn("OrdinaryCheckoutSqlite.append")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.append")(function* () {
       yield* decode(Binding, input.binding);
       yield* decode(Evidence, input.evidence);
       if (
@@ -578,7 +578,7 @@ const make = Effect.gen(function* () {
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} AND owner_epoch=${row.owner_epoch} RETURNING *`;
       if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
       return updated[0]!;
-    })();
+    }); return runCaptured(); };
   // Authorization admits an invocation; it is not an observation of physical work.
   const admitsInvocation = (evidence: Evidence) =>
     evidence.outcome === "active" ||
@@ -638,7 +638,7 @@ const make = Effect.gen(function* () {
       }),
     );
   const currentEvent = (input: EventInput, allowUnknown = false, joining = false) =>
-    Effect.fn("OrdinaryCheckoutSqlite.currentEvent")(function* () {
+    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentEvent")(function* () {
       const row = yield* use(input.binding.operationId);
       if (
         row.revision !== input.expectedRevision ||
@@ -657,7 +657,7 @@ const make = Effect.gen(function* () {
       yield* verifyBinding(row, input.binding, a, joining);
       yield* decode(Evidence, input.evidence);
       return { row, admission: a };
-    })();
+    }); return runCaptured(); };
   const start: OrdinaryCheckout["Service"]["start"] = (input) =>
     transaction(
       Effect.gen(function* () {

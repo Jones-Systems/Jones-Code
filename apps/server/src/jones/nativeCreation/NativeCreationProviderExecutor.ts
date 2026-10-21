@@ -39,7 +39,7 @@ export const layer = Layer.effect(
               }),
           )),
       executeWholeOperation: ({ effect, context }) =>
-        Effect.fn("NativeCreationProviderExecutor.executeWholeOperation")(function* () {
+        { const runCaptured = Effect.fn("NativeCreationProviderExecutor.executeWholeOperation")(function* () {
           const reference = Authority.getNativeCreationExecutionReference(context);
           if (
             !reference ||
@@ -105,7 +105,7 @@ export const layer = Layer.effect(
                 message:
                   "Whole native Codex execution is unconfirmed; original start cannot replay",
               }),
-          ))(),
+          )); return runCaptured(); },
     });
   }),
 );
