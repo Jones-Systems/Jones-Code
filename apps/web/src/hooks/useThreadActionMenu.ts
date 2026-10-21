@@ -46,14 +46,11 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { useThreadActions } from "./useThreadActions";
+import { SETTLEMENT_RESTORE_MENU_ID } from "../jones/settlementRestore/menu";
 import {
-  SETTLEMENT_RESTORE_MENU_ID,
-  withSettlementRestoreMenuItem,
-} from "../jones/settlementRestore/menu";
-import {
-  readEnvironmentSupportsSettlementRestore,
-  restoreCurrentSettlement,
-} from "../jones/settlementRestore/settlementRestore";
+  undoSettleFromMenu,
+  withThreadSettlementRestore,
+} from "../jones/settlementRestore/threadMenu";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -159,18 +156,14 @@ export function useThreadActionMenu(input: {
         snoozePresets,
       });
       // Jones: persistent Undo settle, for servers that keep a restore record.
-      const items = withSettlementRestoreMenuItem(menuItems, {
-        available: isSettled && readEnvironmentSupportsSettlementRestore(threadRef.environmentId),
-        canOperate,
-      });
+      const items = withThreadSettlementRestore(menuItems, { threadRef, isSettled, canOperate });
       const clicked = await settlePromise(() => api.contextMenu.show(items, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
       const choice = clicked.value;
       if (choice === SETTLEMENT_RESTORE_MENU_ID) {
-        const result = await restoreCurrentSettlement(threadRef);
-        if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-          failureToast("Failed to undo settle", squashAtomCommandFailure(result));
-        }
+        await undoSettleFromMenu(threadRef, (error) =>
+          failureToast("Failed to undo settle", error),
+        );
         return;
       }
       const action: ThreadActionMenuId = choice;

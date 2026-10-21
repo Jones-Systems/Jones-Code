@@ -18,7 +18,9 @@
     "packages/client-runtime/src/jones/settlementRestore/index.ts",
     "apps/web/src/jones/settlementRestore/settlementRestore.ts",
     "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
-    "apps/web/src/jones/settlementRestore/menu.ts"
+    "apps/web/src/jones/settlementRestore/menu.ts",
+    "apps/web/src/jones/settlementRestore/threadMenu.ts",
+    "apps/web/src/jones/settlementRestore/threadMenu.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -73,7 +75,15 @@
     },
     {
       "from": "apps/web/src/hooks/useThreadActionMenu.ts",
-      "to": "apps/web/src/jones/settlementRestore/settlementRestore.ts"
+      "to": "apps/web/src/jones/settlementRestore/threadMenu.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/settlementRestore/menu.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/settlementRestore/threadMenu.ts"
     }
   ]
 }

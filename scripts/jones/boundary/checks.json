@@ -553,6 +553,7 @@
         "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
         "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
         "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+        "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
         "apps/web/src/hooks/useThreadActionMenu.test.ts"
       ],
       "commands": [
