@@ -7,7 +7,9 @@
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": ["scripts/lib/third-party-licenses.ts"]
+      "targets": [
+        "scripts/lib/third-party-licenses.ts"
+      ]
     },
     {
       "from": "apps/mobile/metro.config.js",
@@ -15,7 +17,9 @@
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": ["apps/mobile/scripts/generate-device-stream.mts"]
+      "targets": [
+        "apps/mobile/scripts/generate-device-stream.mts"
+      ]
     },
     {
       "from": "apps/mobile/src/features/settings/mobileThirdPartyLicenses.ts",
@@ -29,14 +33,16 @@
         },
         {
           "path": "scripts/lib/third-party-licenses.ts",
-          "sha256": "e84458402a6dac5cbf1e5f41f6d2f9eb901d7a070a7c161ecc626e705604ce8d"
+          "sha256": "161275b7f9e4e0465eedf71526d073ea7b5761e5819646044a51b03064f830bd"
         }
       ],
-      "targets": ["scripts/lib/third-party-licenses.ts"]
+      "targets": [
+        "scripts/lib/third-party-licenses.ts"
+      ]
     },
     {
       "from": "apps/mobile/src/features/devices/DeviceStreamWebView.tsx",
-      "sourceSha256": "fe27c9bf5a099e26df6b01e754b8216d3bfaf3ef1864f42633cbe06e7346b919",
+      "sourceSha256": "2f2d0b32054cf37477157c13df9daba95977f6f848efb3eb462c90773cff746d",
       "expression": "\"@t3tools/mobile-device-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
@@ -50,7 +56,7 @@
         },
         {
           "path": "apps/mobile/src/features/devices/device-stream.browser.ts",
-          "sha256": "80acfb453c4e3e95cba6d2c7dd934866e4ea7cf6158014f80e8dbbc5f5fc276a"
+          "sha256": "30371dd71bc7e6d680415ecfbd9edc5bc9fff9295eb2ed28e3ec968a0cc6db80"
         }
       ],
       "targets": [
@@ -59,84 +65,23 @@
       ]
     },
     {
-      "from": "apps/mobile/src/lib/uniwind-dev-refresh.test.ts",
-      "sourceSha256": "cca6683982d6af0ef8cefc6b5a1e17d12aba2dd81d8e1a5568adb033f5a4b27e",
-      "expression": "modulePath",
-      "reason": "Upstream synthetic test loads a Uniwind dependency-internal module via a file URL; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "apps/mobile/package.json",
-          "sha256": "62bbf35302fad0e19be8db9708e5823a43db4f12ca37f39ae98a6c4282d44797"
-        }
-      ],
-      "targets": []
-    },
-    {
-      "from": "apps/mobile/src/lib/uniwind-platform-variants.fixture.cjs",
-      "sourceSha256": "332d3053b57f5a155ebad7db7bfb7e48800cfb22b6969d74a8aca8ccb4b7e654",
-      "expression": "transformerPath",
-      "reason": "Upstream synthetic fixture loads the installed Uniwind transformer; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "apps/mobile/package.json",
-          "sha256": "62bbf35302fad0e19be8db9708e5823a43db4f12ca37f39ae98a6c4282d44797"
-        }
-      ],
-      "targets": []
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
+      "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
+      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
-      "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
+      "reason": "Jones-restored subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "b7c36313c20ec8d7ab9018f014cd204846c01ed4081b7f80fab657cfb8c1a659"
+          "sha256": "bcc29ad3bff6567fef08c24be6fbcf6a163c87ee02629c8e76f371270436bc52"
         }
       ],
       "targets": []
     },
     {
-      "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
-      "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
-      "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
-      "anchors": [],
-      "targets": [
-        "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
-        "apps/server/src/orchestration-v2/ProjectionStore.ts",
-        "apps/server/src/orchestration-v2/RunExecutionService.ts",
-        "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
-        "apps/server/src/orchestration-v2/RuntimePolicy.ts",
-        "apps/server/src/orchestration-v2/EventSink.ts",
-        "apps/server/src/orchestration-v2/ContextHandoffService.ts",
-        "apps/server/src/git/GitWorkflowService.ts",
-        "apps/server/src/project/ProjectService.ts",
-        "apps/server/src/provider/ProviderAuthService.ts",
-        "apps/server/src/config.ts",
-        "apps/server/src/serverSettings.ts",
-        "apps/server/src/provider/ProviderInstanceRegistry.ts"
-      ]
-    },
-    {
-      "from": "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
-      "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
-      "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
-      "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "apps/server/package.json",
-          "sha256": "b7c36313c20ec8d7ab9018f014cd204846c01ed4081b7f80fab657cfb8c1a659"
-        }
-      ],
-      "targets": []
-    },
-    {
-      "from": "apps/server/src/testkit/RpcInitialMemory.fixture.mjs",
+      "from": "apps/server/src/jones/platformCompatibility/testkit/RpcInitialMemory.fixture.mjs",
       "sourceSha256": "31059aef05a3c0a9dabed6c3c11823f62988479004fe0b400e437e7a75415a87",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
-      "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
+      "reason": "Jones-restored subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
       "targets": [
         "apps/server/src/rpcInitialItems.ts",
@@ -147,41 +92,20 @@
     },
     {
       "from": "apps/web/src/components/files/fileEditorVirtualization.test.ts",
-      "sourceSha256": "a311f200bebba4d2d5d1c50532abfaf285423c81fb704e7376d1d8a8ad884971",
+      "sourceSha256": "57eb21d81b49c87599e1bf81b5b6c6ba63cf651946f4123d37f79cf7194089a9",
       "expression": "renderingManagerUrl.href",
       "reason": "Upstream synthetic editor test loads a Pierre dependency-internal module URL; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "188721b5643a0affb5e8530ffcd6ab3f6e180ebac905908a0f4cbc1617935190"
+          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
         }
       ],
       "targets": []
-    },
-    {
-      "from": "packages/shared/src/testing/TraceRetention.fixture.mjs",
-      "sourceSha256": "646dc0a923ae40316cc0c0b48abab5ea8be05c214230c26ccdd76f12f65ebe5f",
-      "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
-      "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
-      "anchors": [
-        {
-          "path": "packages/shared/package.json",
-          "sha256": "e56b1efe5e6e5d6eeea4939e1e8f4d669b6093e937204400220e86f2cd45dee6"
-        }
-      ],
-      "targets": []
-    },
-    {
-      "from": "packages/shared/src/testing/TraceRetention.fixture.mjs",
-      "sourceSha256": "646dc0a923ae40316cc0c0b48abab5ea8be05c214230c26ccdd76f12f65ebe5f",
-      "expression": "NodeURL.pathToFileURL(root + \"/packages/shared/src/observability.ts\")",
-      "reason": "Upstream subprocess fixture imports the fixed local tracing implementation from a caller-supplied root; this exact target still receives boundary checking.",
-      "anchors": [],
-      "targets": ["packages/shared/src/observability.ts"]
     },
     {
       "from": "apps/mobile/src/features/browser/PreviewStreamWebView.tsx",
-      "sourceSha256": "b70f30c24e48a071ed24e8abdcb04ad25489962d5fa4a87833539c50b7680b37",
+      "sourceSha256": "29ddff9b4cbf307480c152bc7085ae3b76678e286abac95a4f0c939089c3f7a6",
       "expression": "\"@t3tools/mobile-preview-stream\"",
       "reason": "Metro supplies this generated browser-script module from the pinned generator; generated output is not read or claimed verified.",
       "anchors": [
@@ -205,38 +129,30 @@
     },
     {
       "from": "apps/web/src/components/diffs/codeViewSearch.test.ts",
-      "sourceSha256": "b133ce67231c1a916dc6004e02a7e655d935003f9cf0e0ec2ff8ec3e5cde1f72",
+      "sourceSha256": "5e12e1d7bf27b8611eda2489a80d0b252a4c0959a5ee255d92ce84eeb0f51564",
       "expression": "searchUrl.href",
       "reason": "Upstream synthetic search test loads the patched Pierre dependency-internal module URL; external dependency loader is unsupported.",
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "188721b5643a0affb5e8530ffcd6ab3f6e180ebac905908a0f4cbc1617935190"
+          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
         },
         {
           "path": "patches/@pierre%2Fdiffs@1.5.2.patch",
-          "sha256": "298e94372dbd51846a4e26ece2ecc3e22eb1f94b0450b1f1a9c6fec127809be7"
+          "sha256": "2ec81ba1e8ce4681095a3473c2bf78e630417740c622720ef624febb467c25fc"
         }
       ],
       "targets": []
     },
     {
-      "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
-      "expression": "NodeURL.pathToFileURL(root + \"/packages/provider-core/src/server/\" + file + \".ts\")",
-      "reason": "Upstream subprocess fixture loads only IdAllocator from the extracted provider-core owner. Source-byte binding fixes that finite target; the target still receives boundary checking.",
-      "anchors": [],
-      "targets": ["packages/provider-core/src/server/IdAllocator.ts"]
-    },
-    {
       "from": "apps/mobile/src/features/files/SourceFileSurface.tsx",
-      "sourceSha256": "255109776715f25fcea9beb05420395a40448a0bd76c70d10cde2f776966094f",
+      "sourceSha256": "9d01b654a408c243df1fa298286bd749a5ae7e1448389bb3ccdfb46418db1e70",
       "expression": "\"@t3tools/mobile-source-text\"",
       "reason": "Metro resolves this checked-in native package through the mobile manifest file dependency and the package main/types/react-native index.ts entry. The boundary resolver supports exports maps only; exact source and manifest hashes bind this entry, which still receives boundary checking.",
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "62bbf35302fad0e19be8db9708e5823a43db4f12ca37f39ae98a6c4282d44797"
+          "sha256": "ffd8a6ffe0311dca55e593a2a06b1f061ef96a99f54846ea1c0a9ef0673405b9"
         },
         {
           "path": "apps/mobile/metro.config.js",
@@ -247,7 +163,9 @@
           "sha256": "f9acced1f779de8622f6612aacce6042288b2f8a510e531e151037e49e5f03db"
         }
       ],
-      "targets": ["apps/mobile/modules/t3-source-text/index.ts"]
+      "targets": [
+        "apps/mobile/modules/t3-source-text/index.ts"
+      ]
     },
     {
       "from": "scripts/npm-launcher/bin.mjs",
@@ -257,10 +175,12 @@
       "anchors": [
         {
           "path": "scripts/build-npm-launcher.ts",
-          "sha256": "dd66a24c9ac8cf324d1ed620cef76a3f621c8ce5bc70e9daab3529cc5125bc81"
+          "sha256": "37ffba6778b35d3574677a02d6ec49684da014b69cf4c81c012b2bdcaa74deef"
         }
       ],
-      "targets": ["scripts/npm-launcher/t3.mjs"]
+      "targets": [
+        "scripts/npm-launcher/t3.mjs"
+      ]
     }
   ]
 }

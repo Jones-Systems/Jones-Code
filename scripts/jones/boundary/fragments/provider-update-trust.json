@@ -5,7 +5,8 @@
     "packages/client-runtime/src/jones/providerUpdates/index.ts",
     "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
     "apps/server/src/jones/provider/providerUpdateVerification.ts",
-    "apps/server/src/jones/provider/providerUpdateVerification.test.ts"
+    "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
+    "apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx"
   ],
   "hookPaths": [
     "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
@@ -14,12 +15,13 @@
     "apps/web/src/components/ProviderUpdatePrimaryNotification.tsx",
     "apps/web/src/components/ProviderUpdateLaunchNotification.environments.ts",
     "apps/web/src/components/ProviderUpdateEnvironmentRows.tsx",
-    "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx",
     "apps/server/src/provider/providerMaintenanceRunner.ts",
     "apps/server/src/provider/providerMaintenanceRunner.test.ts",
     "apps/web/src/components/sidebar/useUpdateEverything.ts"
   ],
-  "tombstones": [],
+  "tombstones": [
+    "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx"
+  ],
   "allowedImports": [
     {
       "from": "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",

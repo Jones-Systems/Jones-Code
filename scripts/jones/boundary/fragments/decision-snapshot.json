@@ -14,15 +14,17 @@
     "apps/server/src/jones/mcp/decisionSnapshot/access.ts",
     "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
     "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
-    "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx"
+    "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx",
+    "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/McpInvocationContext.ts",
     "apps/server/src/mcp/McpInvocationContext.test.ts",
-    "apps/server/src/mcp/McpSessionRegistry.test.ts",
+    "apps/server/src/mcp/McpSessionRegistry.test.ts"
+  ],
+  "tombstones": [
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
   ],
-  "tombstones": [],
   "allowedImports": [
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
@@ -59,10 +61,6 @@
     {
       "from": "apps/web/src/components/settings/IntegrationsSettings.tsx",
       "to": "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx"
-    },
-    {
-      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-      "to": "apps/server/src/workstreams/WorkstreamGateway.ts"
     }
   ]
 }

@@ -75,10 +75,6 @@
     {
       "from": "apps/server/src/peer/RemoteDelegation.ts",
       "to": "apps/server/src/jones/remoteDelegation/PeerMonitor.ts"
-    },
-    {
-      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-      "to": "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts"
     }
   ]
 }

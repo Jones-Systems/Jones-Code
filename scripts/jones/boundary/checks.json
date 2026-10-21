@@ -7,10 +7,10 @@
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.test.ts",
-        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/mcp/agentMessageHeader.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/mcp/agentMessageHeader.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/jones/mcp/agentMessageHeader.ts apps/server/src/jones/mcp/agentMessageHeader.test.ts apps/server/src/mcp/OrchestratorMcpService.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
@@ -28,13 +28,12 @@
         "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
         "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
-        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts",
         "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts",
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts"
       ],
       "commands": [
-        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryPerformance.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts --maxWorkers=1"
+        "vp test run packages/effect-codex-app-server/src/client.test.ts packages/effect-codex-app-server/src/protocol.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/BackgroundWorkStop.integration.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -72,18 +71,17 @@
         "apps/web/src/components/Sidebar.drag.test.ts",
         "apps/web/src/components/Sidebar.statusFilter.test.tsx",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts",
         "apps/web/src/reactCompilerCoverage.test.ts",
-        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx"
+        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts packages/contracts/src/environmentHttp.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
+        "vp test run packages/client-runtime/src/state/session.test.ts apps/web/src/state/session.test.ts packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts apps/server/src/http.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/web/src/components/Sidebar.drag.test.ts apps/web/src/components/Sidebar.statusFilter.test.tsx packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/reactCompilerCoverage.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp run --filter @t3tools/web test src/components/settings/ProjectSettingsPanel.browser.test.tsx --maxWorkers=1"
+        "vp run --filter @t3tools/web test src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx --maxWorkers=1"
       ]
     },
     {
@@ -91,7 +89,8 @@
       "tests": [
         "packages/shared/src/nodeSqliteClient.test.ts",
         "apps/server/src/persistence/Sqlite.test.ts",
-        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts",
+        "packages/shared/src/jones/checkpointContention.test.ts"
       ],
       "commands": [
         "vp test run packages/shared/src/nodeSqliteClient.test.ts --maxWorkers=1",
@@ -99,19 +98,25 @@
         "vp test run apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts --maxWorkers=1",
         "vp lint packages/shared/src/nodeSqliteClient.ts packages/shared/src/nodeSqliteClient.test.ts",
         "vp run --filter @t3tools/shared typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/shared/src/jones/checkpointContention.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "jones-usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
-        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+        "packages/shared/src/jones/usageMergeCompatibility.test.ts",
+        "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx",
+        "apps/server/src/usage/UsageService.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx apps/web/src/components/usage/UsagePage.browser.test.tsx --maxWorkers=1",
+        "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx --maxWorkers=1",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/shared/src/jones/usageMergeCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/usage/UsageService.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -199,19 +204,23 @@
       "tests": [
         "apps/web/src/jones/settings/providerOrder.test.ts",
         "apps/web/src/jones/settings/SortableProviderRows.browser.test.tsx",
-        "packages/client-runtime/src/state/serverConfigProjection.test.ts"
+        "packages/client-runtime/src/state/serverConfigProjection.test.ts",
+        "apps/mobile/src/jones/modelOptions/providerOptions.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/jones/settings/providerOrder.test.ts packages/client-runtime/src/state/serverConfigProjection.test.ts",
         "cd apps/web && vp test run --project browser src/jones/settings/SortableProviderRows.browser.test.tsx",
         "cd apps/web && vp test run --project unit src/reactCompilerCoverage.test.ts -t 'compiles apps/web/src/jones/settings/SortableProviderRows.tsx'",
         "vp run --filter @t3tools/web typecheck",
-        "vp run --filter @t3tools/client-runtime typecheck"
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp test run apps/mobile/src/jones/modelOptions/providerOptions.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "jones-provider-restart-identity",
-      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "vp run --filter t3 typecheck"
@@ -219,8 +228,12 @@
     },
     {
       "id": "jones-environment-sidebar-filters",
-      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
-      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
+      "tests": [
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
+      ]
     },
     {
       "id": "jones-remote-host-status",
@@ -247,7 +260,9 @@
     },
     {
       "id": "jones-boundary",
-      "tests": ["scripts/jones/check-boundary.test.ts"],
+      "tests": [
+        "scripts/jones/check-boundary.test.ts"
+      ],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -256,7 +271,9 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
+      "tests": [
+        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -352,7 +369,6 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
-        "apps/server/src/serverActivation.test.ts",
         "apps/server/src/serverRuntimeStartup.test.ts",
         "apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx",
         "apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts",
@@ -362,7 +378,7 @@
         "apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
       ],
       "commands": [
-        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/listProjection.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/environmentTrust.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/assignmentIndex.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/enrollment/credentialFile.test.ts apps/server/src/jones/workstreams/enrollment/operations.test.ts apps/server/src/jones/workstreams/enrollment/reservedBearer.test.ts apps/server/src/jones/workstreams/enrollment/secretStore.test.ts apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverActivation.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "vp test run apps/mobile/src/features/workstreams/actions.test.ts apps/mobile/src/features/workstreams/commands.test.ts apps/mobile/src/features/workstreams/listProjection.test.ts apps/mobile/src/features/workstreams/loaders.test.ts apps/mobile/src/features/workstreams/projection.test.ts apps/mobile/src/features/workstreams/useWorkstreams.authorization.test.tsx apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/WorkstreamPlacements.test.ts apps/server/src/workstreams/SyntheticWorkstreamTransport.test.ts apps/server/src/workstreams/http.test.ts apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/workstreamPresentation.test.ts apps/web/src/state/workstreams.test.ts packages/client-runtime/src/state/workstreams/colors.test.ts packages/client-runtime/src/state/workstreams/environmentTrust.test.ts packages/client-runtime/src/state/workstreams/lifecycle.test.ts packages/client-runtime/src/state/workstreams/live.test.ts packages/client-runtime/src/state/workstreams/nativeThreadGrouping.test.ts packages/client-runtime/src/state/workstreams/assignmentIndex.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts packages/client-runtime/src/state/workstreams/workstreams.test.ts packages/contracts/src/queueProtocol.test.ts packages/contracts/src/threadCorpusProtocol.test.ts packages/contracts/src/workstreams.conformance.test.ts packages/contracts/src/workstreams.test.ts apps/server/src/jones/workstreams/enrollment/request.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts apps/server/src/jones/workstreams/enrollment/cli.test.ts apps/server/src/jones/workstreams/enrollment/credentialFile.test.ts apps/server/src/jones/workstreams/enrollment/operations.test.ts apps/server/src/jones/workstreams/enrollment/reservedBearer.test.ts apps/server/src/jones/workstreams/enrollment/secretStore.test.ts apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts apps/server/src/jones/workstreams/nativeProvider/attemptRepository.test.ts apps/server/src/jones/workstreams/nativeProvider/evidence.test.ts apps/server/src/jones/workstreams/nativeProvider/http.test.ts apps/server/src/jones/workstreams/nativeProvider/nativePolicy.test.ts apps/server/src/jones/workstreams/nativeProvider/service.test.ts apps/server/src/jones/workstreams/registrationContext/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts packages/contracts/src/jones/workstreamsNativeProvider.test.ts packages/contracts/src/jones/workstreamsRegistrationContext.test.ts apps/server/src/auth/SessionStore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/web/src/jones/workstreams/WorkstreamAddPrDialog.test.tsx apps/web/src/jones/workstreams/workstreamReferenceActions.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
         "vp test run apps/mobile/src/features/workstreams/gateway.test.ts",
         "vp test run apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts"
       ]
@@ -469,8 +485,12 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": ["native/process-placement/build.test.mjs"],
-      "commands": ["node --test native/process-placement/build.test.mjs"]
+      "tests": [
+        "native/process-placement/build.test.mjs"
+      ],
+      "commands": [
+        "node --test native/process-placement/build.test.mjs"
+      ]
     },
     {
       "id": "jones-workstream-appearance",
@@ -514,13 +534,12 @@
       "tests": [
         "packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
         "packages/ssh/src/tunnel.test.ts",
-        "packages/ssh/src/runnerProcess.test.ts",
         "packages/ssh/src/jones/hostRuntime.test.ts"
       ],
       "commands": [
         "vp run --filter @t3tools/ssh typecheck",
-        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
-        "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/runnerProcess.test.ts packages/ssh/src/jones/hostRuntime.test.ts"
+        "vp lint packages/ssh/src/tunnel.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/persistentRemoteLifecycle.ts packages/ssh/src/jones/persistentRemoteLifecycle.test.ts",
+        "vp test run packages/ssh/src/jones/persistentRemoteLifecycle.test.ts packages/ssh/src/tunnel.test.ts packages/ssh/src/jones/hostRuntime.test.ts"
       ]
     },
     {
@@ -594,11 +613,13 @@
         "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
         "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
-        "apps/web/src/jones/workQueue/classifySentPrompts.test.ts"
+        "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
+        "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/voiceReview/bridge.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/web test src/jones/workQueue/PromptsSettings.test.tsx src/components/settings/settingsSearch.test.ts src/components/workQueue/WorkQueuePage.test.tsx src/jones/workQueue/SentPrompts.test.tsx src/jones/workQueue/UnifiedQueuePage.test.tsx src/jones/workQueue/WorkQueueMetadataPanel.test.tsx src/jones/workQueue/classifySentPrompts.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp run --filter @t3tools/web test src/jones/workQueue/PromptsSettings.test.tsx src/components/settings/settingsSearch.test.ts src/components/workQueue/WorkQueuePage.test.tsx src/jones/workQueue/SentPrompts.test.tsx src/jones/workQueue/UnifiedQueuePage.test.tsx src/jones/workQueue/WorkQueueMetadataPanel.test.tsx src/jones/workQueue/classifySentPrompts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/promptViewSettings.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -613,15 +634,19 @@
         "apps/server/src/jones/device/DeviceDirectGrants.test.ts",
         "apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts",
         "apps/server/src/jones/device/directDeviceGateway.test.ts",
-        "apps/web/src/components/device/DeviceStreamView.browser.test.tsx",
+        "apps/web/src/jones/device/DeviceStreamView.reconnect.browser.test.tsx",
         "apps/web/src/components/settings/deviceHostConnectionChecks.test.ts",
         "apps/web/src/jones/device/device.test.tsx",
         "packages/client-runtime/src/device/stream.test.ts",
         "packages/client-runtime/src/jones/device/mediaRoute.test.ts",
-        "packages/contracts/src/device.test.ts"
+        "packages/contracts/src/device.test.ts",
+        "packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts",
+        "apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/server/src/device/DeviceService.test.ts apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/jones/device/DeviceDirectAdmission.test.ts apps/server/src/jones/device/DeviceDirectGrants.test.ts apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts apps/server/src/jones/device/directDeviceGateway.test.ts apps/web/src/components/device/DeviceStreamView.browser.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/web/src/jones/device/device.test.tsx packages/client-runtime/src/device/stream.test.ts packages/client-runtime/src/jones/device/mediaRoute.test.ts packages/contracts/src/device.test.ts"
+        "vp test run apps/server/src/device/DeviceService.test.ts apps/desktop/src/jones/deviceMedia/DesktopDeviceMediaTunnel.test.ts apps/server/src/device/DeviceHubProxy.test.ts apps/server/src/device/SshDeviceHost.test.ts apps/server/src/device/sshDeviceScript.test.ts apps/server/src/jones/device/DeviceDirectAdmission.test.ts apps/server/src/jones/device/DeviceDirectGrants.test.ts apps/server/src/jones/device/DeviceServiceDirectLifecycle.test.ts apps/server/src/jones/device/directDeviceGateway.test.ts apps/web/src/jones/device/DeviceStreamView.reconnect.browser.test.tsx apps/web/src/components/settings/deviceHostConnectionChecks.test.ts apps/web/src/jones/device/device.test.tsx packages/client-runtime/src/device/stream.test.ts packages/client-runtime/src/jones/device/mediaRoute.test.ts packages/contracts/src/device.test.ts",
+        "vp test run apps/web/src/jones/files/AttachmentFilePreview.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/deviceMediaCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -629,11 +654,7 @@
       "tests": [
         "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
         "apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts",
-        "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-        "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
-        "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
         "apps/server/src/provider/Drivers/CodexDriver.test.ts",
         "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
         "apps/server/src/provider/ProviderRegistry.test.ts",
@@ -641,7 +662,7 @@
         "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/ProviderInstanceRegistry.test.ts apps/server/src/provider/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
+        "vp test run apps/server/src/diagnostics/ProcessDiagnostics.test.ts apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/provider/Drivers/CodexDriver.test.ts apps/server/src/provider/ProviderInstanceRegistry.test.ts apps/server/src/provider/ProviderRegistry.test.ts apps/server/src/resourceTelemetry/Model.test.ts apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ]
     },
     {
@@ -665,8 +686,8 @@
         "scripts/jones/updates/build-provenance.test.ts",
         "apps/desktop/src/updates/DesktopUpdates.test.ts",
         "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
-        "apps/desktop/src/updates/updateChannels.test.ts",
-        "packages/contracts/src/ipc.test.ts",
+        "apps/desktop/src/jones/updates/updateChannels.test.ts",
+        "packages/contracts/src/jones/ipcUpdateReports.test.ts",
         "packages/contracts/src/resourceTelemetry.test.ts",
         "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts",
         "scripts/build-desktop-artifact.test.ts",
@@ -707,12 +728,19 @@
         "apps/server/src/jones/cloud/capturedProcess.test.ts",
         "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
         "packages/contracts/src/jones/jonesSourceRelation.test.ts",
-        "apps/server/src/jones/updates/sourceRelation.test.ts"
+        "apps/server/src/jones/updates/sourceRelation.test.ts",
+        "packages/contracts/src/jones/environmentIdentity.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.test.ts",
+        "apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts",
+        "apps/server/src/jones/updates/recoverStagedSelection.test.ts",
+        "scripts/jones/updates/recover-staged-selection.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
         "vp test run apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/ServerUpdateContinuationPolicy.test.ts",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/updates/updateChannels.test.ts packages/contracts/src/ipc.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/server/src/jones/updates/nativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/server/src/jones/cloud/qualifiedArchive.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/qualification.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/server/src/jones/updates/trialGate.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts apps/desktop/src/jones/updates/jonesMacStaging.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/jones/updates/build-provenance.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/src/updates/DesktopRemoteUpdates.test.ts apps/desktop/src/jones/updates/updateChannels.test.ts packages/contracts/src/jones/ipcUpdateReports.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.test.ts scripts/build-desktop-artifact.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/qualifiedStartup.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/trialStartup.test.ts apps/server/src/cloud/bootService.test.ts apps/server/src/cloud/pinnedRuntime.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/cloud/servicePreflight.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/serverRuntimeStartup.test.ts apps/server/src/cli/service.test.ts apps/server/src/cli/update.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/cloud/qualifiedBackup.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/updates/capabilityReceipt.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts packages/shared/src/jones/nativeWriterFence.test.ts apps/desktop/src/jones/updates/jonesNativeStartup.test.ts apps/server/src/jones/updates/nativePreparation.test.ts apps/desktop/src/jones/updates/jonesNativePreparation.test.ts",
         "node --test scripts/jones/updates/native-startup-fixture.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs",
         "vp test run apps/server/src/orchestration-v2/ServerUpdateContinuationPreparation.test.ts",
@@ -723,7 +751,9 @@
         "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/updates/native-fixture-support.node-test.mjs",
         "vp test run apps/server/src/jones/cloud/capturedProcess.test.ts apps/server/src/jones/cloud/stoppedServerOwnership.test.ts --maxWorkers=1",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/environmentIdentity.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/persistence/Migrations/064_CanonicalizeThreadPullRequestLinks.test.ts apps/server/src/persistence/Migrations/066_RepairClientSettlementTimestamps.test.ts apps/server/src/jones/updates/recoverStagedSelection.test.ts scripts/jones/updates/recover-staged-selection.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -739,12 +769,12 @@
         "packages/contracts/src/workstreams.conformance.test.ts",
         "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/mcp/decisionSnapshot/collector.test.ts apps/server/src/jones/mcp/decisionSnapshot/handlers.test.ts apps/server/src/jones/mcp/decisionSnapshot/access.test.ts apps/server/src/jones/mcp/decisionSnapshot/release.test.ts apps/server/src/mcp/McpInvocationContext.test.ts apps/server/src/mcp/McpSessionRegistry.test.ts apps/server/src/mcp/McpHttpServer.test.ts",
         "vp test run packages/contracts/src/workstreams.conformance.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts",
-        "vp test run apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+        "vp test run apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ]
     },
     {
@@ -787,24 +817,32 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
-      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
+      "tests": [
+        "apps/server/scripts/jones/sqliteHealth.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
+      ]
     },
     {
       "id": "jones-performance-diagnostics",
       "tests": [
         "apps/server/src/jones/performance/v2Workload.test.ts",
         "apps/server/scripts/jones/v2Benchmark.test.mjs",
-        "scripts/jones/performance/current-qualification.node-test.mjs"
+        "scripts/jones/performance/current-qualification.node-test.mjs",
+        "apps/server/src/jones/platformCompatibility/rpcInitialItems.memory.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/performance/v2Workload.test.ts apps/server/scripts/jones/v2Benchmark.test.mjs",
-        "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs"
+        "node --test --test-concurrency=1 scripts/jones/performance/current-qualification.node-test.mjs",
+        "vp test run apps/server/src/jones/platformCompatibility/rpcInitialItems.memory.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "jones-performance-migration-restore",
-      "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
+      "tests": [
+        "scripts/jones/performance/migration-restore.node-test.mjs"
+      ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
       ]
@@ -840,14 +878,16 @@
         "apps/web/src/components/ServerUpdateAction.browser.test.tsx",
         "apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "apps/web/src/jones/updates/installedSourceComparison.test.ts",
-        "apps/web/src/jones/updates/installedSourceObservation.test.ts"
+        "apps/web/src/jones/updates/installedSourceObservation.test.ts",
+        "apps/mobile/src/jones/updates/environmentMaintenance.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.browser.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
-        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.test.tsx src/jones/updates/installedSourceComparison.test.ts src/jones/updates/installedSourceObservation.test.ts src/jones/fleetUpdates/sourceCurrency.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.test.tsx src/jones/updates/installedSourceComparison.test.ts src/jones/updates/installedSourceObservation.test.ts src/jones/fleetUpdates/sourceCurrency.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/mobile/src/jones/updates/environmentMaintenance.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -887,11 +927,13 @@
       "id": "jones-imported-history-custody",
       "tests": [
         "apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts",
-        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts"
+        "apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
+        "apps/server/src/project/AgentSessionImporter.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/importedHistory/ImportedApplicationAttachmentInventory.test.ts apps/server/src/jones/importedHistory/ApplicationBirth.test.ts",
-        "vp run --filter t3 typecheck"
+        "vp run --filter t3 typecheck",
+        "vp test run apps/server/src/project/AgentSessionImporter.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -932,11 +974,13 @@
         "apps/server/src/jones/runtime/RuntimeCensus.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
-        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts"
+        "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts",
+        "apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeCensus.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/orchestration-v2/ProjectionControlReads.test.ts",
-        "vp run --filter t3 typecheck"
+        "vp run --filter t3 typecheck",
+        "vp test run apps/server/src/resourceTelemetry/ResourceTelemetry.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -950,12 +994,14 @@
         "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
         "packages/contracts/src/nativeCreation.test.ts",
         "packages/contracts/src/orchestrationV2.test.ts",
-        "packages/contracts/src/rpc.test.ts"
+        "packages/contracts/src/rpc.test.ts",
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/ws.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts packages/contracts/src/nativeCreation.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/rpc.test.ts",
         "vp run --filter t3 typecheck",
-        "vp run --filter @t3tools/contracts typecheck"
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -964,11 +1010,11 @@
         "apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts",
         "apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts",
-        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/jones/platformCompatibility/project/ProjectSetupScriptRunner.test.ts",
         "apps/server/src/terminal/Manager.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts apps/server/src/project/ProjectSetupScriptRunner.test.ts apps/server/src/terminal/Manager.test.ts",
+        "vp test run apps/server/src/jones/nativeCreation/NativeWorkspacePhysicalPorts.test.ts apps/server/src/jones/nativeCreation/NativeWorkspaceSetupExecutor.test.ts apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts apps/server/src/jones/platformCompatibility/project/ProjectSetupScriptRunner.test.ts apps/server/src/terminal/Manager.test.ts",
         "vp run --filter t3 typecheck"
       ]
     },
@@ -983,13 +1029,11 @@
         "apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/importedHistory/http.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "vp test run apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/importedHistory/http.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/jones/importedHistory/ImportedHistoryPlanner.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck"
       ]
@@ -1015,15 +1059,19 @@
         "packages/contracts/src/environment.test.ts",
         "packages/contracts/src/orchestrationV2.test.ts",
         "packages/contracts/src/rpc.test.ts",
-        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts"
+        "packages/contracts/src/jones/environmentIdentity.test.ts",
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts packages/contracts/src/jones/runtimeStop.test.ts packages/client-runtime/src/operations/currentRuntimeStop.test.ts apps/web/src/hooks/useCurrentRuntimeStop.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts packages/client-runtime/src/state/orchestrationV2Projection.test.ts packages/client-runtime/src/state/threadCommands.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProjectionControlReads.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/rpc.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
+        "vp test run apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts packages/contracts/src/jones/runtimeStop.test.ts packages/client-runtime/src/operations/currentRuntimeStop.test.ts apps/web/src/hooks/useCurrentRuntimeStop.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts packages/client-runtime/src/state/orchestrationV2Projection.test.ts packages/client-runtime/src/state/threadCommands.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProjectionControlReads.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/orchestrationV2.test.ts packages/contracts/src/rpc.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict --json"
+        "node scripts/jones/check-boundary.ts --strict --json",
+        "vp test run packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/environmentIdentity.test.ts packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1053,17 +1101,20 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/EffectWorker.test.ts",
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
-        "apps/server/src/provider/ProviderInstanceRegistry.test.ts"
+        "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+        "apps/server/src/jones/providers/TextGeneration.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
+        "apps/server/src/orchestration-v2/workflowAgentTranscript.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+        "vp test run apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts apps/server/src/jones/nativeCreation/NativeCreationWorkspacePreparation.test.ts apps/server/src/jones/nativeCreation/NativeBootstrapDispatch.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/provider/ProviderInstanceRegistry.test.ts",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict --json"
+        "node scripts/jones/check-boundary.ts --strict --json",
+        "vp test run apps/server/src/jones/providers/TextGeneration.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/server/src/orchestration-v2/workflowAgentTranscript.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1124,13 +1175,15 @@
         "apps/desktop/src/preview/Manager.test.ts",
         "apps/server/src/mcp/PreviewAutomationBroker.test.ts",
         "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
-        "apps/server/src/preview/DesktopBrowserChannel.test.ts",
+        "apps/server/src/jones/platformCompatibility/preview/DesktopBrowserChannel.test.ts",
         "apps/server/src/preview/ServerBrowser.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
-        "packages/contracts/src/preview.test.ts"
+        "packages/contracts/src/preview.test.ts",
+        "packages/contracts/src/jones/previewCompatibility.test.ts"
       ],
       "commands": [
-        "vp test run apps/desktop/src/ipc/methods/preview.test.ts apps/desktop/src/preview/DesktopBrowserHost.test.ts apps/desktop/src/preview/Manager.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/preview/DesktopBrowserChannel.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/preview/SessionControl.test.ts packages/contracts/src/preview.test.ts"
+        "vp test run apps/desktop/src/ipc/methods/preview.test.ts apps/desktop/src/preview/DesktopBrowserHost.test.ts apps/desktop/src/preview/Manager.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/jones/platformCompatibility/preview/DesktopBrowserChannel.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/preview/SessionControl.test.ts packages/contracts/src/preview.test.ts",
+        "vp test run packages/contracts/src/jones/previewCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1203,10 +1256,8 @@
         "apps/server/src/jones/previewCompanion/streamCloseReason.test.ts",
         "apps/server/src/preview/ServerBrowserPage.test.ts",
         "apps/server/src/preview/ServerBrowserStream.test.ts",
-        "apps/web/src/browser/HostedBrowserWebview.browser.test.tsx",
         "apps/web/src/components/preview/PreviewView.browser.test.tsx",
         "apps/web/src/components/settings/IntegrationsSettings.logic.test.ts",
-        "apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx",
         "apps/web/src/jones/previewCompanion/controller.test.ts",
         "apps/web/src/jones/previewCompanion/guest.test.ts",
         "apps/web/src/jones/previewCompanion/inventory.test.ts",
@@ -1216,22 +1267,25 @@
         "packages/client-runtime/src/jones/previewCompanion/streamUnavailable.test.ts",
         "packages/client-runtime/src/preview/serverBrowserStream.test.ts",
         "packages/client-runtime/src/state/environmentHttpAuth.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/contracts/src/jones/previewCompanion.test.ts",
         "scripts/build-desktop-artifact.test.ts",
         "scripts/jones/preview-companion/packageVariant.test.ts",
-        "apps/server/src/persistence/AuthPairingLinks.test.ts"
+        "apps/server/src/persistence/AuthPairingLinks.test.ts",
+        "apps/server/src/preview/SessionControl.test.ts",
+        "apps/server/src/preview/ServerBrowser.test.ts",
+        "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
       ],
       "commands": [
-        "vp test run apps/desktop/src/ipc/methods/localEnvironment.test.ts apps/desktop/src/jones/previewCompanion/CompanionCdpPolicy.test.ts apps/desktop/src/jones/previewCompanion/CompanionConfig.test.ts apps/desktop/src/jones/previewCompanion/CompanionIsolation.test.ts apps/desktop/src/jones/previewCompanion/CompanionPermissions.test.ts apps/desktop/src/jones/previewCompanion/CompanionPopup.test.ts apps/desktop/src/jones/previewCompanion/CompanionUplink.test.ts apps/desktop/src/jones/previewCompanion/Startup.test.ts apps/desktop/src/jones/previewCompanion/ipcMethods.test.ts apps/desktop/src/preview/BrowserSession.test.ts apps/desktop/src/preview/CdpRelay.test.ts apps/desktop/src/settings/DesktopAppSettings.test.ts apps/desktop/src/window/DesktopWindow.test.ts apps/server/src/jones/previewCompanion/CompanionHostRegistry.test.ts apps/server/src/jones/previewCompanion/CompanionSimulator.test.ts apps/server/src/jones/previewCompanion/RenderHostSelection.test.ts apps/server/src/jones/previewCompanion/RenderPlacement.test.ts apps/server/src/jones/previewCompanion/companionCapabilities.test.ts apps/server/src/jones/previewCompanion/framing.test.ts apps/server/src/jones/previewCompanion/http.test.ts apps/server/src/jones/previewCompanion/outcome.test.ts apps/server/src/jones/previewCompanion/stream.test.ts apps/server/src/jones/previewCompanion/streamCloseReason.test.ts apps/server/src/preview/ServerBrowserPage.test.ts apps/server/src/preview/ServerBrowserStream.test.ts packages/contracts/src/jones/previewCompanion.test.ts apps/desktop/src/jones/previewCompanion/CompanionProduct.test.ts apps/desktop/src/jones/previewCompanion/CompanionProductUpdates.test.ts apps/web/src/jones/previewCompanion/controller.test.ts apps/web/src/jones/previewCompanion/guest.test.ts apps/web/src/jones/previewCompanion/inventory.test.ts apps/web/src/jones/previewCompanion/snapshot.test.ts apps/web/src/jones/previewCompanion/ticket.test.ts packages/client-runtime/src/jones/previewCompanion/http.test.ts packages/client-runtime/src/jones/previewCompanion/streamUnavailable.test.ts scripts/jones/preview-companion/packageVariant.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/environmentHttp.test.ts packages/client-runtime/src/preview/serverBrowserStream.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/browser/HostedBrowserWebview.browser.test.tsx apps/web/src/components/preview/PreviewView.browser.test.tsx apps/web/src/components/settings/IntegrationsSettings.browser.test.tsx apps/web/src/components/settings/IntegrationsSettings.logic.test.ts scripts/build-desktop-artifact.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts apps/desktop/src/app/DesktopUserDataOverride.test.ts apps/desktop/src/app/DesktopClerk.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/server/src/persistence/AuthPairingLinks.test.ts",
+        "vp test run apps/desktop/src/ipc/methods/localEnvironment.test.ts apps/desktop/src/jones/previewCompanion/CompanionCdpPolicy.test.ts apps/desktop/src/jones/previewCompanion/CompanionConfig.test.ts apps/desktop/src/jones/previewCompanion/CompanionIsolation.test.ts apps/desktop/src/jones/previewCompanion/CompanionPermissions.test.ts apps/desktop/src/jones/previewCompanion/CompanionPopup.test.ts apps/desktop/src/jones/previewCompanion/CompanionUplink.test.ts apps/desktop/src/jones/previewCompanion/Startup.test.ts apps/desktop/src/jones/previewCompanion/ipcMethods.test.ts apps/desktop/src/preview/BrowserSession.test.ts apps/desktop/src/preview/CdpRelay.test.ts apps/desktop/src/settings/DesktopAppSettings.test.ts apps/desktop/src/window/DesktopWindow.test.ts apps/server/src/jones/previewCompanion/CompanionHostRegistry.test.ts apps/server/src/jones/previewCompanion/CompanionSimulator.test.ts apps/server/src/jones/previewCompanion/RenderHostSelection.test.ts apps/server/src/jones/previewCompanion/RenderPlacement.test.ts apps/server/src/jones/previewCompanion/companionCapabilities.test.ts apps/server/src/jones/previewCompanion/framing.test.ts apps/server/src/jones/previewCompanion/http.test.ts apps/server/src/jones/previewCompanion/outcome.test.ts apps/server/src/jones/previewCompanion/stream.test.ts apps/server/src/jones/previewCompanion/streamCloseReason.test.ts apps/server/src/preview/ServerBrowserPage.test.ts apps/server/src/preview/ServerBrowserStream.test.ts packages/contracts/src/jones/previewCompanion.test.ts apps/desktop/src/jones/previewCompanion/CompanionProduct.test.ts apps/desktop/src/jones/previewCompanion/CompanionProductUpdates.test.ts apps/web/src/jones/previewCompanion/controller.test.ts apps/web/src/jones/previewCompanion/guest.test.ts apps/web/src/jones/previewCompanion/inventory.test.ts apps/web/src/jones/previewCompanion/snapshot.test.ts apps/web/src/jones/previewCompanion/ticket.test.ts packages/client-runtime/src/jones/previewCompanion/http.test.ts packages/client-runtime/src/jones/previewCompanion/streamUnavailable.test.ts scripts/jones/preview-companion/packageVariant.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/client-runtime/src/preview/serverBrowserStream.test.ts packages/client-runtime/src/state/environmentHttpAuth.test.ts apps/web/src/components/preview/PreviewView.browser.test.tsx apps/web/src/components/settings/IntegrationsSettings.logic.test.ts scripts/build-desktop-artifact.test.ts apps/desktop/src/app/DesktopPreReadyPlatform.test.ts apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts apps/desktop/src/app/DesktopUserDataOverride.test.ts apps/desktop/src/app/DesktopClerk.test.ts apps/desktop/src/app/DesktopEnvironment.test.ts apps/desktop/src/app/DesktopLinuxUrlHandler.test.ts apps/desktop/src/updates/DesktopUpdates.test.ts apps/desktop/scripts/main-process-bundle.test.mjs apps/server/src/persistence/AuthPairingLinks.test.ts",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter @t3tools/shared typecheck",
         "vp run --filter @t3tools/desktop typecheck",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "vp run --filter @t3tools/scripts typecheck"
+        "vp run --filter @t3tools/scripts typecheck",
+        "vp test run apps/server/src/preview/SessionControl.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1248,7 +1302,6 @@
         "apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts",
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
         "apps/server/src/jones/workstreams/enrollment/service.test.ts",
-        "apps/server/src/orchestration-v2/V1ImportBoundary.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
         "apps/server/src/jones/persistence/JonesTablePresence.test.ts",
@@ -1257,7 +1310,7 @@
         "apps/server/scripts/jones/currentFixtures.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/persistence/DatabaseMaintenance.test.ts apps/server/src/cli/doctor.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/orchestration-v2/V1ImportBoundary.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts apps/server/scripts/jones/currentFixtures.test.ts",
+        "vp test run apps/server/src/persistence/DatabaseMaintenance.test.ts apps/server/src/cli/doctor.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/Migrations/100_JonesNativeCreationExecution.test.ts apps/server/src/jones/persistence/Migrations/103_JonesRuntimeStop.test.ts apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts apps/server/src/jones/importedHistory/ImportedHistoryChoice.test.ts apps/server/src/jones/importedHistory/ImportedHistoryEventSink.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/jones/workstreams/enrollment/service.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/JonesTablePresence.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts apps/server/scripts/jones/currentFixtures.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
@@ -1268,7 +1321,6 @@
         "apps/web/src/jones/composer/threadMentionTrigger.test.ts",
         "apps/web/src/composer-logic.test.ts",
         "packages/shared/src/composerTrigger.test.ts",
-        "packages/client-runtime/src/composerThreadItems.test.ts",
         "packages/client-runtime/src/jones/composerThreadMatching.test.ts",
         "apps/web/src/composer-editor-mentions.test.ts",
         "packages/shared/src/composerInlineTokens.test.ts",
@@ -1278,7 +1330,7 @@
         "apps/mobile/src/features/threads/use-composer-command-menu.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/composer/threadMentionTrigger.test.ts apps/web/src/composer-logic.test.ts packages/shared/src/composerTrigger.test.ts packages/client-runtime/src/composerThreadItems.test.ts packages/client-runtime/src/jones/composerThreadMatching.test.ts apps/web/src/composer-editor-mentions.test.ts packages/shared/src/composerInlineTokens.test.ts apps/web/src/composer-rich-text-doc.test.ts scripts/jones/check-boundary.test.ts apps/web/src/composer-rich-text.test.ts apps/mobile/src/features/threads/use-composer-command-menu.test.ts",
+        "vp test run apps/web/src/jones/composer/threadMentionTrigger.test.ts apps/web/src/composer-logic.test.ts packages/shared/src/composerTrigger.test.ts packages/client-runtime/src/jones/composerThreadMatching.test.ts apps/web/src/composer-editor-mentions.test.ts packages/shared/src/composerInlineTokens.test.ts apps/web/src/composer-rich-text-doc.test.ts scripts/jones/check-boundary.test.ts apps/web/src/composer-rich-text.test.ts apps/mobile/src/features/threads/use-composer-command-menu.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
@@ -1309,7 +1361,9 @@
     },
     {
       "id": "jones-desktop-workstreams-shell",
-      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
+      "tests": [
+        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
+      ],
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
@@ -1318,14 +1372,13 @@
     {
       "id": "jones-local-desktop-update",
       "tests": [
-        "apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx",
+        "apps/web/src/jones/updates/SidebarUpdatePill.test.tsx",
         "apps/desktop/src/jones/updates/preloadInstall.test.ts",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
-        "apps/web/src/components/desktopUpdate.logic.test.ts",
-        "apps/web/src/components/desktopUpdate.toast.test.tsx"
+        "apps/web/src/components/desktopUpdate.logic.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/sidebar/SidebarUpdatePill.test.tsx apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts apps/web/src/components/desktopUpdate.toast.test.tsx",
+        "vp test run apps/web/src/jones/updates/SidebarUpdatePill.test.tsx apps/desktop/src/jones/updates/preloadInstall.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/components/desktopUpdate.logic.test.ts",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/desktop typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
@@ -1335,9 +1388,8 @@
       "id": "jones-agent-app-identity",
       "tests": [
         "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
-        "packages/provider-core/src/server/runtimeInstructions.test.ts",
         "apps/server/src/provider/CodexDeveloperInstructions.test.ts",
-        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
         "apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts",
         "packages/contracts/src/jones/organizationMetadata.test.ts",
         "packages/provider-pi/src/server/mcpExtensionSource.test.ts",
@@ -1349,7 +1401,7 @@
         "apps/server/src/jones/nativeCreation/NativeCreationProviderExecutor.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts packages/provider-core/src/server/runtimeInstructions.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts packages/provider-pi/src/server/mcpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts packages/provider-pi/src/server/mcpInjection.test.ts",
+        "vp test run apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts apps/server/src/provider/CodexDeveloperInstructions.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts packages/provider-pi/src/server/mcpExtensionSource.test.ts apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts packages/provider-pi/src/server/mcpInjection.test.ts",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "vp test run apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts -t \"matches the read-only allowlist\"",
@@ -1395,7 +1447,11 @@
         "apps/server/src/observability/DefectReporter.test.ts",
         "packages/effect-acp/src/protocol.test.ts",
         "packages/effect-acp/src/client.test.ts",
-        "packages/effect-acp/src/agent.test.ts"
+        "packages/effect-acp/src/agent.test.ts",
+        "packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts",
+        "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts"
       ],
       "commands": [
         "cd packages/client-runtime && vp test run src/rpc/session.test.ts src/rpc/client.test.ts src/connection/outdatedHostUpdate.test.ts src/connection/supervisor.test.ts --maxWorkers=1",
@@ -1403,7 +1459,10 @@
         "cd packages/effect-acp && vp test run src/protocol.test.ts src/client.test.ts src/agent.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp lint packages/client-runtime/src/rpc/session.test.ts",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/ws.test.ts apps/server/src/relay/AgentAwarenessRelay.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/rpcObservationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1444,11 +1503,13 @@
         "apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts",
         "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
         "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
-        "packages/contracts/src/ipc.test.ts"
+        "packages/contracts/src/jones/ipcUpdateReports.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
-        "vp test run packages/client-runtime/src/platform/storageDocument.test.ts packages/client-runtime/src/connection/registry.test.ts apps/web/src/connection/storage.test.ts apps/mobile/src/connection/storage.test.ts apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx packages/contracts/src/ipc.test.ts"
+        "vp test run packages/client-runtime/src/platform/storageDocument.test.ts packages/client-runtime/src/connection/registry.test.ts apps/web/src/connection/storage.test.ts apps/mobile/src/connection/storage.test.ts apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx packages/contracts/src/jones/ipcUpdateReports.test.ts",
+        "vp test run apps/server/src/environment/ServerEnvironment.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1480,10 +1541,10 @@
         "scripts/jones/server-shard-weights/aggregate-cli.test.ts",
         "scripts/jones/ci-test-progress-reporter.test.ts",
         "apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts",
-        "apps/server/src/testUtils/weightedShardSequencer.test.ts"
+        "apps/server/src/jones/platformCompatibility/testUtils/weightedShardSequencer.test.ts"
       ],
       "commands": [
-        "vp test run scripts/jones/server-shard-weights/envelope.test.ts scripts/jones/server-shard-weights/capture.test.ts scripts/jones/server-shard-weights/aggregate.test.ts scripts/jones/server-shard-weights/select.test.ts scripts/jones/server-shard-weights/aggregate-cli.test.ts scripts/jones/ci-test-progress-reporter.test.ts apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts apps/server/src/testUtils/weightedShardSequencer.test.ts",
+        "vp test run scripts/jones/server-shard-weights/envelope.test.ts scripts/jones/server-shard-weights/capture.test.ts scripts/jones/server-shard-weights/aggregate.test.ts scripts/jones/server-shard-weights/select.test.ts scripts/jones/server-shard-weights/aggregate-cli.test.ts scripts/jones/ci-test-progress-reporter.test.ts apps/server/src/jones/testShards/weightedShardSequencer.jones.test.ts apps/server/src/jones/platformCompatibility/testUtils/weightedShardSequencer.test.ts",
         "vp run --filter @t3tools/scripts typecheck",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
@@ -1495,14 +1556,14 @@
         "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
         "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
         "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
-        "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx",
+        "apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx",
         "apps/server/src/provider/providerMaintenanceRunner.test.ts",
         "packages/provider-core/src/server/maintenanceResolver.test.ts",
         "apps/web/src/components/sidebar/updateEverything.logic.test.ts",
         "apps/mobile/src/features/settings/environment-maintenance.test.ts"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck"
@@ -1564,21 +1625,24 @@
       "tests": [
         "packages/contracts/src/pullRequestRateLimit.test.ts",
         "apps/server/src/pullRequest/PullRequestService.test.ts",
-        "apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts",
         "packages/client-runtime/src/state/pullRequests.test.ts",
-        "apps/web/src/hooks/useLiveRefresh.test.ts",
+        "apps/web/src/jones/pullRequestReads/useLiveRefresh.test.ts",
         "apps/web/src/state/query.test.ts",
-        "apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx",
+        "apps/web/src/jones/pullRequestReads/PullRequestDetailPanel.browser.test.tsx",
         "apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx",
         "packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts",
         "packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts",
         "packages/source-control-github/src/server/GitHubRest.test.ts",
         "packages/source-control-github/src/server/GitHubQuota.test.ts",
-        "packages/source-control-core/src/server/SourceControlRateLimit.test.ts"
+        "packages/source-control-core/src/server/SourceControlRateLimit.test.ts",
+        "packages/client-runtime/src/jones/pullRequestReadCompatibility.test.ts",
+        "apps/server/src/vcs/GitVcsDriver.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/pullRequestRateLimit.test.ts apps/server/src/pullRequest/PullRequestService.test.ts apps/server/src/pullRequest/PullRequestProviderRateLimit.test.ts packages/client-runtime/src/state/pullRequests.test.ts apps/web/src/hooks/useLiveRefresh.test.ts apps/web/src/state/query.test.ts apps/web/src/components/pullRequest/PullRequestDetailPanel.browser.test.tsx apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts packages/source-control-github/src/server/GitHubRest.test.ts packages/source-control-github/src/server/GitHubQuota.test.ts packages/source-control-core/src/server/SourceControlRateLimit.test.ts --maxWorkers=1",
-        "node scripts/jones/check-boundary.ts --strict"
+        "vp test run packages/contracts/src/pullRequestRateLimit.test.ts apps/server/src/pullRequest/PullRequestService.test.ts packages/client-runtime/src/state/pullRequests.test.ts apps/web/src/jones/pullRequestReads/useLiveRefresh.test.ts apps/web/src/state/query.test.ts apps/web/src/jones/pullRequestReads/PullRequestDetailPanel.browser.test.tsx apps/web/src/jones/pullRequestReads/PullRequestReadPauseBanner.test.tsx packages/source-control-github/src/jones/qualifiedHeadDiscovery.test.ts packages/source-control-github/src/server/GitHubSourceControlProvider.test.ts packages/source-control-github/src/server/GitHubRest.test.ts packages/source-control-github/src/server/GitHubQuota.test.ts packages/source-control-core/src/server/SourceControlRateLimit.test.ts --maxWorkers=1",
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/vcs/GitVcsDriver.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/pullRequestReadCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1595,17 +1659,21 @@
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts",
         "apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts",
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts",
+        "apps/server/src/terminal/Manager.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/ordinaryCheckout/CheckoutTarget.test.ts apps/server/src/jones/ordinaryCheckout/CheckoutTargetNode.test.ts apps/server/src/jones/ordinaryCheckout/OrdinaryCheckout.test.ts apps/server/src/jones/persistence/Migrations/109_JonesOrdinaryCheckoutLifecycle.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/ordinaryCheckout/CheckoutConflictIntegration.test.ts apps/server/src/jones/ordinaryCheckout/CheckoutIntent.integration.test.ts apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/terminal/Manager.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
       "id": "jones-runtime-operation-permit",
-      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"],
+      "tests": [
+        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
@@ -1620,11 +1688,11 @@
         "apps/server/src/auth/RpcAuthorization.test.ts",
         "apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts",
         "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
-        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts",
         "packages/contracts/src/rpc.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/runtime/ProviderConversationReselection.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts apps/server/src/observability/RpcInstrumentation.test.ts packages/contracts/src/rpc.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/runtime/ProviderConversationReselection.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts packages/contracts/src/rpc.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/contracts typecheck",
         "node scripts/jones/check-boundary.ts --strict"
@@ -1643,7 +1711,10 @@
         "apps/web/src/jones/threadStatusFilter/model.test.ts",
         "packages/contracts/src/environment.test.ts",
         "packages/contracts/src/threadCorpusProtocol.test.ts",
-        "apps/server/src/orchestration-v2/http.test.ts"
+        "apps/server/src/orchestration-v2/http.test.ts",
+        "packages/client-runtime/src/jones/threadShellCompatibility.test.ts",
+        "packages/contracts/src/jones/environmentIdentity.test.ts",
+        "packages/contracts/src/jones/threadMessageMetadata.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/threadAttention.test.ts packages/shared/src/jones/threadAttention.test.ts apps/server/src/jones/threadAttention.test.ts packages/client-runtime/src/state/threadShell.test.ts packages/client-runtime/src/state/entities.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/threadStatusFilter/model.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/threadCorpusProtocol.test.ts apps/server/src/orchestration-v2/http.test.ts --maxWorkers=1",
@@ -1653,7 +1724,9 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/server typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/contracts/src/jones/threadMessageMetadata.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/threadShellCompatibility.test.ts packages/contracts/src/jones/environmentIdentity.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1666,19 +1739,20 @@
         "apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts",
         "apps/web/src/components/chat/workspaceFileDrop.test.ts",
         "apps/web/src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx",
-        "apps/web/src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
+        "apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
         "apps/web/src/composer-logic.test.ts",
-        "apps/mobile/src/features/threads/pendingUserInputLayout.test.ts",
         "apps/web/src/reactCompilerCoverage.test.ts"
       ],
       "commands": [
         "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/jones/questionAnswer/'",
         "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
-        "vp test run apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts apps/web/src/components/chat/workspaceFileDrop.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/composer-logic.test.ts apps/web/src/components/chat/composerSubmission.test.ts apps/web/src/components/chat/composerTypingGuard.test.ts apps/web/src/questionAttachments.test.ts apps/web/src/components/ChatView.logic.test.ts apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts apps/mobile/src/jones/questionAnswer/composerLayout.test.ts apps/mobile/src/features/threads/pendingUserInputLayout.test.ts --maxWorkers=1",
+        "vp test run apps/web/src/jones/questionAnswer/questionAnswerCard.test.ts apps/web/src/components/chat/workspaceFileDrop.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/composer-logic.test.ts apps/web/src/components/chat/composerSubmission.test.ts apps/web/src/components/chat/composerTypingGuard.test.ts apps/web/src/questionAttachments.test.ts apps/web/src/components/ChatView.logic.test.ts apps/mobile/src/jones/questionAnswer/composerDispatch.test.ts apps/mobile/src/jones/questionAnswer/composerLayout.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerCard.browser.test.tsx src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx src/components/chat/ComposerPendingUserInputPanel.navigation.browser.test.tsx src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --project browser --maxWorkers=1",
+        "vp test run apps/web/src/jones/questionAnswer/ComposerPendingUserInputPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1736,7 +1810,10 @@
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
-        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
+        "packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts",
+        "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts",
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementNotifications/ --maxWorkers=1",
@@ -1754,7 +1831,10 @@
         "vp run --filter t3 typecheck",
         "vp test run packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts --maxWorkers=1",
         "vp test run apps/server/scripts/jones/currentFixtures.test.ts --maxWorkers=1",
-        "vp test run packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1777,22 +1857,24 @@
         "packages/contracts/src/jones/delegatedTaskWorkspace.test.ts",
         "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
-        "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
-        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts",
         "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
         "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/ThreadStop.test.ts",
-        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts"
+        "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/delegatedTaskWorkspace.test.ts packages/contracts/src/orchestratorMcp.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
+        "vp test run packages/contracts/src/jones/delegatedTaskWorkspace.test.ts packages/contracts/src/orchestratorMcp.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
         "vp test run apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts --maxWorkers=1",
         "vp test run apps/server/src/orchestration-v2/ThreadLaunchService.test.ts -t \"delegated worktrees|cancels tracked setup|top-level existing-worktree setup running in the background after Stop\" --maxWorkers=1",
         "vp test run apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts --maxWorkers=1",
         "vp test run apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter t3 --concurrency-limit 1 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1823,11 +1905,16 @@
     },
     {
       "id": "jones-scheduled-wake-coalescing",
-      "tests": ["apps/server/src/jones/scheduledTasks/queuedWake.test.ts"],
+      "tests": [
+        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
+        "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/scheduledTasks/ScheduledTaskService.test.ts"
+      ],
       "commands": [
         "vp test run apps/server/src/jones/scheduledTasks/queuedWake.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts apps/server/src/scheduledTasks/ScheduledTaskService.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1847,7 +1934,8 @@
         "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
         "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
-        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts"
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/queuedSteerBatch.test.ts packages/shared/src/jones/queuedSteerBatch.test.ts packages/client-runtime/src/jones/queue/commands.test.ts packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -1858,7 +1946,8 @@
         "vp run lint:mobile",
         "node scripts/jones/check-boundary.ts --strict",
         "vp run --filter @t3tools/web test --project unit src/reactCompilerCoverage.test.ts -t \"QueuedRunsControl|useQueuedSteerBatch\"",
-        "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\""
+        "vp run --filter @t3tools/mobile test src/reactCompilerCoverage.test.ts -t \"jones/queue/QueuedSteerBatchAction\"",
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1872,7 +1961,7 @@
         "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/mcp/toolkits/project/handlers.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
         "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
@@ -1886,17 +1975,19 @@
         "packages/provider-acp/src/server/runtimeModel.test.ts",
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
-        "apps/server/src/jones/persistence/Migrations.test.ts"
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/clientLaunch.test.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/ws.ts packages/contracts/src/jones/clientLaunch.ts packages/contracts/src/jones/clientLaunch.test.ts packages/contracts/src/index.ts packages/contracts/src/orchestratorMcp.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/persistence/JonesMigrations.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/mcp/toolkits/project/tools.ts apps/server/src/mcp/toolkits/project/handlers.ts apps/server/src/mcp/McpToolAccess.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts packages/shared/src/t3McpToolPresentation.ts packages/shared/src/t3McpToolPresentation.test.ts packages/client-runtime/src/t3ToolSummary.ts packages/client-runtime/src/t3ToolSummary.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
+        "vp test run packages/contracts/src/jones/clientLaunch.test.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/ws.ts packages/contracts/src/jones/clientLaunch.ts packages/contracts/src/jones/clientLaunch.test.ts packages/contracts/src/index.ts packages/contracts/src/orchestratorMcp.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/persistence/JonesMigrations.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/mcp/toolkits/project/tools.ts apps/server/src/mcp/toolkits/project/handlers.ts apps/server/src/mcp/McpToolAccess.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts packages/shared/src/t3McpToolPresentation.ts packages/shared/src/t3McpToolPresentation.test.ts packages/client-runtime/src/t3ToolSummary.ts packages/client-runtime/src/t3ToolSummary.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
         "vp run --filter @t3tools/contracts --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "vp run --filter @t3tools/shared test src/t3McpToolPresentation.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime test src/t3ToolSummary.test.ts src/work-log/presentation.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/provider-acp test src/server/runtimeModel.test.ts --maxWorkers=1",
-        "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --concurrency-limit 1 typecheck"
+        "vp run --filter @t3tools/shared --filter @t3tools/client-runtime --concurrency-limit 1 typecheck",
+        "vp test run packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1909,12 +2000,12 @@
         "apps/mobile/src/state/use-selected-thread-git-state.test.tsx",
         "apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts",
         "apps/server/src/jones/requestEconomy/foregroundReads.test.ts",
-        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts",
         "packages/shared/src/httpObservability.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/vcs/VcsProcess.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts apps/server/src/jones/requestEconomy/bitbucketAuthProbe.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/observability/RpcInstrumentation.test.ts packages/shared/src/httpObservability.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/requestEconomy/foregroundReads.test.ts apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts packages/shared/src/httpObservability.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web test src/components/GitActionsControl.browser.test.tsx --maxWorkers=1",
         "vp run --filter @t3tools/mobile test src/state/use-selected-thread-git-state.test.tsx --maxWorkers=1",
         "vp run test:perf:v2-wire",
@@ -1967,13 +2058,17 @@
         "apps/server/src/orchestration-v2/providerGoalHttp.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
         "apps/server/src/mcp/toolkits/core.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
-        "packages/shared/src/t3McpToolPresentation.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "apps/server/src/jones/goals/stopTarget.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadStop.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/goals/GoalStartDispatch.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/goals/GoalStartDispatch.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter @t3tools/shared --filter t3 --concurrency-limit 1 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/server/src/jones/goals/stopTarget.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/ThreadStop.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1986,21 +2081,21 @@
         "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
         "packages/client-runtime/src/state/peerLinks.test.ts",
         "packages/client-runtime/src/state/commandPermissions.test.ts",
-        "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
+        "apps/mobile/src/jones/linkedEnvironments/threadAgentsPresentation.test.ts",
         "apps/mobile/src/state/thread-order.test.ts",
         "apps/mobile/src/features/home/useThreadListActions.test.ts",
         "apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
         "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
         "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
-        "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
-        "apps/server/src/cli/sshHelper.test.ts"
+        "packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/linkOrigin.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts packages/client-runtime/src/state/peerLinks.test.ts packages/client-runtime/src/state/commandPermissions.test.ts apps/mobile/src/features/threads/threadAgentsPresentation.test.ts apps/mobile/src/state/thread-order.test.ts apps/mobile/src/features/home/useThreadListActions.test.ts apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.activity.test.ts apps/server/src/cli/sshHelper.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/web test src/components/ThreadNotificationCoordinator.badge.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx src/components/ThreadNotificationCoordinator.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/linkOrigin.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts packages/client-runtime/src/state/peerLinks.test.ts packages/client-runtime/src/state/commandPermissions.test.ts apps/mobile/src/jones/linkedEnvironments/threadAgentsPresentation.test.ts apps/mobile/src/state/thread-order.test.ts apps/mobile/src/features/home/useThreadListActions.test.ts apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.activity.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/ThreadNotificationCoordinator.badge.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --filter t3 --concurrency-limit 1 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run packages/client-runtime/src/jones/commandPermissionCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2008,15 +2103,14 @@
       "tests": [
         "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
-        "packages/contracts/src/environmentHttp.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/http.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/target.test.ts",
         "apps/web/src/jones/remoteAdmission/presentation.test.ts",
-        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2053,11 +2147,10 @@
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
-        "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts",
         "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/peerPersistence/PeerPersistence.test.ts apps/server/src/peer/PeerLinks.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts apps/server/src/persistence/reconcileV2PreviewMigration.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/jones/peerPersistence/PeerPersistence.test.ts apps/server/src/peer/PeerLinks.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/persistence/reconcileV2PreviewMigration.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2065,13 +2158,13 @@
       "tests": [
         "packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts",
         "packages/provider-core/src/server/textGenerationPrompts.test.ts",
-        "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "apps/server/src/jones/providers/TextGeneration.test.ts",
         "apps/server/src/textGeneration/ClaudeTextGeneration.test.ts",
         "apps/server/src/textGeneration/CodexTextGeneration.test.ts",
         "apps/server/src/git/GitManager.test.ts"
       ],
       "commands": [
-        "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/textGeneration/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/jones/providers/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck"
       ]
     },
@@ -2082,10 +2175,10 @@
         "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
         "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
         "packages/shared/src/t3McpToolPresentation.test.ts",
-        "packages/provider-core/src/server/orchestrationInstructions.test.ts"
+        "packages/provider-core/src/jones/orchestrationInstructions.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/shared typecheck",
@@ -2100,7 +2193,6 @@
         "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
         "apps/web/src/pendingUserInput.test.ts",
         "apps/web/src/lib/composerContextRecords.test.ts",
-        "apps/web/src/lib/composerContextReferences.test.ts",
         "apps/web/src/composerDraftStore.test.ts",
         "packages/shared/src/jones/threadReferenceProjection.test.ts",
         "packages/shared/src/composerContextReferences.test.ts",
@@ -2111,12 +2203,12 @@
         "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
         "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
         "apps/server/src/auth/RpcAuthorization.test.ts",
-        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts",
         "apps/web/src/components/chat/pendingDraftWork.test.ts",
         "packages/contracts/src/composerContext.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/lib/composerContextRecords.test.ts apps/web/src/lib/composerContextReferences.test.ts apps/web/src/composerDraftStore.test.ts packages/shared/src/jones/threadReferenceProjection.test.ts packages/shared/src/composerContextReferences.test.ts packages/contracts/src/jones/threadReferenceExcerpt.test.ts packages/shared/src/jones/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts apps/web/src/jones/threadReferenceExcerpt/capture.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/observability/RpcInstrumentation.test.ts apps/web/src/components/chat/pendingDraftWork.test.ts packages/contracts/src/composerContext.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/lib/composerContextRecords.test.ts apps/web/src/composerDraftStore.test.ts packages/shared/src/jones/threadReferenceProjection.test.ts packages/shared/src/composerContextReferences.test.ts packages/contracts/src/jones/threadReferenceExcerpt.test.ts packages/shared/src/jones/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts apps/web/src/jones/threadReferenceExcerpt/capture.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/jones/platformCompatibility/observability/RpcInstrumentation.test.ts apps/web/src/components/chat/pendingDraftWork.test.ts packages/contracts/src/composerContext.test.ts --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/(jones/(questionAnswer|threadReferenceExcerpt)/|components/chat/(ChatComposer|usePendingThreadRequests))'",
         "vp run --filter @t3tools/web typecheck",

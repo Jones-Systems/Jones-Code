@@ -104,7 +104,8 @@
     "apps/server/src/jones/updates/sourceRelation.ts",
     "apps/server/src/jones/updates/sourceRelation.test.ts",
     "apps/web/src/jones/updates/installedSourceObservation.ts",
-    "apps/web/src/jones/updates/installedSourceObservation.test.ts"
+    "apps/web/src/jones/updates/installedSourceObservation.test.ts",
+    "apps/desktop/src/jones/updates/updateChannels.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -117,11 +118,9 @@
     "apps/desktop/src/updates/DesktopRemoteUpdates.test.ts",
     "apps/desktop/src/updates/DesktopRemoteUpdates.ts",
     "apps/desktop/src/updates/DesktopUpdates.ts",
-    "apps/desktop/src/updates/updateChannels.test.ts",
     "apps/desktop/src/updates/updateChannels.ts",
     "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
     "packages/contracts/package.json",
-    "packages/contracts/src/ipc.test.ts",
     "packages/contracts/src/resourceTelemetry.ts",
     "packages/shared/package.json",
     "scripts/build-desktop-artifact.ts",
@@ -222,7 +221,9 @@
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.ts",
     "apps/server/src/jones/cloud/qualifiedWriterObserverSocket.test.ts",
     "apps/server/src/jones/cloud/qualifiedLinuxLease.ts",
-    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts"
+    "apps/server/src/jones/cloud/qualifiedLinuxLease.test.ts",
+    "apps/desktop/src/updates/updateChannels.test.ts",
+    "packages/contracts/src/ipc.test.ts"
   ],
   "allowedImports": [
     {
