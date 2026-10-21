@@ -103,10 +103,10 @@ export const makePendingWebhookRuns = Effect.gen(function* () {
    * a run whose dispatch landed before the stop is not dispatched again. A pass that cannot read
    * the records fails, and the next tick tries again.
    */
-  const recover = <E>(input: {
-    readonly findTask: (id: ScheduledTaskId) => Effect.Effect<ScheduledTask | null, E>;
+  const recover = <FindError, RunError>(input: {
+    readonly findTask: (id: ScheduledTaskId) => Effect.Effect<ScheduledTask | null, FindError>;
     readonly skip: (deliveryId: string, reason: string) => Effect.Effect<void>;
-    readonly run: (task: ScheduledTask, deliveryId: string, prompt: string) => Effect.Effect<void>;
+    readonly run: (task: ScheduledTask, deliveryId: string, prompt: string) => Effect.Effect<void, RunError>;
   }) =>
     Effect.gen(function* () {
       if (!(yield* present)) return;

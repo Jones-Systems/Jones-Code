@@ -302,7 +302,7 @@ interface ServerTab {
   readonly control: SessionControl;
   agentOperating: boolean;
   fileChooserIntercepted: boolean;
-  readonly onFileChooser: (chooser: FileChooser) => void;
+  readonly onFileChooser: (chooser: FileChooser) => Promise<void>;
 
   readonly isolatedContext: boolean;
   /**
@@ -821,7 +821,7 @@ const make = Effect.gen(function* () {
       control,
       agentOperating: false,
       fileChooserIntercepted: false,
-      onFileChooser: (chooser) => void offerFileChooser(tab, chooser),
+      onFileChooser: (chooser) => offerFileChooser(tab, chooser),
       isolatedContext,
       desktop:
         desktop === null

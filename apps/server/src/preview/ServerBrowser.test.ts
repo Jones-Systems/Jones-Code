@@ -14,6 +14,7 @@ import {
   type PreviewAutomationStatus,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -322,6 +323,19 @@ const ready = Effect.gen(function* () {
   const tabId = PreviewTabId.make(opened.tabId!);
   return { browser, broker, tabId };
 });
+const stallViewer = (
+  viewer: ServerBrowser.ServerBrowserViewer,
+  item: ServerBrowser.ServerBrowserViewerOutput,
+) => {
+  // The real attachViewer owner returns this queue's read handle. Check its runtime
+  // write capability before filling the synthetic backlog; do not cast a dequeue.
+  const output = viewer.output;
+  if (!Queue.isQueue<ServerBrowser.ServerBrowserViewerOutput, never>(output)) {
+    throw new Error("Expected the server-owned viewer output queue");
+  }
+  while (Queue.offerUnsafe(output, item));
+};
+
 const viewerInput = (tabId: string, canOperate: boolean) => ({
   threadId: scope.thread.threadId,
   tabId,
@@ -749,13 +763,12 @@ it.live("a popup becomes the agent's own tab and keeps its opener page", () =>
       const { broker, tabId } = yield* ready;
       const opener = contexts[0]!.page;
       const popup = makeContext();
-      opener.emit("popup", popup.page);
       const manager = yield* Manager.PreviewManager;
-      let sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
-      while (sessions.length < 2) {
-        yield* Effect.sleep("5 millis");
-        sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
-      }
+      const events = yield* manager.subscribeEvents;
+      opener.emit("popup", popup.page);
+      let event = yield* PubSub.take(events);
+      while (event.type !== "opened" || event.tabId === tabId) event = yield* PubSub.take(events);
+      const sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
       const popupTab = sessions.find((session) => session.tabId !== tabId)!;
       const opened = sessions.find((session) => session.tabId === tabId)!;
       expect(popupTab).toMatchObject({ automationOwner: opened.automationOwner, reveal: false });
@@ -775,8 +788,9 @@ it.live("a popup becomes the agent's own tab and keeps its opener page", () =>
       expect(opener.goto).not.toHaveBeenCalled();
       expect(opener.close).not.toHaveBeenCalled();
       yield* Effect.promise(() => popup.page.close());
-      while ((yield* manager.list({ threadId: scope.thread.threadId })).sessions.length > 1) {
-        yield* Effect.sleep("5 millis");
+      let closed = yield* PubSub.take(events);
+      while (closed.type !== "closed" || closed.tabId !== popupTab.tabId) {
+        closed = yield* PubSub.take(events);
       }
     }),
   ).pipe(Effect.provide(layer)),
@@ -1108,7 +1122,7 @@ it.live("a file picker replaces a stalled viewer backlog instead of being droppe
       const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
       yield* viewer.input({ type: "takeControl" });
       const accept = Promise.withResolvers<string>();
-      page.emit("filechooser", {
+      const offered = page.emitAsync("filechooser", {
         isMultiple: () => false,
         element: () => ({ getAttribute: () => accept.promise }),
         setFiles: async () => {},
@@ -1116,7 +1130,7 @@ it.live("a file picker replaces a stalled viewer backlog instead of being droppe
       yield* Queue.clear(viewer.output);
       stallViewer(viewer, { _tag: "viewport", width: 1, height: 1 });
       accept.resolve(".csv");
-      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+      yield* Effect.promise(() => offered);
       expect(yield* Queue.clear(viewer.output)).toEqual([
         expect.objectContaining({ _tag: "fileChooser", accept: ".csv" }),
       ]);
@@ -1193,22 +1207,20 @@ it.live("an agent answers the page's file picker or sets files on a file input",
         _tag: "PreviewAutomationExecutionError",
       });
       const setFiles = vi.fn(async (_files: unknown) => {});
-      page.emit("filechooser", {
-        isMultiple: () => false,
-        element: () => ({ getAttribute: async () => ".csv" }),
-        setFiles,
-      });
+      yield* Effect.promise(() =>
+        page.emitAsync("filechooser", {
+          isMultiple: () => false,
+          element: () => ({ getAttribute: async () => ".csv" }),
+          setFiles,
+        }),
+      );
       const status = broker.invoke<PreviewAutomationStatus>({
         scope,
         tabId,
         operation: "status",
         input: {},
       });
-      let opened = yield* status;
-      while (!opened.fileChooser) {
-        yield* Effect.sleep("5 millis");
-        opened = yield* status;
-      }
+      const opened = yield* status;
       expect(opened.fileChooser).toEqual({ multiple: false, accept: ".csv" });
       yield* Effect.flip(upload({ paths: ["/tmp/a.csv", "/tmp/b.csv"] }));
       yield* upload({ paths: ["/tmp/a.csv"] });

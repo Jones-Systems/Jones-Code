@@ -242,10 +242,8 @@ function flushInbound(): void {
     }
     const message = inboundMessage(frame);
     if (stopped || message === undefined) return;
-    // The cursor records validated replay entries, not consumer completion.
-    // Publish it before the answer can let the client close this process.
-    advance();
-    send(message);
+    cursor += 1;
+    messages.push(message);
   }
   if (!stopped) writeStatus();
   messages.forEach(send);

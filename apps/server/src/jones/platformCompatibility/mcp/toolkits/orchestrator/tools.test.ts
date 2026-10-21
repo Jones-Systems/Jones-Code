@@ -1,8 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
 import { Tool } from "effect/ai";
 
-import { CreateThreadsTool, DelegateTaskTool, OrchestratorToolkit, ThreadUpdateTool } from "../../../../../mcp/toolkits/orchestrator/tools.ts";
+import { OrchestratorToolkit } from "../../../../../mcp/toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "../../../../../mcp/toolkits/project/tools.ts";
+
+const CreateThreadsTool = OrchestratorToolkit.tools.create_threads;
+const DelegateTaskTool = OrchestratorToolkit.tools.delegate_task;
+const ThreadUpdateTool = OrchestratorToolkit.tools.t3_thread_update;
 
 describe("orchestrator MCP tool guidance", () => {
   it("discovers self settlement with a required replay key and no target selector", () => {

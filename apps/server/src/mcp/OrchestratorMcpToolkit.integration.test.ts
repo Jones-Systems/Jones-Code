@@ -1,3 +1,5 @@
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as PubSub from "effect/PubSub";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
@@ -34,8 +36,23 @@ import {
   type ScheduledTask,
   RuntimeRequestId,
   TurnItemId,
+  IsoDateTime,
+  type OrchestrationV2ProviderCapabilities,
+  type OrchestrationV2ProviderSession,
+  type OrchestrationV2ProviderThread,
+  OrchestratorMcpCreateThreadsResult,
+  OrchestratorMcpTaskCancelResult,
+  OrchestratorMcpThreadListResult,
+  OrchestratorMcpThreadWaitResult,
+  ProviderThreadId,
+  ProviderTurnId,
+  ScheduledTaskId,
+  type ScheduledTaskUpsertInput,
+  ThreadMetadataMcpUpdateResult,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Queue from "effect/Queue";
+import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -116,7 +133,7 @@ const delegatedTaskStatusTranscriptFile = new URL(
 );
 
 const readDelegatedTaskStatusTranscript = Effect.fn("readDelegatedTaskStatusTranscript")(function* (
-  followupResult: string = queuedFollowupResult,
+  followupResult: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(
@@ -155,6 +172,332 @@ function makeProviderSnapshot(input: {
     skills: [],
   };
 }
+
+const declaredFailure = (result: McpSchema.CallToolResult): unknown => {
+  const text = result.content[0];
+  return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
+};
+
+const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
+
+const claudeModel = "claude-sonnet-4-6";
+
+const createdThreadPrompt = "Complete the newly created ordinary thread.";
+
+const decodeCreateThreadsResult = Schema.decodeUnknownEffect(OrchestratorMcpCreateThreadsResult);
+
+const decodeTaskCancelResult = Schema.decodeUnknownEffect(OrchestratorMcpTaskCancelResult);
+
+const decodeThreadListResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadListResult);
+
+const decodeThreadReadResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadReadResult);
+
+const decodeThreadWaitResult = Schema.decodeUnknownEffect(OrchestratorMcpThreadWaitResult);
+
+const decodeThreadUpdateResult = Schema.decodeUnknownEffect(ThreadMetadataMcpUpdateResult);
+
+const claudeSelection = {
+  instanceId: claudeInstanceId,
+  model: claudeModel,
+} satisfies ModelSelection;
+
+interface CapturedTurn {
+  readonly instanceId: ProviderInstanceId;
+  readonly threadId: ThreadId;
+  readonly text: string;
+}
+
+function unsupported(driver: ProviderDriverKind, detail: string) {
+  return Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({ driver, detail }));
+}
+
+function makeDeterministicAdapter(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly driver: ProviderDriverKind;
+  readonly capabilities: OrchestrationV2ProviderCapabilities;
+  readonly capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>;
+  readonly shouldComplete: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) => boolean;
+  readonly terminalGate?: (
+    turn: ProviderAdapter.ProviderAdapterV2TurnInput,
+  ) => Deferred.Deferred<void> | undefined;
+  readonly response: (turn: ProviderAdapter.ProviderAdapterV2TurnInput) => string;
+}): ProviderAdapter.ProviderAdapterV2["Service"] {
+  return {
+    instanceId: input.instanceId,
+    driver: input.driver,
+    getCapabilities: () => Effect.succeed(input.capabilities),
+    planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
+    openSession: (sessionInput) =>
+      Effect.gen(function* () {
+        const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+        const now = yield* DateTime.now;
+        const providerSession: OrchestrationV2ProviderSession = {
+          id: sessionInput.providerSessionId,
+          driver: input.driver,
+          providerInstanceId: input.instanceId,
+          status: "ready",
+          cwd: sessionInput.runtimePolicy.cwd ?? process.cwd(),
+          model: sessionInput.modelSelection.model,
+          capabilities: input.capabilities,
+          createdAt: now,
+          updatedAt: now,
+          lastError: null,
+        };
+
+        const publish = (providerEvents: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+          Effect.forEach(providerEvents, (event) => PubSub.publish(events, event), {
+            discard: true,
+          });
+        const runOrdinals = new Map<ProviderTurnId, number>();
+        const turnInputs = new Map<ProviderTurnId, ProviderAdapter.ProviderAdapterV2TurnInput>();
+
+        return {
+          instanceId: input.instanceId,
+          driver: input.driver,
+          providerSessionId: sessionInput.providerSessionId,
+          providerSession,
+          events: Stream.fromPubSub(events),
+          ensureThread: (threadInput) =>
+            Effect.gen(function* () {
+              const createdAt = yield* DateTime.now;
+              const nativeThreadId = `${input.driver}:${threadInput.threadId}`;
+              return {
+                id: ProviderThreadId.make(`provider-thread:${nativeThreadId}`),
+                driver: input.driver,
+                providerInstanceId: input.instanceId,
+                providerSessionId: sessionInput.providerSessionId,
+                appThreadId: threadInput.threadId,
+                ownerNodeId: null,
+                nativeThreadRef: {
+                  driver: input.driver,
+                  nativeId: nativeThreadId,
+                  strength: "strong",
+                },
+                nativeConversationHeadRef: null,
+                status: "idle",
+                firstRunOrdinal: null,
+                lastRunOrdinal: null,
+                handoffIds: [],
+                forkedFrom: null,
+                createdAt,
+                updatedAt: createdAt,
+              } satisfies OrchestrationV2ProviderThread;
+            }),
+          resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+          startTurn: (turnInput) =>
+            Effect.gen(function* () {
+              yield* Ref.update(input.capturedTurns, (turns) => [
+                ...turns,
+                {
+                  instanceId: input.instanceId,
+                  threadId: turnInput.threadId,
+                  text: turnInput.message.text,
+                },
+              ]);
+              const eventTime = yield* DateTime.now;
+              const providerTurnId = ProviderTurnId.make(
+                `provider-turn:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}`,
+              );
+              runOrdinals.set(providerTurnId, turnInput.runOrdinal);
+              turnInputs.set(providerTurnId, turnInput);
+              yield* publish([
+                {
+                  type: "provider_turn.updated",
+                  driver: input.driver,
+                  providerTurn: {
+                    id: providerTurnId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nodeId: turnInput.rootNodeId,
+                    runAttemptId: turnInput.attemptId,
+                    nativeTurnRef: {
+                      driver: input.driver,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      strength: "strong",
+                    },
+                    ordinal: turnInput.providerTurnOrdinal,
+                    status: "running",
+                    startedAt: eventTime,
+                    completedAt: null,
+                  },
+                },
+              ]);
+              const terminalGate = input.terminalGate?.(turnInput);
+              if (terminalGate !== undefined) {
+                yield* Deferred.await(terminalGate);
+              } else if (!input.shouldComplete(turnInput)) {
+                return;
+              }
+              const response = input.response(turnInput);
+              yield* publish([
+                {
+                  type: "provider_turn.updated",
+                  driver: input.driver,
+                  providerTurn: {
+                    id: providerTurnId,
+                    providerThreadId: turnInput.providerThread.id,
+                    nodeId: turnInput.rootNodeId,
+                    runAttemptId: turnInput.attemptId,
+                    nativeTurnRef: {
+                      driver: input.driver,
+                      nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                      strength: "strong",
+                    },
+                    ordinal: turnInput.providerTurnOrdinal,
+                    status: "completed",
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                  },
+                },
+                {
+                  type: "turn_item.updated",
+                  driver: input.driver,
+                  turnItem: {
+                    id: TurnItemId.make(
+                      `turn-item:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    threadId: turnInput.threadId,
+                    runId: turnInput.runId,
+                    nodeId: turnInput.rootNodeId,
+                    providerThreadId: turnInput.providerThread.id,
+                    providerTurnId,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: turnInput.runOrdinal * 100 + 1,
+                    status: "completed",
+                    title: null,
+                    startedAt: eventTime,
+                    completedAt: eventTime,
+                    updatedAt: eventTime,
+                    type: "assistant_message",
+                    messageId: MessageId.make(
+                      `message:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}:assistant`,
+                    ),
+                    text: response,
+                    streaming: false,
+                  },
+                },
+                {
+                  type: "turn.terminal",
+                  driver: input.driver,
+                  providerThreadId: turnInput.providerThread.id,
+                  providerTurnId,
+                  runOrdinal: turnInput.runOrdinal,
+                  status: "completed",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              ]);
+            }),
+          steerTurn: () => Effect.void,
+          interruptTurn: ({ providerThread, providerTurnId }) =>
+            Effect.gen(function* () {
+              const turnInput = turnInputs.get(providerTurnId);
+              const completedAt = yield* DateTime.now;
+              if (turnInput !== undefined) {
+                yield* publish([
+                  {
+                    type: "provider_turn.updated",
+                    driver: input.driver,
+                    providerTurn: {
+                      id: providerTurnId,
+                      providerThreadId: providerThread.id,
+                      nodeId: turnInput.rootNodeId,
+                      runAttemptId: turnInput.attemptId,
+                      nativeTurnRef: {
+                        driver: input.driver,
+                        nativeId: `native-turn:${turnInput.threadId}:${turnInput.runOrdinal}`,
+                        strength: "strong",
+                      },
+                      ordinal: turnInput.providerTurnOrdinal,
+                      status: "interrupted",
+                      startedAt: completedAt,
+                      completedAt,
+                    },
+                  },
+                ]);
+              }
+              yield* publish([
+                {
+                  type: "turn.terminal",
+                  driver: input.driver,
+                  providerThreadId: providerThread.id,
+                  providerTurnId,
+                  runOrdinal: runOrdinals.get(providerTurnId) ?? 1,
+                  status: "interrupted",
+                  failure: null,
+                  threadDisposition: "reusable",
+                },
+              ]);
+            }),
+          respondToRuntimeRequest: () => Effect.void,
+          readThreadSnapshot: () =>
+            unsupported(input.driver, "readThreadSnapshot is unused in this test"),
+          rollbackThread: () => unsupported(input.driver, "rollbackThread is unused in this test"),
+          forkThread: () => unsupported(input.driver, "forkThread is unused in this test"),
+        };
+      }),
+  };
+}
+
+function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask {
+  const timestamp = IsoDateTime.make("2026-07-01T09:00:00.000Z");
+  return {
+    id: input.id ?? ScheduledTaskId.make(`scheduled-task:${input.commandId ?? "stub"}`),
+    title: input.title,
+    prompt: input.prompt,
+    enabled: input.enabled,
+    schedule:
+      input.schedule.type === "webhook"
+        ? {
+            type: "webhook",
+            signature:
+              input.schedule.signature == null
+                ? null
+                : {
+                    header: input.schedule.signature.header,
+                    encoding: input.schedule.signature.encoding,
+                    prefix: input.schedule.signature.prefix,
+                  },
+          }
+        : input.schedule,
+    projectId: input.projectId,
+    threadId: input.threadId ?? null,
+    workspaceStrategy: input.workspaceStrategy,
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    createdBy: input.createdBy ?? "user",
+    creationSource: input.creationSource ?? "web",
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    nextRunAt: null,
+    lastRunAt: null,
+    lastRunStatus: "never",
+    lastRunError: null,
+    runCount: 0,
+  };
+}
+
+const waitForProjection = Effect.fn("test.waitForProjection")(function* (
+  orchestrator: Orchestrator.OrchestratorV2Shape,
+  threadId: ThreadId,
+  predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
+) {
+  // Capture the durable cursor before reading so a concurrent update cannot be missed.
+  const eventSink = yield* EventSink.EventSinkV2;
+  const afterSequence = yield* eventSink.latestSequence({ threadId });
+  const current = yield* orchestrator.getThreadProjection(threadId);
+  if (predicate(current)) return current;
+  const observed = yield* eventSink.stream({ threadId, afterSequence }).pipe(
+    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+    Stream.filter(predicate),
+    Stream.runHead,
+  );
+  return yield* Option.match(observed, {
+    onNone: () => Effect.die(new Error(`Projection stream ended before the milestone for ${threadId}.`)),
+    onSome: Effect.succeed,
+  });
+});
 
 const client = McpSchema.McpServerClient.of({
   clientId: 1,
@@ -659,7 +1002,7 @@ describe("orchestrator MCP toolkit", () => {
     ),
   );
 
-it.live(
+  it.effect(
     "delegates cross-provider tasks, polls and cancels children, and creates ordinary threads",
     () =>
       Effect.scoped(
@@ -710,29 +1053,32 @@ it.live(
           const continuationOffers = yield* Ref.make<
             ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
           >([]);
+          const continuationOfferCounts = yield* Queue.unbounded<number>();
           const layerContinuationProbe = Layer.succeed(
             ProviderContinuationRequests.ProviderContinuationRequests,
             {
               offer: (request) =>
-                Ref.update(continuationOffers, (existing) => [...existing, request]),
+                Ref.updateAndGet(continuationOffers, (existing) => [...existing, request]).pipe(
+                  Effect.flatMap((offers) => Queue.offer(continuationOfferCounts, offers.length)),
+                  Effect.asVoid,
+                ),
               take: Effect.never,
             },
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
-              for (let attempt = 0; attempt < 1_000; attempt += 1) {
-                const current = yield* Ref.get(continuationOffers);
-                if (current.length >= count) {
-                  return current;
-                }
-                yield* Effect.sleep("5 millis");
+              if ((yield* Ref.get(continuationOffers)).length < count) {
+                yield* Stream.fromQueue(continuationOfferCounts).pipe(
+                  Stream.filter((observed) => observed >= count),
+                  Stream.runHead,
+                );
               }
               return yield* Ref.get(continuationOffers);
             });
           const expectOffersToStay = (count: number) =>
             Effect.gen(function* () {
               for (let sample = 0; sample < 4; sample += 1) {
-                yield* Effect.sleep("50 millis");
+                yield* TestClock.adjust("50 millis");
                 expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
               }
             });
@@ -1718,19 +2064,11 @@ it.live(
               placeholder: "Paste the webhook secret",
               clientRequestId: "release-webhook-secret",
             }).pipe(Effect.forkChild);
-            const asked = yield* Effect.gen(function* () {
-              while (true) {
-                const projection = yield* orchestrator.getThreadProjection(parentThreadId);
-                if (
-                  projection.turnItems.some(
-                    (item) => item.type === "secret_request" && item.secretStatus === "pending",
-                  )
-                ) {
-                  return projection;
-                }
-                yield* Effect.sleep("5 millis");
-              }
-            });
+            const asked = yield* waitForProjection(orchestrator, parentThreadId, (projection) =>
+              projection.turnItems.some(
+                (item) => item.type === "secret_request" && item.secretStatus === "pending",
+              ),
+            );
             const card = asked.turnItems.find((item) => item.type === "secret_request");
             if (card?.type !== "secret_request") {
               return yield* Effect.die(new Error("Secret request card missing."));
@@ -2675,11 +3013,13 @@ it.live(
                 projection.providerTurns.some((turn) => turn.status === "running"),
             );
             const activeRun = activeProjection.runs[0]!;
-            const activeTimeoutCall = yield* invoke("t3_thread_wait", {
+            const activeTimeoutFiber = yield* invoke("t3_thread_wait", {
               threadId: activeThread.threadId,
               runId: activeRun.id,
               timeoutMs: 1,
-            });
+            }).pipe(Effect.forkChild);
+            yield* TestClock.adjust("1 millis");
+            const activeTimeoutCall = yield* Fiber.join(activeTimeoutFiber);
             const activeTimeout = yield* decodeThreadWaitResult(
               activeTimeoutCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -2819,7 +3159,7 @@ it.live(
               listed.threads.some((thread) => thread.relationshipToParent === "subagent"),
             ).toBe(false);
 
-            const upgradedCall = yield* invoke("delegate_task", {
+            const upgradedFiber = yield* invoke("delegate_task", {
               task: cancellationPrompt,
               target: {
                 providerInstanceId: codexInstanceId,
@@ -2828,7 +3168,9 @@ it.live(
               mode: "wait",
               timeoutMs: 1,
               clientRequestId: "delegate-wait-upgrade-1",
-            });
+            }).pipe(Effect.forkChild);
+            yield* TestClock.adjust("1 millis");
+            const upgradedCall = yield* Fiber.join(upgradedFiber);
             const upgradedDelegated = yield* decodeDelegateTaskResult(
               upgradedCall.structuredContent,
             ).pipe(Effect.orDie);

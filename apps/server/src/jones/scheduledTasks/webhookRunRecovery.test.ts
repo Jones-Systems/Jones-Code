@@ -8,6 +8,7 @@ import {
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -109,6 +110,9 @@ const lifetime = <A, E>(
     const launches = yield* Queue.unbounded<LaunchInput>();
     const sources: Array<Effect.Effect<void>> = [];
     const dependencies = Layer.mergeAll(
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        isScratchProject: () => Effect.succeed(false),
+      }),
       NodeCrypto.layer,
       Layer.mock(Scheduler.Scheduler)({
         register: <E, R>(_name: string, work: Effect.Effect<void, E, R>) =>

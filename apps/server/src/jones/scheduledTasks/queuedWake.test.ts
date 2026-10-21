@@ -3,6 +3,7 @@ import { expect, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as ManagedProjectFolders from "../../project/ManagedProjectFolders.ts";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
@@ -20,6 +21,9 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
     const deliveries: Array<{ threadId: string; scheduledTaskId?: string; messageId: string }> = [];
     const runs: Array<{ id: string; threadId: string; userMessageId: string; status: string }> = [];
     const dependencies = Layer.mergeAll(
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        isScratchProject: () => Effect.succeed(false),
+      }),
       NodeCrypto.layer,
       Layer.mock(Scheduler.Scheduler)({
         register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>

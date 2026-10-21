@@ -195,6 +195,10 @@ const fixture = Effect.fn("fixture")(function* (
   ).pipe(
     Effect.provide(NodeCrypto.layer),
     Effect.provideService(DeviceHost.DeviceHost, host),
+      Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+        issue: () => Effect.die("Updating a tool must not issue a direct grant"),
+        admit: () => Effect.die("Updating a tool must not admit a direct connection"),
+      }),
     Effect.provideService(
       ServerSettings.ServerSettingsService,
       ServerSettings.ServerSettingsService.of({

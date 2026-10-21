@@ -2353,3 +2353,20 @@ it.layer(
     }),
   );
 });
+
+const multiTerminalHistoryLogPath = (
+  logsDir: string,
+  threadId = "thread-1",
+  terminalId = DEFAULT_TERMINAL_ID,
+) =>
+  Effect.service(Path.Path).pipe(
+    Effect.map(({ join }) => {
+      const threadPart = `terminal_${Base64Url.encode(threadId)}`;
+      return join(
+        logsDir,
+        terminalId === DEFAULT_TERMINAL_ID
+          ? `${threadPart}.log`
+          : `${threadPart}_${Base64Url.encode(terminalId)}.log`,
+      );
+    }),
+  );

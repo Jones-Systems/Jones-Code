@@ -778,7 +778,7 @@ export const make = Effect.gen(function* () {
       return retainedFiles;
     });
     const windowEndMs =
-      hourlyWindow?.untilTimeMs ??
+      exactWindow?.untilTimeMs ??
       Date.parse(`${input.untilDay}T00:00:00Z`) + 86400000 + MTIME_SLACK_MS;
     let resolvedAny = false;
     for (const { reader } of transcriptReaders) {

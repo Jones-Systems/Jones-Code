@@ -5,7 +5,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
-  type ApplicationStoredEvent,
+  type ApplicationRecordedEvent,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
@@ -168,7 +168,7 @@ const makeImporter = Effect.fn(function* (
   const sql = yield* SqlClient.SqlClient;
   const events = yield* EventStore.EventStoreV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const published: Array<ApplicationStoredEvent> = [];
+  const published: Array<ApplicationRecordedEvent> = [];
   const withTransaction: typeof sql.withTransaction = (effect) =>
     beforeTransaction.pipe(Effect.andThen(sql.withTransaction(effect)));
   const importSql = new Proxy(sql, {

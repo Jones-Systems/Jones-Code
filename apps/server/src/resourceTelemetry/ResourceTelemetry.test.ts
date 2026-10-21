@@ -1,3 +1,5 @@
+import * as TestClock from "effect/testing/TestClock";
+import * as Duration from "effect/Duration";
 import type {
   DesktopHostTelemetrySnapshot,
   ResourceMonitorProcessSample,

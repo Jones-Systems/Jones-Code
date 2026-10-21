@@ -1,3 +1,7 @@
+import * as PeerLinks from "./peer/PeerLinks.ts";
+import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
+import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
+import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -290,6 +294,10 @@ it.live.each(["thread", "shell"] as const)(
 
 // Build the production RPC layer; unrelated capabilities fail if this test calls them.
 const layerUnusedConfigRpcServices = Layer.mergeAll(
+  Layer.mock(PeerLinks.PeerLinks)({}),
+  Layer.mock(QueueCompatibility.QueueCompatibility)({}),
+  Layer.mock(SettlementOrigins.SettlementOrigins)({}),
+  Layer.mock(TokenAccountingService.TokenAccountingService)({ isAvailable: Effect.succeed(false) }),
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
   Layer.mock(TraceDiagnostics.TraceDiagnostics)({}),
@@ -466,6 +474,7 @@ it.effect(
             {},
             yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
+            () => Effect.succeed({}),
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );

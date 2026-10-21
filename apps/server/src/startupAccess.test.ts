@@ -1,6 +1,12 @@
-import { expect, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 
-import { resolveHeadlessConnectionString } from "./startupAccess.ts";
+import {
+  resolveHeadlessConnectionString,
+  buildPairingUrl,
+  formatHeadlessServeOutput,
+  renderTerminalQrCode,
+  resolveListeningPort,
+} from "./startupAccess.ts";
 
 it("resolves wildcard hosts to a concrete external interface when one is available", () => {
   const connectionString = resolveHeadlessConnectionString("0.0.0.0", 3773, {
