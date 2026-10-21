@@ -611,6 +611,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
@@ -677,6 +678,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);
+            yield* PubSub.publish(completionChanges, undefined);
             yield* notifyAvailable();
           }
           return rows.length === 1;
