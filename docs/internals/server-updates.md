@@ -56,11 +56,20 @@ Rollback awaits the captured trial's exit and acquires state ownership before
 restoring. A durable restore marker makes an interrupted restore finish before
 either version boots. After durable commit and its IPC acknowledgement, or after
 restoration and the terminal rollback state are durable, the launcher removes that
-attempt's recovery payload and transient advanced state, keeping the directory and
-small receipts used by startup and update status. Cleanup failures preserve the
-durable result and keep the remaining files for later reconciliation. An uncertain pointer write, failed
-restore or failed terminal write preserves recovery bytes. It leaves older retained
-snapshots alone. The shared ownership file is never unlinked.
+attempt's exact recovery payload files, keeping every directory, restore journal,
+receipt and unknown entry. Cleanup failures preserve the durable result. Before
+the next qualified Install's capacity checks, the launcher retries only the
+immediately previous committed or rolled-back generation. An unsafe binding,
+file identity or incomplete restore journal refuses that Install while the current
+server remains active. Completed rollback journals remain valid after live WAL
+or settings files rotate. Startup does not clean terminal qualified generations,
+and older retained snapshots remain operator-owned.
+
+An uncertain pointer write, failed restore or failed terminal write preserves
+recovery bytes. Failed generations are never retried; the sole qualified failure
+cleanup is an accepted-phase launcher restart, before the candidate could run,
+with no restore evidence. State-ownership and post-restore failures stay held.
+The shared ownership file is never unlinked.
 Attachments and other files outside SQLite and the paired startup files are outside
 this rollback boundary. Qualified at-most-once resume reservations remain at
 `runtime/db-backup/<update-id>/resume-dispatched.json`. Keeping that directory lets

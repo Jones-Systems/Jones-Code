@@ -58,7 +58,7 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
   it.each([false, true])(
-    "puts assignment directly below Snooze/Wake with read-only gating (snoozed: %s)",
+    "puts assignment directly above Snooze/Wake with read-only gating (snoozed: %s)",
     (isSnoozed) => {
       const assignmentItems = [
         { id: "assign-workstream:group:alpha" as const, label: "alpha" },
@@ -72,8 +72,8 @@ describe("buildThreadActionMenuItems", () => {
           assignmentItems,
         });
         const snooze = items.findIndex((item) => item.id === (isSnoozed ? "unsnooze" : "snooze"));
-        expect(items[snooze + 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
-        expect(items[snooze + 1]?.children).toEqual(
+        expect(items[snooze - 1]).toMatchObject({ id: "assign-thread", label: "Assign thread" });
+        expect(items[snooze - 1]?.children).toEqual(
           canOperate
             ? assignmentItems
             : assignmentItems.map((item) => ({ ...item, disabled: true })),
@@ -82,9 +82,9 @@ describe("buildThreadActionMenuItems", () => {
     },
   );
 
-  it("places Stop after settlement and keeps it reachable without session details", () => {
+  it("places Stop after snooze and keeps it reachable without session details", () => {
     const items = buildThreadActionMenuItems(baseState);
-    expect(items[items.findIndex((item) => item.id === "settle") + 1]).toMatchObject({
+    expect(items[items.findIndex((item) => item.id === "snooze") + 1]).toMatchObject({
       id: "stop-thread",
       label: "Stop thread",
       icon: "square",
@@ -115,10 +115,10 @@ describe("buildThreadActionMenuItems", () => {
         ? [
             "unpin",
             "unsettle",
-            "stop-thread",
-            "unsnooze",
-            "rename",
             "regenerate-title",
+            "unsnooze",
+            "stop-thread",
+            "rename",
             "auto-settle",
             "archive",
             "delete",
@@ -126,10 +126,10 @@ describe("buildThreadActionMenuItems", () => {
         : [
             "pin",
             "settle",
-            "stop-thread",
-            "snooze",
-            "rename",
             "regenerate-title",
+            "snooze",
+            "stop-thread",
+            "rename",
             "auto-settle",
             "archive",
             "delete",
@@ -145,8 +145,8 @@ describe("buildThreadActionMenuItems", () => {
   it("preserves local actions and restores mutations after a grant", () => {
     const denied = buildThreadActionMenuItems({ ...baseState, canOperate: false, branch: "main" });
     expect(denied.filter((item) => !item.disabled).map((item) => item.id)).toEqual([
-      "new-thread-on-branch",
       "mark-unread",
+      "new-thread-on-branch",
       "copy",
       "project-settings",
     ]);
@@ -170,9 +170,9 @@ describe("buildThreadActionMenuItems", () => {
         },
       }),
     ).toEqual([
+      "mark-unread",
       "stop-thread",
       "rename",
-      "mark-unread",
       "copy",
       "project-settings",
       "archive",
@@ -180,15 +180,65 @@ describe("buildThreadActionMenuItems", () => {
     ]);
   });
 
-  it("groups project settings with utility actions before archive", () => {
-    const items = buildThreadActionMenuItems(baseState);
-    const copyIndex = items.findIndex((item) => item.id === "copy");
-    expect(items[copyIndex + 1]).toMatchObject({
-      id: "project-settings",
-      label: "Project settings",
-      icon: "settings",
+  it.each([
+    {
+      titleRegeneration: true,
+      assignment: true,
+      snooze: true,
+      branch: "feat/menu",
+      activity: ["regenerate-title", "assign-thread", "snooze", "stop-thread"],
+    },
+    {
+      titleRegeneration: false,
+      assignment: true,
+      snooze: true,
+      branch: null,
+      activity: ["assign-thread", "snooze", "stop-thread"],
+    },
+    {
+      titleRegeneration: false,
+      assignment: false,
+      snooze: true,
+      branch: null,
+      activity: ["snooze", "stop-thread"],
+    },
+    {
+      titleRegeneration: false,
+      assignment: false,
+      snooze: false,
+      branch: null,
+      activity: ["stop-thread"],
+    },
+  ])("groups actions with optional members: $activity", (scenario) => {
+    const items = buildThreadActionMenuItems({
+      ...baseState,
+      branch: scenario.branch,
+      assignmentItems: scenario.assignment ? [] : undefined,
+      projectFilter: { label: "Beta Project", isActive: false },
+      supports: {
+        ...baseState.supports,
+        titleRegeneration: scenario.titleRegeneration,
+        snooze: scenario.snooze,
+      },
     });
-    expect(items[copyIndex + 2]?.id).toBe("archive");
+    const sections: string[][] = [];
+    for (const item of items) {
+      if (item.separatorBefore || sections.length === 0) sections.push([]);
+      sections.at(-1)?.push(item.id);
+    }
+    expect(items[0]?.separatorBefore).not.toBe(true);
+    expect(sections).toEqual([
+      ["mark-unread", "pin", "settle"],
+      scenario.activity,
+      [
+        ...(scenario.branch ? ["new-thread-on-branch"] : []),
+        "rename",
+        "filter-by-project",
+        "auto-settle",
+      ],
+      ["copy", "project-settings"],
+      ["archive", "delete"],
+    ]);
   });
 
   it("offers project filtering only for surfaces with a scoped thread list", () => {
@@ -208,7 +258,7 @@ describe("buildThreadActionMenuItems", () => {
     });
     const filterIndex = items.findIndex((candidate) => candidate.id === "filter-by-project");
     expect(items[filterIndex]).toMatchObject({ label: "Show all projects", icon: "folder-tree" });
-    expect(items[filterIndex - 1]?.id).toBe("mark-unread");
+    expect(items[filterIndex - 1]?.id).toBe("rename");
     expect(items[filterIndex + 1]?.id).toBe("auto-settle");
   });
 
@@ -239,7 +289,7 @@ describe("buildThreadActionMenuItems", () => {
     const off = find({ ...baseState, autoSettleEnabled: false });
     expect(off?.children?.map((child) => child.checked)).toEqual([false, true]);
     const items = buildThreadActionMenuItems(baseState);
-    expect(items[items.findIndex((item) => item.id === "mark-unread") + 1]?.id).toBe("auto-settle");
+    expect(items[items.findIndex((item) => item.id === "rename") + 1]?.id).toBe("auto-settle");
     expect(
       ids({ ...baseState, supports: { ...baseState.supports, autoSettleOptOut: false } }),
     ).not.toContain("auto-settle");

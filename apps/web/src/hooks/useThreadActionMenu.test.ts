@@ -23,6 +23,8 @@ const state = vi.hoisted(() => ({
   effects: [] as string[],
   completed: deferred<void>(),
   shown: deferred<void>(),
+  settled: false,
+  settlementRestore: true,
   show: vi.fn<
     (
       items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>>,
@@ -64,8 +66,17 @@ vi.mock("../state/entities", () => ({
     worktreePath: null,
     runtime: null,
     latestRun: null,
+    settledOverride: state.settled ? "settled" : null,
   }),
   useProjects: () => [{ id: "project", environmentId: "secondary" }],
+}));
+// Jones settlement restore: capability and the server-record restore it runs.
+vi.mock("../jones/settlementRestore/settlementRestore", () => ({
+  readEnvironmentSupportsSettlementRestore: () => state.settlementRestore,
+  restoreCurrentSettlement: async (threadRef: { threadId: string }) => {
+    recordEffect(`undo-settle:${threadRef.threadId}`);
+    return AsyncResult.success(undefined);
+  },
 }));
 vi.mock("../state/environments", () => ({ usePrimaryEnvironmentId: () => "primary" }));
 vi.mock("../state/threads", () => ({
@@ -181,6 +192,8 @@ const createMenu = () =>
   });
 
 beforeEach(() => {
+  state.settled = false;
+  state.settlementRestore = true;
   state.granted = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
@@ -276,5 +289,34 @@ describe("thread menu permissions", () => {
     createMenu().openMenu(position);
     await state.completed.promise;
     expect(state.effects).toEqual([effect]);
+  });
+});
+
+describe("Jones settlement restore menu item", () => {
+  const ids = () => state.show.mock.calls[0]![0].map((item) => item.id as string);
+
+  it("offers Undo settle beside Un-settle and restores from the server's record", async () => {
+    state.granted.add("secondary");
+    state.settled = true;
+    state.show.mockResolvedValue("jones:undo-settle" as ThreadActionMenuId);
+    createMenu().openMenu(position);
+    await state.completed.promise;
+    expect(ids().slice(ids().indexOf("unsettle"), ids().indexOf("unsettle") + 2)).toEqual([
+      "unsettle",
+      "jones:undo-settle",
+    ]);
+    expect(state.effects).toEqual(["undo-settle:thread"]);
+  });
+
+  it("is absent for active threads and servers without native restore", async () => {
+    createMenu().openMenu(position);
+    await state.shown.promise;
+    state.settled = true;
+    state.settlementRestore = false;
+    state.shown = deferred<void>();
+    createMenu().openMenu(position);
+    await state.shown.promise;
+    for (const call of state.show.mock.calls)
+      expect(call[0].some((item) => (item.id as string) === "jones:undo-settle")).toBe(false);
   });
 });

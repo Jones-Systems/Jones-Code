@@ -77,14 +77,14 @@ describe("Jones build status", () => {
   it("shows both builds compactly and keeps exact identities one disclosure away", async () => {
     const onRequest = await render();
     const text = container.textContent!;
-    expect(text).toContain("Installed0.45 · 0676");
-    expect(text).toContain("Available0.45 · 5620");
+    expect(text).toContain("Installedd994dd4");
+    expect(text).toContain("Available0368cbb");
     expect(text).toContain("Different source");
     expect(text).not.toContain("0.0.45-preview");
     expect(text).not.toContain(offeredSha);
     expect(
       container.querySelector(
-        '[aria-label="Copy available version 0.0.45-preview.20261016.38974945620.1"]',
+        '[aria-label^="Copy available version 0.0.45-preview.20261016.38974945620.1;"]',
       ),
     ).not.toBeNull();
 
@@ -107,6 +107,27 @@ describe("Jones build status", () => {
     });
   });
 
+  it("shows colliding build times with seconds and copies the full canonical version", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await render({
+      state: {
+        ...available,
+        currentBuildStartedAt: "2026-10-20T21:13:43Z",
+        provenance: { ...available.provenance!, buildStartedAt: "2026-10-20T21:13:47Z" },
+      },
+    });
+    const installed = buttonNamed("1020·1713:43");
+    expect(installed).toBeDefined();
+    expect(buttonNamed("1020·1713:47")).toBeDefined();
+    expect(installed.getAttribute("aria-label")).toContain("Built October 20, 17:13 Eastern");
+    await act(async () => installed.click());
+    expect(writeText).toHaveBeenCalledWith(available.currentVersion);
+    await act(async () => buttonNamed("Details").click());
+    expect(container.textContent).toContain("2026, 17:13:43 EDT");
+    expect(container.textContent).toContain("2026, 17:13:47 EDT");
+  });
+
   it("places the installed comparison before the arrow, apart from the candidate badge", async () => {
     const onRequest = await render({ installedComparison: "older", comparison: "matches" });
     const [installed, offered] = badges();
@@ -114,11 +135,11 @@ describe("Jones build status", () => {
     expect(installed!.textContent).toBe("Installed compared with this laptop: Older");
     expect(offered!.textContent).toBe("Available compared with this laptop: Matches laptop");
     const installedVersion = container.querySelector(
-      '[aria-label="Copy installed version 0.0.45-preview.20261013.38343490676.1"]',
+      '[aria-label^="Copy installed version 0.0.45-preview.20261013.38343490676.1;"]',
     )!;
     const arrow = container.querySelector("svg.lucide-arrow-right")!;
     const offeredVersion = container.querySelector(
-      '[aria-label="Copy available version 0.0.45-preview.20261016.38974945620.1"]',
+      '[aria-label^="Copy available version 0.0.45-preview.20261016.38974945620.1;"]',
     )!;
     expect(precedes(installedVersion, installed!)).toBe(true);
     expect(precedes(installed!, arrow)).toBe(true);
@@ -221,7 +242,9 @@ describe("Jones build status", () => {
       freshnessMessage: "Update status is temporarily unavailable; retrying.",
     });
     const text = container.textContent!;
-    expect(text).toContain("Rolled back: 0.45 · 8344 → 0.45 · 0676 · health check failed");
+    expect(text).toContain(
+      "Rolled back: 0.0.45-preview.20261011.38178738344.1 → 0.0.45-preview.20261013.38343490676.1 · health check failed",
+    );
     expect(text).toContain("Update status is temporarily unavailable; retrying.");
     expect(buttonNamed("Download").disabled).toBe(true);
     expect(buttonNamed("Check").disabled).toBe(true);

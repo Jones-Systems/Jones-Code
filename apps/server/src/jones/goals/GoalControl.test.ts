@@ -35,7 +35,13 @@ const scope: McpInvocationScope = {
   client: { sessionId: "client", label: "Test", access: "full-access" },
 };
 function fixture(
-  options: { active?: boolean; driver?: string; unknown?: boolean; failedCapture?: boolean } = {},
+  options: {
+    active?: boolean;
+    driver?: string;
+    unknown?: boolean;
+    failedCapture?: boolean;
+    caller?: "self" | "other";
+  } = {},
 ) {
   let goal: OrchestrationV2ProviderGoal | null = {
     objective: "Finish everything",
@@ -50,6 +56,30 @@ function fixture(
     nativeThreadRef: { driver: options.driver ?? "codex", nativeId: "native", strength: "strong" },
     goal,
   } as OrchestrationV2ProviderThread;
+  const callerId = options.caller === "other" ? ThreadId.make("caller-thread") : threadId;
+  const callerSessionId =
+    options.caller === "other" ? ProviderSessionId.make("caller-runtime") : sessionId;
+  const credentialId = "mcp-credential";
+  const invocation: McpInvocationScope =
+    options.caller === undefined
+      ? scope
+      : {
+          ...scope,
+          capabilities: new Set(scope.capabilities),
+          client: undefined,
+          thread: {
+            threadId: callerId,
+            providerInstanceId: instanceId,
+            providerSessionId: credentialId,
+          },
+        };
+  let callerProvider: OrchestrationV2ProviderThread = {
+    ...provider,
+    providerSessionId: callerSessionId,
+  };
+  let attached = true;
+  let callerLive = true;
+  const callerMode = "full-access";
   let runtimeMode = "full-access";
   let mutationCalls = 0;
   let unknown = options.unknown ?? false;
@@ -89,6 +119,10 @@ function fixture(
     modelSelection: { instanceId, model: "test" },
     runtimeMode,
     interactionMode: "default",
+    activeRunId: null,
+    pendingBackgroundTasks: callerLive
+      ? [{ kind: "subagent", providerInstanceId: instanceId }]
+      : [],
     archivedAt: null,
     deletedAt: null,
   });
@@ -100,11 +134,38 @@ function fixture(
   const dependencies = Layer.mergeAll(
     NodeServices.layer,
     Layer.mock(Threads.ThreadManagementService)({
-      getThreadShell: () => Effect.sync(() => thread() as never),
+      getThreadShell: (id) =>
+        Effect.sync(
+          () =>
+            (id === threadId
+              ? thread()
+              : {
+                  ...thread(),
+                  id: callerId,
+                  runtimeMode: callerMode,
+                }) as never,
+        ),
+      getThreadRecords: () =>
+        Effect.sync(
+          () =>
+            ({
+              thread: thread(),
+              providerThreads: [options.caller === "self" ? provider : callerProvider],
+            }) as never,
+        ),
       getProjectThreadRecords: () => Effect.sync(() => records() as never),
     }),
     Layer.mock(Sessions.ProviderSessionManagerV2)({
       get: () => Effect.sync(() => Option.some(runtime)),
+      isMcpCallerAttached: (input) =>
+        Effect.sync(
+          () =>
+            attached &&
+            input.threadId === callerId &&
+            input.providerSessionId === callerSessionId &&
+            input.providerInstanceId === instanceId &&
+            input.mcpCredentialId === credentialId,
+        ),
     }),
     Layer.mock(GoalStart.GoalStartDispatch)({
       capture: () =>
@@ -128,6 +189,25 @@ function fixture(
   );
   return {
     layer: GoalControl.layer.pipe(Layer.provide(dependencies)),
+    invocation,
+    invalidateCaller: (change: string) => {
+      if (change === "detached") attached = false;
+      else if (change === "inactive") callerLive = false;
+      else if (change === "permission") (invocation.capabilities as Set<string>).clear();
+      else {
+        const current = options.caller === "self" ? provider : callerProvider;
+        const changed =
+          change === "session"
+            ? { ...current, providerSessionId: ProviderSessionId.make("changed") }
+            : change === "missing-session"
+              ? { ...current, providerSessionId: null }
+              : change === "missing-provider"
+                ? { ...current, id: ProviderThreadId.make("inactive-provider") }
+                : { ...current, providerInstanceId: ProviderInstanceId.make("changed") };
+        if (options.caller === "self") provider = changed;
+        else callerProvider = changed;
+      }
+    },
     counts: () => ({ mutations: mutationCalls, starts }),
     reconcile: () => {
       goal = null;
@@ -169,6 +249,85 @@ const mutate = (
   });
 
 describe("agent goal controls", () => {
+  for (const caller of ["self", "other"] as const) {
+    it.effect.each(["pause", "replace", "clear", "resume"] as const)(
+      `${caller} thread caller controls %s with a distinct MCP credential and replays once`,
+      (action) => {
+        const f = fixture({ caller, active: action !== "resume" });
+        return Effect.gen(function* () {
+          const service = yield* GoalControl.GoalControl;
+          const state = yield* service.execute(f.invocation, { threadId, action: "read" });
+          expect(state.outcome).toBe("observed");
+          const input = {
+            threadId,
+            action,
+            controlToken: state.controlToken!,
+            clientRequestId: "thread-request",
+            ...(action === "replace" ? { objective: "Updated objective" } : {}),
+          };
+          const first = yield* service.execute(f.invocation, input);
+          expect(first.outcome).toBe(action === "resume" ? "accepted" : "applied");
+          if (action === "pause") expect(first.goal?.status).toBe("paused");
+          if (action === "replace") expect(first.goal?.objective).toBe("Updated objective");
+          if (action === "clear") expect(first.goal).toBeNull();
+          expect(yield* service.execute(f.invocation, input)).toEqual({ ...first, replayed: true });
+          expect(f.counts()).toEqual({
+            mutations: action === "resume" ? 0 : 1,
+            starts: action === "resume" ? 1 : 0,
+          });
+        }).pipe(Effect.provide(f.layer));
+      },
+    );
+    it.effect.each([
+      "credential",
+      "detached",
+      "session",
+      "missing-session",
+      "missing-provider",
+      "instance",
+      "inactive",
+      "permission",
+      "native",
+    ])(`${caller} thread caller refuses changed %s before side effects`, (change) => {
+      const f = fixture({ caller });
+      return Effect.gen(function* () {
+        const service = yield* GoalControl.GoalControl;
+        const state = yield* service.execute(f.invocation, { threadId, action: "read" });
+        if (change === "native") f.changeBinding();
+        else if (change !== "credential") f.invalidateCaller(change);
+        const invocation =
+          change === "credential"
+            ? {
+                ...f.invocation,
+                thread: { ...f.invocation.thread!, providerSessionId: "wrong-credential" },
+              }
+            : f.invocation;
+        for (const action of ["pause", "resume"] as const) {
+          const result = yield* service
+            .execute(invocation, {
+              threadId,
+              action,
+              controlToken: state.controlToken!,
+              clientRequestId: action,
+            })
+            .pipe(Effect.result);
+          if (change === "inactive" || change === "permission") {
+            expect(result._tag).toBe("Failure");
+            if (result._tag === "Failure")
+              expect(result.failure.code).toBe(
+                change === "inactive" ? "parent_not_active" : "capability_denied",
+              );
+          } else {
+            expect(result._tag).toBe("Success");
+            if (result._tag === "Success")
+              expect(["stale", "unavailable", "unsupported"]).toContain(result.success.outcome);
+          }
+        }
+        expect(f.counts()).toEqual({ mutations: 0, starts: 0 });
+      }).pipe(Effect.provide(f.layer));
+    });
+  }
+
   it.effect("pauses an active goal directly and replays the same receipt", () => {
     const f = fixture({ active: true });
     return Effect.gen(function* () {

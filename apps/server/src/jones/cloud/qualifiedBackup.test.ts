@@ -11,6 +11,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   copyQualifiedBackupFile,
+  QUALIFIED_STARTUP_STATE_FILES,
+  removeQualifiedRecoveryPayload,
   preflightQualifiedBackup,
   readQualifiedBackupReceipt,
   retainQualifiedAdvancedState,
@@ -533,6 +535,352 @@ it("copies a Linux fallback in concurrent chunks and removes a partial copy afte
   });
 });
 
+function cpuSnapshot(busy: number, idle: number, count = 4): NodeOS.CpuInfo[] {
+  return Array.from({ length: count }, () => ({
+    model: "synthetic CPU",
+    speed: 1000,
+    times: { user: busy, nice: 0, sys: 0, irq: 0, idle },
+  }));
+}
+
+async function checkLinuxCopyConcurrency(
+  expected: number,
+  parallelism: () => number,
+  snapshots: () => NodeOS.CpuInfo[],
+  chunks = 6,
+) {
+  await fixture(async (base, database) => {
+    const chunk = 8 * 1024 * 1024;
+    await NodeFSP.truncate(database, chunks * chunk);
+    const destination = NodePath.join(base, "cpu-selected-copy");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let active = 0;
+    let maximum = 0;
+    const originalOpen = NodeFSP.open;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const capacity = vi.spyOn(NodeOS, "availableParallelism").mockImplementation(parallelism);
+    const cpus = vi.spyOn(NodeOS, "cpus").mockImplementation(snapshots);
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] !== database) return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "read")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              active += 1;
+              maximum = Math.max(maximum, active);
+              entered.resolve();
+              try {
+                await release.promise;
+                return await target.read(buffer, offset, length, position);
+              } finally {
+                active -= 1;
+              }
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copying = copyQualifiedBackupFile(database, destination);
+    try {
+      await entered.promise;
+      assert.equal(active, 1, "baseline starts before CPU sampling completes");
+      await vi.advanceTimersByTimeAsync(100);
+      assert.equal(active, expected, "CPU evidence selects concurrent positioned reads");
+      release.resolve();
+      assert.deepEqual(await copying, { method: "copy", bytes: chunks * chunk });
+      assert.equal(maximum, expected);
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      release.resolve();
+      await copying.catch(() => {});
+      vi.useRealTimers();
+      open.mockRestore();
+      clone.mockRestore();
+      cpus.mockRestore();
+      capacity.mockRestore();
+      platform.mockRestore();
+    }
+  });
+}
+
+it("keeps a saturated Linux fallback on its baseline copy loop", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    1,
+    () => 4,
+    () => cpuSnapshot(samples++ * 100, 0),
+  );
+});
+
+it.each([
+  { name: "idle host", available: 8, busy: 0, idle: 100, expected: 4 },
+  { name: "two-core capacity hint", available: 2, busy: 0, idle: 100, expected: 2 },
+  { name: "one-core capacity hint", available: 1, busy: 0, idle: 100, expected: 1 },
+  { name: "one spare core", available: 4, busy: 75, idle: 25, expected: 2 },
+  { name: "less than one spare core", available: 4, busy: 90, idle: 10, expected: 1 },
+  { name: "zero capacity hint", available: 0, busy: 0, idle: 100, expected: 4 },
+  { name: "nonfinite capacity hint", available: NaN, busy: 0, idle: 100, expected: 4 },
+  { name: "fractional capacity hint", available: 1.5, busy: 0, idle: 100, expected: 4 },
+])("selects Linux copy concurrency for $name", async ({ available, busy, idle, expected }) => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    expected,
+    () => available,
+    () => {
+      if (available === 1) {
+        samples += 1;
+        throw new Error("one-core copies must not sample");
+      }
+      return samples++ === 0 ? cpuSnapshot(0, 0) : cpuSnapshot(busy, idle);
+    },
+  );
+  assert.equal(samples, available === 1 ? 0 : 2);
+});
+
+it.each([
+  { name: "empty", after: [] },
+  { name: "mismatched", after: cpuSnapshot(100, 200, 3) },
+  { name: "reset", after: cpuSnapshot(0, 200) },
+  { name: "nonfinite", after: cpuSnapshot(Infinity, 200) },
+  { name: "zero total delta", after: cpuSnapshot(100, 100) },
+])("keeps aggressive Linux copy capacity with $name CPU evidence", async ({ after }) => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    4,
+    () => 4,
+    () => (samples++ === 0 ? cpuSnapshot(100, 100) : after),
+  );
+});
+
+it.each([0, 1])(
+  "keeps aggressive Linux copy capacity when CPU snapshot %i throws",
+  async (failsAt) => {
+    let samples = 0;
+    await checkLinuxCopyConcurrency(
+      4,
+      () => 4,
+      () => {
+        if (samples++ === failsAt) throw new Error("synthetic CPU lookup failure");
+        return cpuSnapshot(0, 0);
+      },
+    );
+  },
+);
+
+it("keeps the four-loop ceiling when the capacity hint throws", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    4,
+    () => {
+      throw new Error("synthetic capacity lookup failure");
+    },
+    () => cpuSnapshot(0, samples++ * 100),
+  );
+});
+
+it("counts nice, system and interrupt CPU time as busy", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    1,
+    () => 4,
+    () => {
+      const value = samples++ * 100;
+      return cpuSnapshot(0, 0).map((cpu) => ({
+        ...cpu,
+        times: { user: 0, nice: value, sys: value, irq: value, idle: 0 },
+      }));
+    },
+  );
+});
+
+it.each([false, true])(
+  "cancels Linux sampling when the baseline settles early (failure=%s)",
+  async (fails) => {
+    await fixture(async (base, database) => {
+      await NodeFSP.truncate(database, 3 * 8 * 1024 * 1024);
+      const destination = NodePath.join(base, "early-copy");
+      const failure = Object.assign(new Error("synthetic early write failure"), { code: "ENOSPC" });
+      const originalOpen = NodeFSP.open;
+      const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+      const capacity = vi.spyOn(NodeOS, "availableParallelism").mockReturnValue(4);
+      const cpus = vi.spyOn(NodeOS, "cpus").mockReturnValue(cpuSnapshot(0, 0));
+      const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+      const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        const handle = await originalOpen(...args);
+        if (!fails || args[0] !== destination) return handle;
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "write")
+              return async () => {
+                throw failure;
+              };
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const copying = copyQualifiedBackupFile(database, destination);
+        if (fails) {
+          await NodeAssert.rejects(copying, (cause) => cause === failure);
+          await NodeAssert.rejects(NodeFSP.lstat(destination), { code: "ENOENT" });
+        } else {
+          assert.equal((await copying).bytes, 3 * 8 * 1024 * 1024);
+        }
+        assert.equal(cpus.mock.calls.length, 1);
+        assert.equal(vi.getTimerCount(), 0);
+        await vi.advanceTimersByTimeAsync(100);
+        assert.equal(cpus.mock.calls.length, 1);
+      } finally {
+        vi.useRealTimers();
+        open.mockRestore();
+        clone.mockRestore();
+        cpus.mockRestore();
+        capacity.mockRestore();
+        platform.mockRestore();
+      }
+    });
+  },
+);
+
+it("bypasses CPU sampling for empty, single-chunk and cloned Linux files", async () => {
+  await fixture(async (base, database) => {
+    const originalCopy = NodeFSP.copyFile;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const cpus = vi.spyOn(NodeOS, "cpus");
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (const size of [0, 1, 8 * 1024 * 1024]) {
+        await NodeFSP.truncate(database, size);
+        assert.deepEqual(
+          await copyQualifiedBackupFile(database, NodePath.join(base, `small-${size}`)),
+          {
+            method: "copy",
+            bytes: size,
+          },
+        );
+      }
+      await NodeFSP.truncate(database, 2 * 8 * 1024 * 1024);
+      clone.mockImplementation((source, target) =>
+        originalCopy(source, target, NodeFS.constants.COPYFILE_EXCL),
+      );
+      assert.equal(
+        (await copyQualifiedBackupFile(database, NodePath.join(base, "cloned-large"))).method,
+        "clone",
+      );
+      assert.equal(cpus.mock.calls.length, 0);
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      vi.useRealTimers();
+      clone.mockRestore();
+      cpus.mockRestore();
+      platform.mockRestore();
+    }
+  });
+});
+
+it("caps idle Linux copy workers at the file's chunk count", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    2,
+    () => 4,
+    () => cpuSnapshot(0, samples++ * 100),
+    2,
+  );
+});
+
+it("settles every started Linux copy loop before closing and removing a failed output", async () => {
+  await fixture(async (base, database) => {
+    const chunk = 8 * 1024 * 1024;
+    await NodeFSP.truncate(database, 6 * chunk);
+    const destination = NodePath.join(base, "settled-failure");
+    const baselineEntered = Promise.withResolvers<void>();
+    const baselineRelease = Promise.withResolvers<void>();
+    const failedWrite = Promise.withResolvers<void>();
+    const failure = Object.assign(new Error("synthetic concurrent disk full"), { code: "ENOSPC" });
+    const originalOpen = NodeFSP.open;
+    let samples = 0;
+    let reads = 0;
+    let closes = 0;
+    let active = 0;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const capacity = vi.spyOn(NodeOS, "availableParallelism").mockReturnValue(4);
+    const cpus = vi.spyOn(NodeOS, "cpus").mockImplementation(() => cpuSnapshot(0, samples++ * 100));
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "read")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              reads += 1;
+              active += 1;
+              try {
+                if (position === 0) {
+                  baselineEntered.resolve();
+                  await baselineRelease.promise;
+                }
+                return await target.read(buffer, offset, length, position);
+              } finally {
+                active -= 1;
+              }
+            };
+          if (property === "write")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              if (position !== 0) {
+                failedWrite.resolve();
+                throw failure;
+              }
+              return target.write(buffer, offset, length, position);
+            };
+          if (property === "close")
+            return async () => {
+              assert.equal(active, 0, "handles remain open until every read settles");
+              closes += 1;
+              await target.close();
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copying = copyQualifiedBackupFile(database, destination);
+    const rejected = NodeAssert.rejects(copying, (cause) => cause === failure);
+    try {
+      await baselineEntered.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      await failedWrite.promise;
+      assert.equal(reads, 4);
+      assert.equal(closes, 0);
+      await NodeFSP.access(destination);
+      baselineRelease.resolve();
+      await rejected;
+      assert.equal(closes, 2);
+      assert.equal(reads, 4, "a failed loop prevents claiming additional chunks");
+      await NodeAssert.rejects(NodeFSP.lstat(destination), { code: "ENOENT" });
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      baselineRelease.resolve();
+      await copying.catch(() => {});
+      await rejected.catch(() => {});
+      vi.useRealTimers();
+      open.mockRestore();
+      clone.mockRestore();
+      cpus.mockRestore();
+      capacity.mockRestore();
+      platform.mockRestore();
+    }
+  });
+});
+
 it("reserves the exact copy rollback buffer and trial headroom before stopping", async () => {
   await fixture(async (base, database) => {
     await NodeFSP.writeFile(`${database}-wal`, "wal");
@@ -585,5 +933,382 @@ it("reads protocol-one receipts with or without optional copy and sync durations
       );
       await NodeAssert.rejects(readQualifiedBackupReceipt(base, "timed"), /receipt is invalid/);
     }
+  });
+});
+
+const cleanupId = "12345678-1234-4234-8234-123456789abc";
+const recoveryNames = [
+  "database",
+  "database-wal",
+  "database-shm",
+  ...QUALIFIED_STARTUP_STATE_FILES,
+];
+
+async function cleanupFixture(
+  body: (input: {
+    base: string;
+    database: string;
+    generation: string;
+    advanced: string;
+    binding: { transactionId: string; qualified: { fixture: string } };
+    remove: (terminal?: "committed" | "rolled-back" | "failed-before-trial") => Promise<void>;
+  }) => Promise<void>,
+) {
+  await fixture(async (allocated) => {
+    const base = await NodeFSP.realpath(allocated);
+    const database = NodePath.join(base, "userdata", "statev2.sqlite");
+    const generation = NodePath.join(base, "runtime", "db-backup", cleanupId);
+    const advanced = NodePath.join(generation, "advanced-state");
+    await NodeFSP.mkdir(advanced, { recursive: true, mode: 0o700 });
+    const binding = { transactionId: cleanupId, qualified: { fixture: "terminal-binding" } };
+    await NodeFSP.writeFile(
+      NodePath.join(generation, "paired-binding.json"),
+      JSON.stringify(binding),
+    );
+    for (const directory of [generation, advanced]) {
+      for (const name of recoveryNames)
+        await NodeFSP.writeFile(NodePath.join(directory, name), "recovery");
+      for (const name of ["paired-settings.json", "rename-journal.json", "unknown-extra"])
+        await NodeFSP.writeFile(NodePath.join(directory, name), "keep");
+    }
+    await NodeFSP.writeFile(NodePath.join(generation, "resume-dispatched.json"), "keep");
+    for (const suffix of ["-wal", "-shm"])
+      await NodeFSP.writeFile(`${database}${suffix}`, "live-sidecar");
+    for (const name of QUALIFIED_STARTUP_STATE_FILES)
+      await NodeFSP.writeFile(NodePath.join(base, "userdata", name), "live-settings");
+    const live = await Promise.all(
+      [
+        database,
+        `${database}-wal`,
+        `${database}-shm`,
+        ...QUALIFIED_STARTUP_STATE_FILES.map((name) => NodePath.join(base, "userdata", name)),
+      ].map(async (path) => ({
+        path,
+        stat: await NodeFSP.stat(path, { bigint: true }),
+        bytes: await NodeFSP.readFile(path),
+      })),
+    );
+    try {
+      await body({
+        base,
+        database,
+        generation,
+        advanced,
+        binding,
+        remove: (terminal = "committed") =>
+          removeQualifiedRecoveryPayload(base, cleanupId, database, binding, terminal),
+      });
+    } finally {
+      vi.restoreAllMocks();
+      for (const file of live) {
+        const stat = await NodeFSP.stat(file.path, { bigint: true });
+        assert.equal(stat.dev, file.stat.dev);
+        assert.equal(stat.ino, file.stat.ino);
+        assert.deepEqual(await NodeFSP.readFile(file.path), file.bytes);
+      }
+    }
+  });
+}
+
+async function completedRestore(generation: string, database: string, name = "database") {
+  const source = NodePath.join(generation, name);
+  const target = name === "database" ? database : NodePath.join(NodePath.dirname(database), name);
+  const temporary = `${target}.restore-${NodeCrypto.createHash("sha256").update(source).digest("hex").slice(0, 16)}`;
+  const intent = NodePath.join(generation, `.${name}-restore.json`);
+  await NodeFSP.writeFile(intent, JSON.stringify({ source, target, temporary }));
+  // Completed restore identities are historical; live WAL and settings may have been replaced.
+  await NodeFSP.writeFile(`${intent}.complete`, JSON.stringify({ device: "0", inode: "0" }));
+  return { source, target, temporary, intent };
+}
+
+it("removes only exact qualified payload names and is idempotent, preserving unknown entries and directories", async () => {
+  await cleanupFixture(async ({ generation, advanced, remove }) => {
+    await remove();
+    await remove();
+    for (const directory of [generation, advanced]) {
+      assert.isTrue((await NodeFSP.lstat(directory)).isDirectory());
+      for (const name of recoveryNames)
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(directory, name)), { code: "ENOENT" });
+      for (const name of ["paired-settings.json", "rename-journal.json", "unknown-extra"])
+        assert.equal(await NodeFSP.readFile(NodePath.join(directory, name), "utf8"), "keep");
+    }
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(generation, "resume-dispatched.json"), "utf8"),
+      "keep",
+    );
+  });
+});
+
+it.each([
+  "runtime",
+  "db-backup",
+  "generation",
+  "advanced-state",
+  "payload-symlink",
+  "payload-hardlink",
+  "payload-directory",
+  "writable-directory",
+  "wrong-owner",
+  "binding",
+  "live-identity",
+  "settings-hardlink",
+])("holds unsafe recovery cleanup: %s", async (attack) => {
+  await cleanupFixture(async ({ base, database, generation, advanced, remove }) => {
+    const payload = NodePath.join(generation, "database");
+    if (["runtime", "db-backup", "generation", "advanced-state"].includes(attack)) {
+      const path =
+        attack === "runtime"
+          ? NodePath.join(base, "runtime")
+          : attack === "db-backup"
+            ? NodePath.dirname(generation)
+            : attack === "generation"
+              ? generation
+              : advanced;
+      await NodeFSP.rename(path, `${path}-original`);
+      await NodeFSP.symlink(`${path}-original`, path);
+    } else if (attack === "writable-directory") await NodeFSP.chmod(generation, 0o777);
+    else if (attack === "binding")
+      await NodeFSP.writeFile(NodePath.join(generation, "paired-binding.json"), "{}");
+    else if (attack === "wrong-owner") {
+      const original = NodeFSP.lstat;
+      vi.spyOn(NodeFSP, "lstat").mockImplementation(
+        async (...args: Parameters<typeof NodeFSP.lstat>) => {
+          const stat = await original(...args);
+          return String(args[0]).endsWith(cleanupId)
+            ? Object.assign(stat, { uid: BigInt(stat.uid) + 1n })
+            : stat;
+        },
+      );
+    } else if (attack === "live-identity") {
+      const original = NodeFSP.lstat;
+      const live = await NodeFSP.lstat(database, { bigint: true });
+      vi.spyOn(NodeFSP, "lstat").mockImplementation(
+        async (...args: Parameters<typeof NodeFSP.lstat>) => {
+          const stat = await original(...args);
+          return String(args[0]).endsWith("/database")
+            ? Object.assign(stat, { dev: live.dev, ino: live.ino })
+            : stat;
+        },
+      );
+    } else {
+      const selected =
+        attack === "settings-hardlink" ? NodePath.join(generation, "settings.json") : payload;
+      await NodeFSP.unlink(selected);
+      if (attack === "payload-directory") await NodeFSP.mkdir(selected);
+      else if (attack === "payload-symlink") await NodeFSP.symlink(database, selected);
+      else
+        await NodeFSP.link(
+          attack === "settings-hardlink"
+            ? NodePath.join(base, "userdata", "settings.json")
+            : database,
+          selected,
+        );
+    }
+    await NodeAssert.rejects(remove());
+    assert.isTrue((await NodeFSP.stat(advanced)).isDirectory());
+    assert.isTrue((await NodeFSP.stat(generation)).isDirectory());
+  });
+});
+
+it.each(["..", cleanupId.toUpperCase(), "not-a-uuid"])(
+  "rejects cleanup update ID %s",
+  async (id) => {
+    await cleanupFixture(async ({ base, database, binding, generation }) => {
+      await NodeAssert.rejects(
+        removeQualifiedRecoveryPayload(
+          base,
+          id,
+          database,
+          { ...binding, transactionId: id },
+          "committed",
+        ),
+        /invalid-update-id/,
+      );
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"),
+        "recovery",
+      );
+    });
+  },
+);
+
+it("holds a directory swap after pinning without deleting live files", async () => {
+  await cleanupFixture(async ({ generation, base, remove }) => {
+    const original = NodeFSP.open;
+    let swapped = false;
+    vi.spyOn(NodeFSP, "open").mockImplementation(
+      async (...args: Parameters<typeof NodeFSP.open>) => {
+        const handle = await original(...args);
+        if (!swapped && String(args[0]).endsWith(cleanupId)) {
+          swapped = true;
+          await NodeFSP.rename(generation, `${generation}-original`);
+          await NodeFSP.symlink(NodePath.join(base, "userdata"), generation);
+        }
+        return handle;
+      },
+    );
+    await NodeAssert.rejects(remove(), /directory-changed/);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-original`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("retries a partially unlinked payload without touching receipts", async () => {
+  await cleanupFixture(async ({ generation, remove }) => {
+    const original = NodeFSP.unlink;
+    let count = 0;
+    const unlink = vi.spyOn(NodeFSP, "unlink").mockImplementation(async (path) => {
+      if (++count === 2) throw Object.assign(new Error("fixture interruption"), { code: "EIO" });
+      await original(path);
+    });
+    await NodeAssert.rejects(remove());
+    await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(generation, "database")), {
+      code: "ENOENT",
+    });
+    unlink.mockRestore();
+    await remove();
+    assert.isTrue((await NodeFSP.lstat(NodePath.join(generation, "paired-binding.json"))).isFile());
+  });
+});
+
+it("releases completed rollback journals despite rotated live WAL and settings identities", async () => {
+  await cleanupFixture(async ({ generation, database, advanced, remove }) => {
+    for (const name of ["database", "database-wal", "settings.json"])
+      await completedRestore(generation, database, name);
+    await NodeFSP.writeFile(NodePath.join(generation, ".restore-pending"), "");
+    await remove("rolled-back");
+    await remove("rolled-back");
+    for (const name of ["database", "database-wal", "settings.json"])
+      for (const suffix of ["", ".complete"])
+        assert.isTrue(
+          (
+            await NodeFSP.lstat(NodePath.join(generation, `.${name}-restore.json${suffix}`))
+          ).isFile(),
+        );
+    assert.isTrue((await NodeFSP.lstat(advanced)).isDirectory());
+    assert.isTrue((await NodeFSP.lstat(NodePath.join(generation, ".restore-pending"))).isFile());
+  });
+});
+
+it.each([
+  "missing-intent",
+  "missing-completion",
+  "missing-main-pair",
+  "temporary-present",
+  "wrong-source",
+  "wrong-temporary",
+  "invalid-completion",
+  "payload-completion",
+  "journal-symlink",
+  "journal-hardlink",
+])("holds incomplete rollback cleanup: %s", async (attack) => {
+  await cleanupFixture(async ({ generation, database, remove }) => {
+    const journal = await completedRestore(generation, database);
+    if (attack === "missing-intent" || attack === "missing-main-pair")
+      await NodeFSP.unlink(journal.intent);
+    if (attack === "missing-completion" || attack === "missing-main-pair")
+      await NodeFSP.unlink(`${journal.intent}.complete`);
+    if (attack === "temporary-present") await NodeFSP.writeFile(journal.temporary, "unfinished");
+    if (attack === "wrong-source" || attack === "wrong-temporary")
+      await NodeFSP.writeFile(
+        journal.intent,
+        JSON.stringify({
+          source: attack === "wrong-source" ? database : journal.source,
+          target: journal.target,
+          temporary: attack === "wrong-temporary" ? database : journal.temporary,
+        }),
+      );
+    if (attack === "invalid-completion")
+      await NodeFSP.writeFile(
+        `${journal.intent}.complete`,
+        JSON.stringify({ device: 0, inode: "x" }),
+      );
+    if (attack === "payload-completion") {
+      const stat = await NodeFSP.stat(journal.source, { bigint: true });
+      await NodeFSP.writeFile(
+        `${journal.intent}.complete`,
+        JSON.stringify({ device: stat.dev.toString(), inode: stat.ino.toString() }),
+      );
+    }
+    if (attack === "journal-symlink" || attack === "journal-hardlink") {
+      await NodeFSP.unlink(journal.intent);
+      if (attack === "journal-symlink") await NodeFSP.symlink(database, journal.intent);
+      else await NodeFSP.link(database, journal.intent);
+    }
+    await NodeAssert.rejects(remove("rolled-back"));
+    assert.equal(await NodeFSP.readFile(journal.source, "utf8"), "recovery");
+  });
+});
+
+it.each(["committed", "failed-before-trial"] as const)(
+  "holds unexpected restore evidence for %s",
+  async (terminal) => {
+    for (const name of [
+      ".restore-pending",
+      ".settings.json-restore.json",
+      ".database-restore.json.complete",
+    ]) {
+      await cleanupFixture(async ({ generation, remove }) => {
+        await NodeFSP.writeFile(NodePath.join(generation, name), "{}");
+        await NodeAssert.rejects(remove(terminal), /restore-intent-unexpected/);
+        assert.equal(
+          await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"),
+          "recovery",
+        );
+      });
+    }
+  },
+);
+
+it("holds a directory replacement immediately before payload unlink", async () => {
+  await cleanupFixture(async ({ generation, base, remove }) => {
+    const original = NodeFSP.lstat;
+    let observations = 0;
+    vi.spyOn(NodeFSP, "lstat").mockImplementation(
+      async (...args: Parameters<typeof NodeFSP.lstat>) => {
+        const stat = await original(...args);
+        if (String(args[0]).endsWith("/database") && ++observations === 3) {
+          // Generation and advanced payload scans precede the unlink-time identity check.
+          await NodeFSP.rename(generation, `${generation}-original`);
+          await NodeFSP.symlink(NodePath.join(base, "userdata"), generation);
+        }
+        return stat;
+      },
+    );
+    await NodeAssert.rejects(remove(), /directory-changed/);
+    assert.equal(observations, 3);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-original`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("rejects an aliased base and treats an absent generation as already removed", async () => {
+  await cleanupFixture(async ({ base, database, binding, remove, generation }) => {
+    const alias = NodePath.join(base, "alias");
+    await NodeFSP.symlink(base, alias);
+    await NodeAssert.rejects(
+      removeQualifiedRecoveryPayload(alias, cleanupId, database, binding, "committed"),
+      /invalid-native-home/,
+    );
+    await NodeFSP.rename(generation, `${generation}-preserved`);
+    await remove();
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-preserved`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("refuses unavailable pinned-directory access instead of treating it as a missing generation", async () => {
+  await cleanupFixture(async ({ generation, remove }) => {
+    vi.spyOn(NodeFSP, "stat").mockRejectedValue(
+      Object.assign(new Error("fixture descriptor unavailable"), { code: "ENOENT" }),
+    );
+    await NodeAssert.rejects(remove(), /directory-access-unavailable/);
+    assert.equal(await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"), "recovery");
   });
 });

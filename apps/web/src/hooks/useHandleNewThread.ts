@@ -14,10 +14,9 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { newDraftId, newThreadId } from "../lib/utils";
-import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
+import { useSidebarProjectGroups } from "./useSidebarProjectGroups";
 import {
   deriveLogicalProjectKeyFromSettings,
-  getProjectOrderKey,
   selectProjectGroupingSettings,
 } from "../logicalProject";
 import { resolveNewThreadEnvMode, resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -26,7 +25,6 @@ import {
   readProjects,
   readThreadShell,
   readThreadShells,
-  useProjects,
   useQuietThreadShell,
 } from "../state/entities";
 import {
@@ -38,7 +36,6 @@ import { readT3ProjectFile } from "../lib/t3ProjectFileDefaults";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentServerConfigsAtom } from "../state/server";
 import { resolveThreadRouteTarget } from "../threadRoutes";
-import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
 import { useClientSettings } from "./useSettings";
 import { useThreadRouteTarget } from "./useThreadRouteTarget";
 
@@ -384,7 +381,6 @@ export function useNewThreadHandler() {
 }
 
 export function useHandleNewThread() {
-  const projectOrder = useUiStateStore((store) => store.projectOrder);
   const routeTarget = useThreadRouteTarget();
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const routeDraftId = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
@@ -397,17 +393,8 @@ export function useHandleNewThread() {
         : useComposerDraftStore.getState().getDraftSession(routeTarget.draftId)
       : null,
   );
-  const projects = useProjects();
   const handleNewThread = useNewThreadHandler();
-  const [defaultProject] = orderItemsByPreferredIds({
-    items: projects,
-    preferredIds: projectOrder,
-    getId: getProjectOrderKey,
-    getPreferenceIds: (project) => [
-      getProjectOrderKey(project),
-      legacyProjectCwdPreferenceKey(project.workspaceRoot),
-    ],
-  });
+  const [defaultProject] = useSidebarProjectGroups();
   const defaultProjectRef = defaultProject
     ? scopeProjectRef(defaultProject.environmentId, defaultProject.id)
     : null;

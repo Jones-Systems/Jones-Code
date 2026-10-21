@@ -65,6 +65,19 @@ describe("settlement inbox", () => {
     ).toBe(refreshed);
   });
 
+  it("removes only positively excluded threads in the matching environment and keeps acknowledgements", () => {
+    const child = entry("child");
+    const elsewhere = entry("child", 200, otherEnv);
+    const missing = entry("missing");
+    const inbox = dismiss(withEntries(child, elsewhere, missing), [entry("older").id]);
+    const refreshed = refreshThreads(inbox, env, new Map(), new Set(), new Set([child.threadId]));
+    expect(refreshed.entries).toEqual([{ ...missing, threadGone: true }, elsewhere]);
+    expect(refreshed.acknowledged).toEqual([child.id, entry("older").id]);
+    expect(refreshThreads(refreshed, env, new Map(), new Set(), new Set([child.threadId]))).toBe(
+      refreshed,
+    );
+  });
+
   it("never evicts pending titles or acknowledgement tombstones by age/count", () => {
     const entries = Array.from({ length: 2_101 }, (_, index) => entry(`thread-${index}`, index));
     const inbox = withEntries(...entries);

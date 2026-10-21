@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ORCHESTRATION_PROTOCOL_VERSION } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -21,6 +22,11 @@ import {
 } from "../cloud/config.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
+
+const buildMetadata = vi.hoisted(
+  () => ({ version: "0.0.45-preview.20261020.42.1" }) as Record<string, unknown>,
+);
+vi.mock("../../package.json", () => ({ default: buildMetadata }));
 
 const isServerEnvironmentIdPersistenceError = Schema.is(
   ServerEnvironment.ServerEnvironmentIdPersistenceError,
@@ -93,6 +99,30 @@ const layerIsolatedServerConfig = (baseDir: string) =>
   );
 
 it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+  it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
+    "forwards only valid embedded build time %s with the descriptor version",
+    (startedAt) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped();
+        if (startedAt === undefined) delete buildMetadata.jonesBuildStartedAt;
+        else buildMetadata.jonesBuildStartedAt = startedAt;
+        const descriptor = yield* Effect.gen(function* () {
+          return yield* (yield* ServerEnvironment.ServerEnvironment).getDescriptor;
+        }).pipe(
+          Effect.provide(layerServerEnvironment(baseDir)),
+          Effect.ensuring(
+            Effect.sync(() => {
+              delete buildMetadata.jonesBuildStartedAt;
+            }),
+          ),
+        );
+        expect(descriptor.serverVersion).toBe(buildMetadata.version);
+        expect(descriptor.jonesBuildStartedAt).toBe(
+          startedAt === "invalid" ? undefined : startedAt,
+        );
+      }),
+  );
   it.effect("publishes proven install ownership only for manually updated servers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

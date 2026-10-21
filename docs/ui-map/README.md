@@ -9,8 +9,8 @@ the affected entry below. Reusable principles remain in the maintained
 ## Coverage and discovery
 
 This is a **partial** map of the shared web/desktop renderer's thread/chat and
-settings routes. It records known entry paths within that boundary, not all
-Jones Code views or every setting's behavior. Pull requests, usage, conversations,
+settings routes, plus the usage metrics entry. It records known entry paths within that boundary, not all
+Jones Code views or every setting's behavior. Pull requests, conversations,
 work queues, design requests and native mobile screens are not mapped. Native
 shells, provider execution, remote/relay/tunnel modes and authenticated external
 services need separate checks; a shared-renderer result cannot qualify them.
@@ -19,6 +19,12 @@ services need separate checks; a shared-renderer result cannot qualify them.
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
 | [Thread/chat](thread-chat.md) | Index/empty, draft, server thread, loading/missing; direct routes, sidebar, palette/shortcuts, links, notifications and reopen | Draft and server routes share ChatView; sidebar, composer, timeline and right-panel consumers are linked in the entry | Source-discovered; runtime `unverified` |
 | [Settings](settings.md)       | General and all discovered settings siblings; direct routes, navigation/search, scope selectors and contextual links           | Shared shell, settings rows/search targets and workspace header/container consumers are linked in the entry           | Source-discovered; runtime `unverified` |
+
+The [usage metrics entry](usage.md) covers totals, model percentages, cache-write
+details, and their focused shared-renderer verification.
+
+The [host-status companion entry](host-status.md) covers telemetry continuity
+across thread, draft, panel and Settings navigation, with focused runtime evidence.
 
 Discovery checked on **2026-10-20** against Jones Code source
 `e7527d88ef438daa443e49a84d59e9891415918b`: routes, navigation callers, shared

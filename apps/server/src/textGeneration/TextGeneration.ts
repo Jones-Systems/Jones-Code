@@ -17,6 +17,8 @@ export type {
   CommitMessageGenerationResult,
   PrContentGenerationInput,
   PrContentGenerationResult,
+  RemoteRequestEvaluationInput,
+  RemoteRequestEvaluationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
   ThreadTitleGenerationInput,
@@ -28,6 +30,7 @@ export class TextGeneration extends Context.Service<TextGeneration, ProviderText
 ) {}
 
 type TextGenerationOp =
+  | "evaluateRemoteRequest"
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
@@ -57,6 +60,10 @@ export const make = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   const sourceControl = yield* SourceControlProviderRegistry.SourceControlProviderRegistry;
   return TextGeneration.of({
+    evaluateRemoteRequest: (input) =>
+      resolveInstance(registry, "evaluateRemoteRequest", input.modelSelection.instanceId).pipe(
+        Effect.flatMap((textGeneration) => textGeneration.evaluateRemoteRequest(input)),
+      ),
     generateCommitMessage: (input) =>
       resolveInstance(registry, "generateCommitMessage", input.modelSelection.instanceId).pipe(
         Effect.flatMap((textGeneration) => textGeneration.generateCommitMessage(input)),

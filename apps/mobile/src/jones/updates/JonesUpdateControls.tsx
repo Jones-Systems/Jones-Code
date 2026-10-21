@@ -1,4 +1,7 @@
+import { jonesBuildLabels, type JonesBuildRef } from "@t3tools/shared/jones/buildTime";
+import { JonesBuildVersion } from "./JonesBuildVersion";
 import {
+  jonesCandidatePresentation,
   jonesFollowerHold,
   jonesFollowerSummary,
   jonesUpdateActionError,
@@ -43,9 +46,33 @@ export function JonesUpdateControls({
   // A host that follows its laptop takes only the laptop's build; the host refuses others too.
   const followerHold = jonesFollowerHold(state);
   const followerSummary = jonesFollowerSummary(state);
+  const candidate = jonesCandidatePresentation(state);
+  const builds: Array<{ title: string; build: JonesBuildRef }> = [];
+  if (state.currentVersion !== undefined)
+    builds.push({
+      title: "Installed",
+      build: {
+        version: state.currentVersion,
+        startedAt: state.currentBuildStartedAt,
+        sourceSha: state.installedSource?.sha,
+      },
+    });
+  if (candidate !== undefined)
+    builds.push({
+      title: candidate.label,
+      build: {
+        version: candidate.version ?? "Version not reported",
+        startedAt: candidate.buildStartedAt,
+        sourceSha: candidate.sourceSha,
+      },
+    });
+  const labels = jonesBuildLabels(builds.map(({ build }) => build));
   return (
     <SettingsSection title="Jones main builds">
       <View className="gap-2 p-4">
+        {builds.map(({ title, build }, index) => (
+          <JonesBuildVersion key={title} title={title} build={build} label={labels[index]!} />
+        ))}
         <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
         {followerSummary !== undefined ? (
           <Text className="text-sm text-foreground-muted">
@@ -64,7 +91,12 @@ export function JonesUpdateControls({
           <Text className="text-sm text-foreground-muted">Update {state.updateId}</Text>
         ) : null}
         {presentation.outcomeMessage ? (
-          <Text className="text-sm text-foreground-muted">{presentation.outcomeMessage}</Text>
+          <View className="gap-1">
+            <Text className="text-sm text-foreground-muted">{presentation.outcomeMessage}</Text>
+            <Text selectable className="text-sm text-foreground-muted">
+              {state.outcome?.fromVersion} → {state.outcome?.targetVersion}
+            </Text>
+          </View>
         ) : null}
         {state.migrationPlan ? (
           <Text className="text-sm text-foreground-muted">

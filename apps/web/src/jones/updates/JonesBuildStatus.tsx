@@ -18,7 +18,8 @@ import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { ITEM_ROW_CLASSNAME, ITEM_ROW_INNER_CLASSNAME } from "../../components/settings/itemRows";
-import { compactJonesVersionText } from "./buildVersion";
+import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
+import { outcomeBuildDetail, outcomeBuildRefs } from "./buildPairs";
 import type { JonesInstalledComparison } from "./installedSourceComparison";
 import {
   DETAIL_PANEL_CLASSNAME,
@@ -156,10 +157,22 @@ export function JonesBuildStatus({
   const busy = pending || presentation.busy || freshness !== "fresh";
   const provenance = state.provenance;
   const outcome = state.outcome;
+  const installedRef = {
+    version: state.currentVersion ?? "",
+    startedAt: state.currentBuildStartedAt,
+    sourceSha: state.installedSource?.sha,
+  };
+  const offeredRef = {
+    version: candidate?.version ?? "",
+    startedAt: provenance?.buildStartedAt,
+    sourceSha: candidate?.sourceSha,
+  };
+  const [installedLabel, offeredLabel] = jonesBuildLabels([installedRef, offeredRef], "day");
+  const outcomeLabels = outcome === undefined ? [] : jonesBuildLabels(outcomeBuildRefs(state));
   const outcomeText =
     outcome === undefined
       ? undefined
-      : `${compactJonesVersionText(outcome.fromVersion)} → ${compactJonesVersionText(outcome.targetVersion)}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+      : `${outcomeLabels[0]!.text} → ${outcomeLabels[1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
   const hasBuilds = state.currentVersion !== undefined || candidate !== undefined;
   const badge = comparison === null ? null : COMPARISON[comparison];
   const installedBadge =
@@ -178,6 +191,7 @@ export function JonesBuildStatus({
             label="installed version"
             version={state.currentVersion}
             sourceSha={state.installedSource?.sha}
+            buildLabel={installedLabel}
           />
         </span>
       ) : null}
@@ -200,6 +214,7 @@ export function JonesBuildStatus({
               label={`${candidate.label.toLowerCase()} version`}
               version={candidate.version}
               sourceSha={candidate.sourceSha}
+              buildLabel={offeredLabel}
             />
           ) : (
             <CopyableValue
@@ -320,9 +335,21 @@ export function JonesBuildStatus({
           </p>
         ) : null}
         {outcome !== undefined && outcome.status !== "committed" ? (
-          <p role="status" className="text-destructive">
-            {outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: {outcomeText}
-          </p>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <p
+                  role="status"
+                  className="text-destructive"
+                  tabIndex={0}
+                  aria-label={`${outcome.status}: ${outcomeBuildDetail(state)}${outcome.reason ? `; ${outcome.reason}` : ""}`}
+                />
+              }
+            >
+              {outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: {outcomeText}
+            </TooltipTrigger>
+            <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
+          </Tooltip>
         ) : null}
         {state.capability.reason === "bootstrap-required" ? (
           <p className="text-muted-foreground">
@@ -337,6 +364,9 @@ export function JonesBuildStatus({
                   <CopyableValue label="installed version" value={state.currentVersion} />
                 </DetailItem>
               ) : null}
+              <DetailItem label="Installed built">
+                {jonesBuildLabel(installedRef).detail}
+              </DetailItem>
               <DetailItem label="Installed source">
                 {state.installedSource === undefined ? (
                   "not reported"
@@ -358,6 +388,9 @@ export function JonesBuildStatus({
                         value={candidate.version}
                       />
                     )}
+                  </DetailItem>
+                  <DetailItem label={`${candidate.label} built`}>
+                    {jonesBuildLabel(offeredRef).detail}
                   </DetailItem>
                   <DetailItem label={`${candidate.label} source`}>
                     <CopyableValue label="source commit" value={candidate.sourceSha} />
@@ -387,7 +420,15 @@ export function JonesBuildStatus({
                 </DetailItem>
               ) : null}
               {outcome !== undefined ? (
-                <DetailItem label="Last update">{presentation.outcomeMessage}</DetailItem>
+                <>
+                  <DetailItem label="Last update">{presentation.outcomeMessage}</DetailItem>
+                  <DetailItem label="From version">
+                    <CopyableValue label="outcome from version" value={outcome.fromVersion} />
+                  </DetailItem>
+                  <DetailItem label="Target version">
+                    <CopyableValue label="outcome target version" value={outcome.targetVersion} />
+                  </DetailItem>
+                </>
               ) : null}
             </DetailList>
           </div>

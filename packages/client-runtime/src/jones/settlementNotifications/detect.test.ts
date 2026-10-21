@@ -103,6 +103,46 @@ describe("settlement detection", () => {
     }
   });
 
+  it("suppresses direct, nested, archived and deleted subagents without losing baseline history", () => {
+    const parent = thread("parent").id;
+    const childLineage = {
+      rootThreadId: parent,
+      parentThreadId: parent,
+      relationshipToParent: "subagent" as const,
+    };
+    const rows = [
+      thread("parent", 200),
+      thread("fork", 200, { lineage: { ...childLineage, relationshipToParent: "fork" } }),
+      thread("mcp-child", 300, { lineage: childLineage, createdBy: "agent" }),
+      thread("provider-child", 400, { lineage: childLineage }),
+      thread("nested", 500, {
+        lineage: { ...childLineage, parentThreadId: thread("mcp-child").id },
+      }),
+      thread("deleted-child", 600, { lineage: childLineage, deletedAt: DateTime.makeUnsafe(700) }),
+    ];
+    const archived = thread("archived-child", 800, {
+      lineage: childLineage,
+      archivedAt: DateTime.makeUnsafe(900),
+    });
+    const result = observeEnvironment(baseline(), input(shell(2, rows, [archived])));
+    expect(result.kind).toBe("compare");
+    if (result.kind === "compare") {
+      expect(result.arrivals.map((arrival) => arrival.threadId)).toEqual(["parent", "fork"]);
+      expect(result.baseline.threads).toEqual({
+        parent: 200,
+        fork: 200,
+        "mcp-child": 300,
+        "provider-child": 400,
+        nested: 500,
+        "deleted-child": 600,
+        "archived-child": 800,
+      });
+      expect(result.baseline.watermarkMs).toBe(800);
+      expect(result.threadTitles.get(thread("nested").id)).toBe("nested");
+      expect(result.goneThreadIds.has(thread("deleted-child").id)).toBe(true);
+    }
+  });
+
   it("skips regressed sequences until the reset interval then silently rebaselines", () => {
     const prev = baseline({ snapshotSequence: 10 });
     const state = shell(1, [thread("thread-a", 200)]);

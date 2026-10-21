@@ -52,6 +52,7 @@ export type T3McpToolSummaryAction =
   | "project-delete"
   | "project-clone"
   | "environment-read"
+  | "environment-links"
   | "environment-update"
   | "attachment-prepare"
   | "attachment-discard"
@@ -144,6 +145,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   delete_scheduled_task: tool(
     ["Delete", "Deleting", "Requested deletion of", "a scheduled task"],
     "schedule-delete",
+  ),
+  t3_request_user_response: tool(
+    ["Request", "Requesting", "Requested", "owner response"],
+    "question-respond",
   ),
   request_secret: tool(["Ask for", "Asking for", "Asked for", "a secret"], "secret-request"),
   create_threads: tool(["Create", "Creating", "Created", "T3 threads"], "thread-create"),
@@ -318,6 +323,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_environment_read: tool(
     ["Read", "Reading", "Read", "environment preferences"],
     "environment-read",
+  ),
+  t3_environment_links: tool(
+    ["List", "Listing", "Listed", "linked environments"],
+    "environment-links",
   ),
   t3_environment_preferences_update: tool(
     ["Update", "Updating", "Updated", "environment preferences"],

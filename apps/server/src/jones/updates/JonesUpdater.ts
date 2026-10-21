@@ -1,5 +1,6 @@
 // @effect-diagnostics globalTimers:off globalDate:off
 // Promise boundary is also exercised without an Effect runtime; timers drive subscriptions and installation progress.
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 import type {
   JonesUpdatePolicy,
   JonesUpdateState,
@@ -67,10 +68,24 @@ export interface JonesUpdaterHost {
 interface JonesCheckRun {
   readonly state: JonesUpdateState;
   readonly candidate: JonesActionsCandidate | undefined;
+  readonly buildStartedAt?: string;
+}
+
+export function readCurrentJonesBuildStartedAt(
+  metadata: unknown,
+  currentVersion: string,
+): string | undefined {
+  return typeof metadata === "object" &&
+    metadata !== null &&
+    "version" in metadata &&
+    metadata.version === currentVersion
+    ? readJonesBuildStartedAt(metadata)
+    : undefined;
 }
 
 function candidateProvenance(
   candidate: JonesActionsCandidate,
+  buildStartedAt: string | undefined,
 ): NonNullable<JonesUpdateState["provenance"]> {
   return {
     repository: candidate.repository,
@@ -84,6 +99,7 @@ function candidateProvenance(
     platform: candidate.platform,
     architecture: candidate.architecture,
     version: candidate.version,
+    ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
   };
 }
 
@@ -114,6 +130,7 @@ export class JonesUpdater {
   private revision = 0;
   private busy = false;
   private candidate: JonesActionsCandidate | undefined;
+  private candidateBuildStartedAt: string | undefined;
   /** The one check run on this host, keyed by its target (`latest` for the newest main build). */
   private inflight: { readonly key: string; readonly promise: Promise<JonesCheckRun> } | undefined;
   /** The one unaccepted preparation; a policy change can stop it. Installs are never here. */
@@ -326,7 +343,7 @@ export class JonesUpdater {
     return promise;
   }
 
-  /** Runs one check under the busy latch held by `checkRun`; its candidate is returned, not kept. */
+  /** Runs one check under the busy latch; its result keeps candidate display metadata paired. */
   private async runCheck(targetSource: string | undefined): Promise<JonesCheckRun> {
     const staged = this.state.stagedHandle !== undefined;
     // A host that already holds a settled result keeps showing it until this check replaces it.
@@ -342,10 +359,12 @@ export class JonesUpdater {
       const checkedAt = new Date().toISOString();
       if (result.state === "available") {
         const candidate = result.candidate;
+        const buildStartedAt = result.buildStartedAt;
         // A follower offers only its laptop's build, with the tree the repository records for it.
         const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
         if (refusal !== undefined) {
           this.candidate = undefined;
+          this.candidateBuildStartedAt = undefined;
           return {
             state: this.publish(
               staged ? { checkedAt } : { phase: "blocked", checkedAt, message: refusal },
@@ -354,15 +373,22 @@ export class JonesUpdater {
           };
         }
         this.candidate = candidate;
-        if (staged) return { state: this.publish({ checkedAt }), candidate };
+        this.candidateBuildStartedAt = buildStartedAt;
+        if (staged)
+          return {
+            state: this.publish({ checkedAt }),
+            candidate,
+            ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+          };
         return {
           state: this.publish({
             phase: "available",
             checkedAt,
             message: "A qualified main build is ready to download.",
-            provenance: candidateProvenance(candidate),
+            provenance: candidateProvenance(candidate, buildStartedAt),
           }),
           candidate,
+          ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
         };
       }
       if (staged) return { state: this.publish({ checkedAt }), candidate: undefined };
@@ -417,7 +443,7 @@ export class JonesUpdater {
         : run.state;
     // Another request may have claimed the host while this one waited for its turn.
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
-    return this.stagedOutcome(targetSource) ?? this.stageCandidate(candidate);
+    return this.stagedOutcome(targetSource) ?? this.stageCandidate(candidate, run.buildStartedAt);
   }
 
   /** The result of asking for `targetSource` when a build is already staged, otherwise nothing. */
@@ -456,11 +482,14 @@ export class JonesUpdater {
         message: "The selected build changed. Check for updates again.",
       });
     }
-    return this.stageCandidate(candidate);
+    return this.stageCandidate(candidate, this.candidateBuildStartedAt);
   }
 
   /** Downloads and stages exactly `candidate` under the busy latch; the caller has chosen it. */
-  private stageCandidate(candidate: JonesActionsCandidate): Promise<JonesUpdateState> {
+  private stageCandidate(
+    candidate: JonesActionsCandidate,
+    buildStartedAt: string | undefined,
+  ): Promise<JonesUpdateState> {
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
       return Promise.resolve(this.snapshot());
     this.busy = true;
@@ -474,8 +503,9 @@ export class JonesUpdater {
       this.busy = false;
       settle(state);
     };
-    void this.prepareCandidate(candidate, controller.signal).then(finish, (cause: unknown) =>
-      finish(this.fail(cause)),
+    void this.prepareCandidate(candidate, buildStartedAt, controller.signal).then(
+      finish,
+      (cause: unknown) => finish(this.fail(cause)),
     );
     return done;
   }
@@ -483,6 +513,7 @@ export class JonesUpdater {
   /** Publishes the outcome, including a failure, as the host's state. */
   private async prepareCandidate(
     candidate: JonesActionsCandidate,
+    buildStartedAt: string | undefined,
     signal: AbortSignal,
   ): Promise<JonesUpdateState> {
     try {
@@ -503,7 +534,10 @@ export class JonesUpdater {
         ...(staged.migrationPlan === undefined ? {} : { migrationPlan: staged.migrationPlan }),
         message: "Downloaded and verified. Install is a separate action.",
         provenance: {
-          ...candidateProvenance(candidate),
+          ...candidateProvenance(
+            candidate,
+            staged.version === candidate.version ? buildStartedAt : undefined,
+          ),
           version: staged.version,
           payloadSha256: staged.payloadSha256,
         },
@@ -552,6 +586,7 @@ export class JonesUpdater {
       } = this.state;
       this.state = rest;
       this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
       this.publish({
         phase: "no-new",
         message: "The unaccepted staged selection was retired; its payload was retained.",

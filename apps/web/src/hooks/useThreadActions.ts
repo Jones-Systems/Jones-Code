@@ -1,5 +1,10 @@
 import { useMarkThreadUnread } from "../jones/threadReadDwell/useMarkThreadUnread";
 import {
+  newSettleCommandId,
+  readEnvironmentSupportsSettlementRestore,
+  restoreObservedSettlement,
+} from "../jones/settlementRestore/settlementRestore";
+import {
   parseScopedThreadKey,
   scopeProjectRef,
   scopeThreadRef,
@@ -693,6 +698,13 @@ export function useThreadActions() {
     const pinOrderKey = resolved?.thread.pinnedAt != null ? resolved.thread.pinOrderKey : null;
     const wasPinned = resolved?.thread.pinnedAt != null;
     const snoozedUntil = resolved?.thread.snoozedUntil ?? null;
+    // Jones: a server with native restore undoes exactly this settle command.
+    const settleCommandId = newSettleCommandId();
+    const nativeRestore = readEnvironmentSupportsSettlementRestore(target.environmentId);
+    const settleWasNoop =
+      resolved?.thread.settledOverride === "settled" &&
+      resolved.thread.settledAt != null &&
+      !wasPinned;
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
@@ -700,7 +712,7 @@ export function useThreadActions() {
     const action = ThreadUndo.begin("settle", scopedThreadKey(target));
     const result = await settleThreadMutation({
       environmentId: target.environmentId,
-      input: { threadId: target.threadId },
+      input: { threadId: target.threadId, commandId: settleCommandId },
     });
     if (result._tag !== "Success") {
       action.finish();
@@ -713,6 +725,9 @@ export function useThreadActions() {
       action: "Settled",
       claim: action,
       undo: async () => {
+        if (nativeRestore && readEnvironmentSupportsSettlementRestore(target.environmentId)) {
+          return restoreObservedSettlement(target, settleCommandId, { settleWasNoop });
+        }
         const unsettled = await unsettleThread(target);
         if (unsettled._tag !== "Success") return unsettled;
         if (wasPinned) {

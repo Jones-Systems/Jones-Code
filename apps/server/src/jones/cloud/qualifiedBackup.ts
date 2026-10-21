@@ -6,6 +6,7 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 export const QUALIFIED_STARTUP_STATE_FILES = [
   "settings.json",
   "keybindings.json",
@@ -108,10 +109,69 @@ async function cloneDarwinFile(source: string, target: string): Promise<void> {
 }
 
 // Copying a synthetic 8 GiB file on ext4, fs.copyFile's single kernel stream ran at about
-// 380 MiB/s and four concurrent 8 MiB positioned copies at about 760 MiB/s. Four matches
-// libuv's default thread pool; clone-capable filesystems never reach this fallback.
+// 380 MiB/s and four concurrent 8 MiB positioned copies at about 760 MiB/s.
+// Keep that ceiling; clone-capable filesystems never reach this fallback.
 const COPY_CHUNK_BYTES = 8 * 1024 * 1024;
 const COPY_CONCURRENCY = 4;
+
+function copyConcurrencyCap(): number {
+  try {
+    const available = NodeOS.availableParallelism();
+    return Number.isSafeInteger(available) && available >= 1
+      ? Math.min(COPY_CONCURRENCY, available)
+      : COPY_CONCURRENCY;
+  } catch {
+    return COPY_CONCURRENCY;
+  }
+}
+
+function sampleCopyConcurrency(cap: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const selected = new Promise<number>((resolve) => {
+    try {
+      const before = NodeOS.cpus();
+      // @effect-diagnostics-next-line globalTimers:off - The detached launcher must use Node built-ins and cannot load Effect.
+      timer = setTimeout(() => {
+        try {
+          const after = NodeOS.cpus();
+          if (before.length === 0 || before.length !== after.length) {
+            resolve(cap);
+            return;
+          }
+          let busy = 0;
+          let idle = 0;
+          for (const [index, cpu] of after.entries()) {
+            for (const field of ["user", "nice", "sys", "irq", "idle"] as const) {
+              const start = before[index]!.times[field];
+              const end = cpu.times[field];
+              const delta = end - start;
+              if (!Number.isFinite(start) || start < 0 || !Number.isFinite(delta) || delta < 0) {
+                resolve(cap);
+                return;
+              }
+              if (field === "idle") idle += delta;
+              else busy += delta;
+            }
+          }
+          const total = busy + idle;
+          if (!Number.isFinite(total) || total <= 0) {
+            resolve(cap);
+            return;
+          }
+          // Host CPU times are advisory, not cgroup-local usage. The baseline is already running.
+          const idleCores = (1 - busy / total) * after.length;
+          resolve(Math.min(cap, Math.max(1, 1 + Math.floor(idleCores))));
+        } catch {
+          resolve(cap);
+        }
+      }, 100);
+      timer.unref();
+    } catch {
+      resolve(cap);
+    }
+  });
+  return { selected, cancel: () => clearTimeout(timer) };
+}
 
 /** Linux full-copy fallback with fs.copyFile's EXCL, mode and failed-target cleanup; callers fsync. */
 async function copyFileConcurrently(source: string, target: string): Promise<void> {
@@ -141,8 +201,21 @@ async function copyFileConcurrently(source: string, target: string): Promise<voi
         failures.push(cause);
       }
     };
+    const baseline = copyChunks();
+    const loops = [baseline];
+    const cap = Math.min(copyConcurrencyCap(), Math.ceil(size / COPY_CHUNK_BYTES));
+    if (cap > 1) {
+      const sample = sampleCopyConcurrency(cap);
+      try {
+        const selected = await Promise.race([sample.selected, baseline.then(() => 1)]);
+        for (let worker = 1; worker < selected && failures.length === 0 && next < size; worker++)
+          loops.push(copyChunks());
+      } finally {
+        sample.cancel();
+      }
+    }
     // Every chunk settles before the handle closes, so no write lands after cleanup.
-    await Promise.all(Array.from({ length: COPY_CONCURRENCY }, copyChunks));
+    await Promise.all(loops);
     if (failures.length === 0)
       await output.chmod(mode & 0o7777).catch((cause: unknown) => failures.push(cause));
     await output.close().catch((cause: unknown) => failures.push(cause));
@@ -470,12 +543,7 @@ export async function retainQualifiedAdvancedState(
 
 /** Durable intent owns the one restore buffer; completed copies resume by inode without recopying. */
 export async function restoreQualifiedBackupFile(source: string, target: string): Promise<void> {
-  const identity = NodeCrypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
-  const temporary = `${target}.restore-${identity}`;
-  const directory = NodePath.dirname(source);
-  const intentPath = NodePath.join(directory, `.${NodePath.basename(source)}-restore.json`);
-  const completedPath = `${intentPath}.complete`;
-  const intent = { source, target, temporary };
+  const { temporary, intentPath, completedPath, intent } = restoreFileJournal(source, target);
   const readJson = async (file: string): Promise<unknown> => {
     await fileSize(file);
     return JSON.parse(await NodeFSP.readFile(file, "utf8"));
@@ -519,16 +587,7 @@ export async function restoreQualifiedBackupFile(source: string, target: string)
     await syncDirectory(NodePath.dirname(target));
     await writeJournal(completedPath, completed);
   }
-  if (
-    typeof completed !== "object" ||
-    completed === null ||
-    !("device" in completed) ||
-    typeof completed.device !== "string" ||
-    !/^\d+$/.test(completed.device) ||
-    !("inode" in completed) ||
-    typeof completed.inode !== "string" ||
-    !/^\d+$/.test(completed.inode)
-  )
+  if (!isRestoreCompletion(completed))
     throw new Error("Restore completion receipt is invalid; recovery held.");
   const exists = (await fileSize(temporary, true)) !== undefined;
   const stat = await NodeFSP.lstat(exists ? temporary : target, { bigint: true });
@@ -542,5 +601,248 @@ export async function restoreQualifiedBackupFile(source: string, target: string)
   if (exists) {
     await NodeFSP.rename(temporary, target);
     await syncDirectory(NodePath.dirname(target));
+  }
+}
+
+function restoreFileJournal(source: string, target: string) {
+  const identity = NodeCrypto.createHash("sha256").update(source).digest("hex").slice(0, 16);
+  const temporary = `${target}.restore-${identity}`;
+  const intentPath = NodePath.join(
+    NodePath.dirname(source),
+    `.${NodePath.basename(source)}-restore.json`,
+  );
+  return {
+    temporary,
+    intentPath,
+    completedPath: `${intentPath}.complete`,
+    intent: { source, target, temporary },
+  };
+}
+
+function isRestoreCompletion(value: unknown): value is { device: string; inode: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "device" in value &&
+    typeof value.device === "string" &&
+    /^\d+$/.test(value.device) &&
+    "inode" in value &&
+    typeof value.inode === "string" &&
+    /^\d+$/.test(value.inode)
+  );
+}
+
+/** Terminal authority comes from service state; receipts alone never authorize payload removal. */
+export async function removeQualifiedRecoveryPayload(
+  baseDir: string,
+  updateId: string,
+  liveDbPath: string,
+  expectedBinding: { readonly transactionId: string; readonly qualified: unknown },
+  terminal: "committed" | "rolled-back" | "failed-before-trial",
+): Promise<void> {
+  const fail = (category: string): never => {
+    throw new Error(`recovery-cleanup: ${category}`);
+  };
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(updateId) ||
+    NodePath.basename(updateId) !== updateId ||
+    expectedBinding.transactionId !== updateId
+  )
+    fail("invalid-update-id");
+  if (
+    (await NodeFSP.realpath(baseDir)) !== baseDir ||
+    liveDbPath !== NodePath.join(baseDir, "userdata", "statev2.sqlite")
+  )
+    fail("invalid-native-home");
+  const uid = process.getuid?.();
+  if (uid === undefined) fail("ownership-unavailable");
+  const same = (a: NodeFS.BigIntStats, b: NodeFS.BigIntStats) => a.dev === b.dev && a.ino === b.ino;
+  const statOptional = async (path: string) => {
+    try {
+      return await NodeFSP.lstat(path, { bigint: true });
+    } catch (cause) {
+      if (!isMissing(cause)) throw cause;
+      return undefined;
+    }
+  };
+  const directories: {
+    path: string;
+    handle: NodeFSP.FileHandle;
+    identity: NodeFS.BigIntStats;
+    access: string;
+  }[] = [];
+  const checkDirectories = async () => {
+    for (const directory of directories) {
+      const current = await statOptional(directory.path);
+      if (
+        current === undefined ||
+        !same(current, directory.identity) ||
+        !current.isDirectory() ||
+        current.uid !== BigInt(uid!) ||
+        (current.mode & 0o022n) !== 0n
+      )
+        fail("directory-changed");
+    }
+  };
+  const pin = async (path: string, access: string, optional = false) => {
+    const identity = await statOptional(access);
+    if (identity === undefined) {
+      if (optional) return undefined;
+      return fail("directory-missing");
+    }
+    if (!identity.isDirectory() || identity.uid !== BigInt(uid!) || (identity.mode & 0o022n) !== 0n)
+      fail("unsafe-directory");
+    const handle = await NodeFSP.open(
+      access,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY | NodeFS.constants.O_NOFOLLOW,
+    );
+    const directory = {
+      path,
+      handle,
+      identity,
+      // oxlint-disable-next-line t3code/no-global-process-runtime -- Detached launcher cleanup uses the native host and Node built-ins only.
+      access: process.platform === "linux" ? `/proc/self/fd/${handle.fd}` : path,
+    };
+    directories.push(directory);
+    if (!same(identity, await handle.stat({ bigint: true }))) fail("directory-changed");
+    const accessible = await NodeFSP.stat(directory.access, { bigint: true }).catch(() =>
+      fail("directory-access-unavailable"),
+    );
+    if (!same(identity, accessible)) fail("directory-changed");
+    await checkDirectories();
+    return directory;
+  };
+  const names = ["database", "database-wal", "database-shm", ...QUALIFIED_STARTUP_STATE_FILES];
+  try {
+    let parent = await pin(baseDir, baseDir);
+    for (const name of ["runtime", "db-backup", updateId]) {
+      parent = await pin(
+        NodePath.join(parent!.path, name),
+        NodePath.join(parent!.access, name),
+        true,
+      );
+      if (parent === undefined) return;
+    }
+    const generation = parent!;
+    const readJournal = async (name: string) => {
+      const path = NodePath.join(generation.access, name);
+      const identity = await statOptional(path);
+      if (identity === undefined || !identity.isFile() || identity.nlink !== 1n)
+        fail("unsafe-journal");
+      const handle = await NodeFSP.open(
+        path,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+      );
+      try {
+        if (!same(identity!, await handle.stat({ bigint: true }))) fail("journal-changed");
+        return JSON.parse(await handle.readFile("utf8")) as unknown;
+      } finally {
+        await handle.close();
+      }
+    };
+    if (!NodeUtil.isDeepStrictEqual(await readJournal("paired-binding.json"), expectedBinding))
+      fail("binding-mismatch");
+    const advanced = await pin(
+      NodePath.join(generation.path, "advanced-state"),
+      NodePath.join(generation.access, "advanced-state"),
+      true,
+    );
+    const payloadDirectories = advanced === undefined ? [generation] : [generation, advanced];
+    const candidates: {
+      directory: typeof generation;
+      name: string;
+      identity: NodeFS.BigIntStats;
+    }[] = [];
+    for (const directory of payloadDirectories) {
+      for (const name of names) {
+        const identity = await statOptional(NodePath.join(directory.access, name));
+        if (identity === undefined) continue;
+        if (!identity.isFile() || identity.nlink !== 1n) fail("unsafe-payload");
+        candidates.push({ directory, name, identity });
+      }
+    }
+    const completions: { device: string; inode: string }[] = [];
+    if (
+      terminal !== "rolled-back" &&
+      (await statOptional(NodePath.join(generation.access, ".restore-pending"))) !== undefined
+    )
+      fail("restore-intent-unexpected");
+    for (const directory of payloadDirectories) {
+      for (const name of names) {
+        const intentName = `.${name}-restore.json`;
+        const intentExists = await statOptional(NodePath.join(directory.access, intentName));
+        const completeExists = await statOptional(
+          NodePath.join(directory.access, `${intentName}.complete`),
+        );
+        if (terminal !== "rolled-back" || directory !== generation) {
+          if (intentExists !== undefined || completeExists !== undefined)
+            fail("restore-intent-unexpected");
+          continue;
+        }
+        if (intentExists === undefined && completeExists === undefined && name !== "database")
+          continue;
+        if (intentExists === undefined || completeExists === undefined) fail("restore-incomplete");
+        const intent = await readJournal(intentName);
+        if (
+          typeof intent !== "object" ||
+          intent === null ||
+          !("target" in intent) ||
+          typeof intent.target !== "string" ||
+          !NodePath.isAbsolute(intent.target)
+        )
+          fail("restore-incomplete");
+        const expected = restoreFileJournal(
+          NodePath.join(generation.path, name),
+          (intent as { target: string }).target,
+        );
+        if (
+          JSON.stringify(intent) !== JSON.stringify(expected.intent) ||
+          (await statOptional(expected.temporary)) !== undefined
+        )
+          fail("restore-incomplete");
+        const completed = await readJournal(`${intentName}.complete`);
+        if (!isRestoreCompletion(completed)) fail("restore-incomplete");
+        completions.push(completed as { device: string; inode: string });
+      }
+    }
+    const livePaths = [
+      ...SUFFIXES.map((suffix) => `${liveDbPath}${suffix}`),
+      ...QUALIFIED_STARTUP_STATE_FILES.map((name) => NodePath.join(baseDir, "userdata", name)),
+    ];
+    const assertDisjoint = async (identity: NodeFS.BigIntStats) => {
+      if (
+        completions.some(
+          (complete) =>
+            complete.device === identity.dev.toString() &&
+            complete.inode === identity.ino.toString(),
+        )
+      )
+        fail("restore-incomplete");
+      for (const path of livePaths) {
+        const live = await statOptional(path);
+        if (live !== undefined && (live.isSymbolicLink() || same(live, identity)))
+          fail("live-payload-overlap");
+      }
+    };
+    for (const candidate of candidates) await assertDisjoint(candidate.identity);
+    // Linux unlinks through the pinned fd. Other platforms revalidate the full walk on both sides.
+    // Same-uid writers remain trusted across the final lstat/unlink window.
+    for (const candidate of candidates) {
+      await checkDirectories();
+      const path = NodePath.join(candidate.directory.access, candidate.name);
+      const current = await statOptional(path);
+      if (current === undefined) continue;
+      if (!current.isFile() || current.nlink !== 1n || !same(current, candidate.identity))
+        fail("payload-changed");
+      await assertDisjoint(current);
+      await checkDirectories();
+      await NodeFSP.unlink(path).catch((cause: unknown) => {
+        if (!isMissing(cause)) throw cause;
+      });
+      await checkDirectories();
+    }
+    for (const directory of payloadDirectories) await directory.handle.sync();
+  } finally {
+    for (const directory of directories.toReversed()) await directory.handle.close();
   }
 }

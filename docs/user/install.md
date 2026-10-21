@@ -6,7 +6,8 @@ desktop, web, or mobile app. Set up the machine where the agents will work first
 > **Jones Code:** every installer on this page installs upstream T3 Code, not
 > Jones Code. That includes the `install.sh` and `install.ps1` scripts, `npx t3`,
 > GitHub Releases, package managers, and the mobile store apps. Jones Code Mac
-> builds are unsigned preview artifacts. See
+> builds are unsigned preview artifacts for Apple Silicon only. Jones Code supports
+> Apple Silicon Macs and Linux; Windows and Intel Macs are unsupported. See
 > [Mac desktop artifact](../operations/build-artifacts.md#mac-desktop-artifact)
 > for how they install and update. The upstream macOS app uses the same bundle
 > identifier as Jones Code. If both are installed, verify which app opens

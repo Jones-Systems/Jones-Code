@@ -15,6 +15,7 @@ import {
   discardLocalDesktopUpdate,
   downloadLocalDesktopUpdate,
   getJonesDesktopUpdateBuildUrl,
+  getJonesDesktopUpdateOutcomeMessage,
   installLocalDesktopUpdate,
 } from "./localDesktopUpdate";
 
@@ -433,6 +434,25 @@ describe("Jones local desktop update UI", () => {
       expect(isDesktopUpdateButtonDisabled(nextDownload)).toBe(false);
     },
   );
+
+  it("uses exact outcome matches for time labels and keeps an unmatched version whole", () => {
+    const state: DesktopUpdateState = {
+      ...downloaded,
+      jones: {
+        ...downloaded.jones!,
+        phase: "committed",
+        currentVersion: "1.0.0",
+        currentBuildStartedAt: "2026-10-20T21:13:43Z",
+        outcome: { status: "committed", fromVersion: "1.0.0", targetVersion: "1.1.0" },
+      },
+    };
+    expect(
+      getDesktopUpdateButtonTooltip({ ...state, status: "available", availableVersion: "1.0.0" }),
+    ).toContain("1020·1713 (1.0.0; Built");
+    expect(getJonesDesktopUpdateOutcomeMessage(state)).toBe(
+      "Update committed: 1020·1713 → 1.1.0 (1.0.0 → 1.1.0).",
+    );
+  });
 
   it("keeps upstream installs argument-free", async () => {
     const { jones: _jones, ...upstream } = downloaded;

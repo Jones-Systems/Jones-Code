@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-apple-silicon-platforms",
+      "tests": [
+        "scripts/jones/platforms/supportedTargets.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/lib/build-target-arch.test.ts",
+        "scripts/jones/preview-companion/packageVariant.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.test.ts scripts/lib/build-target-arch.test.ts scripts/jones/preview-companion/packageVariant.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/platforms/supportedTargets.ts scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.ts scripts/build-cli-archive.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
@@ -106,10 +121,11 @@
       "id": "jones-usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
-        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx",
+        "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx apps/web/src/components/usage/UsagePage.browser.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.test.tsx src/components/usage/usageBreakdown.test.ts src/components/usage/UsagePage.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -532,6 +548,35 @@
       ],
       "commands": [
         "vp test run apps/server/src/jones/mcp/organizationMetadata/OrganizationMetadataMcpService.test.ts apps/server/src/jones/mcp/organizationMetadata/handlers.test.ts packages/contracts/src/jones/organizationMetadata.test.ts"
+      ]
+    },
+    {
+      "id": "jones-settlement-restore",
+      "tests": [
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "packages/contracts/src/jones/settlementRestore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/settlementRestore/ packages/contracts/src/jones/settlementRestore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/orchestration-v2/SelfSettlement.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck"
+      ]
+    },
+    {
+      "id": "jones-settlement-restore-client",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
+        "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
+        "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+        "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
+        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementRestore/ apps/web/src/jones/settlementRestore/ apps/web/src/hooks/useThreadActionMenu.test.ts apps/web/src/hooks/useThreadActions.undo.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
@@ -1922,6 +1967,7 @@
       "id": "jones-watcher-restart-survival",
       "tests": [
         "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts",
         "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
         "apps/server/src/scheduledTasks/webhookRoute.test.ts",
         "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
@@ -1955,6 +2001,226 @@
       "commands": [
         "vp test run apps/server/src/jones/goals/GoalStartDispatch.test.ts apps/server/src/jones/goals/CodexGoalControl.test.ts apps/server/src/jones/goals/GoalControl.test.ts packages/contracts/src/jones/threadGoal.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts packages/shared/src/t3McpToolPresentation.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter @t3tools/shared --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-cross-host-integration",
+      "tests": [
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts",
+        "apps/server/src/mcp/linkOrigin.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "packages/client-runtime/src/state/peerLinks.test.ts",
+        "packages/client-runtime/src/state/commandPermissions.test.ts",
+        "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
+        "apps/mobile/src/state/thread-order.test.ts",
+        "apps/mobile/src/features/home/useThreadListActions.test.ts",
+        "apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+        "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
+        "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
+        "apps/server/src/cli/sshHelper.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/linkOrigin.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts packages/client-runtime/src/state/peerLinks.test.ts packages/client-runtime/src/state/commandPermissions.test.ts apps/mobile/src/features/threads/threadAgentsPresentation.test.ts apps/mobile/src/state/thread-order.test.ts apps/mobile/src/features/home/useThreadListActions.test.ts apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.activity.test.ts apps/server/src/cli/sshHelper.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/ThreadNotificationCoordinator.badge.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx src/components/ThreadNotificationCoordinator.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-remote-admission",
+      "tests": [
+        "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/target.test.ts",
+        "apps/web/src/jones/remoteAdmission/presentation.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-remote-delegation",
+      "tests": [
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "apps/server/src/jones/remoteDelegation/IntentStore.test.ts",
+        "apps/server/src/jones/remoteDelegation/Lifecycle.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/peer/RemoteDelegation.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts apps/server/src/jones/remoteDelegation/IntentStore.test.ts apps/server/src/jones/remoteDelegation/Lifecycle.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/peer/PeerForwarding.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-peer-transport",
+      "tests": [
+        "apps/server/src/jones/peerTransport/PeerMcpClient.test.ts",
+        "apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/peerTransport/PeerMcpClient.test.ts apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-peer-persistence",
+      "tests": [
+        "apps/server/src/jones/peerPersistence/PeerPersistence.test.ts",
+        "apps/server/src/peer/PeerLinks.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts",
+        "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/peerPersistence/PeerPersistence.test.ts apps/server/src/peer/PeerLinks.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts apps/server/src/persistence/reconcileV2PreviewMigration.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-remote-request-evaluation",
+      "tests": [
+        "packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts",
+        "packages/provider-core/src/server/textGenerationPrompts.test.ts",
+        "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "apps/server/src/textGeneration/ClaudeTextGeneration.test.ts",
+        "apps/server/src/textGeneration/CodexTextGeneration.test.ts",
+        "apps/server/src/git/GitManager.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/textGeneration/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck"
+      ]
+    },
+    {
+      "id": "jones-durable-owner-response",
+      "tests": [
+        "packages/contracts/src/jones/userResponseRequest.test.ts",
+        "apps/server/src/jones/orchestration/userInputRequestRecord.test.ts",
+        "apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/userResponseRequest.test.ts apps/server/src/jones/orchestration/userInputRequestRecord.test.ts apps/server/src/jones/mcp/userResponseRequest/UserResponseRequestMcpService.test.ts packages/shared/src/t3McpToolPresentation.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter @t3tools/provider-core typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-readable-build-labels",
+      "tests": [
+        "packages/shared/src/jones/buildTime.test.ts",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/jones/jonesUpdates.buildTime.test.ts",
+        "scripts/stamp-jones-build.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/mobile/src/jones/updates/buildVersion.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/buildVersion.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/buildTime.test.ts packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts scripts/stamp-jones-build.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts apps/mobile/src/jones/updates/buildVersion.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/jones/updates/clientUpdateBanner.test.tsx apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx apps/web/src/jones/environmentFilters/environmentFilters.test.ts apps/web/src/jones/updates/installedSourceComparison.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/build-desktop-artifact.test.ts scripts/jones/updates/build-provenance.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/mobile --filter @t3tools/web --filter @t3tools/desktop --filter @t3tools/scripts --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs"
+      ]
+    },
+    {
+      "id": "jones-thread-reference-only",
+      "tests": [
+        "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/lib/composerContextRecords.test.ts",
+        "apps/web/src/lib/composerContextReferences.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "packages/shared/src/jones/threadReferenceProjection.test.ts",
+        "packages/shared/src/composerContextReferences.test.ts",
+        "packages/contracts/src/jones/threadReferenceExcerpt.test.ts",
+        "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/web/src/components/chat/pendingDraftWork.test.ts",
+        "packages/contracts/src/composerContext.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts apps/web/src/pendingUserInput.test.ts apps/web/src/lib/composerContextRecords.test.ts apps/web/src/lib/composerContextReferences.test.ts apps/web/src/composerDraftStore.test.ts packages/shared/src/jones/threadReferenceProjection.test.ts packages/shared/src/composerContextReferences.test.ts packages/contracts/src/jones/threadReferenceExcerpt.test.ts packages/shared/src/jones/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts apps/server/src/jones/orchestration/threadReferenceTail.test.ts packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts apps/web/src/jones/threadReferenceExcerpt/capture.test.ts apps/server/src/auth/RpcAuthorization.test.ts apps/server/src/observability/RpcInstrumentation.test.ts apps/web/src/components/chat/pendingDraftWork.test.ts packages/contracts/src/composerContext.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/reactCompilerCoverage.test.ts --project unit --maxWorkers=1 -t 'compiles apps/web/src/(jones/(questionAnswer|threadReferenceExcerpt)/|components/chat/(ChatComposer|usePendingThreadRequests))'",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-staged-selection-recovery",
+      "tests": [
+        "apps/server/src/jones/updates/recoverStagedSelection.test.ts",
+        "scripts/jones/updates/recover-staged-selection.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/recoverStagedSelection.test.ts scripts/jones/updates/recover-staged-selection.test.ts apps/server/src/jones/updates/stagedSelection.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/updates/recoverStagedSelection.ts apps/server/src/jones/updates/recoverStagedSelection.test.ts scripts/jones/updates/recover-staged-selection.ts scripts/jones/updates/recover-staged-selection.test.ts apps/server/src/jones/updates/stagedSelection.ts",
+        "vp run --filter t3 typecheck",
+        "tsc-rs --project scripts/tsconfig.json --noEmit",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-presentation-order",
+      "tests": [
+        "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx",
+        "apps/web/src/jones/presentationOrder/environmentOrder.test.ts",
+        "apps/web/src/jones/presentationOrder/projectOrder.test.ts",
+        "apps/web/src/uiStateStore.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/hooks/useHandleNewThread.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/uiStateStore.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/hooks/useHandleNewThread.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/presentationOrder/SortableOrderList.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/components/CommandPalette.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/DraftHeroHeadline.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/settings/settingsSearch.ts apps/web/src/hooks/useHandleNewThread.test.ts apps/web/src/hooks/useHandleNewThread.ts apps/web/src/hooks/useLogicalProjectEnvironments.ts apps/web/src/hooks/useSidebarProjectGroups.ts apps/web/src/jones/workQueue/PromptsSettings.tsx apps/web/src/uiStateStore.test.ts apps/web/src/uiStateStore.ts apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx apps/web/src/jones/presentationOrder/SortableOrderList.tsx apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/environmentOrder.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

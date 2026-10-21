@@ -1,3 +1,4 @@
+import { jonesBuildLabels } from "@t3tools/shared/jones/buildTime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateProvenance,
@@ -251,10 +252,35 @@ export function jonesUpdatePresentation(state: JonesUpdateState) {
       ? "Installing — server restarting. Waiting for the launcher outcome."
       : (state.message ?? state.phase);
   const outcome = state.outcome;
+  const outcomeLabels =
+    outcome === undefined
+      ? undefined
+      : jonesBuildLabels([
+          {
+            version: outcome.fromVersion,
+            startedAt:
+              outcome.fromVersion === state.currentVersion
+                ? state.currentBuildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.fromVersion === state.currentVersion ? state.installedSource?.sha : undefined,
+          },
+          {
+            version: outcome.targetVersion,
+            startedAt:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.buildStartedAt
+                : undefined,
+            sourceSha:
+              outcome.targetVersion === state.provenance?.version
+                ? state.provenance.sourceSha
+                : undefined,
+          },
+        ]);
   const outcomeMessage =
     outcome === undefined
       ? undefined
-      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcome.fromVersion} → ${outcome.targetVersion}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
+      : `${outcome.status === "committed" ? "Installed" : outcome.status === "rolled-back" ? "Rolled back" : "Blocked"}: ${outcomeLabels![0]!.text} → ${outcomeLabels![1]!.text}${outcome.reason ? ` · ${outcome.reason}` : ""}`;
   return { busy, message, outcomeMessage };
 }
 
@@ -321,6 +347,7 @@ export function jonesCandidatePresentation(state: JonesUpdateState) {
           ? "Available"
           : "Offered",
     version: provenance.version,
+    buildStartedAt: provenance.buildStartedAt,
     sourceSha: provenance.sourceSha,
   };
 }

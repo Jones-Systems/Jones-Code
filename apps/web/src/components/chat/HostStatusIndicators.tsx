@@ -2,6 +2,7 @@ import type { EnvironmentId, HostStatusSnapshot } from "@t3tools/contracts";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
+  type HostStatusCache,
   HOST_STATUS_IDS,
   HOST_STATUS_NAMES,
   fetchHostStatus,
@@ -30,6 +31,12 @@ const metricClasses = {
 const bubbleClasses =
   "inline-flex h-8 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-xs font-medium tabular-nums";
 
+let retained: { environmentId: EnvironmentId; cache: HostStatusCache } | null = null;
+
+export function clearRetainedHostStatus(environmentId: EnvironmentId) {
+  if (retained?.environmentId === environmentId) retained = null;
+}
+
 export const HostStatusIndicators = memo(function HostStatusIndicators({
   environmentId,
 }: {
@@ -39,7 +46,13 @@ export const HostStatusIndicators = memo(function HostStatusIndicators({
 });
 
 function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: EnvironmentId }) {
-  const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(null);
+  const [cache] = useState(() => {
+    if (retained?.environmentId !== environmentId) {
+      retained = { environmentId, cache: { snapshot: null, settledAt: -Infinity } };
+    }
+    return retained.cache;
+  });
+  const [snapshot, setSnapshot] = useState<HostStatusSnapshot | null>(() => cache.snapshot);
   const [visibleCount, setVisibleCount] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const measurementRef = useRef<HTMLDivElement>(null);
@@ -51,12 +64,13 @@ function EnvironmentHostStatusIndicators({ environmentId }: { environmentId: Env
         if (active) setSnapshot(snapshot);
       },
       (signal) => fetchHostStatus(environmentId, signal),
+      cache,
     );
     return () => {
       active = false;
       stop();
     };
-  }, [environmentId]);
+  }, [environmentId, cache]);
   useLayoutEffect(() => {
     const container = containerRef.current;
     const measurement = measurementRef.current;
