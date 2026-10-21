@@ -32,34 +32,36 @@ const receiptOutcome = (
  * off to every 30 seconds, while the launcher can answer, and otherwise waits until this process
  * exits.
  */
-export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome")(function* (input: {
-  readonly operationId: string | undefined;
-  readonly cause: Cause.Cause<ServerSelfUpdateError>;
-  readonly reconcile: (operationId: string) => Effect.Effect<OperationReconciliation>;
-  /** Absent when the launcher cannot report outcomes. */
-  readonly query?: (
-    operationId: string,
-  ) => Effect.Effect<
-    { readonly outcome: "accepted" | "rejected" | "unknown" },
-    ServiceLauncherClientError
-  >;
-}): Effect.fn.Return<HandoffOutcome> {
-  const error = Cause.findErrorOption(input.cause);
-  const refused =
-    Option.isSome(error) &&
-    (error.value.cause as { readonly _tag?: unknown } | undefined)?._tag ===
-      "ServiceLauncherRejectedError";
-  const operationId = input.operationId;
-  if (operationId === undefined) return refused ? "rejected" : yield* Effect.never;
-  for (let delay = 1_000; ; delay = Math.min(delay * 2, 30_000)) {
-    const proven = receiptOutcome(operationId, yield* input.reconcile(operationId));
-    if (proven !== undefined) return proven;
-    if (refused) return "rejected";
-    if (input.query === undefined) return yield* Effect.never;
-    const answer = yield* input
-      .query(operationId)
-      .pipe(Effect.catch(() => Effect.succeed({ outcome: "unknown" as const })));
-    if (answer.outcome !== "unknown") return answer.outcome;
-    yield* Effect.sleep(Duration.millis(delay));
-  }
-});
+export const awaitHandoffOutcome = Effect.fn("HandoffOutcome.awaitHandoffOutcome")(
+  function* (input: {
+    readonly operationId: string | undefined;
+    readonly cause: Cause.Cause<ServerSelfUpdateError>;
+    readonly reconcile: (operationId: string) => Effect.Effect<OperationReconciliation>;
+    /** Absent when the launcher cannot report outcomes. */
+    readonly query?: (
+      operationId: string,
+    ) => Effect.Effect<
+      { readonly outcome: "accepted" | "rejected" | "unknown" },
+      ServiceLauncherClientError
+    >;
+  }): Effect.fn.Return<HandoffOutcome> {
+    const error = Cause.findErrorOption(input.cause);
+    const refused =
+      Option.isSome(error) &&
+      (error.value.cause as { readonly _tag?: unknown } | undefined)?._tag ===
+        "ServiceLauncherRejectedError";
+    const operationId = input.operationId;
+    if (operationId === undefined) return refused ? "rejected" : yield* Effect.never;
+    for (let delay = 1_000; ; delay = Math.min(delay * 2, 30_000)) {
+      const proven = receiptOutcome(operationId, yield* input.reconcile(operationId));
+      if (proven !== undefined) return proven;
+      if (refused) return "rejected";
+      if (input.query === undefined) return yield* Effect.never;
+      const answer = yield* input
+        .query(operationId)
+        .pipe(Effect.catch(() => Effect.succeed({ outcome: "unknown" as const })));
+      if (answer.outcome !== "unknown") return answer.outcome;
+      yield* Effect.sleep(Duration.millis(delay));
+    }
+  },
+);

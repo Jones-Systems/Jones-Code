@@ -58,7 +58,9 @@ describe("preparation sweep", () => {
     await NodeFSP.mkdir(NodePath.join(jobs, "not-a-job"));
     await NodeFSP.mkdir(fixture.cacheRoot, { recursive: true });
     const cacheRoot = await NodeFSP.realpath(fixture.cacheRoot);
-    const selected = await attempt(cacheRoot, "stage-selected", "1".repeat(64), { at: new Date("2026-01-01T00:00:00.000Z") });
+    const selected = await attempt(cacheRoot, "stage-selected", "1".repeat(64), {
+      at: new Date("2026-01-01T00:00:00.000Z"),
+    });
     const unselected = await attempt(cacheRoot, "stage-unselected", "2".repeat(64));
     const unreadable = await attempt(cacheRoot, "stage-unreadable", "3".repeat(64), {
       unreadable: true,
