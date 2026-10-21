@@ -332,8 +332,9 @@ contents are excluded. Selected text and tool output are copied into the receivi
 
 The excerpt reflects the source when you attach it. Adding the same reference again does not
 refresh it. If the source is disconnected or cannot provide an excerpt, the identity reference
-still works and the missing context is identified. The agent can read more history on demand
-only for threads in its own environment; a reference does not grant access to another server.
+still works and the missing context is identified. The agent can read more history on demand.
+Reading another environment requires a tool that supports its environment ID and an accessible
+linked source; attaching a reference does not grant that access.
 Attaching a thread does not change it or authorize the agent to message it.
 
 Dropping or pasting a thread reference preserves its source environment. Existing transcript

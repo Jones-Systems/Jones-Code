@@ -16,5 +16,5 @@ file contents are excluded. No transcript file is uploaded. The excerpt is copie
 answer and shares the same size limits as [thread context in the composer](./composer.md#context-in-your-message).
 
 If the source is disconnected or does not support excerpts, the reference keeps its identity.
-The answering agent can read additional history through its own thread-reading tool only when
-the referenced thread is in the same environment.
+The answering agent can read additional history on demand. For another environment, its tool
+must support the source environment ID and that source must be linked and accessible.

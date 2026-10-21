@@ -17,7 +17,7 @@ describe("thread reference answers", () => {
   it("preserves foreign identity without linking to a local thread or including history", () => {
     const answer = `Compare ${formatInlineContextReference(threadContextReference(foreign))} and ${formatInlineContextReference(threadContextReference(record))}`;
     expect(projectPendingUserInputAnswer(answer, [foreign, record], local)).toBe(
-      "Compare Foreign title (threadId: same-id; environmentId: remote; reference only, no history attached; unavailable through this environment's t3_thread_read). and [Local title](t3-thread://v1/other-id)",
+      "Compare Foreign title (threadId: same-id; environmentId: remote; reference only, no history attached; additional history requires a tool supporting environmentId and linked source access). and [Local title](t3-thread://v1/other-id)",
     );
   });
   it("leaves missing references and literal choices unchanged", () => {

@@ -13,7 +13,7 @@ export function projectPendingUserInputAnswer(
   const identity = (record: ThreadContextRecord, label: string) =>
     record.environmentId === environmentId
       ? formatThreadLink(record.threadId, label)
-      : `${record.title} (threadId: ${record.threadId}; environmentId: ${record.environmentId}; ${record.excerpt?.status === "captured" ? "bounded point-in-time context attached" : "reference only, no history attached"}; unavailable through this environment's t3_thread_read).`;
+      : `${record.title} (threadId: ${record.threadId}; environmentId: ${record.environmentId}; ${record.excerpt?.status === "captured" ? "bounded point-in-time context attached" : "reference only, no history attached"}; additional history requires a tool supporting environmentId and linked source access).`;
   const referenced: ThreadContextRecord[] = [];
   const baseline = replaceComposerContextReferences(answer, (reference) => {
     const record = reference.kind === "thread" ? recordsById.get(reference.contextId) : undefined;

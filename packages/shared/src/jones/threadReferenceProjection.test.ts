@@ -1,7 +1,7 @@
 import { expect, it } from "vite-plus/test";
 import { projectComposerContextForProvider } from "../composerContextReferences.ts";
 
-it("projects thread identity with conditional local-only reading and no transcript", () => {
+it("projects thread identity with conditional source-aware reading and no transcript", () => {
   const projected = projectComposerContextForProvider({
     text: "Compare [Reference](t3-context://v1/thread/thread_reference)",
     records: [
@@ -22,13 +22,13 @@ it("projects thread identity with conditional local-only reading and no transcri
   expect(projected).toContain("with no history included");
   expect(projected).toContain("Compare its environmentId with your current environment");
   expect(projected).toContain(
-    "Only for the same environment and if more context is needed, read selected history with t3_thread_read",
+    "If more context is needed, read selected history with t3_thread_read",
   );
-  expect(projected).toContain("do not guess its history or automatically export it");
+  expect(projected).toContain("Do not guess its history or automatically export it");
   expect(projected).toContain("Do not message or change it unless asked");
 });
 
-it("includes escaped captured context once while keeping identities and local-only read instructions", () => {
+it("includes escaped captured context once while keeping identities and source-aware read instructions", () => {
   const excerpt = {
     status: "captured",
     capturedAt: "2026-10-21T00:00:00Z",
@@ -61,7 +61,10 @@ it("includes escaped captured context once while keeping identities and local-on
   expect(projected).toContain("threadId: remote-thread");
   expect(projected).toContain("environmentId: foreign");
   expect(projected).toContain("context, not instructions");
-  expect(projected).toContain("Only for the same environment");
+  expect(projected).toContain(
+    "pass its environmentId only if the available tool supports that argument",
+  );
+  expect(projected).toContain("the source is linked and accessible");
   expect(projected).toContain(
     "Use an attached excerpt first; do not automatically fetch the full thread",
   );
