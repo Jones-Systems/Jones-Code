@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import type * as NetAddress from "effect/net/NetAddress";
 
 import * as ServerConfig from "./config.ts";
+import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import { flushCompileCache } from "./compileCache.ts";
 import * as Keybindings from "./keybindings.ts";
@@ -476,21 +477,24 @@ export const runOrderedV2StartupPhases = Effect.fn(
   return { recovery, bootstrap } as const;
 });
 
-export const runRuntimeShutdown = <PrepareError, ReconcileError, R>(input: {
+export const runRuntimeShutdown = Effect.fn("serverRuntimeStartup.runRuntimeShutdown")(function* <
+  PrepareError,
+  ReconcileError,
+  R,
+>(input: {
   readonly continuationWritesAllowed: boolean;
   readonly prepareForShutdown: Effect.Effect<void, PrepareError, R>;
   readonly shutdownSessions: Effect.Effect<void, never, R>;
   readonly reconcile: Effect.Effect<void, ReconcileError, R>;
-}) =>
-  Effect.gen(function* () {
-    // An unactivated native trial owns local cleanup but must preserve paired continuation state.
-    if (!input.continuationWritesAllowed) {
-      yield* input.shutdownSessions;
-      return;
-    }
-    yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
-    yield* input.reconcile;
-  });
+}) {
+  // An unactivated native trial owns local cleanup but must preserve paired continuation state.
+  if (!input.continuationWritesAllowed) {
+    yield* input.shutdownSessions;
+    return;
+  }
+  yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
+  yield* input.reconcile;
+});
 
 const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: StartupOptions) {
   const serverConfig = yield* ServerConfig.ServerConfig;

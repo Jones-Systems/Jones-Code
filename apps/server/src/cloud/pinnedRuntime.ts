@@ -597,39 +597,40 @@ export const installPinnedRuntimeFromLocalArchive = Effect.fn(
       expectedProvenance: metadata,
       requireInstall: Effect.void,
       installArchive: (stagingDir) => extractArchive(input, stagingDir, archive),
-      validate: (paths) =>
-        Effect.gen(function* () {
-          const result = yield* input.runner
-            .run({
-              ...pinnedRuntimeCommand(paths),
-              args: ["--version"],
-              timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
-            })
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new PinnedRuntimeInstallError({
-                    step: "checking the Jones artifact version",
-                    cause,
-                  }),
-              ),
-            );
-          if (
-            result.code !== 0 ||
-            result.timedOut ||
-            result.stdoutTruncated ||
-            result.stdoutInvalidUtf8 ||
-            /\bv(\S+)\s*$/.exec(result.stdout)?.[1] !== metadata.version
-          ) {
-            return yield* new PinnedRuntimeInstallError({
-              step: "checking the Jones artifact version",
-              exitCode: Number(result.code),
-              stdoutLength: result.stdout.length,
-              stderrLength: result.stderr.length,
-            });
-          }
-          yield* input.validate(paths);
-        }),
+      validate: Effect.fn("cloud.pinned_runtime.validate_local_jones_artifact")(function* (
+        paths: PinnedRuntimePaths,
+      ) {
+        const result = yield* input.runner
+          .run({
+            ...pinnedRuntimeCommand(paths),
+            args: ["--version"],
+            timeout: PINNED_RUNTIME_INSTALL_TIMEOUT,
+          })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PinnedRuntimeInstallError({
+                  step: "checking the Jones artifact version",
+                  cause,
+                }),
+            ),
+          );
+        if (
+          result.code !== 0 ||
+          result.timedOut ||
+          result.stdoutTruncated ||
+          result.stdoutInvalidUtf8 ||
+          /\bv(\S+)\s*$/.exec(result.stdout)?.[1] !== metadata.version
+        ) {
+          return yield* new PinnedRuntimeInstallError({
+            step: "checking the Jones artifact version",
+            exitCode: Number(result.code),
+            stdoutLength: result.stdout.length,
+            stderrLength: result.stderr.length,
+          });
+        }
+        yield* input.validate(paths);
+      }),
     }),
   );
 });
@@ -872,7 +873,7 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
       .readDirectory(directory)
       .pipe(
         Effect.catch((error) =>
-          error.reason._tag === "NotFound" ? Effect.succeed([]) : Effect.fail(error),
+          error.reason._tag === "NotFound" ? Effect.succeed<string[]>([]) : Effect.fail(error),
         ),
       );
   const runtimeDir = path.join(baseDir, PINNED_RUNTIME_DIR);

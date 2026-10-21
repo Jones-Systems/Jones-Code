@@ -206,6 +206,7 @@ it.effect.each([
         }),
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: false,
+          requiresQualifiedTrialGate: false,
           prepareTrial: Effect.succeed(undefined),
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
@@ -221,7 +222,9 @@ it.effect.each([
       );
       yield* Effect.gen(function* () {
         const startup = yield* ServerRuntimeStartup.ServerRuntimeStartup;
-        yield* startup.markHttpListening;
+        yield* startup.markHttpListening(
+          NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 3773),
+        );
         const ready = yield* Effect.exit(startup.awaitCommandReady);
         assert.equal(Exit.isSuccess(ready), scenario !== "project-failure");
         const welcome = events.find((event) => event.type === "welcome");

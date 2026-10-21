@@ -174,7 +174,7 @@ function fixture(
           program: [`${versionDir}/t3`, "__service-launcher"],
         };
       }),
-    restart: Effect.succeed(false),
+    restart: Effect.succeed("skipped"),
     withStopped: (operation) => operation,
     uninstall: Effect.succeed(false),
   });

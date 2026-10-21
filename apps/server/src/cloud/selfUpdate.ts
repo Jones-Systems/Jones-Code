@@ -112,28 +112,26 @@ export class ServerSelfUpdate extends Context.Service<
   }
 >()("t3/cloud/selfUpdate/ServerSelfUpdate") {}
 
-function timedQualifiedStep<A, E, R>(
+const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(function* <A, E, R>(
   step: string,
   operationId: string | undefined,
   effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> {
-  return Effect.gen(function* () {
-    const started = yield* Clock.currentTimeMillis;
-    return yield* effect.pipe(
-      Effect.ensuring(
-        Clock.currentTimeMillis.pipe(
-          Effect.flatMap((completed) =>
-            Effect.logInfo("Qualified installation timing", {
-              operationId,
-              step,
-              durationMs: completed - started,
-            }),
-          ),
+) {
+  const started = yield* Clock.currentTimeMillis;
+  return yield* effect.pipe(
+    Effect.ensuring(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((completed) =>
+          Effect.logInfo("Qualified installation timing", {
+            operationId,
+            step,
+            durationMs: completed - started,
+          }),
         ),
       ),
-    );
-  });
-}
+    ),
+  );
+});
 
 /** The deadline owns preparation only; launcher handoff can have an uncertain external effect. */
 export function runQualifiedInstallPhases<A, B, R, R2>(input: {
@@ -562,8 +560,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
     return launcher.currentVersion;
   };
-  const validateQualifiedCandidate = (entryPath: string, databasePath: string, version: string) =>
-    Effect.gen(function* () {
+  const validateQualifiedCandidate = Effect.fn("ServerSelfUpdate.validateQualifiedCandidate")(
+    function* (entryPath: string, databasePath: string, version: string) {
       const result = yield* runner
         .run({
           command: entryPath,
@@ -604,7 +602,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       );
       const decoded = decodeServicePreflightResult(parsed);
       return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
-    });
+    },
+  );
   const stageQualified = (artifact: JonesStagedArtifact) =>
     Effect.tryPromise({
       try: async () => {
@@ -742,30 +741,31 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         yield* timedQualifiedStep("capturing", input.operationId, onPrepared(staged));
         return staged;
       }),
-      handoff: (staged) =>
-        Effect.gen(function* () {
-          yield* reportStep("handoff");
-          const updateId = yield* timedQualifiedStep(
-            "handoff",
-            input.operationId,
-            launcher
-              .requestUpdate({
-                targetVersion: staged.receipt.version,
-                dbPath: staged.binding.dbPath,
-                stagedHandle: staged.stagedHandle,
-                ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
-              })
-              .pipe(
-                Effect.mapError((cause) => failWith(cause.message, cause)),
-                Effect.tap(() => onHandoffAccepted()),
-              ),
-          );
-          return {
-            targetVersion: staged.receipt.version,
-            method: "boot-service" as const,
-            updateId,
-          };
-        }),
+      handoff: Effect.fn("ServerSelfUpdate.handoffQualified")(function* (
+        staged: StagedQualifiedRuntime,
+      ) {
+        yield* reportStep("handoff");
+        const updateId = yield* timedQualifiedStep(
+          "handoff",
+          input.operationId,
+          launcher
+            .requestUpdate({
+              targetVersion: staged.receipt.version,
+              dbPath: staged.binding.dbPath,
+              stagedHandle: staged.stagedHandle,
+              ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+            })
+            .pipe(
+              Effect.mapError((cause) => failWith(cause.message, cause)),
+              Effect.tap(() => onHandoffAccepted()),
+            ),
+        );
+        return {
+          targetVersion: staged.receipt.version,
+          method: "boot-service" as const,
+          updateId,
+        };
+      }),
     });
 
   return ServerSelfUpdate.of({
