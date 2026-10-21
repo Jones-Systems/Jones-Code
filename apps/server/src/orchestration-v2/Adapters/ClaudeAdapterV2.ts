@@ -4017,13 +4017,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // A stream can end before its queued terminal commits. Keep successful
         // bindings until an explicit close barrier, never abandon on raw exit.
         const boundQueriesByNativeThread = new Map<string, ClaudeLiveQueryContext>();
-        // Temporary opt-in synthetic-fixture probe; remove after diagnosis.
-        let diagnosticCount = 0;
-        const diagnostic = (stage: string) => Effect.sync(() => {
-          if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1" &&
-              input.providerSessionId === "provider-session-claude-wake" && diagnosticCount++ < 32)
-            console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({ adapter: "claude-production", stage }));
-        });
         const retirementPermit = yield* Semaphore.make(1);
         let queryBindingUnknown = false;
         let sourceOwnerClosed = false;
@@ -4043,15 +4036,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     detail:
                       "The previous query retirement is unconfirmed; it must not be replayed.",
                   });
-                yield* diagnostic("retire-permit");
                 if (!launchedGenerations.has(generation)) return;
-                yield* diagnostic("retire-before");
                 yield* before;
-                yield* diagnostic("retire-before-done");
                 queryEventProducers.get(generation)?.retire();
                 attemptedAbandonments.add(generation);
                 yield* input.runtimeLifecycle?.abandon(generation) ?? Effect.void;
-                yield* diagnostic("retire-abandon-done");
                 attemptedAbandonments.delete(generation);
                 launchedGenerations.delete(generation);
                 queryEventProducers.delete(generation);
@@ -4081,9 +4070,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             .pipe(
               // Stream exit acknowledgement must not block a replacement's binding.
               Effect.andThen(
-                diagnostic("retire-after").pipe(
-                  Effect.andThen(after),
-                  Effect.andThen(diagnostic("retire-after-done")),
+                after.pipe(
                   Effect.tapError(() =>
                     Effect.sync(() => {
                       queryBindingUnknown = true;
@@ -9741,7 +9728,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
-                yield* diagnostic("stream-exit");
                 const heldContext = yield* Ref.get(activeTurn);
                 if (
                   (yield* Ref.get(queryContext))?.query === querySession &&
@@ -9766,9 +9752,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 }
               }),
             ),
-            Effect.ensuring(diagnostic("stream-ensure-closed").pipe(
-              Effect.andThen(Deferred.succeed(closed, undefined)),
-            )),
+            Effect.ensuring(Deferred.succeed(closed, undefined)),
             Effect.provideService(ClaudeProducerContext, context),
             Effect.forkIn(sessionScope),
           );
@@ -10107,15 +10091,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return;
               }
               yield* closeLiveQueryForNativeThread(nativeThreadId);
-              yield* diagnostic("stop-close-done");
               const current = yield* Ref.get(queryContext);
               if (current === null || current.query === existing.query) {
                 yield* clearWakeStateForNativeThread(nativeThreadId);
-                yield* diagnostic("stop-clear-done");
                 yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId, {
                   status: "idle",
                 });
-                yield* diagnostic("stop-reset-done");
               }
               return;
             }
@@ -10357,11 +10338,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
             }),
             Effect.gen(function* () {
-              yield* diagnostic("captured-wait-closed");
               const closed = yield* Deferred.await(existing.closed).pipe(
                 Effect.timeoutOption("10 seconds"),
               );
-              yield* diagnostic("captured-wait-done");
               if (Option.isSome(closed)) return;
               yield* Effect.logWarning("orchestration-v2.claude-query-close-timeout-before-fork", {
                 providerSessionId: input.providerSessionId,
