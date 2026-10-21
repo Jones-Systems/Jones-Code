@@ -221,9 +221,9 @@ export function buildThreadReferenceExcerpt(input: {
   };
 }
 
-export const THREAD_REFERENCE_ESCAPED_BUDGET = 32_000;
-export const THREAD_REFERENCE_PROMPT_LIMIT = 120_000;
-export const THREAD_REFERENCE_PROMPT_RESERVE = 4_000;
+const THREAD_REFERENCE_ESCAPED_BUDGET = 32_000;
+const THREAD_REFERENCE_PROMPT_LIMIT = 120_000;
+const THREAD_REFERENCE_PROMPT_RESERVE = 4_000;
 const BUDGET_MARKER = "\nexcerpt: [omitted: prompt budget]";
 function escapeExcerpt(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
