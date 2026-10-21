@@ -1938,6 +1938,7 @@
       "id": "jones-watcher-restart-survival",
       "tests": [
         "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts",
         "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
         "apps/server/src/scheduledTasks/webhookRoute.test.ts",
         "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",

@@ -1441,6 +1441,8 @@
     "packages/provider-opencode/src/server/textGeneration.ts": "accepted-shared",
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts": "jones-owned",
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts": "jones-owned",
     "apps/server/src/scheduledTasks/webhookRoute.test.ts": "jones-tests-in-upstream",
@@ -1963,6 +1965,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
     }
   ]
 }

@@ -36,10 +36,10 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { makeFifoPermit, type FifoPermit } from "../jones/scheduledTasks/fifoPermit.ts";
 import { hasQueuedWake, queuedWakeSkipReason } from "../jones/scheduledTasks/queuedWake.ts";
 import { makePendingWebhookRuns } from "../jones/scheduledTasks/webhookRunRecovery.ts";
 
@@ -370,9 +370,8 @@ export const layer = Layer.effect(
     const secretRequests = yield* SecretRequests.SecretRequests;
     const scheduler = yield* Scheduler.Scheduler;
     const readWebhookOrigin = yield* ScheduledTaskWebhookOrigin;
-    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
-      new Map(),
-    );
+    // Jones hook: a FIFO permit, so a delivery arriving as a run ends cannot overtake a waiting one.
+    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, FifoPermit>>(new Map());
     // Keyed by task id and creation time, so deliveries of a deleted task that
     // finish late release their own count, never a recreated task's.
     const webhookQueued = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
@@ -1322,7 +1321,7 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         const existing = (yield* Ref.get(webhookPermits)).get(id);
         if (existing !== undefined) return existing;
-        const created = yield* Semaphore.make(1);
+        const created = yield* makeFifoPermit;
         return yield* Ref.modify(webhookPermits, (permits) => {
           const raced = permits.get(id);
           return raced === undefined
@@ -1368,7 +1367,7 @@ export const layer = Layer.effect(
                 ),
           ),
           Effect.andThen(pendingWebhookRuns.settle(deliveryId)),
-          permit.withPermits(1),
+          permit.withPermit,
           Effect.withSpan("ScheduledTaskService.runWebhookDelivery", {
             root: true,
             attributes: {
