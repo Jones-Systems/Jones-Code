@@ -156,6 +156,26 @@ jobs:
             echo 'Preview versions have no automatic update feed. No GitHub Release is created.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Smoke-test packaged update preparation worker
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mount="$TMPDIR/preparation-smoke-dmg"
+          mkdir -p "$mount"
+          hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+            "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
+          trap 'hdiutil detach "$mount" || hdiutil detach -force "$mount"' EXIT
+          apps=("$mount"/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          executable="$(/usr/bin/plutil -extract CFBundleExecutable raw -o - "$app/Contents/Info.plist")"
+          # The packaged service runs as Electron's Node, exactly as the qualified runtime wrapper starts it.
+          ELECTRON_RUN_AS_NODE=1 node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts \
+            --worker "$app/Contents/MacOS/$executable" \
+            --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
+
       - name: Upload DMG and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
