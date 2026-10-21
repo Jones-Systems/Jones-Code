@@ -2,17 +2,11 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "thread-reference-only",
   "jonesOwnedPaths": [
-    "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
-    "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts",
-    "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
     "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
     "apps/web/src/jones/threadReferenceExcerpt/capture.ts",
     "apps/web/src/jones/threadReferenceExcerpt/useThreadReferenceCapture.ts",
     "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
     "packages/client-runtime/src/jones/threadReferenceExcerpt.ts",
-    "packages/contracts/src/jones/threadReferenceExcerpt.test.ts",
-    "packages/contracts/src/jones/threadReferenceExcerpt.ts",
-    "packages/contracts/src/jones/threadReferenceExcerptRpc.ts",
     "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
     "packages/shared/src/jones/threadReferenceExcerpt.ts",
     "packages/shared/src/jones/threadReferenceProjection.test.ts"
