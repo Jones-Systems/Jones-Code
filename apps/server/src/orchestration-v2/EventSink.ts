@@ -723,7 +723,9 @@ const layerBase: Layer.Layer<
     const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
       Effect.gen(function* () {
         // Jones: every settle path commits here; capture reads the target before replacement.
-        yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
+        // Other batches skip the hook entirely, so this per-event path runs no extra effects.
+        if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
+          yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
