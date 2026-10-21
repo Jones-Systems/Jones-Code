@@ -1463,7 +1463,13 @@
     "packages/contracts/src/composerContext.ts": "hook",
     "packages/client-runtime/src/state/orchestration.ts": "hook",
     "apps/web/src/questionAttachments.ts": "accepted-shared",
-    "apps/web/src/components/ThreadContextChip.tsx": "accepted-shared"
+    "apps/web/src/components/ThreadContextChip.tsx": "accepted-shared",
+    "apps/server/src/jones/updates/recoverStagedSelection.ts": "jones-owned",
+    "apps/server/src/jones/updates/recoverStagedSelection.test.ts": "jones-owned",
+    "scripts/jones/updates/recover-staged-selection.ts": "jones-owned",
+    "scripts/jones/updates/recover-staged-selection.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
+    "docs/operations/staged-selection-recovery.md": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
