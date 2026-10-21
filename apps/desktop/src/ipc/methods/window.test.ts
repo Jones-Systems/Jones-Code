@@ -8,7 +8,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { vi } from "vite-plus/test";
 
-const { focusedWebContents, ownerWindow } = vi.hoisted(() => ({
+import type * as Electron from "electron";
+
+const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
   exposeInMainWorld: vi.fn(),
@@ -34,6 +36,10 @@ import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import {
   getLocalEnvironmentBootstraps,
+  getPreviewAutomationRuntimeIdentity,
+  getWindowFullscreenState,
+  pasteAsText,
+  pickProjectFavicon,
   getRelayTelemetryEnabled,
   probeRemoteEditors,
 } from "./window.ts";

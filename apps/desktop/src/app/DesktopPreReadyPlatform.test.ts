@@ -15,6 +15,7 @@ const {
   writeFileSyncMock,
   copyFileSyncMock,
   execFileSyncMock,
+  holdNativeFenceMock,
   readFileSyncMock,
 } = vi.hoisted(() => ({
   appendSwitchMock: vi.fn(),
@@ -27,6 +28,11 @@ const {
   copyFileSyncMock: vi.fn(),
   execFileSyncMock: vi.fn(),
   readFileSyncMock: vi.fn(),
+  holdNativeFenceMock: vi.fn(),
+}));
+
+vi.mock("@t3tools/shared/jones/nativeWriterFence", () => ({
+  holdJonesNativeWriterFence: holdNativeFenceMock,
 }));
 
 vi.mock("electron", () => ({
@@ -70,6 +76,7 @@ describe("DesktopPreReadyPlatform", () => {
     writeFileSyncMock.mockReset();
     copyFileSyncMock.mockReset();
     execFileSyncMock.mockReset();
+    holdNativeFenceMock.mockReset();
     readFileSyncMock.mockReset().mockReturnValue("{}");
   });
 
@@ -154,8 +161,8 @@ describe("DesktopPreReadyPlatform", () => {
         );
         const identity = yield* Effect.promise(() => portalIdentity);
         assert.equal(identity.desktopName, "com.t3tools.T3Code.desktop");
-        assert.include(identity.desktopEntry ?? "", "Exec=/Applications/current.AppImage %U");
-        assert.include(identity.desktopEntry ?? "", "Name=T3 Code (Beta)");
+        assert.include(identity.desktopEntry ?? "", 'Exec="/Applications/current.AppImage" %U');
+        assert.include(identity.desktopEntry ?? "", "Name=Jones Code");
         assert.include(identity.desktopEntry ?? "", "MimeType=x-scheme-handler/t3code;");
         assert.include(
           identity.desktopEntry ?? "",

@@ -24,6 +24,161 @@ import {
 } from "./modelOptions";
 
 describe("mobile model options", () => {
+  it("displays the current configured effort across accounts without changing stored options", () => {
+    const capabilities = {
+      optionDescriptors: [
+        {
+          id: "reasoningEffort",
+          label: "Reasoning",
+          type: "select" as const,
+          currentValue: "medium",
+          options: [
+            { id: "low", label: "Low" },
+            { id: "medium", label: "Medium", isDefault: true },
+            { id: "high", label: "High" },
+          ],
+        },
+      ],
+    };
+    const config = {
+      providers: [
+        {
+          instanceId: "codex_personal",
+          driver: "codex",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [{ slug: "gpt-5.6-sol", name: "Sol", capabilities }],
+        },
+        { instanceId: "codex_work", driver: "codex", models: [] },
+      ],
+    } as unknown as ServerConfig;
+    const selection: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex_personal"),
+      model: "gpt-5.6-sol",
+    };
+    for (const effort of ["high", "low"]) {
+      const input = {
+        config,
+        capabilities,
+        modelSelection: selection,
+        defaultModelSelection: {
+          instanceId: ProviderInstanceId.make("codex_work"),
+          model: selection.model,
+          options: [{ id: "reasoningEffort", value: effort }],
+        },
+      };
+      const displayCaps = resolveModelDisplayCapabilities(input)!;
+      const descriptors = getProviderOptionDescriptors({
+        caps: displayCaps,
+        selections: selection.options,
+      });
+      expect(descriptors[0]?.currentValue).toBe(effort);
+      expect(selection.options).toBeUndefined();
+      const modelOption = buildModelOptions(
+        config,
+        selection,
+        undefined,
+        null,
+        false,
+        input.defaultModelSelection,
+      )[0]!;
+      expect(modelOption.capabilities?.optionDescriptors?.[0]?.currentValue).toBe(effort);
+      expect(modelOption.selection.options).toBeUndefined();
+      expect(
+        resolveModelDisplayCapabilities({
+          ...input,
+          modelSelection: { ...selection, options: [{ id: "reasoningEffort", value: "medium" }] },
+        }),
+      ).toBe(capabilities);
+      expect(
+        resolveModelDisplayCapabilities({
+          ...input,
+          defaultModelSelection: { ...input.defaultModelSelection, model: "other-model" },
+        }),
+      ).toBe(capabilities);
+    }
+  });
+
+  it("groups models by provider and flags legacy entries", () => {
+    const config = {
+      providers: [
+        {
+          instanceId: "codex",
+          driver: "codex",
+          displayName: "Codex",
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "gpt-5.6-sol",
+              name: "GPT-5.6 Sol",
+              isCustom: false,
+              capabilities: null,
+            },
+            {
+              slug: "gpt-5.4",
+              name: "GPT-5.4",
+              isCustom: false,
+              isLegacy: true,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    expect(groupByProvider(buildModelOptions(config, null, undefined, null))).toMatchObject([
+      {
+        providerKey: "codex",
+        providerLabel: "Codex",
+        models: [
+          { key: "codex:gpt-5.6-sol", label: "GPT-5.6 Sol", subtitle: "", isLegacy: false },
+          { key: "codex:gpt-5.4", label: "GPT-5.4", isLegacy: true },
+        ],
+      },
+    ]);
+  });
+
+  it("carries configured ACP identity into model and provider catalogs", () => {
+    const iconUrl = "https://cdn.agentclientprotocol.com/registry/v1/latest/antigravity-acp.svg";
+    const config = {
+      providers: [
+        {
+          instanceId: "acpRegistry_antigravity",
+          driver: "acpRegistry",
+          displayName: "Antigravity",
+          iconUrl,
+          enabled: true,
+          installed: true,
+          auth: { status: "authenticated" },
+          models: [
+            {
+              slug: "default",
+              name: "Default",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        },
+      ],
+    } as unknown as ServerConfig;
+
+    const [group] = groupByProvider(buildModelOptions(config, null, undefined, null));
+
+    expect(group).toMatchObject({
+      providerKey: "acpRegistry_antigravity",
+      providerLabel: "Antigravity",
+      models: [
+        {
+          providerDriver: "acpRegistry",
+          providerIconUrl: iconUrl,
+        },
+      ],
+    });
+  });
+
   it("distinguishes same-name OpenCode models without changing their routing", () => {
     const sources = [
       { id: "anthropic", label: "Anthropic" },

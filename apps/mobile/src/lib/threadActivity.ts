@@ -1335,6 +1335,16 @@ export function deriveThreadFeedPresentation(
   runlessWorkActive = false,
   cache?: ThreadFeedCache,
 ): ThreadFeedEntry[] {
+  const sentinelEntry = (entry: ThreadFeedEntry) =>
+    entry.type === "message" &&
+    isWorkModeSentinelMessage({
+      ...entry.message,
+      status: entry.message.projectedItem?.item.status,
+    });
+  const lastUserIndex = feed.findLastIndex(
+    (entry) => entry.type === "message" && entry.message.role === "user",
+  );
+  const quietTurn = lastUserIndex >= 0 && feed.slice(lastUserIndex).every(sentinelEntry);
   const previous = cache?.presentation ?? null;
   const restart = presentationRestart(
     previous,
@@ -1366,6 +1376,7 @@ export function deriveThreadFeedPresentation(
     const entry = feed[index]!;
     if (entry.type === "run-fold" || entry.type === "work-toggle" || entry.type === "thinking")
       continue;
+    if (sentinelEntry(entry)) continue;
     retainedFeed.push(entry);
     retainedFeedIndices.push(index);
   }

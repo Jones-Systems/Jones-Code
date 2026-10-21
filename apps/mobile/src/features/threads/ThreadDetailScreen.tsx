@@ -13,7 +13,7 @@ import {
   useThreadShell,
 } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
-import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/native";
+import { StackActions, useFocusEffect, useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   effectiveSnoozed,
   threadWokeAt,
@@ -355,8 +355,20 @@ function ThreadVisitWatermark(props: {
   const showContent = props.showContent;
   const selectedThreadKey = scopedThreadKey(props.environmentId, thread.id);
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
-  const lastDispatchedVisitRef = useRef<string | null>(null);
-  const lastVisitDispatchRef = useRef({ threadKey: selectedThreadKey, at: 0 });
+  const readViewVisible = useIsFocused() && showContent;
+  const readDwellRef = useRef<ReturnType<typeof createThreadReadDwell> | null>(null);
+  useEffect(() => {
+    const controller = createThreadReadDwell();
+    readDwellRef.current = controller;
+    const subscription = AppState.addEventListener("change", (state) => {
+      controller.setVisible(readViewVisible && state === "active");
+    });
+    return () => {
+      subscription.remove();
+      controller.dispose();
+      readDwellRef.current = null;
+    };
+  }, [selectedThreadKey, readViewVisible]);
   const selectedThreadId = thread.id;
   const snoozedUntil = thread.snoozedUntil;
   // Keep the clock in state so React Compiler invalidates the wake calculation.
@@ -376,56 +388,43 @@ function ThreadVisitWatermark(props: {
     selectedThreadWokeAt !== null && Date.parse(selectedThreadWokeAt) > Date.parse(thread.updatedAt)
       ? selectedThreadWokeAt
       : thread.updatedAt;
-  const wakeIsLatestUpdate = selectedThreadUpdatedAt === selectedThreadWokeAt;
   const selectedThreadLastVisitedAt = thread.lastVisitedAt;
   const selectedThreadCompletedAt = thread.latestRun?.completedAt;
   useEffect(() => {
-    if (!showContent || selectedThreadLastVisitedAt === undefined) return;
-    const threadUpdatedAtMs = Date.parse(selectedThreadUpdatedAt);
-    if (Number.isNaN(threadUpdatedAtMs)) return;
-    const lastVisitedAtMs = selectedThreadLastVisitedAt
-      ? Date.parse(selectedThreadLastVisitedAt)
-      : NaN;
-    if (!Number.isNaN(lastVisitedAtMs) && lastVisitedAtMs >= threadUpdatedAtMs) return;
-    const dispatchKey = `${selectedThreadKey}:${selectedThreadUpdatedAt}`;
-    if (lastDispatchedVisitRef.current === dispatchKey) return;
-    const dispatch = () => {
-      lastDispatchedVisitRef.current = dispatchKey;
-      lastVisitDispatchRef.current = { threadKey: selectedThreadKey, at: Date.now() };
-      void visitThread({
-        environmentId: props.environmentId,
-        input: { threadId: selectedThreadId, visitedAt: selectedThreadUpdatedAt },
-      });
-    };
-    const completedAtMs = selectedThreadCompletedAt ? Date.parse(selectedThreadCompletedAt) : NaN;
-    const hasUnseenCompletion =
-      !Number.isNaN(completedAtMs) &&
-      (Number.isNaN(lastVisitedAtMs) || completedAtMs > lastVisitedAtMs);
-    const previous = lastVisitDispatchRef.current;
-    const elapsed = Date.now() - previous.at;
-    // Like a completion, a wake the user is looking at must not wait out the throttle:
-    // leaving within it would cancel the dispatch and keep Woke in the list.
-    if (
-      previous.threadKey !== selectedThreadKey ||
-      hasUnseenCompletion ||
-      wakeIsLatestUpdate ||
-      elapsed >= 10_000
-    ) {
-      dispatch();
-      return;
-    }
-    const timer = setTimeout(dispatch, 10_000 - elapsed);
-    return () => clearTimeout(timer);
+    // A scheduled wake has the same urgency as a new completion after the dwell.
+    const attentionAt =
+      selectedThreadWokeAt !== null &&
+      (!selectedThreadCompletedAt ||
+        Date.parse(selectedThreadWokeAt) > Date.parse(selectedThreadCompletedAt))
+        ? selectedThreadWokeAt
+        : selectedThreadCompletedAt;
+    readDwellRef.current?.update(
+      !readViewVisible || selectedThreadLastVisitedAt === undefined
+        ? null
+        : {
+            threadKey: selectedThreadKey,
+            updatedAt: selectedThreadUpdatedAt,
+            lastVisitedAt: selectedThreadLastVisitedAt,
+            completedAt: attentionAt ?? null,
+            visible: AppState.currentState === "active",
+            onVisit: (visitedAt) => {
+              void visitThread({
+                environmentId: props.environmentId,
+                input: { threadId: selectedThreadId, visitedAt },
+              });
+            },
+          },
+    );
   }, [
     props.environmentId,
     selectedThreadId,
     selectedThreadKey,
     selectedThreadLastVisitedAt,
     selectedThreadCompletedAt,
+    selectedThreadWokeAt,
     selectedThreadUpdatedAt,
-    showContent,
+    readViewVisible,
     visitThread,
-    wakeIsLatestUpdate,
   ]);
   return null;
 }
@@ -1030,7 +1029,6 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
     userInputInsetProgress.set(1);
   }, [activeUserInputRequestId, userInputCardProgress, userInputInsetProgress]);
   const showContent = props.showContent ?? true;
-  const readViewVisible = useIsFocused() && showContent;
   const layoutVariant = props.layoutVariant ?? "compact";
   const isSplitLayout = layoutVariant === "split";
   const contentMaxWidth =
@@ -1519,6 +1517,10 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
                   ) : null}
                 </View>
 
+                {/*
+                 * Hide failed thread creation without unmounting the editor, so its draft and
+                 * editor state survive. Pending questions keep this ordinary composer visible.
+                 */}
                 <View style={composerSlotHidden ? { display: "none" } : undefined}>
                   {isProviderSubagent ? (
                     <View

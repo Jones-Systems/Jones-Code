@@ -1,5 +1,9 @@
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import * as DateTime from "effect/DateTime";
+import {
+  projectMobileWorkstreamList,
+  mobileWorkstreamMoveDestination,
+} from "../workstreams/listProjection";
 import * as Schema from "effect/Schema";
 import { planPinnedMove } from "@t3tools/client-runtime/state/thread-sort";
 import {

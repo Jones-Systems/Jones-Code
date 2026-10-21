@@ -111,14 +111,7 @@ describe("environment release checks", () => {
     );
   });
 
-  it("never queries upstream releases for a Jones preview", async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-    await expect(findEnvironmentUpdate("0.0.44-preview.20261002.100.2", signal)).rejects.toThrow(
-      "separate Download and Install",
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+
 
   it("reports failed checks instead of claiming the server is current", async () => {
     for (const status of [403, 429]) {
@@ -137,4 +130,6 @@ describe("environment release checks", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "invalid" })));
     await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow();
   });
+
+
 });

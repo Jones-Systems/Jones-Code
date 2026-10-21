@@ -19,7 +19,7 @@ import {
 import { type EnvironmentId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useFocusEffect } from "@react-navigation/native";
-import { use, useEffect, useRef, useState, type ComponentProps } from "react";
+import { use, useCallback, useMemo, useEffect, useRef, useState, type ComponentProps } from "react";
 import {
   Platform,
   ScrollView,
@@ -552,7 +552,7 @@ export function HomeScreen(props: HomeScreenProps) {
         )) &&
       (v2SearchQuery.length === 0 || pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),
   );
-  const threadListV2Items = buildThreadListV2ListItems({
+  const nativeThreadListV2Items = buildThreadListV2ListItems({
     items: threadListV2Layout.items,
     pendingTasks: v2PendingTasks,
     workingCount: threadListV2Layout.workingCount,
@@ -609,6 +609,15 @@ export function HomeScreen(props: HomeScreenProps) {
   }, [activateVisibleRows, swipeEnabled, threadListV2Items]);
 
   const renderV2Item = ({ item }: { readonly item: ThreadListV2ListItem }) => {
+    if (item.type === "v2-workstream") {
+      return (
+        <ThreadListV2WorkstreamHeader
+          {...item}
+          onToggle={() => workstreams.toggleGroup(item.groupKey)}
+          onOpen={() => workstreams.openGroup(item.groupKey)}
+        />
+      );
+    }
     if (item.type === "v2-pending") {
       const pendingScopeKey = scopedProjectKey(
         item.pendingTask.environmentId,
@@ -671,6 +680,8 @@ export function HomeScreen(props: HomeScreenProps) {
         fullSwipeWidth={fullSwipeWidth}
         onNewThreadOnBranch={props.onNewThreadOnBranch}
         thread={thread}
+        onOpenWorkstreams={workstreams.openThread}
+        secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
         variant={item.item.variant}
         hasQueuedMessages={item.hasQueuedMessages}
         snoozed={item.item.snoozed}
@@ -724,7 +735,7 @@ export function HomeScreen(props: HomeScreenProps) {
         onPinThread={handlePinThread}
         onUnpinThread={handleUnpinThread}
         onSetThreadAutoSettle={handleSetThreadAutoSettle}
-        onMoveThread={handleMoveThread}
+        onMoveThread={moveWithinWorkstream}
         onSwipeableClose={handleSwipeableClose}
         onSwipeableWillOpen={handleSwipeableWillOpen}
         simultaneousSwipeGesture={homeScrollGesture}
@@ -739,6 +750,7 @@ export function HomeScreen(props: HomeScreenProps) {
   // every HomeScreen render — and the minute clock must stay out of it for
   // the same reason: the clock text is precomputed per item instead.
   const v2ExtraData = {
+    workstreamBindingRevision: workstreams.bindingRevision,
     projectByKey,
     projectTitleByProjectKey: v2ProjectTitleByProjectKey,
     listEnvironments,

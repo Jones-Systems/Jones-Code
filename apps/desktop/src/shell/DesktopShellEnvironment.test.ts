@@ -141,6 +141,119 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
+  it.effect.each(["darwin", "linux"] as const)(
+    "uses the account shell when SHELL is missing on %s",
+    (platform) =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
+        const commands: string[] = [];
+
+        yield* runShellEnvironment({
+          env,
+          platform,
+          userShell: "/usr/local/bin/fish",
+          handler: (command) => {
+            if (command._tag !== "StandardCommand") return "";
+            commands.push(command.command);
+            return envOutput({ PATH: "/home/test/.local/bin:/usr/bin" });
+          },
+        });
+
+        assert.deepEqual(commands, ["/usr/local/bin/fish"]);
+        assert.equal(env.PATH, "/home/test/.local/bin:/usr/bin");
+      }),
+  );
+
+  it.effect("tries the account shell before the platform fallback when SHELL has no PATH", () =>
+    Effect.gen(function* () {
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/missing", PATH: "/usr/bin" };
+      const commands: string[] = [];
+
+      yield* runShellEnvironment({
+        env,
+        platform: "linux",
+        userShell: "/usr/local/bin/fish",
+        handler: (command) => {
+          if (command._tag !== "StandardCommand") return "";
+          commands.push(command.command);
+          return command.command === "/usr/local/bin/fish"
+            ? envOutput({ PATH: "/home/test/.local/bin:/usr/bin" })
+            : "";
+        },
+      });
+
+      assert.deepEqual(commands, ["/bin/missing", "/usr/local/bin/fish"]);
+      assert.equal(env.PATH, "/home/test/.local/bin:/usr/bin");
+    }),
+  );
+
+  it.effect(
+    "recovers Workstreams activation from the login shell for an empty GUI environment",
+    () =>
+      Effect.gen(function* () {
+        const env: NodeJS.ProcessEnv = {};
+        const activation = {
+          T3_WORKSTREAM_CONTROL_PLANE_URL: "https://workstreams.example.test",
+          T3_WORKSTREAM_OWNER_ID: "test-owner",
+          T3_WORKSTREAM_PRINCIPAL_ID: "test-principal",
+          T3_WORKSTREAM_KEY_ID: "test-key",
+          T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
+        };
+
+        yield* runShellEnvironment({
+          env,
+          platform: "darwin",
+          handler: (command) => {
+            assert.equal(command._tag, "StandardCommand");
+            if (command._tag !== "StandardCommand") return "";
+            assert.equal(command.command, "/bin/zsh");
+            for (const name of Object.keys(activation)) {
+              assert.include(command.args.join(" "), `printenv ${name} || true`);
+            }
+            return envOutput({ PATH: "/usr/bin", ...activation });
+          },
+        });
+
+        for (const [name, value] of Object.entries(activation)) {
+          assert.equal(env[name], value);
+        }
+      }),
+  );
+
+  it.effect("preserves inherited Workstreams activation over login-shell values", () =>
+    Effect.gen(function* () {
+      const inherited = {
+        T3_WORKSTREAM_CONTROL_PLANE_URL: "https://inherited.example.test",
+        T3_WORKSTREAM_OWNER_ID: "inherited-owner",
+        T3_WORKSTREAM_PRINCIPAL_ID: "inherited-principal",
+        T3_WORKSTREAM_KEY_ID: "inherited-key",
+        T3_WORKSTREAM_SIGNING_SECRET: "",
+        T3_WORKSTREAM_AUTHORIZATION_REVISION: "3",
+      };
+      const env: NodeJS.ProcessEnv = { SHELL: "/bin/zsh", ...inherited };
+
+      yield* runShellEnvironment({
+        env,
+        platform: "darwin",
+        handler: () =>
+          envOutput({
+            PATH: "/usr/bin",
+            T3_WORKSTREAM_CONTROL_PLANE_URL: "https://shell.example.test",
+            T3_WORKSTREAM_OWNER_ID: "shell-owner",
+            T3_WORKSTREAM_PRINCIPAL_ID: "shell-principal",
+            T3_WORKSTREAM_KEY_ID: "shell-key",
+            T3_WORKSTREAM_SIGNING_SECRET: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            T3_WORKSTREAM_AUTHORIZATION_REVISION: "7",
+          }),
+      });
+
+      for (const [name, value] of Object.entries(inherited)) {
+        assert.equal(env[name], value);
+      }
+    }),
+  );
+
   it.effect("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = {

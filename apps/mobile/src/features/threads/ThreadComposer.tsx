@@ -629,11 +629,20 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const lockedProviderInstanceId = props.canSwitchProvider
     ? undefined
     : currentModelSelection.instanceId;
+  const configuredDefaultModelSelection = props.serverConfig?.settings
+    ? resolveProjectSettings(
+        props.serverConfig.settings,
+        props.selectedThread.projectId,
+        project,
+      ).settings.defaultModelSelection
+    : null;
   const modelOptions = buildModelOptions(
     props.serverConfig,
     currentModelSelection,
     lockedProviderInstanceId,
     props.selectedThread.projectId,
+    false,
+    configuredDefaultModelSelection,
   );
   const threadProviderGroups = groupByProvider(modelOptions);
   const currentModelOption =
@@ -804,6 +813,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         style={{ maxWidth: props.contentMaxWidth }}
         onLayout={(event) => measureRow("surfaceWidth", event.nativeEvent.layout.width)}
       >
+        <ContinuationChoiceNotice
+          environmentId={props.environmentId}
+          threadId={props.selectedThread.id}
+        />
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (

@@ -58,6 +58,7 @@ const layerDesktopClerk = (
     copyText: () => Effect.void,
   },
   listeners = new Map<string, (...args: unknown[]) => void>(),
+  userDataDirectoryOverride: Option.Option<string> = Option.none(),
 ) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
@@ -279,6 +280,45 @@ describe("DesktopClerk", () => {
         assert.equal(createClerkBridgeMock.mock.calls.length, 0);
         assert.equal(storageMock.mock.calls.length, 0);
       }),
+  );
+
+  it.effect(
+    "binds an explicit profile before Clerk without inspecting or copying default Windows state",
+    () => {
+      const events: string[] = [];
+      storageMock.mockReturnValue(storageAdapter);
+      createClerkBridgeMock.mockImplementation(() => {
+        events.push("createClerkBridge");
+        return { cleanup: vi.fn(), isPrimaryInstance: true };
+      });
+      const noProfileAccess = FileSystem.layerNoop({
+        exists: () => Effect.die("must not inspect a default profile"),
+        readFileString: () => Effect.die("must not copy Windows Local State"),
+        makeDirectory: () => Effect.die("boot owns profile directory creation"),
+        writeFileString: () => Effect.die("must not migrate default profile state"),
+      });
+      return Effect.gen(function* () {
+        yield* Effect.scoped(
+          Layer.build(
+            layerDesktopClerk(
+              false,
+              events,
+              "win32",
+              noProfileAccess,
+              undefined,
+              undefined,
+              Option.some("/isolated/client-profile"),
+            ),
+          ),
+        );
+        assert.deepEqual(events, [
+          "setPath:userData:/isolated/client-profile",
+          "requestSingleInstanceLock",
+          "on:second-instance",
+          "createClerkBridge",
+        ]);
+      });
+    },
   );
 });
 

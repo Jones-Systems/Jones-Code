@@ -61,11 +61,6 @@ async function fetchReleases(url: string, accept: string, signal: AbortSignal) {
 
 export async function findEnvironmentUpdate(currentVersion: string, signal: AbortSignal) {
   const channel = cliReleaseChannelOf(currentVersion);
-  if (channel === "preview") {
-    throw new Error(
-      "Jones previews use qualified main builds. Use the separate Download and Install actions for this environment.",
-    );
-  }
   // Public release pages avoid the anonymous API quota shared by devices on the same network.
   const response = await fetchReleases(
     channel === "stable" ? `${CLI_RELEASES_PAGE_URL}/latest` : `${CLI_RELEASES_PAGE_URL}.atom`,

@@ -571,10 +571,11 @@ function ThreadSettingsSessionProvider(
       }
       if (!("modelOptions" in change)) return;
     }
-    const next =
-      change && "modelOptions" in change
-        ? (change.modelOptions ?? [])
-        : applyProviderOptionSelection(displayedDescriptors, { id, value });
+    const next = applyProviderOptionSelection(
+      displayedDescriptors,
+      { id, value },
+      pendingModel ? pendingModel.selection.options : props.selectedModel?.options,
+    );
     if (!next) {
       return;
     }

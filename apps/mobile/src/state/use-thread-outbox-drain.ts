@@ -204,6 +204,7 @@ export function buildQueuedThreadCreationStartTurnInput(input: {
     commandId: message.commandId,
     messageId: message.messageId,
     createdAt: message.createdAt,
+    titleText: message.text,
     ...serializeComposerMessageForServer(
       message.text.trim(),
       uploadedComposerContext(message.context, message.attachments, input.attachments),
@@ -1052,20 +1053,12 @@ export function useThreadOutboxDrain(): void {
           message: queuedMessage,
           creation: workspace,
           projectCwd,
-          threadId: queuedMessage.threadId,
-          commandId: queuedMessage.commandId,
-          messageId: queuedMessage.messageId,
-          createdAt: queuedMessage.createdAt,
-          titleText: queuedMessage.text,
-          ...serializeComposerMessageForServer(
-            queuedMessage.text.trim(),
-            uploadedComposerContext(
-              queuedMessage.context,
-              queuedMessage.attachments,
-              prepared.attachments,
-            ),
+          attachments: prepared.attachments,
+          settings: sendSettings,
+          serverResolvesWorktreeBase:
+            currentConfig.environment.capabilities.worktreeDefaultBase === true,
+          inlineMessageContext:
             currentConfig.environment.capabilities.inlineMessageContext === true,
-          ),
         }),
       });
       if (AsyncResult.isFailure(deliveryResult) && !hasAccess()) return true;

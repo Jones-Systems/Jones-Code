@@ -1,3 +1,4 @@
+import { findEnvironmentUpdate as findJonesEnvironmentUpdate } from "../../jones/updates/environmentMaintenance";
 import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
 import { jonesUpdates } from "../../jones/updates/jonesUpdates";
 import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
@@ -34,7 +35,6 @@ import { SettingsSection } from "./components/SettingsSection";
 import {
   canMaintainEnvironment,
   canUpdateEnvironmentProvider,
-  findEnvironmentUpdate,
   supportsEnvironmentUpdate,
 } from "./environment-maintenance";
 
@@ -63,6 +63,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const session = useAtomValue(environmentSession.sessionStateValueAtom(environmentId));
   const sessionResult = useAtomValue(environmentSession.sessionStateAtom(environmentId));
   const updateState = useAtomValue(serverEnvironment.updateStateAtom(environmentId));
+  const jonesState = useAtomValue(jonesUpdates.value(environmentId));
+  const isJonesEnvironment = jonesState !== null || config?.environment.jonesSource !== undefined;
   const outdated =
     useAtomValue(environmentPresentations.presentationAtom(environmentId))?.entry
       .serverUpdateRequired === true;
@@ -117,7 +119,13 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
 
   function requestServerUpdate() {
     const targetVersion = checkedRelease?.targetVersion;
-    if (disabled || !targetVersion || !capabilities || !supportsEnvironmentUpdate(capabilities))
+    if (
+      isJonesEnvironment ||
+      disabled ||
+      !targetVersion ||
+      !capabilities ||
+      !supportsEnvironmentUpdate(capabilities)
+    )
       return;
     Dialog.alert(
       `Update ${environment?.environmentLabel ?? "environment"}?`,
@@ -271,38 +279,46 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       </Text>
                     ) : null}
                   </View>
-                  <SettingsActionRow
-                    icon="arrow.clockwise"
-                    label="Check for updates"
-                    disabled={disabled}
-                    loading={pending === "check"}
-                    onPress={() => {
-                      if (disabled) return;
-                      void run("check", async () => {
-                        const controller = new AbortController();
-                        checkController.current = controller;
-                        const timeout = setTimeout(() => controller.abort(), 20_000);
-                        const fromVersion = config.environment.serverVersion;
-                        const result = await settlePromise(() =>
-                          findEnvironmentUpdate(fromVersion, controller.signal),
-                        );
-                        clearTimeout(timeout);
-                        checkController.current = null;
-                        // `run` owns the error message, so a failed lookup rethrows to it.
-                        if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
-                        setRelease({ fromVersion, targetVersion: result.value });
-                      });
-                    }}
-                  />
-                  {checkedRelease?.targetVersion &&
-                  supportsEnvironmentUpdate(config.environment.capabilities) ? (
-                    <SettingsActionRow
-                      icon="arrow.up.circle"
-                      label={`Update to ${checkedRelease.targetVersion}`}
-                      disabled={disabled}
-                      loading={pending === "server" || running}
-                      onPress={requestServerUpdate}
-                    />
+                  {!isJonesEnvironment ? (
+                    <>
+                      <SettingsActionRow
+                        icon="arrow.clockwise"
+                        label="Check for updates"
+                        disabled={disabled}
+                        loading={pending === "check"}
+                        onPress={() => {
+                          if (disabled) return;
+                          void run("check", async () => {
+                            const controller = new AbortController();
+                            checkController.current = controller;
+                            const timeout = setTimeout(() => controller.abort(), 20_000);
+                            const fromVersion = config.environment.serverVersion;
+                            const result = await settlePromise(() =>
+                              findJonesEnvironmentUpdate(
+                                fromVersion,
+                                controller.signal,
+                                !isJonesEnvironment,
+                              ),
+                            );
+                            clearTimeout(timeout);
+                            checkController.current = null;
+                            // `run` owns the error message, so a failed lookup rethrows to it.
+                            if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+                            setRelease({ fromVersion, targetVersion: result.value });
+                          });
+                        }}
+                      />
+                      {checkedRelease?.targetVersion &&
+                      supportsEnvironmentUpdate(config.environment.capabilities) ? (
+                        <SettingsActionRow
+                          icon="arrow.up.circle"
+                          label={`Update to ${checkedRelease.targetVersion}`}
+                          disabled={disabled}
+                          loading={pending === "server" || running}
+                          onPress={requestServerUpdate}
+                        />
+                      ) : null}
+                    </>
                   ) : null}
                 </SettingsSection>
                 <JonesUpdateControls environmentId={environmentId} allowed={!disabled} />

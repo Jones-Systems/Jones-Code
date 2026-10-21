@@ -241,6 +241,8 @@ export function useThreadComposerState() {
   const selectedThreadKey = selectedThreadShell
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
+  const currentImportedThreadKeyRef = useRef(selectedThreadKey);
+  currentImportedThreadKeyRef.current = selectedThreadKey;
   const selectedThreadQueuedMessages = selectedThreadKey
     ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []).filter(
         (message) => message.creation === undefined,
@@ -675,13 +677,99 @@ export function useThreadComposerState() {
     const setupRunning = [selectedThreadActivityRun?.status, selectedThreadRuntime?.status].some(
       (status) => status === "preparing" || status === "starting",
     );
-    const followUpDispatchMode = setupRunning
-      ? "queue"
-      : followUpAction === "auto"
-        ? null
-        : followUpAction === "queue"
-          ? "queue"
-          : "auto";
+    const followUpDispatchMode = resolveQuestionAwareDispatchMode({
+      busy: activeThreadBusy,
+      setupRunning,
+      followUpAction,
+      requests: selectedThreadProjection?.projection.runtimeRequests ?? [],
+    });
+
+    if (
+      selectedThreadProjection?.projection.thread.historyOrigin === "v1_import" &&
+      followUpDispatchMode !== "queue"
+    ) {
+      if (importedPreparationRef.current) return null;
+      importedPreparationRef.current = true;
+      const choice = getMobileImportedHistoryChoice(thread.environmentId, thread.id);
+      let reviewDraft = draft;
+      const unchanged = () =>
+        currentImportedThreadKeyRef.current === threadKey &&
+        sameComposerDraftState(getComposerDraftSnapshot(threadKey), reviewDraft) &&
+        getQueuedRunEdit(threadKey) === null;
+      try {
+        await choice.hydrate();
+        if (choice.snapshot().pending) {
+          await choice.observe();
+          return null;
+        }
+        const preparedAttachments = await prepareTurnAttachments({
+          environmentId: thread.environmentId,
+          attachments,
+          supportsImageUploads: serverConfig?.environment.capabilities.attachmentUploads === true,
+          persistUploadedReferences: async (updated) => {
+            if (!unchanged()) return "abandon";
+            replaceComposerDraftAttachments(threadKey, updated);
+            reviewDraft = getComposerDraftSnapshot(threadKey);
+            await flushComposerDrafts();
+            return unchanged() ? "persisted" : "abandon";
+          },
+        });
+        if (preparedAttachments.status !== "ready" || !unchanged()) return null;
+        const context = uploadedComposerContext(
+          draft.context,
+          attachments,
+          preparedAttachments.attachments,
+        );
+        const inlineContext =
+          serverConfig?.environment.capabilities.inlineMessageContext === true;
+        const metadata = makeQueuedMessageMetadata();
+        const messageId = MessageId.make(metadata.messageId);
+        const prepared = await prepareImportedHistoryMessage({
+          environmentId: thread.environmentId,
+          input: {
+            commandId: CommandId.make(metadata.commandId),
+            threadId: thread.id,
+            creationSource: "mobile",
+            message: {
+              messageId,
+              role: "user",
+              text:
+                context && !inlineContext
+                  ? serializeLegacyContextMessage({ text, records: context.records })
+                  : text,
+              attachments: preparedAttachments.attachments,
+              ...(context && inlineContext ? { context } : {}),
+            },
+            modelSelection,
+            runtimeMode: draft.runtimeMode ?? thread.runtimeMode,
+            interactionMode: resolveProviderInteractionMode(
+              provider,
+              draft.interactionMode ?? thread.interactionMode,
+            ),
+          },
+        });
+        if (prepared._tag !== "Success") {
+          Dialog.alert(
+            "Imported history unavailable",
+            "The message could not be prepared. Your draft is unchanged.",
+          );
+          return null;
+        }
+        await choice.review(
+          { type: "message", command: prepared.value },
+          `${threadKey}:${messageId}`,
+          unchanged,
+        );
+      } catch {
+        Dialog.alert(
+          "Imported history unavailable",
+          "Review or persistence is unavailable. Your draft is unchanged.",
+        );
+      } finally {
+        importedPreparationRef.current = false;
+      }
+      return null;
+    }
 
     const metadata = makeQueuedMessageMetadata();
     const messageId = MessageId.make(metadata.messageId);

@@ -605,7 +605,7 @@ export function useThreadListActions(): {
   const moveThread = async (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
     if (!checkThreadOperationPermission(thread, "Could not move thread")) return false;
     if (getPendingThreadOrder() !== null || appAtomRegistry.get(threadDropBusyAtom)) return false;
-    const shells = appAtomRegistry.get(environmentThreadShells.threadShellsAtom);
+    const shells = appAtomRegistry.get(environmentThreadShells.navigationThreadShellsAtom);
     const current = shells.find(
       (row) => row.id === thread.id && row.environmentId === thread.environmentId,
     );
@@ -620,9 +620,11 @@ export function useThreadListActions(): {
     if (section === "settled") {
       if (!environmentSupportsSettlement(thread.environmentId)) return false;
       appAtomRegistry.set(threadDropBusyAtom, true);
-      const settled = await settleThread(thread);
-      appAtomRegistry.set(threadDropBusyAtom, false);
-      return settled;
+      try {
+        return await settleThread(thread);
+      } finally {
+        appAtomRegistry.set(threadDropBusyAtom, false);
+      }
     }
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const supportsReorder = (environmentId: EnvironmentThreadShell["environmentId"]) => {
@@ -696,7 +698,8 @@ export function useThreadListActions(): {
           }),
         );
     const reorder = section === "pinned" ? reorderPinnedMutation : reorderActiveMutation;
-    const moved = await (async () => {
+    let succeeded = false;
+    try {
       if (crossSection) {
         if (section === "pinned") {
           const orderKey = assignments.find(
@@ -748,12 +751,13 @@ export function useThreadListActions(): {
           return false;
         }
       }
+      succeeded = true;
       pending?.complete();
       return true;
-    })();
-    if (!moved) pending?.cancel();
-    appAtomRegistry.set(threadDropBusyAtom, false);
-    return moved;
+    } finally {
+      if (!succeeded) pending?.cancel();
+      appAtomRegistry.set(threadDropBusyAtom, false);
+    }
   };
 
   const confirmDeleteThread = (thread: EnvironmentThreadShell) =>

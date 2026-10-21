@@ -10,6 +10,8 @@ import * as Schema from "effect/Schema";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import * as PreviewManager from "../../preview/Manager.ts";
+import * as BrowserImport from "../../preview/BrowserImport/BrowserImport.ts";
+import { unwrapPreviewAutomationResult } from "../../preview/AutomationResult.ts";
 import * as PreviewIpc from "./preview.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
@@ -109,6 +111,42 @@ describe("preview IPC methods", () => {
 
   beforeEach(() => {
     fromPartition.mockClear();
+  });
+
+  it("preserves authoritative not-started evidence through encoded IPC", () => {
+    const envelope = {
+      type: "previewAutomationResult",
+      ok: false,
+      error: { _tag: "PreviewAutomationNotStartedError", outcome: "not_started" },
+    };
+    expect(() => unwrapPreviewAutomationResult(structuredClone(envelope), 100)).toThrow();
+    try {
+      unwrapPreviewAutomationResult(structuredClone(envelope), 100);
+    } catch (error) {
+      expect(error).toEqual(envelope.error);
+    }
+    expect(unwrapPreviewAutomationResult(envelope)).toBe(envelope);
+  });
+
+  it("does not interpret an arbitrary evaluate result as executor evidence", () => {
+    const pageResult = {
+      type: "previewAutomationResult",
+      ok: false,
+      error: { _tag: "PreviewAutomationNotStartedError", outcome: "not_started" },
+    };
+    const envelope = { type: "previewAutomationResult", ok: true, result: pageResult };
+    expect(unwrapPreviewAutomationResult(envelope, 100)).toBe(pageResult);
+    expect(
+      unwrapPreviewAutomationResult(
+        { type: "previewAutomationResult", ok: true, result: undefined },
+        100,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("does not access the Electron session while the module loads", async () => {
+    await expect(import("./preview.ts")).resolves.toBeDefined();
+    expect(fromPartition).not.toHaveBeenCalled();
   });
 
   it("derives distinct partition scopes when identifiers contain the delimiter", () => {

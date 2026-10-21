@@ -544,6 +544,7 @@ function ThreadNavigationSidebarPane(
   // clock deliberately stays out: its per-row text lives on the items, so a
   // tick only re-renders rows whose displayed text actually moved.
   const listExtraData = {
+    workstreamBindingRevision: workstreams.bindingRevision,
     selectedThreadKey: props.selectedThreadKey ?? "",
     projectByKey,
     projectTitleByProjectKey,
@@ -580,7 +581,25 @@ function ThreadNavigationSidebarPane(
     return true;
   };
   useHardwareKeyboardCommand("focusSearch", focusSearch);
+  const moveWithinWorkstream = (
+    thread: EnvironmentThreadShell,
+    direction: ThreadMoveDestination,
+  ) => {
+    const target = workstreams.enabled
+      ? mobileWorkstreamMoveDestination(listItems, thread, direction)
+      : direction;
+    if (target !== null) void moveThread(thread, target);
+  };
   const renderListItem = ({ item }: { readonly item: SidebarListItem }) => {
+    if (item.type === "v2-workstream") {
+      return (
+        <ThreadListV2WorkstreamHeader
+          {...item}
+          onToggle={() => workstreams.toggleGroup(item.groupKey)}
+          onOpen={() => workstreams.openGroup(item.groupKey)}
+        />
+      );
+    }
     switch (item.type) {
       case "v2-pending": {
         const pendingScopeKey = scopedProjectKey(
@@ -612,6 +631,8 @@ function ThreadNavigationSidebarPane(
           <ThreadListV2Row
             onNewThreadOnBranch={props.onNewThreadOnBranch}
             thread={thread}
+            onOpenWorkstreams={workstreams.openThread}
+            secondaryWorkstreamLabel={item.secondaryWorkstreamLabel}
             variant={item.item.variant}
             hasQueuedMessages={item.hasQueuedMessages}
             snoozed={item.item.snoozed}
@@ -665,7 +686,7 @@ function ThreadNavigationSidebarPane(
             onPinThread={pinThread}
             onUnpinThread={unpinThread}
             onSetThreadAutoSettle={setThreadAutoSettle}
-            onMoveThread={moveThread}
+            onMoveThread={moveWithinWorkstream}
             onSwipeableClose={handleSwipeableClose}
             onSwipeableWillOpen={handleSwipeableWillOpen}
             simultaneousSwipeGesture={sidebarScrollGesture}
