@@ -317,11 +317,24 @@ Another thread can be context too. Type `@` followed by part of its title to pic
 the same server, or on web and desktop drag a thread out of the sidebar and drop it on the
 composer; a multi-selection drops together. The chip shows the thread's current title and
 opens it when selected, including threads from another connected environment. Your prompt
-carries a small reference with the title, thread ID, and source environment, not a transcript.
-The agent can read history on demand only for threads in its own environment. A reference to
-another environment does not give the agent access to that history and does not automatically
-export or attach a saved transcript. Attaching a thread does not change it or authorize the
-agent to message it.
+carries the title, thread ID, and source environment. On web and desktop, adding a thread also
+captures a bounded excerpt of its recent conversation: up to three recent exchanges with tool
+activity, plus up to six earlier exchanges containing only the incoming message and last
+recorded assistant reply, presented chronologically. Historical replies are labeled as recorded
+replies because the source does not retain final-channel metadata. Incoming messages can come
+from you, another agent, or a scheduled task.
+
+The excerpt is extracted automatically, without a model-generated summary or a transcript file.
+Long messages and tool results are shortened, with omissions marked. Each thread excerpt is
+limited to 16,000 characters; excerpts across a message share a 32,000-character budget and may
+be omitted when the rest of the prompt leaves too little room. Reasoning and attached file
+contents are excluded. Selected text and tool output are copied into the receiving conversation.
+
+The excerpt reflects the source when you attach it. Adding the same reference again does not
+refresh it. If the source is disconnected or cannot provide an excerpt, the identity reference
+still works and the missing context is identified. The agent can read more history on demand
+only for threads in its own environment; a reference does not grant access to another server.
+Attaching a thread does not change it or authorize the agent to message it.
 
 Dropping or pasting a thread reference preserves its source environment. Existing transcript
 files you attached previously remain ordinary file attachments; this does not remove them.

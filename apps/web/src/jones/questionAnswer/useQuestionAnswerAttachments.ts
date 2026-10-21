@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../threadReferenceExcerpt/useThreadReferenceCapture";
 import { useEffect, useState } from "react";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -67,6 +68,7 @@ export function useQuestionAnswerAttachments(input: {
   const keys = prompt.questions.map((q) =>
     questionAttachmentDraftId(environmentId, threadId, prompt.requestId, q.id),
   );
+  const addCapturedThreadContexts = useThreadReferenceCapture(target, target);
   const draft = useComposerDraftStore((state) => state.draftsByThreadKey[target]);
   const uploads = useAttachmentUploadStore((state) => state.uploadsByImageId);
   const preparationCount = useQuestionAttachmentPreparation((state) => state.counts[target] ?? 0);
@@ -228,9 +230,7 @@ export function useQuestionAnswerAttachments(input: {
       return shell ? [threadContextRecord(ref, shell.title)] : [];
     });
     if (records.length) {
-      useComposerDraftStore
-        .getState()
-        .addThreadContexts(target, records, { appendReference: false });
+      addCapturedThreadContexts(records, { appendReference: false });
       insert(
         records
           .map((record) => formatInlineContextReference(threadContextReference(record)))
@@ -246,9 +246,7 @@ export function useQuestionAnswerAttachments(input: {
     const records = new Map(knownRecords.map((record) => [record.contextId, record]));
     for (const record of knownRecords) {
       if (record.kind === "thread") {
-        useComposerDraftStore
-          .getState()
-          .addThreadContexts(target, [record], { appendReference: false });
+        addCapturedThreadContexts([record], { appendReference: false });
       }
       if (record.kind !== "image" && record.kind !== "file") continue;
       const sourceEnvironmentId = fragment.source.environmentId;

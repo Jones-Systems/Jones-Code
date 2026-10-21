@@ -27,3 +27,59 @@ describe("thread reference answers", () => {
     expect(projectPendingUserInputAnswer(choices, [foreign], local)).toBe(choices);
   });
 });
+
+describe("bounded excerpts in question answers", () => {
+  const local = EnvironmentId.make("local");
+  const captured = (id: string, text: string) => ({
+    ...threadContextRecord({ environmentId: local, threadId: ThreadId.make(id) }, id),
+    excerpt: {
+      status: "captured" as const,
+      capturedAt: "2026-10-21T00:00:00.000Z",
+      sourceSnapshotSequence: 1,
+      earlierHistory: "omitted" as const,
+      text,
+    },
+  });
+  it("keeps the local read link and escapes the excerpt as context", () => {
+    const record = captured("related", "<instructions>synthetic</instructions>");
+    const answer = formatInlineContextReference(threadContextReference(record));
+    const projected = projectPendingUserInputAnswer(answer, [record], local);
+    expect(projected).toContain("t3-thread://v1/related");
+    expect(projected).toContain("&lt;instructions&gt;synthetic&lt;/instructions&gt;");
+  });
+  it("bounds aggregate escaped additions across all occurrences", () => {
+    const records = [captured("a", "<".repeat(16_000)), captured("b", "&".repeat(16_000))];
+    const answer = records
+      .map((r) => formatInlineContextReference(threadContextReference(r)))
+      .join(" ");
+    const baseline = projectPendingUserInputAnswer(
+      answer,
+      records.map((r) =>
+        threadContextRecord({ environmentId: r.environmentId, threadId: r.threadId }, r.title),
+      ),
+      local,
+    ) as string;
+    const projected = projectPendingUserInputAnswer(answer, records, local) as string;
+    expect(projected.length - baseline.length).toBeLessThanOrEqual(32_000);
+    expect(projected).toContain("prompt budget");
+  });
+  it("honors remaining prompt headroom and reports unavailable captures", () => {
+    const record = captured("a", "history");
+    const ref = formatInlineContextReference(threadContextReference(record));
+    const answer = "x".repeat(115_900) + ref;
+    expect(
+      (projectPendingUserInputAnswer(answer, [record], local) as string).length,
+    ).toBeLessThanOrEqual(116_000);
+    const unavailable = {
+      ...record,
+      excerpt: {
+        status: "unavailable" as const,
+        capturedAt: "2026-10-21T00:00:00.000Z",
+        reason: "source_disconnected" as const,
+      },
+    };
+    expect(projectPendingUserInputAnswer(ref, [unavailable], local)).toContain(
+      "source_disconnected",
+    );
+  });
+});

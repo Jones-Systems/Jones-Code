@@ -1334,7 +1334,11 @@
     "apps/web/src/components/chat/composerThreadImport.browser.test.tsx": "upstream-deleted",
     "apps/web/src/lib/threadContextAttachment.ts": "upstream-deleted",
     "apps/web/src/lib/threadContextAttachment.test.ts": "upstream-deleted",
-    "docs/user/question-attachments.md": "accepted-shared"
+    "docs/user/question-attachments.md": "accepted-shared",
+    "packages/contracts/src/composerContext.ts": "hook",
+    "packages/client-runtime/src/state/orchestration.ts": "hook",
+    "apps/web/src/questionAttachments.ts": "accepted-shared",
+    "apps/web/src/components/ThreadContextChip.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1155,9 +1155,19 @@
         "apps/web/src/lib/composerContextReferences.test.ts",
         "apps/web/src/composerDraftStore.test.ts",
         "packages/shared/src/jones/threadReferenceProjection.test.ts",
-        "packages/shared/src/composerContextReferences.test.ts"
+        "packages/shared/src/composerContextReferences.test.ts",
+        "packages/contracts/src/jones/threadReferenceExcerpt.test.ts",
+        "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/web/src/components/chat/pendingDraftWork.test.ts",
+        "packages/contracts/src/composerContext.test.ts"
       ],
-      "scope": "Web and desktop main-composer and question-answer thread drops and clipboard imports preserve source-environment references without fetching transcripts or creating files. Shared ChatComposer edits remove the upstream import branch and dead reservation bookkeeping; extracting its existing clipboard switch and draft closure would duplicate stateful machinery. Shared provider wording remains in the canonical formatter because the conditional reading rule applies to every thread record and provider. Pending-answer projection delegates to a Jones module and its caller supplies the receiving environment. The existing pending-answer tests only gain the required environment argument. Removed browser/unit importer tests cover the retired transcript-file path, replaced by reference-only drop/paste and projection checks. HTTP transcript export, persisted files, wire contracts, mobile attachment entry points, and server execution are unchanged."
+      "scope": "Web/desktop main-composer drop, picker and clipboard plus question-answer thread references capture bounded programmatic recent context from the source environment, retain clickable identity, and never export JSONL/full transcript. Latest3 run exchanges include selected canonical activity; up to6 older exchanges include incoming text and last nonempty non-streaming recorded assistant (historical final channel unavailable). Schemas retain old identity-only records; shared projection caps escaped excerpt additions. New read RPC uses existing orchestration-read authorization and internal tail projection preserves visibility/fork rules. ProjectionStore/ThreadManagement/RPC/auth/constants edits are narrow existing-owner integrations; message formatter and questionAttachments generation counters remain accepted shared edits because extracting their owning state/formatter would duplicate machinery. Existing exported transcript API/stored files remain. Mobile creation remains identity-only, current web/client dispatch is V2, strict legacy bootstrap is excluded. No new provider-adapter or database schema changes. Existing thread-chip tooltip adds capture status without new layout; exhaustive RPC instrumentation assigns the new read to its existing family."
     }
   ]
 }

@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
 import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
@@ -2978,7 +2979,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const addCapturedThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
   const setComposerDraftThreadContexts = useComposerDraftStore((store) => store.setThreadContexts);
   const buildContextClipboardFragment = (contextIds: ReadonlyArray<string>): string | null => {
     const wanted = new Set(contextIds);
@@ -3219,7 +3223,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           break;
         }
         case "thread": {
-          addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+          addCapturedThreadContexts([record], {
             appendReference: false,
           });
           rewritten.set(record.contextId, record.contextId);
@@ -3870,7 +3874,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
       });
       if (applied) {
-        addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+        addCapturedThreadContexts([record], {
           appendReference: false,
         });
         setComposerHighlightedItemId(null);
@@ -5863,12 +5867,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
-      addComposerDraftThreadContexts(questionAttachmentTarget, records, {
+      addCapturedThreadContexts(records, {
         appendReference: false,
       });
       if (isComposerCollapsedMobile) expandMobileComposerStable();
     } else {
-      addComposerDraftThreadContexts(composerDraftTarget, records);
+      addCapturedThreadContexts(records);
     }
   });
 

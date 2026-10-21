@@ -1,3 +1,4 @@
+import * as ThreadReferenceExcerpts from "./jones/orchestration/threadReferenceExcerpt.ts";
 import * as RuntimeStop from "./jones/runtime/RuntimeStop.ts";
 import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
 import { withClientSettlementOrigin } from "./jones/settlementOrigins/clientIngress.ts";
@@ -1235,6 +1236,9 @@ const layerWsRpc = (
       });
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const threadReferenceExcerpts = yield* ThreadReferenceExcerpts.ThreadReferenceExcerpts.pipe(
+        Effect.provide(ThreadReferenceExcerpts.layer),
+      );
       const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
       const intakeContext = yield* Effect.context<
         | ThreadManagementService.ThreadManagementService
@@ -1859,6 +1863,8 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: (input) =>
+          threadReferenceExcerpts.capture(input),
         [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: (input) =>
           startup
             .enqueueCommand(

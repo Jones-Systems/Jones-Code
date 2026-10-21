@@ -1,3 +1,4 @@
+import { readPreparedConnection } from "../../state/session";
 import { readThreadShell } from "../../state/entities";
 import { THREAD_CONTEXT_DROP_EVENT } from "../../components/chat/threadContextDrag";
 import { listenForWorkspaceFileDragEnd } from "./workspaceFileDragLifecycle";
@@ -54,6 +55,20 @@ vi.mock(import("../../lib/imageCompression"), async (importOriginal) => {
   const original = await importOriginal();
   return { ...original, prepareImageForAttachment: vi.fn(original.prepareImageForAttachment) };
 });
+
+const { excerptRequest } = vi.hoisted(() => ({ excerptRequest: vi.fn() }));
+vi.mock(import("../../state/use-atom-command"), () => ({ useAtomCommand: () => excerptRequest }));
+vi.mock(import("../../state/session"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  readPreparedConnection: vi.fn(() => ({ httpBaseUrl: "http://synthetic.invalid" }) as never),
+}));
+const capturedExcerpt = {
+  status: "captured" as const,
+  capturedAt: "2026-10-21T00:00:00.000Z",
+  sourceSnapshotSequence: 12,
+  earlierHistory: "omitted" as const,
+  text: "Synthetic bounded thread excerpt",
+};
 
 const threadRef = {
   environmentId: EnvironmentId.make("question-test"),
@@ -232,6 +247,14 @@ function Harness({
 let root: Root;
 let container: HTMLDivElement;
 beforeEach(() => {
+  vi.mocked(readPreparedConnection).mockReturnValue({
+    httpBaseUrl: "http://synthetic.invalid",
+  } as never);
+  excerptRequest.mockReset();
+  excerptRequest.mockImplementation(async ({ input }: { input: { threadId: string } }) => ({
+    _tag: "Success",
+    value: { threadId: input.threadId, excerpt: capturedExcerpt },
+  }));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.append(container);
@@ -628,7 +651,7 @@ it("shows legacy unavailable attachments and removes them without changing the t
 });
 
 it.each(["question-test", "foreign-environment"])(
-  "pastes a %s thread as a reference without fetching history or files",
+  "pastes a %s thread with bounded source context without exporting or uploading files",
   async (source) => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const record = threadContextRecord(
@@ -667,20 +690,23 @@ it.each(["question-test", "foreign-environment"])(
           question.id,
         ),
       );
-    expect(answerDraft?.threadContexts).toEqual([record]);
+    expect(answerDraft?.threadContexts).toEqual([{ ...record, excerpt: capturedExcerpt }]);
+    expect(excerptRequest).toHaveBeenCalledWith({
+      environmentId: record.environmentId,
+      input: { threadId: record.threadId },
+    });
     expect(answerDraft?.files ?? []).toEqual([]);
     expect(answerField().value).toBe(formatInlineContextReference(threadContextReference(record)));
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
     await act(async () => button("Send").click());
-    expect(output("answer")).toBe(
-      JSON.stringify({
-        approach:
-          source === "question-test"
-            ? formatThreadLink(record.threadId, "Related thread")
-            : "Related thread (threadId: related; environmentId: foreign-environment; reference only, no history attached; unavailable through this environment's t3_thread_read).",
-      }),
+    const sentAnswer = JSON.parse(output("answer")!) as { approach: string };
+    expect(sentAnswer.approach).toContain(
+      source === "question-test"
+        ? formatThreadLink(record.threadId, "Related thread")
+        : "environmentId: foreign-environment",
     );
+    expect(sentAnswer.approach).toContain("Synthetic bounded thread excerpt");
     expect(output("messages")).toBe("[]");
   },
 );
@@ -812,7 +838,11 @@ it.each(["question-test", "foreign-environment"])(
         ),
       );
     const record = threadContextRecord(ref, "Dropped thread");
-    expect(draft?.threadContexts).toEqual([record]);
+    expect(draft?.threadContexts).toEqual([{ ...record, excerpt: capturedExcerpt }]);
+    expect(excerptRequest).toHaveBeenCalledWith({
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId },
+    });
     expect(draft?.files ?? []).toEqual([]);
     expect(answerField().value).toBe(
       formatInlineContextReference(threadContextReference(record)) + " ",
@@ -820,3 +850,120 @@ it.each(["question-test", "foreign-environment"])(
     expect(fetchSpy).not.toHaveBeenCalled();
   },
 );
+
+it("blocks question submission while thread context is captured, then submits the snapshot", async () => {
+  let resolve!: (value: unknown) => void;
+  excerptRequest.mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const ref = {
+    environmentId: EnvironmentId.make("foreign-environment"),
+    threadId: ThreadId.make("pending-thread"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Pending thread" } as never);
+  await act(async () => root.render(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  expect(button("Send").disabled).toBe(true);
+  expect(output("answer")).toBe("null");
+  await act(async () =>
+    resolve({ _tag: "Success", value: { threadId: ref.threadId, excerpt: capturedExcerpt } }),
+  );
+  expect(button("Send").disabled).toBe(false);
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("Synthetic bounded thread excerpt");
+});
+
+it("copies a captured question reference without requesting a newer snapshot", async () => {
+  const record = {
+    ...threadContextRecord(
+      {
+        environmentId: EnvironmentId.make("foreign-environment"),
+        threadId: ThreadId.make("copied"),
+      },
+      "Copied",
+    ),
+    excerpt: capturedExcerpt,
+  };
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", formatInlineContextReference(threadContextReference(record)));
+  clipboardData.setData(
+    COMPOSER_CONTEXT_CLIPBOARD_MIME,
+    encodeComposerContextFragment({
+      version: 1,
+      source: { environmentId: record.environmentId },
+      records: [record],
+    })!,
+  );
+  await act(async () => root.render(<Harness />));
+  await act(async () =>
+    answerField().dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(excerptRequest).not.toHaveBeenCalled();
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("Synthetic bounded thread excerpt");
+});
+
+it("keeps disconnected source identity without trying the current environment", async () => {
+  vi.mocked(readPreparedConnection).mockReturnValue(null);
+  const ref = {
+    environmentId: EnvironmentId.make("disconnected-source"),
+    threadId: ThreadId.make("unavailable"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Unavailable thread" } as never);
+  await act(async () => root.render(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  expect(readPreparedConnection).toHaveBeenCalledWith(ref.environmentId);
+  expect(excerptRequest).not.toHaveBeenCalled();
+  expect(button("Send").disabled).toBe(false);
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("source_disconnected");
+  expect(output("answer")).toContain("environmentId: disconnected-source");
+});
+
+it("does not apply a capture after its question component unmounts", async () => {
+  let resolve!: (value: unknown) => void;
+  excerptRequest.mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const ref = {
+    environmentId: EnvironmentId.make("foreign-environment"),
+    threadId: ThreadId.make("late-thread"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Late thread" } as never);
+  await act(async () => root.render(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  await act(async () => root.render(<div />));
+  await act(async () =>
+    resolve({ _tag: "Success", value: { threadId: ref.threadId, excerpt: capturedExcerpt } }),
+  );
+  const target = questionAttachmentDraftId(
+    threadRef.environmentId,
+    threadRef.threadId,
+    "request",
+    question.id,
+  );
+  expect(useComposerDraftStore.getState().getComposerDraft(target)?.threadContexts).toEqual([
+    threadContextRecord(ref, "Late thread"),
+  ]);
+  expect(useQuestionAttachmentPreparation.getState().counts[target]).toBe(0);
+});

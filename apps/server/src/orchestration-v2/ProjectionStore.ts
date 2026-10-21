@@ -355,12 +355,15 @@ export type ProjectionRecords<K extends ProjectionRecordField> = Pick<
 >;
 
 export interface ProjectionTimelinePageOptions {
+  readonly tail?: boolean;
   readonly afterPosition?: number;
   readonly itemId?: TurnItemId;
   readonly view?: "messages" | "activity";
   readonly limit: number;
 }
 export interface ProjectionTimelinePage {
+  readonly snapshotSequence?: number;
+  readonly inProgress?: boolean;
   readonly items: ReadonlyArray<OrchestrationV2ProjectedTurnItem>;
   readonly totalItems: number;
   readonly hasMore: boolean;
@@ -5765,7 +5768,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       ))
                   : row.sourceItemId === options.itemId,
               );
-            const page = matching.slice(0, options.limit);
+            const page = options.tail
+              ? matching.slice(Math.max(0, matching.length - options.limit))
+              : matching.slice(0, options.limit);
+            const revisions = options.tail
+              ? yield* sql<{
+                  sequence: number | null;
+                }>`SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE application_event_version = 2`
+              : [];
+            if (options.tail && index.records.thread.deletedAt !== null)
+              return yield* new ProjectionStoreThreadNotFoundError({ threadId });
             const items = yield* Effect.forEach(page, (row) =>
               Effect.gen(function* () {
                 if (row.synthetic !== undefined)
@@ -5801,6 +5813,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             return {
               items,
               totalItems: index.visible.length,
+              ...(revisions[0]?.sequence == null
+                ? {}
+                : { snapshotSequence: revisions[0].sequence }),
+              ...(options.tail
+                ? {
+                    inProgress: index.records.runs.some((run) => activeRunStatuses.has(run.status)),
+                  }
+                : {}),
               hasMore: matching.length > page.length,
             };
           }),
@@ -7593,8 +7613,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           ),
         ),
       getTimelinePage: (threadId, options) =>
-        service.getThreadProjection(threadId).pipe(
-          Effect.map((projection) => {
+        service.getThreadSnapshot(threadId).pipe(
+          Effect.map(({ projection, snapshotSequence }) => {
             const matching = projection.visibleTurnItems.filter((row) =>
               options.itemId === undefined
                 ? row.position > (options.afterPosition ?? -1) &&
@@ -7603,8 +7623,16 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 : row.sourceItemId === options.itemId,
             );
             return {
-              items: matching.slice(0, options.limit),
+              items: options.tail
+                ? matching.slice(Math.max(0, matching.length - options.limit))
+                : matching.slice(0, options.limit),
               totalItems: projection.visibleTurnItems.length,
+              ...(options.tail
+                ? {
+                    snapshotSequence,
+                    inProgress: projection.runs.some((run) => activeRunStatuses.has(run.status)),
+                  }
+                : {}),
               hasMore: matching.length > options.limit,
             };
           }),

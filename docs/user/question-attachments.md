@@ -9,6 +9,12 @@ Files upload to the environment running the thread, including remote environment
 Submitted attachments remain in the thread history. Reverting a thread removes attachments belonging to discarded answers; deleting the thread uses the same file cleanup as other attachments. You can attach up to 100 files across one set of answers, using the same file and total image size limits as the normal composer.
 
 On web and desktop, you can also drop a sidebar thread or paste a copied thread reference into
-a written answer. These references carry the thread title and identity, not a transcript or
-file upload. References from another environment retain that environment in the submitted
-answer, but the answering agent cannot read their history through its own thread-reading tool.
+a written answer. These references carry the thread title, source environment, and a bounded
+excerpt captured when attached: up to three recent exchanges with tool activity and six earlier
+input/reply pairs. Long text and tool output are shortened with omissions marked; reasoning and
+file contents are excluded. No transcript file is uploaded. The excerpt is copied into your
+answer and shares the same size limits as [thread context in the composer](./composer.md#context-in-your-message).
+
+If the source is disconnected or does not support excerpts, the reference keeps its identity.
+The answering agent can read additional history through its own thread-reading tool only when
+the referenced thread is in the same environment.

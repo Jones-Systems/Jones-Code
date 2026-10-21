@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "default": "./src/jones/threadReferenceExcerpt.ts"
+    },
     "./jones/queue": {
       "types": "./src/jones/queue/queuedSteerBatch.ts",
       "default": "./src/jones/queue/queuedSteerBatch.ts"
