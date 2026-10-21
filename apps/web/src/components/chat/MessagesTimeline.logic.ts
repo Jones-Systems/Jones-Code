@@ -500,7 +500,7 @@ export interface TimelineDurationMessage {
 
 export type TimelineLatestRun = Pick<
   ThreadRunSummary,
-  "runId" | "status" | "startedAt" | "completedAt" | "turnEnded"
+  "runId" | "status" | "startedAt" | "completedAt" | "turnEnded" | "providerSettlement"
 >;
 
 const LIVE_ACTIVITY_ROW_ID = "live-activity-row";

@@ -1,3 +1,4 @@
+import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
 import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
@@ -6646,6 +6647,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                       />
                     </ComposerBanner.Actions>
                   </ComposerBanner.Row>
+                ) : questionCard ? (
+                  <div
+                    data-chat-composer-collapsed-controls="true"
+                    data-question-answer-card="true"
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                  >
+                    {questionCard}
+                  </div>
                 ) : pendingUserInputs.length > 0 ? (
                   <ComposerPendingUserInputPanel
                     pendingUserInputs={pendingUserInputs}

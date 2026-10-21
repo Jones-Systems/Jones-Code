@@ -1,7 +1,22 @@
-import { findRecordedWorktreeSetup, mergeDirectPreviewAnnotation } from "./ChatView.logic";
-import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
-import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { deriveProviderInstanceEntries } from "../providerInstances";
+import { resolveComposerPickerModelSelection } from "./ChatView.logic";
+import {
+  findRecordedWorktreeSetup,
+  isThreadWokeUnseen,
+  mergeDirectPreviewAnnotation,
+  resolveVisibleWorktreeSetup,
+} from "./ChatView.logic";
+import {
+  recallCheckoutIsRepo,
+  rememberCheckoutIsRepo,
+  threadShellHasStarted,
+} from "./ChatView.logic";
+import {
+  ANTIGRAVITY_DEFAULT_MODEL,
+  ProviderDriverKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
+import { deriveProviderInstanceEntries, NO_PROVIDER_MODEL_SELECTION } from "../providerInstances";
+import type { RightPanelSurface } from "../rightPanelStore";
 import {
   CommandId,
   EnvironmentId,
@@ -42,6 +57,12 @@ import {
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
   resolveDraftPromotionNavigationTarget,
+  resolveThreadMetadataUpdateForNextTurn,
+  resolveSendEnvMode,
+  resolveFirstSendWorktreePreparation,
+  startNewThreadForProject,
+  shouldShowBranchMismatchBanner,
+  shouldShowPlanFollowUpPrompt,
   waitForRevertedMessage,
 } from "./ChatView.logic";
 

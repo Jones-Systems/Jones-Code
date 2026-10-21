@@ -770,6 +770,25 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
 
 export { readFileAsDataUrl } from "../lib/imageCompression";
 
+// Preserve New worktree intent while automatic base selection is still loading.
+export function resolveFirstSendWorktreePreparation(input: {
+  isFirstMessage: boolean;
+  sendEnvMode: DraftThreadEnvMode;
+  worktreePath: string | null;
+  projectCwd: string;
+  baseBranch: string | null;
+  startFromOrigin: boolean;
+}): NonNullable<StartThreadTurnInput["bootstrap"]>["prepareWorktree"] {
+  if (!input.isFirstMessage || input.sendEnvMode !== "worktree" || input.worktreePath !== null) {
+    return undefined;
+  }
+  return {
+    projectCwd: input.projectCwd,
+    ...(input.baseBranch !== null ? { baseBranch: input.baseBranch } : {}),
+    ...(input.startFromOrigin ? { startFromOrigin: true } : {}),
+  };
+}
+
 export { resolveSendEnvMode } from "@t3tools/shared/projectSettings";
 
 export function resolveBackgroundDraftWorkspaceOptions(input: {
@@ -1335,4 +1354,27 @@ export function mergeDirectPreviewAnnotation(input: {
   return { images, previewAnnotations };
 }
 
+export function resolveComposerPickerModelSelection(input: {
+  instanceId: ProviderInstanceId;
+  model: string;
+  currentSelection: ModelSelection | null | undefined;
+  rememberedOptions: ModelSelection["options"];
+}): ModelSelection {
+  const options =
+    input.rememberedOptions?.filter((option) => option.id !== "reasoningEffort") ?? [];
+  if (
+    input.currentSelection?.instanceId === input.instanceId &&
+    input.currentSelection.model === input.model
+  ) {
+    const effort = input.currentSelection.options?.find(
+      (option) => option.id === "reasoningEffort",
+    );
+    if (effort !== undefined) options.push(effort);
+  }
+  return {
+    instanceId: input.instanceId,
+    model: input.model,
+    ...(options.length ? { options } : {}),
+  };
+}
 export { isThreadWokeUnseen } from "@t3tools/client-runtime/state/thread-settled";

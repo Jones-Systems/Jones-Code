@@ -197,7 +197,6 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarV2VisibleThreads,
   getSidebarThreadIdsToPrewarm,
-  filterSidebarV2VisibleThreads,
   resolveAdjacentThreadId,
   isContextMenuPointerDown,
   isSidebarNestedLinkClick,
@@ -1187,10 +1186,7 @@ function useProjectThreads(
       resolveThreadLastVisitedAt(thread.lastVisitedAt, threadLastVisitedAts[index] ?? undefined),
     ]),
   );
-  const visibleProjectThreads = sortThreads(
-    filterSidebarV2VisibleThreads(sidebarThreads, null),
-    threadSortOrder,
-  );
+  const visibleProjectThreads = sortThreads(projectThreads, threadSortOrder);
   const projectStatus = resolveProjectStatusIndicator(
     visibleProjectThreads.map((thread) =>
       resolveProjectThreadStatus(thread, lastVisitedAtByThreadKey),

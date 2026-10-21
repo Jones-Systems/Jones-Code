@@ -2,7 +2,13 @@ import { USAGE_CONTRACT_VERSION } from "@t3tools/contracts";
 import { mergeUsage, type MergedUsage, type ModelTotals } from "@t3tools/shared/usageMerge";
 import { describe, expect, it } from "vite-plus/test";
 
-import { cacheHitRate, costPerMillionTokens } from "./usageBreakdown";
+import {
+  cacheHitRate,
+  costPerMillionTokens,
+  modelShare,
+  sortModelsByTokens,
+  selectUsageBreakdown,
+} from "./usageBreakdown";
 
 const model = (
   name: string,

@@ -503,6 +503,15 @@ function useSidebarThreads(input: {
             ),
           ),
         );
+  /** Tasks linked environments run for a listed thread; they show under it. */
+  const delegatedUnderParent = useDelegatedUnderParent();
+  const environmentThreads = filterSidebarEnvironmentThreads(threads, input.excludedEnvironmentIds);
+  const scopedThreads = filterSidebarV2VisibleThreads(
+    environmentThreads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+  );
+  const settledResetKey = JSON.stringify([projectScopeKey, input.excludedEnvironmentKey]);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
   // Snooze wake times are second-precise, including rows hidden by the
@@ -518,7 +527,7 @@ function useSidebarThreads(input: {
     scopedThreads,
     "current",
     nowMinute > snoozeWakeAt ? nowMinute : snoozeWakeAt,
-    routeThreadKey,
+    routeRowThreadKey,
   );
   // Counts include filtered-out threads, so arm the scoped roster's next wake.
   useEffect(() => {
@@ -3035,6 +3044,7 @@ export default function Sidebar() {
     activeKeys,
     pinnedKeysById,
     activeKeysById,
+    routeRowThreadKey,
   } = useSidebarThreads({
     excludedEnvironmentIds,
     excludedEnvironmentKey,
@@ -3042,7 +3052,7 @@ export default function Sidebar() {
     scopedProjectKeys,
     serverConfigs,
     optimisticDrop,
-    routeThreadKey,
+    routeThreadRef,
   });
 
   useEffect(() => {
@@ -3126,46 +3136,41 @@ export default function Sidebar() {
     },
   );
 
-  const {
-    threads,
-    workingShelfEnabled,
-    pinnedThreads,
-    draggableThreadKeys,
-    activeReorderableThreadKeys,
-    activeThreads,
-    workingThreads,
-    snoozedThreads,
-    settledThreads,
-    snoozeNow,
-    searchableThreads,
-    settledVisibleCount,
-    hiddenSettledCount,
-    showMoreSettled,
-    settledShelfExpanded,
-    toggleSettledShelf,
-    snoozedShelfExpanded,
-    toggleSnoozedShelf,
-    workingShelfExpanded,
-    toggleWorkingShelf,
-    renderedSettledThreads,
-    visibleSnoozedThreads,
-    visibleWorkingThreads,
-    orderedThreadKeys,
-    threadByKey,
-    settledThreadKeys,
-    snoozedThreadKeys,
-    sectionByThreadKey,
-    pinnedKeys,
-    activeKeys,
-    pinnedKeysById,
-    activeKeysById,
-    routeRowThreadKey,
-  } = useSidebarThreads({
-    projectScopeKey,
-    scopedProjectKeys,
-    serverConfigs,
-    optimisticDrop,
-    routeThreadRef,
+  const workstreamController = useWorkstreams(true, threads);
+  const workstreamAssignmentMenuRef = useRef<
+    ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
+  >(null);
+  const workstreamExternalDropRef = useRef<NativeThreadExternalDrop | null>(null);
+  const [workstreamCreateOpen, setWorkstreamCreateOpen] = useState(false);
+  const [workstreamCreatePending, setWorkstreamCreatePending] = useState(false);
+  const closeWorkstreamCreate = useStableCallback(() => setWorkstreamCreateOpen(false));
+  // Display-only trust across connected environments; assignment changes keep placement trust.
+  const workstreamTrust = useConnectedWorkstreamTrust(
+    workstreamController.placements?.trustedEnvironments,
+  );
+  // Stored assignments group immediately; only proof assurance follows the hook's clock.
+  const workstreamAssignmentInput = workstreamController.assignmentIndex
+    ? {
+        assignmentIndex: workstreamController.assignmentIndex,
+        verificationNow: workstreamController.verificationNow ?? snoozeNow,
+      }
+    : {};
+  const workstreamGrouping = groupNativeThreadsWithConnectedTrust({
+    workstreams: workstreamController.data?.items ?? [],
+    placements: workstreamController.placements?.items ?? [],
+    threads: activeThreads,
+    trustedNow: snoozeNow,
+    ...workstreamAssignmentInput,
+    trust: workstreamTrust,
+  });
+
+  const workstreamSummaryGrouping = groupNativeThreadsWithConnectedTrust({
+    workstreams: workstreamController.data?.items ?? [],
+    placements: workstreamController.placements?.items ?? [],
+    threads: environmentThreads,
+    trustedNow: snoozeNow,
+    ...workstreamAssignmentInput,
+    trust: workstreamTrust,
   });
 
   const isSearchingThreads = threadSearchQuery.trim().length > 0;

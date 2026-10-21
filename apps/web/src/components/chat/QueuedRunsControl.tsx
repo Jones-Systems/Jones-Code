@@ -357,14 +357,7 @@ export function QueuedRunsControl({
           data-chat-composer-collapsed-controls="true"
           className="relative z-0"
         >
-          <ComposerBanner.Row
-            render={<button type="button" />}
-            aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
-            aria-expanded={expanded}
-            aria-controls={queueListId}
-            onPointerDown={(event) => event.preventDefault()}
-            onClick={() => setExpanded((value) => !value)}
-          >
+          <ComposerBanner.Row>
             <ComposerBanner.Icon>
               <ListOrderedIcon />
             </ComposerBanner.Icon>
@@ -372,8 +365,19 @@ export function QueuedRunsControl({
               Queued
             </ComposerBanner.Content>
             <ComposerBanner.Actions>
-              <ComposerBanner.Count>{items.length}</ComposerBanner.Count>
-              <ComposerBanner.ToggleIcon expanded={expanded} />
+              <QueuedSteerBatchAction batch={batch} />
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                aria-label={expanded ? "Collapse queued messages" : "Expand queued messages"}
+                aria-expanded={expanded}
+                aria-controls={queueListId}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                <ComposerBanner.Count>{items.length}</ComposerBanner.Count>
+                <ComposerBanner.ToggleIcon expanded={expanded} />
+              </Button>
             </ComposerBanner.Actions>
           </ComposerBanner.Row>
           <ComposerBanner.Scroll className={cn("max-h-32", !expanded && "hidden")}>
@@ -388,7 +392,7 @@ export function QueuedRunsControl({
                 const rowServerIndex = item.serverIndex;
                 const isEditing = rowRunId !== null && rowRunId === props.editingRunId;
                 const rowDraggable =
-                  rowRunId !== null && rowServerIndex !== null && canReorder && busyRunId === null;
+                  rowRunId !== null && rowServerIndex !== null && canReorder && !queueBusy;
                 return (
                   <ComposerBanner.Row
                     render={<li />}

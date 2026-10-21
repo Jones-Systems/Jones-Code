@@ -1485,6 +1485,7 @@ function SavedBackendListRow({
   const [diagnosisOpen, setDiagnosisOpen] = useState(false);
   const environmentId = environment.environmentId;
   const unsupported = environment.connection.phase === "unsupported";
+  const historicalUpdate = environment.entry.compatibilityHint?.kind === "outdated-update";
   const blocked = unsupported && !hasSavedBearerRoute(environment.entry);
   const enabled = environment.entry.enabled && !unsupported;
   const isConnected = environment.connection.phase === "connected";
@@ -1674,6 +1675,8 @@ function SavedBackendListRow({
       }
       below={
         <>
+          {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
+          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
           {diagnosis ? (
             <ConnectionDiagnosisSummary
               diagnosis={diagnosis}
@@ -1754,14 +1757,20 @@ function SavedBackendListRow({
             <Switch
               size="sm"
               checked={enabled}
-              disabled={isRemoving || blocked}
+              disabled={isRemoving || blocked || historicalUpdate}
               aria-label={`${enabled ? "Switch off" : "Switch on"} ${environment.label}`}
               onCheckedChange={(checked) => onSetEnabled(environmentId, checked)}
             />
           }
         />
         <TooltipPopup side="top">
-          {blocked ? "Client not supported" : enabled ? "Switch off" : "Switch on"}
+          {blocked
+            ? "Client not supported"
+            : historicalUpdate
+              ? "Previously required an update; refresh host status"
+              : enabled
+                ? "Switch off"
+                : "Switch on"}
         </TooltipPopup>
       </Tooltip>
       <Menu>

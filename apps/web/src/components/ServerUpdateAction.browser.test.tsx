@@ -1,3 +1,4 @@
+import { beforeEach } from "vite-plus/test";
 import { RegistryContext } from "@effect/atom-react";
 import { AuthSessionState, type EnvironmentId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -156,6 +157,10 @@ function renderAction(props: Partial<Parameters<typeof ServerUpdateAction>[0]> =
     />,
   );
 }
+
+beforeEach(() => {
+  testState.jonesEnvironmentIds.clear();
+});
 
 describe("ServerUpdateAction", () => {
   it.each([

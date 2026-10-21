@@ -1,7 +1,11 @@
-import type { SensorProps } from "@dnd-kit/core";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { DndContext, useDraggable, useSensor, useSensors, type SensorProps } from "@dnd-kit/core";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { dropPinnedThreadOnWorkstream } from "../jones/workstreams/sidebarThreadDrop";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, StrictMode, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { SidebarDragLifecycle, SidebarPointerSensor } from "./Sidebar.pointer";
 import { fakeTimers } from "../../test/render";
-import { SidebarPointerSensor } from "./Sidebar.pointer";
 
 const sensors: SidebarPointerSensor[] = [];
 

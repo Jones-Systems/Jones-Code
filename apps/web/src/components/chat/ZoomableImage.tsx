@@ -10,6 +10,7 @@ import {
 
 import { AttachmentImage } from "../media/AttachmentImage";
 
+const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 8;
 
 // The viewer lays out below the native caption strip so its controls never share a row with
@@ -42,6 +43,7 @@ export function ZoomableImage({
   const viewportRef = useRef<HTMLDivElement>(null);
   const [naturalSize, setNaturalSize] = useState({ width: 0, height: 0 });
   const [viewerSize, setViewerSize] = useState(readViewerSize);
+  const [panelSize, setPanelSize] = useState({ width: 0, height: 0 });
   const [zoom, setZoom] = useState(1);
   const [percentInput, setPercentInput] = useState("100");
   const zoomRef = useRef(1);
@@ -56,10 +58,15 @@ export function ZoomableImage({
   const suppressClickRef = useRef(false);
   const [dragging, setDragging] = useState(false);
   const maxHeight = Math.max(1, Math.min(viewerSize.height * 0.86, viewerSize.height - 160));
-  const fit = Math.min(
-    1,
-    (viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
-    maxHeight / (naturalSize.height || 1),
+  const fit = Math.max(
+    0,
+    Math.min(
+      1,
+      (layout === "panel"
+        ? panelSize.width
+        : viewerSize.width * 0.92 - (viewerSize.width >= 640 ? 96 : 0)) / (naturalSize.width || 1),
+      (layout === "panel" ? panelSize.height : maxHeight) / (naturalSize.height || 1),
+    ),
   );
   const width = naturalSize.width * fit * zoom;
   const height = naturalSize.height * fit * zoom;

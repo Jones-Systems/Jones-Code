@@ -721,6 +721,8 @@ function UsageOverview({
       .slice(cursorInsertAt)
       .map((provider) => ({ kind: "usage" as const, provider })),
   ];
+  const breakdownProviders = focusedProvider === null ? activeProviders : [focusedProvider];
+  const timeValueColumnWidth = `${60 / (breakdownProviders.length + 2)}%`;
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -1011,54 +1013,18 @@ function UsageOverview({
               ) : (
                 breakdownModels.map((model, index) => {
                   const key = `${model.provider}:${model.model}`;
-                  const value = metric === "tokens" ? model.totalTokens : model.costUsd;
-                  const hasBar = value > 0 && breakdownPeak > 0;
-                  const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
-                  const rowFigures = figureClass(loadingProviders.has(model.provider));
                   return (
-                    <tr
+                    <UsageModelRow
                       key={key}
-                      className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
-                    >
-                      <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
-                      <td className="py-2.5 text-left whitespace-normal">
-                        <button
-                          type="button"
-                          onClick={() => onSelectModel(key)}
-                          className={cn(
-                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
-                            !hasBar && "py-1",
-                          )}
-                        >
-                          <ProviderMark provider={model.provider} className="size-3.5" />
-                          {model.model}
-                        </button>
-                        {hasBar ? (
-                          <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
-                                backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
-                              }}
-                            />
-                          </div>
-                        ) : null}
-                      </td>
-                      <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
-                        {isModelCostUnknown(model) ? (
-                          <span className="text-muted-foreground">Unpriced</span>
-                        ) : (
-                          formatUsd(model.costUsd)
-                        )}
-                      </td>
-                      <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
-                        {share === null ? "" : formatPercent(share)}
-                      </td>
-                      <td className={cn("py-2.5 pl-6", rowFigures)}>
-                        {formatTokens(model.totalTokens)}
-                      </td>
-                    </tr>
+                      model={model}
+                      index={index}
+                      metric={metric}
+                      breakdownPeak={breakdownPeak}
+                      loading={loadingProviders.has(model.provider)}
+                      expanded={expandedModelKey === key}
+                      onSelect={() => onSelectModel(key)}
+                      onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
+                    />
                   );
                 })
               )}
@@ -1074,11 +1040,16 @@ function UsageOverview({
             <table className="w-full text-sm whitespace-nowrap">
               <colgroup>
                 <col className="w-2/5" />
+                {breakdownProviders.map((provider) => (
+                  <col key={provider} style={{ width: timeValueColumnWidth }} />
+                ))}
+                <col style={{ width: timeValueColumnWidth }} />
+                <col style={{ width: timeValueColumnWidth }} />
               </colgroup>
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
-                  {activeProviders.map((provider) => (
+                  {breakdownProviders.map((provider) => (
                     <th key={provider} className="py-2 pl-4 text-right font-normal">
                       {PROVIDER_PRESENTATION[provider].label}
                     </th>
@@ -1091,7 +1062,7 @@ function UsageOverview({
                 {breakdownPeriods.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={activeProviders.length + 3}
+                      colSpan={breakdownProviders.length + 3}
                       className="py-6 text-center text-muted-foreground"
                     >
                       No activity in this window.
@@ -1108,7 +1079,7 @@ function UsageOverview({
                           ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
                           : formatDayShort(period.day)}
                       </td>
-                      {activeProviders.map((provider) => (
+                      {breakdownProviders.map((provider) => (
                         <td
                           key={provider}
                           className={cn(

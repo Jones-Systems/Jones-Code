@@ -1,3 +1,4 @@
+import { dismissContextMenu } from "./contextMenuFallback";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
@@ -219,6 +220,51 @@ afterEach(() => {
 });
 
 describe("showContextMenuFallback", () => {
+  it("selects an enabled Stop and rejects a disabled Stop", async () => {
+    const selection = showContextMenuFallback([
+      { id: "stop-thread", label: "Stop thread", icon: "square" },
+    ]);
+    const button = findButton("Stop thread");
+    expect(button).toBeTruthy();
+    button?.dispatchEvent(new FakeDomEvent("click"));
+    await expect(selection).resolves.toBe("stop-thread");
+
+    const disabled = showContextMenuFallback([
+      { id: "stop-thread", label: "Stop thread", icon: "square", disabled: true },
+    ]);
+    expect(findButton("Stop thread")?.disabled).toBe(true);
+    findButton("Stop thread")?.dispatchEvent(new FakeDomEvent("click"));
+    dismissContextMenu();
+    await expect(disabled).resolves.toBeNull();
+  });
+  it("renders one separator between menu sections", async () => {
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename" },
+      { id: "archive", label: "Archive", separatorBefore: true },
+    ]);
+    const separators = (document as unknown as FakeDocument)
+      .querySelectorAll("div")
+      .filter((element) => element.dataset.contextMenuSeparator === "true");
+
+    expect(separators).toHaveLength(1);
+    expect(separators[0]?.attributes.get("role")).toBe("separator");
+    dismissContextMenu();
+    await expect(selectionPromise).resolves.toBeNull();
+  });
+
+  it("resolves a clicked flat menu item", async () => {
+    const selectionPromise = showContextMenuFallback([
+      { id: "rename", label: "Rename" },
+      { id: "delete", label: "Delete", destructive: true },
+    ]);
+
+    const renameButton = findButton("Rename");
+    expect(renameButton).toBeTruthy();
+    renameButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    await expect(selectionPromise).resolves.toBe("rename");
+  });
+
   it("ignores a click from the gesture that opened the menu", async () => {
     let enablePointerSelection: ((time: number) => void) | undefined;
     vi.stubGlobal("requestAnimationFrame", (callback: (time: number) => void) => {

@@ -408,6 +408,15 @@ describe("expandCollapsedComposerCursor", () => {
 });
 
 describe("composerStateAtPromptEnd", () => {
+  it("puts the caret at the end of a restored parked draft", () => {
+    const prompt = "first half\n\nsecond half";
+
+    expect(composerStateAtPromptEnd(prompt)).toEqual({
+      cursor: prompt.length,
+      trigger: null,
+    });
+  });
+
   it("collapses mention chips so the next keystroke lands after the draft", () => {
     const prompt = "see @AGENTS.md please";
 

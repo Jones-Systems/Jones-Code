@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
+  type ScopedThreadRef,
   type OrchestrationV2ThreadProjection,
   type ProviderApprovalDecision,
   type RuntimeRequestId,
@@ -21,7 +22,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type RefObject,
   type SetStateAction,
 } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -30,6 +30,7 @@ import { useStableCallback } from "../../hooks/useStableCallback";
 import { getUploadedAttachments, useAttachmentUploadStore } from "../../lib/attachmentUploadQueue";
 import {
   buildPendingUserInputAnswers,
+  carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
   pendingUserInputRequestKey,
@@ -105,6 +106,8 @@ export function usePendingThreadRequests(input: {
   readonly activeThread: { readonly id: ThreadId } | undefined;
   readonly serverProjection: OrchestrationV2ThreadProjection | null;
   readonly supportsQuestionAttachments: boolean;
+  readonly composerDraftTarget: ScopedThreadRef | DraftId;
+  readonly setComposerDraftPrompt: (target: ScopedThreadRef | DraftId, prompt: string) => void;
   readonly setThreadError: (threadId: ThreadId, error: string | null) => void;
 }) {
   const {
@@ -113,6 +116,8 @@ export function usePendingThreadRequests(input: {
     activeThread,
     serverProjection,
     supportsQuestionAttachments,
+    composerDraftTarget,
+    setComposerDraftPrompt,
     setThreadError,
   } = input;
   const respondToThreadApproval = useOrchestrationCommand(threadEnvironment.respondToApproval, {

@@ -2,7 +2,7 @@ import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
   getPromptControlledTraits,
-  getTraitSelectChange,
+  getTraitSelectChange as getSharedTraitSelectChange,
   replaceDescriptorCurrentValue,
   selectableProviderOptionChoices,
   REASONING_SELECT_DESCRIPTOR_IDS,
@@ -19,7 +19,7 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
-  buildProviderOptionSelectionsFromDescriptors,
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
   normalizeModelSlug,
@@ -50,6 +50,39 @@ import { useComposerMenuProps } from "./composerEventScope";
 import { useComposerMenuState } from "./useComposerMenuState";
 
 type ProviderOptions = ReadonlyArray<ProviderOptionSelection>;
+
+export function buildTraitsOptionSelections(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+  selections: ProviderOptions | null | undefined,
+  change: ProviderOptionSelection,
+): ProviderOptions | undefined {
+  const descriptorIds = new Set(descriptors.map((descriptor) => descriptor.id));
+  const normalized = buildExplicitProviderOptionSelectionsFromDescriptors(
+    replaceDescriptorCurrentValue(descriptors, change.id, change.value),
+    [...(selections ?? []), change],
+  );
+  const preserved = (selections ?? []).filter((selection) => !descriptorIds.has(selection.id));
+  const next = [...(normalized ?? []), ...preserved];
+  return next.length > 0 ? next : undefined;
+}
+
+function getTraitSelectChange(
+  selected: Parameters<typeof getSharedTraitSelectChange>[0],
+  descriptor: Parameters<typeof getSharedTraitSelectChange>[1],
+  prompt: string,
+  value: string,
+  modelOptions: ProviderOptions | null | undefined,
+) {
+  const change = getSharedTraitSelectChange(selected, descriptor, prompt, value);
+  if (!change || !("modelOptions" in change)) return change;
+  return {
+    ...change,
+    modelOptions: buildTraitsOptionSelections(selected.descriptors, modelOptions, {
+      id: descriptor.id,
+      value,
+    }),
+  };
+}
 
 const SAVED_OPTION_LABELS: Readonly<Record<string, string>> = {
   agent: "Agent",

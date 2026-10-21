@@ -186,10 +186,10 @@ function describeInitialUpdates(input: {
   readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
   readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
 }): string {
-  const fromSettings = input.updateProviders.filter(
+  const fromSettings = dedupeProvidersByDriver(input.updateProviders.filter(
     (provider) => provider.versionAdvisory.canUpdate,
-  );
-  const manual = input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate);
+  ));
+  const manual = dedupeProvidersByDriver(input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate));
   return [
     input.oneClickProviders.length > 0
       ? "Install the update now or review provider settings."
@@ -211,7 +211,7 @@ export function getProviderUpdateInitialToastView(input: {
   return {
     phase: "initial",
     type: "warning",
-    title: getProviderUpdateInitialToastTitle(input.updateProviders),
+    title: getProviderUpdateInitialToastTitle(dedupeProvidersByDriver(input.updateProviders)),
     description: describeInitialUpdates(input),
   };
 }

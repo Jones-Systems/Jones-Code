@@ -15,7 +15,6 @@ import {
   scopeProjectRef,
   scopeThreadRef,
 } from "@t3tools/client-runtime/environment";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import {
   defaultInstanceIdForDriver,
   DEFAULT_MODEL,
@@ -33,6 +32,11 @@ import {
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import {
+  collectAssistantCitations,
+  serializeAssistantCitation,
+} from "@t3tools/shared/assistantCitations";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CODEX_SECONDARY_INSTANCE = ProviderInstanceId.make("codex_secondary");
@@ -74,7 +78,6 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import {
   COMPOSER_DRAFT_STORAGE_KEY,
   subscribeComposerDraftModelReconciliation,
-  deriveEffectiveComposerModelState,
   clearComposerDraftsEnvironment,
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
@@ -1296,6 +1299,53 @@ describe("composerDraftStore modelSelection", () => {
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
     h.setStatus("live");
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
+  });
+
+  it("inherits reasoning effort after switching models while preserving speed options", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "old-model", {
+        reasoningEffort: "low",
+        fastMode: true,
+        serviceTier: "priority",
+      }),
+    );
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "new-model"));
+
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(
+      modelSelection(CODEX_DRIVER, "new-model", { fastMode: true, serviceTier: "priority" }),
+    );
+  });
+
+  it("keeps same-model reasoning effort when a model-only selection is repeated", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection(CODEX_DRIVER, "current-model", { reasoningEffort: "low" });
+    store.setModelSelection(threadRef, selection);
+    store.setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "current-model"));
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(selection);
+  });
+
+  it("does not restore old thread effort into an optionless draft selection", () => {
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: CODEX_INSTANCE,
+        modelSelectionByProvider: {
+          [CODEX_INSTANCE]: modelSelection(CODEX_DRIVER, "new-model"),
+        },
+      },
+      providers: [],
+      selectedProvider: CODEX_DRIVER,
+      selectedInstanceId: CODEX_INSTANCE,
+      threadModelSelection: modelSelection(CODEX_DRIVER, "old-model", { reasoningEffort: "low" }),
+      projectModelSelection: modelSelection(CODEX_DRIVER, "new-model", { reasoningEffort: "high" }),
+      settings: DEFAULT_UNIFIED_SETTINGS,
+    });
+    expect(state.modelOptions).toBeNull();
   });
 
   it("releases an inactive thread pick only after its queued model becomes durable", () => {

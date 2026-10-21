@@ -84,19 +84,23 @@ export function EnvironmentRow({
         className,
       )}
     >
-      {/* Dim only the identity so a switched-off row's controls stay readable
-          and distinct from disabled ones. */}
-      <EnvironmentMachineIcon
-        aria-hidden
-        kind={kind}
-        className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}
-      />
-      <div className={cn("min-w-0", dimmed && "opacity-60")}>
-        <p className="truncate text-sm font-medium text-foreground">{label}</p>
-        <div className="truncate text-xs text-muted-foreground">{subtitle}</div>
-        {below}
-      </div>
-      <div className="flex shrink-0 items-center gap-1">{children}</div>
+      <EnvironmentMachineIcon aria-hidden kind={kind} className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")} />
+      {header ? (
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>{name}</div>
+      ) : (
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>
+          {name}
+          {line}
+        </div>
+      )}
+      {/* In a header, this box is the name's line height; taller controls center on that line. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "h-5")}>{children}</div>
+      {header ? (
+        <div className={cn("col-span-2 col-start-2 min-w-0", dimmed && "opacity-60")}>
+          {line}
+          {below}
+        </div>
+      ) : null}
       {detail ? <div className="col-span-2 col-start-2 min-w-0">{detail}</div> : null}
     </div>
   );

@@ -1,3 +1,4 @@
+import { collectProviderUpdateCandidates, deriveEnvironmentDisplayLabel, environmentGroupsWithUpdates, isTerminalProviderUpdatePhase, localEnvironmentUpdateNotificationKey } from "./ProviderUpdateLaunchNotification.logic";
 import { describe, expect, it } from "vite-plus/test";
 import {
   EnvironmentId,
@@ -83,7 +84,7 @@ function updateCandidate(input: Parameters<typeof provider>[0]): ProviderUpdateC
 }
 
 describe("provider update launch notification logic", () => {
-  it("disables one-click updates when provider instances disagree on the update command", () => {
+  it("allows one-click updates when provider instances use different update commands", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),
       instanceId: instanceId("claude_personal"),
@@ -197,6 +198,24 @@ describe("provider update launch notification logic", () => {
 
     expect(hasOneClickUpdateProviderCandidate(candidate, [candidate])).toBe(true);
     expect(canOneClickUpdateProviderCandidate(candidate, [candidate])).toBe(false);
+  });
+
+  it("builds a notification key from provider latest versions", () => {
+    const codex = updateCandidate({
+      driver: driver("codex"),
+      version: "1.0.0",
+      latestVersion: "1.1.0",
+    });
+    const cursor = updateCandidate({
+      driver: driver("cursor"),
+      version: "0.2.0",
+      latestVersion: "0.3.0",
+    });
+
+    expect(providerUpdateNotificationKey([codex, cursor])).toBe(
+      "codex:codex:1.1.0:one-click|cursor:cursor:0.3.0:one-click",
+    );
+    expect(providerUpdateNotificationKey([])).toBeNull();
   });
 
   it("keeps the same notification key while the published update version is unchanged", () => {
@@ -470,6 +489,62 @@ describe("provider update launch notification logic", () => {
       providers: input.providers,
     });
 
+    it("groups each environment's outdated one-click candidates", () => {
+      const result = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          label: "Windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          label: "WSL",
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+      ]);
+
+      expect(result.isAnySettling).toBe(false);
+      expect(result.groups.map((group) => group.label)).toEqual(["Windows", "WSL"]);
+      expect(result.groups.every((group) => group.candidates.length === 1)).toBe(true);
+    });
+
+    it("retains each instance in each environment even when command strings match", () => {
+      const providers = [
+        provider({ driver: driver("codex"), instanceId: instanceId("personal") }),
+        provider({ driver: driver("codex"), instanceId: instanceId("work") }),
+      ];
+      const { groups } = buildLocalEnvironmentUpdateGroups([
+        environment({ environmentId: "first", providers }),
+        environment({ environmentId: "second", providers }),
+      ]);
+
+      expect(
+        groups.flatMap((group) =>
+          group.candidates.map((candidate) => [group.environmentId, candidate.instanceId]),
+        ),
+      ).toEqual([
+        ["first", "personal"],
+        ["first", "work"],
+        ["second", "personal"],
+        ["second", "work"],
+      ]);
+    });
+
+    it.each(["connecting", "disconnected", "error"] as const)(
+      "does not offer cached candidates for a %s environment",
+      (connectionState) => {
+        const { groups } = buildLocalEnvironmentUpdateGroups([
+          environment({
+            environmentId: "offline",
+            connectionState,
+            providers: [provider({ driver: driver("codex") })],
+          }),
+        ]);
+        expect(environmentGroupsWithUpdates(groups)).toEqual([]);
+      },
+    );
+
     it("flags settling while a secondary backend is still connecting", () => {
       const result = buildLocalEnvironmentUpdateGroups([
         environment({
@@ -485,6 +560,102 @@ describe("provider update launch notification logic", () => {
         result.groups.find((group) => group.environmentId === ("env-wsl" as EnvironmentId))
           ?.isSettling,
       ).toBe(true);
+    });
+
+    it("keeps only environments that have a one-click update on offer", () => {
+      const { groups } = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex") })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          providers: [
+            provider({ driver: driver("codex"), advisoryStatus: "current", latestVersion: null }),
+          ],
+        }),
+      ]);
+
+      expect(environmentGroupsWithUpdates(groups).map((group) => group.environmentId)).toEqual([
+        "env-windows",
+      ]);
+    });
+
+    it("keys the notification by environment, driver and latest version", () => {
+      const noUpdates = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [
+            provider({ driver: driver("codex"), advisoryStatus: "current", latestVersion: null }),
+          ],
+        }),
+      ]);
+      expect(localEnvironmentUpdateNotificationKey(noUpdates.groups)).toBeNull();
+
+      const both = buildLocalEnvironmentUpdateGroups([
+        environment({
+          environmentId: "env-windows",
+          isPrimary: true,
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+        environment({
+          environmentId: "env-wsl",
+          providers: [provider({ driver: driver("codex"), latestVersion: "1.1.0" })],
+        }),
+      ]);
+      const key = localEnvironmentUpdateNotificationKey(both.groups);
+      expect(key).toContain("env-windows=codex:codex:1.1.0:one-click");
+      expect(key).toContain("env-wsl=codex:codex:1.1.0:one-click");
+    });
+
+    it("labels environments by platform so they are distinguishable", () => {
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: false,
+          wslDistro: null,
+          platformOs: "windows",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("Windows");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: true,
+          wslDistro: null,
+          platformOs: "linux",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("WSL");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: true,
+          wslDistro: "ubuntu",
+          platformOs: "linux",
+          fallbackLabel: "Jgratton24",
+        }),
+      ).toBe("WSL · ubuntu");
+      expect(
+        deriveEnvironmentDisplayLabel({
+          isWsl: false,
+          wslDistro: null,
+          platformOs: undefined,
+          fallbackLabel: "My Device",
+        }),
+      ).toBe("My Device");
+    });
+  });
+
+  describe("isTerminalProviderUpdatePhase", () => {
+    it("treats succeeded/failed/unchanged as terminal", () => {
+      expect(isTerminalProviderUpdatePhase("succeeded")).toBe(true);
+      expect(isTerminalProviderUpdatePhase("failed")).toBe(true);
+      expect(isTerminalProviderUpdatePhase("unchanged")).toBe(true);
+    });
+
+    it("treats running/initial as non-terminal so they are not persisted", () => {
+      expect(isTerminalProviderUpdatePhase("running")).toBe(false);
+      expect(isTerminalProviderUpdatePhase("initial")).toBe(false);
     });
   });
 
@@ -520,6 +691,76 @@ describe("provider update launch notification logic", () => {
           isPending: true,
         }),
       ).toMatchObject({ kind: "failed", text: "boom" });
+    });
+  });
+
+it("retains every provider instance as an update candidate", () => {
+    expect(
+      collectProviderUpdateCandidates([
+        provider({
+          driver: driver("codex"),
+          instanceId: instanceId("codex_personal"),
+          latestVersion: "1.1.0",
+        }),
+        provider({
+          driver: driver("codex"),
+          instanceId: instanceId("codex"),
+          latestVersion: "1.1.0",
+        }),
+        provider({ driver: driver("cursor"), latestVersion: "0.3.0" }),
+      ]),
+    ).toHaveLength(3);
+  });
+
+
+
+it("keeps unchanged providers actionable from settings", () => {
+    const view = getProviderUpdateProgressToastView({
+      providers: [
+        provider({
+          driver: driver("cursor"),
+          updateState: {
+            status: "unchanged",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "still old",
+            output: null,
+          },
+        }),
+      ],
+      providerCount: 1,
+    });
+
+    expect(view).toMatchObject({
+      phase: "unchanged",
+      type: "warning",
+      title: "Provider update could not be verified",
+      description: "still old",
+    });
+  });
+
+it("keeps unchanged sidebar pill states dismissible", () => {
+    const view = getProviderUpdateSidebarPillView(
+      [
+        provider({
+          driver: driver("cursor"),
+          updateState: {
+            status: "unchanged",
+            startedAt: checkedAt,
+            finishedAt: checkedAt,
+            message: "still old",
+            output: null,
+          },
+        }),
+      ],
+      { visibleAfterIso: sessionStartedAt },
+    );
+
+    expect(view).toMatchObject({
+      key: "unchanged:cursor:2026-04-23T10:00:00.000Z:still old",
+      tone: "warning",
+      title: "Cursor update could not be verified",
+      dismissible: true,
     });
   });
 });
@@ -601,5 +842,83 @@ describe("getProviderUpdateRunToastView", () => {
       title: "2 of 3 provider updates failed",
       description: "Mac Studio · Claude: npm exited with code 1.\nLaptop · Codex: WebSocket closed",
     });
+  });
+
+  it.each([false, true])(
+    "preserves unverified results alongside successes (failure=%s)",
+    (hasFailure) => {
+      const unverified = provider({
+        driver: driver("codex"),
+        latestVersion: null,
+        advisoryStatus: "unknown",
+        updateState: updateState("unchanged", "The installed version could not be verified."),
+      });
+      const runs = [
+        run("Laptop", "codex", AsyncResult.success({ providers: [unverified] })),
+        run(
+          "Server",
+          "codex",
+          AsyncResult.success({
+            providers: [
+              provider({
+                driver: driver("codex"),
+                updateState: updateState("succeeded", "Provider updated."),
+              }),
+            ],
+          }),
+        ),
+      ];
+      if (hasFailure) {
+        runs.push(
+          run("Other", "codex", AsyncResult.failure(Cause.die(new Error("Connection lost")))),
+        );
+      }
+      const view = getProviderUpdateRunToastView(runs);
+      expect(view?.type).toBe(hasFailure ? "error" : "warning");
+      expect(view?.title).toBe(
+        hasFailure
+          ? "1 of 3 provider updates failed"
+          : "1 of 2 provider updates could not be verified",
+      );
+      expect(view?.description).toContain(
+        "Laptop · Codex: The installed version could not be verified.",
+      );
+      if (hasFailure) expect(view?.description).toContain("Other · Codex: Connection lost");
+      expect(
+        getProviderUpdateProgressToastView({ providers: [unverified], providerCount: 1 }),
+      ).toMatchObject({
+        phase: "unchanged",
+        type: "warning",
+        title: "Provider update could not be verified",
+        description: "The installed version could not be verified.",
+      });
+    },
+  );
+
+  it("reports success when every update succeeded", () => {
+    const succeeded = AsyncResult.success({
+      providers: [
+        provider({
+          driver: driver("codex"),
+          updateState: updateState("succeeded", "Provider updated."),
+        }),
+      ],
+    });
+
+    expect(
+      getProviderUpdateRunToastView([
+        run("Mac Studio", "codex", succeeded),
+        run("Laptop", "codex", succeeded),
+      ]),
+    ).toEqual({
+      type: "success",
+      title: "2 providers updated",
+      description: "New sessions will use the updated providers.",
+    });
+    expect(
+      getProviderUpdateRunToastView([
+        run("Server", "codex", AsyncResult.failure(Cause.interrupt())),
+      ]),
+    ).toBeNull();
   });
 });
