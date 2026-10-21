@@ -13,7 +13,6 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
 
-
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import type * as McpInvocationContext from "../../../mcp/McpInvocationContext.ts";
 import * as ThreadMetadataMcp from "../../../mcp/ThreadMetadataMcpService.ts";
@@ -49,12 +48,6 @@ function layerService(
     ),
   );
 }
-
-
-
-
-
-
 
 it.effect("blocks project peers, permits self recovery, and denies foreign unblocking", () =>
   Effect.gen(function* () {

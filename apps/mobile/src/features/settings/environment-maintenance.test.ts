@@ -111,8 +111,6 @@ describe("environment release checks", () => {
     );
   });
 
-
-
   it("reports failed checks instead of claiming the server is current", async () => {
     for (const status of [403, 429]) {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status })));
@@ -130,6 +128,4 @@ describe("environment release checks", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "invalid" })));
     await expect(findEnvironmentUpdate("1.0.0", signal)).rejects.toThrow();
   });
-
-
 });

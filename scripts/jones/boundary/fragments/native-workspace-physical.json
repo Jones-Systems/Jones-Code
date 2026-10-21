@@ -1,9 +1,7 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "native-workspace-physical",
-  "jonesOwnedPaths": [
-    "apps/server/src/terminal/NativeSetupControl.ts"
-  ],
+  "jonesOwnedPaths": ["apps/server/src/terminal/NativeSetupControl.ts"],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [

@@ -720,8 +720,7 @@ export function useThreadComposerState() {
           attachments,
           preparedAttachments.attachments,
         );
-        const inlineContext =
-          serverConfig?.environment.capabilities.inlineMessageContext === true;
+        const inlineContext = serverConfig?.environment.capabilities.inlineMessageContext === true;
         const metadata = makeQueuedMessageMetadata();
         const messageId = MessageId.make(metadata.messageId);
         const prepared = await prepareImportedHistoryMessage({

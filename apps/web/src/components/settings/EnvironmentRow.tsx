@@ -84,7 +84,11 @@ export function EnvironmentRow({
         className,
       )}
     >
-      <EnvironmentMachineIcon aria-hidden kind={kind} className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")} />
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={kind}
+        className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}
+      />
       {header ? (
         <div className={cn("min-w-0", dimmed && "opacity-60")}>{name}</div>
       ) : (

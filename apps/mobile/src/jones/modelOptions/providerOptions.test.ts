@@ -2,7 +2,10 @@ import { expect, it } from "vite-plus/test";
 
 import type { ModelCapabilities } from "@t3tools/contracts";
 
-import { applyProviderOptionSelection, resolveProviderOptionDescriptors } from "../../lib/providerOptions";
+import {
+  applyProviderOptionSelection,
+  resolveProviderOptionDescriptors,
+} from "../../lib/providerOptions";
 
 const CODEX_CAPABILITIES: ModelCapabilities = {
   optionDescriptors: [
@@ -29,43 +32,38 @@ const CODEX_CAPABILITIES: ModelCapabilities = {
   ],
 };
 
-
 it("updates generic select options without knowing provider-specific ids", () => {
-    const descriptors = resolveProviderOptionDescriptors({
-      capabilities: CODEX_CAPABILITIES,
-      selections: undefined,
-    });
-
-    expect(
-      applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "priority" }),
-    ).toEqual([{ id: "serviceTier", value: "priority" }]);
-    expect(
-      applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "turbo" }),
-    ).toBeNull();
-    expect(applyProviderOptionSelection(descriptors, { id: "unknown", value: "high" })).toBeNull();
+  const descriptors = resolveProviderOptionDescriptors({
+    capabilities: CODEX_CAPABILITIES,
+    selections: undefined,
   });
+
+  expect(
+    applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "priority" }),
+  ).toEqual([{ id: "serviceTier", value: "priority" }]);
+  expect(
+    applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "turbo" }),
+  ).toBeNull();
+  expect(applyProviderOptionSelection(descriptors, { id: "unknown", value: "high" })).toBeNull();
+});
 
 it("keeps explicit effort when changing an unrelated trait", () => {
-    const selections = [{ id: "reasoningEffort", value: "high" }] as const;
-    const descriptors = resolveProviderOptionDescriptors({
-      capabilities: CODEX_CAPABILITIES,
-      selections,
-    });
-    expect(
-      applyProviderOptionSelection(
-        descriptors,
-        { id: "serviceTier", value: "priority" },
-        selections,
-      ),
-    ).toEqual([
-      { id: "reasoningEffort", value: "high" },
-      { id: "serviceTier", value: "priority" },
-    ]);
-    expect(
-      applyProviderOptionSelection(
-        descriptors,
-        { id: "reasoningEffort", value: "medium" },
-        selections,
-      ),
-    ).toEqual([{ id: "reasoningEffort", value: "medium" }]);
+  const selections = [{ id: "reasoningEffort", value: "high" }] as const;
+  const descriptors = resolveProviderOptionDescriptors({
+    capabilities: CODEX_CAPABILITIES,
+    selections,
   });
+  expect(
+    applyProviderOptionSelection(descriptors, { id: "serviceTier", value: "priority" }, selections),
+  ).toEqual([
+    { id: "reasoningEffort", value: "high" },
+    { id: "serviceTier", value: "priority" },
+  ]);
+  expect(
+    applyProviderOptionSelection(
+      descriptors,
+      { id: "reasoningEffort", value: "medium" },
+      selections,
+    ),
+  ).toEqual([{ id: "reasoningEffort", value: "medium" }]);
+});

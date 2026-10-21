@@ -19,9 +19,7 @@
     "apps/server/src/provider/providerMaintenanceRunner.test.ts",
     "apps/web/src/components/sidebar/useUpdateEverything.ts"
   ],
-  "tombstones": [
-    "apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx"
-  ],
+  "tombstones": ["apps/web/src/components/ProviderUpdateEnvironmentRows.test.tsx"],
   "allowedImports": [
     {
       "from": "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",

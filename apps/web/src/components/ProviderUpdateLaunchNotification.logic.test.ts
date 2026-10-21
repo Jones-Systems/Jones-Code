@@ -1,4 +1,10 @@
-import { collectProviderUpdateCandidates, deriveEnvironmentDisplayLabel, environmentGroupsWithUpdates, isTerminalProviderUpdatePhase, localEnvironmentUpdateNotificationKey } from "./ProviderUpdateLaunchNotification.logic";
+import {
+  collectProviderUpdateCandidates,
+  deriveEnvironmentDisplayLabel,
+  environmentGroupsWithUpdates,
+  isTerminalProviderUpdatePhase,
+  localEnvironmentUpdateNotificationKey,
+} from "./ProviderUpdateLaunchNotification.logic";
 import { describe, expect, it } from "vite-plus/test";
 import {
   EnvironmentId,
@@ -694,7 +700,7 @@ describe("provider update launch notification logic", () => {
     });
   });
 
-it("retains every provider instance as an update candidate", () => {
+  it("retains every provider instance as an update candidate", () => {
     expect(
       collectProviderUpdateCandidates([
         provider({
@@ -712,9 +718,7 @@ it("retains every provider instance as an update candidate", () => {
     ).toHaveLength(3);
   });
 
-
-
-it("keeps unchanged providers actionable from settings", () => {
+  it("keeps unchanged providers actionable from settings", () => {
     const view = getProviderUpdateProgressToastView({
       providers: [
         provider({
@@ -739,7 +743,7 @@ it("keeps unchanged providers actionable from settings", () => {
     });
   });
 
-it("keeps unchanged sidebar pill states dismissible", () => {
+  it("keeps unchanged sidebar pill states dismissible", () => {
     const view = getProviderUpdateSidebarPillView(
       [
         provider({

@@ -123,7 +123,9 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
         return HttpServerResponse.empty();
       }
       if (attached._tag === "companionUnavailable") {
-        yield* writer.write(new Socket.CloseEvent(PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE, attached.reason));
+        yield* writer.write(
+          new Socket.CloseEvent(PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE, attached.reason),
+        );
         return HttpServerResponse.empty();
       }
       if (attached._tag === "hostSetup") {

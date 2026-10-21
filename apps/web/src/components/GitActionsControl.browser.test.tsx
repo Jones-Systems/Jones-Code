@@ -59,27 +59,27 @@ vi.mock(import("~/state/query"), async (original) => ({
   // Serves both the VCS status and the source-control discovery queries.
   useEnvironmentQuery: ((atom: unknown) => {
     state.queries.push(atom);
-    return ({
-    data: {
-      sourceControlProviders: [],
-      isRepo: true,
-      refName: state.branch,
-      isDefaultRef: state.isDefaultRef,
-      hasPrimaryRemote: state.hasPrimaryRemote,
-      hasUpstream: state.hasPrimaryRemote,
-      aheadCount: 0,
-      behindCount: 0,
-      pr: null,
-      hasWorkingTreeChanges: true,
-      workingTree: {
-        ...(state.workingTreeRoot === undefined ? {} : { rootPath: state.workingTreeRoot }),
-        files: state.files,
-        insertions: 1,
-        deletions: 0,
+    return {
+      data: {
+        sourceControlProviders: [],
+        isRepo: true,
+        refName: state.branch,
+        isDefaultRef: state.isDefaultRef,
+        hasPrimaryRemote: state.hasPrimaryRemote,
+        hasUpstream: state.hasPrimaryRemote,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: null,
+        hasWorkingTreeChanges: true,
+        workingTree: {
+          ...(state.workingTreeRoot === undefined ? {} : { rootPath: state.workingTreeRoot }),
+          files: state.files,
+          insertions: 1,
+          deletions: 0,
+        },
+        error: null,
       },
-      error: null,
-    },
-  });
+    };
   }) as never,
 }));
 vi.mock(import("~/state/use-atom-command"), async (original) => {
@@ -218,7 +218,11 @@ function setup(): Disposable {
   });
   return {
     [Symbol.dispose]() {
-      useComposerDraftStore.setState({ getDraftSession, getDraftThreadByRef, setDraftThreadContext });
+      useComposerDraftStore.setState({
+        getDraftSession,
+        getDraftThreadByRef,
+        setDraftThreadContext,
+      });
     },
   };
 }

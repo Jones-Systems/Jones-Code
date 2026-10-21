@@ -2,7 +2,25 @@ import { v2PullRequestThread } from "../orchestration-v2/testkit/pullRequestFixt
 import { emptyProjection } from "../orchestration-v2/ProjectionStore.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { CommandId, EnvironmentId, MessageId, NodeId, OrchestratorMcpTarget, type OrchestrationV2ThreadShell, type ScheduledTask, ScheduledTaskId, ProjectId, ProviderDriverKind, ProviderInstanceId, RunId, ThreadId, type OrchestrationV2ServerCommand, type OrchestrationV2ThreadProjection, type ServerProvider, EventId } from "@t3tools/contracts";
+import {
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  NodeId,
+  OrchestratorMcpTarget,
+  type OrchestrationV2ThreadShell,
+  type ScheduledTask,
+  ScheduledTaskId,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type OrchestrationV2ServerCommand,
+  type OrchestrationV2ThreadProjection,
+  type ServerProvider,
+  EventId,
+} from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -2594,7 +2612,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     );
   });
 
-it.effect(
+  it.effect(
     "advertises orchestration capability from registered adapters rather than a driver allowlist [Jones compatibility]",
     () =>
       Effect.gen(function* () {
@@ -2734,7 +2752,7 @@ it.effect(
       }),
   );
 
-it.effect("re-probes an unavailable target once before refusing it", () =>
+  it.effect("re-probes an unavailable target once before refusing it", () =>
     Effect.gen(function* () {
       const claudeInstanceId = ProviderInstanceId.make("claudeAgent");
       const claudeDriver = ProviderDriverKind.make("claudeAgent");
@@ -2839,7 +2857,7 @@ it.effect("re-probes an unavailable target once before refusing it", () =>
     }),
   );
 
-it.effect(
+  it.effect(
     "inherits an available parent instance for driver-only targets and otherwise selects a healthy peer [Jones compatibility]",
     () =>
       Effect.gen(function* () {

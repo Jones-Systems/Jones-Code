@@ -21,8 +21,6 @@ describe("orchestrator MCP tool guidance", () => {
     assert.include(tool.description ?? "", "checkpoint");
   });
 
-  
-
   it("routes separate-session delegation to delegate_task and keeps launches standalone", () => {
     const delegateSchema = JSON.stringify(Tool.getJsonSchema(DelegateTaskTool));
     assert.include(delegateSchema, '"workspaceStrategy"');
@@ -58,10 +56,6 @@ describe("orchestrator MCP tool guidance", () => {
     assert.include(launch, "use delegate_task");
     assert.notInclude(launch, "requests independent work");
   });
-
-  
-
-  
 
   it("publishes thread metadata actions from an object-root schema", () => {
     const schema = Tool.getJsonSchema(ThreadUpdateTool) as {

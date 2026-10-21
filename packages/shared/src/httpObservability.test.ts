@@ -52,7 +52,13 @@ describe("HTTP observability redaction", () => {
       assert.strictEqual(attributes["http.request.header.accept"], "application/json");
 
       const recorded = JSON.stringify(attributes);
-      for (const secret of ["ticket-value", "signed-value", "bearer-value", "proof-value", "expo-session-value"]) {
+      for (const secret of [
+        "ticket-value",
+        "signed-value",
+        "bearer-value",
+        "proof-value",
+        "expo-session-value",
+      ]) {
         assert.notInclude(recorded, secret);
       }
     }),

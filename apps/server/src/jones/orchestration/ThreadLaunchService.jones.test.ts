@@ -506,10 +506,34 @@ it.effect("preserves an explicit V2 base without looking up the default", () => 
 
 it.effect.each([
   { name: "local base", base: "main", remoteName: "origin", branchName: "main", missing: false },
-  { name: "origin base", base: "origin/release", remoteName: "origin", branchName: "release", missing: false },
-  { name: "local origin-prefixed branch", base: "origin/release", remoteName: "origin", branchName: "origin/release", missing: false },
-  { name: "other remote", base: "upstream/release", remoteName: "upstream", branchName: "release", missing: false },
-  { name: "missing origin branch", base: "local-only", remoteName: "origin", branchName: "local-only", missing: true },
+  {
+    name: "origin base",
+    base: "origin/release",
+    remoteName: "origin",
+    branchName: "release",
+    missing: false,
+  },
+  {
+    name: "local origin-prefixed branch",
+    base: "origin/release",
+    remoteName: "origin",
+    branchName: "origin/release",
+    missing: false,
+  },
+  {
+    name: "other remote",
+    base: "upstream/release",
+    remoteName: "upstream",
+    branchName: "release",
+    missing: false,
+  },
+  {
+    name: "missing origin branch",
+    base: "local-only",
+    remoteName: "origin",
+    branchName: "local-only",
+    missing: true,
+  },
 ])(
   "pins the fetched V2 worktree base with one lookup for $name",
   ({ base, remoteName, branchName, missing }) => {
@@ -552,7 +576,10 @@ it.effect.each([
       assert.deepEqual(operations, ["resolve", "fetch"]);
       assert.deepEqual(resolveWorktreeBaseRemote.mock.calls, [[{ cwd: "/repo", refName: base }]]);
       assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: base }]]);
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, missing ? base : "pinned-origin-sha");
+      assert.equal(
+        harness.createWorktree.mock.calls[0]?.[0].refName,
+        missing ? base : "pinned-origin-sha",
+      );
       assert.equal(
         harness.createWorktree.mock.calls[0]?.[0].baseRefName,
         missing ? base : `refs/remotes/${remoteName}/${branchName}`,
@@ -778,9 +805,14 @@ it.effect(
       );
       assert.equal(listRefs.mock.calls.length, 0);
       assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
-      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: "origin/release" }]]);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [
+        [{ cwd: "/repo", refName: "origin/release" }],
+      ]);
       assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "local-origin-prefixed-sha");
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "refs/remotes/origin/origin/release");
+      assert.equal(
+        harness.createWorktree.mock.calls[0]?.[0].baseRefName,
+        "refs/remotes/origin/origin/release",
+      );
     }).pipe(Effect.provide(harness.layer));
   },
 );

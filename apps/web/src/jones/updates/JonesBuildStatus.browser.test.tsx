@@ -167,7 +167,9 @@ describe("Jones build status", () => {
       await using screen = await renderStatus({ installedComparison, comparison: null });
       const { container } = screen;
       expect(badges(container)).toHaveLength(1);
-      expect(badges(container)[0]!.textContent).toBe(`Installed compared with this laptop: ${label}`);
+      expect(badges(container)[0]!.textContent).toBe(
+        `Installed compared with this laptop: ${label}`,
+      );
       expect(badges(container)[0]!.className).toContain(`text-${tone}-foreground`);
     }
   });

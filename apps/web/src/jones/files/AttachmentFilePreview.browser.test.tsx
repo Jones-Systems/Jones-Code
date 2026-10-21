@@ -56,7 +56,12 @@ describe("attachment HTML and PDF preview recovery", () => {
       pdfLoads.mockClear();
       resources.use(vi.spyOn(Date, "now").mockImplementation(() => now));
       refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
-      resources.use(stubGlobal("fetch", vi.fn(async () => new Response("<p>Captured HTML</p>"))));
+      resources.use(
+        stubGlobal(
+          "fetch",
+          vi.fn(async () => new Response("<p>Captured HTML</p>")),
+        ),
+      );
       screen = resources.use(await render(null));
       container = screen.container;
       return resources;

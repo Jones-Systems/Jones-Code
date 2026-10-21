@@ -814,7 +814,11 @@ export const layer = Layer.effect(
         ) {
           yield* rescheduleSkippedRun(active, startedAt, queuedWakeSkipReason);
           return {
-            task: { ...active, nextRunAt: nextRunAt(active, startedAt), lastRunError: queuedWakeSkipReason },
+            task: {
+              ...active,
+              nextRunAt: nextRunAt(active, startedAt),
+              lastRunError: queuedWakeSkipReason,
+            },
             threadId: null,
           };
         }
@@ -1668,15 +1672,17 @@ export const layer = Layer.effect(
       );
     });
 
-    const runWebhookDelivery = Effect.fn("ScheduledTaskService.runAcceptedWebhookDelivery")(function* (
-      task: ScheduledTask, deliveryId: string, prompt: string,
-    ) {
-      const permit = yield* webhookPermit(task.id);
-      yield* dispatchWebhookDelivery(task, deliveryId, prompt).pipe(
-        Effect.flatMap((settled) => settled ? pendingWebhookRuns.settle(deliveryId) : Effect.void),
-        permit.withPermit,
-      );
-    });
+    const runWebhookDelivery = Effect.fn("ScheduledTaskService.runAcceptedWebhookDelivery")(
+      function* (task: ScheduledTask, deliveryId: string, prompt: string) {
+        const permit = yield* webhookPermit(task.id);
+        yield* dispatchWebhookDelivery(task, deliveryId, prompt).pipe(
+          Effect.flatMap((settled) =>
+            settled ? pendingWebhookRuns.settle(deliveryId) : Effect.void,
+          ),
+          permit.withPermit,
+        );
+      },
+    );
 
     // Delivery attributes belong to the enclosing triggerWebhook span.
     const observeDelivery = Effect.fnUntraced(function* (
@@ -1769,7 +1775,9 @@ export const layer = Layer.effect(
       // held on the relay, so it must give up its claim or the next pass
       // would treat it as already delivered.
       let claimAcquired = false;
-      let acceptedRun: { readonly prompt: string; readonly release: Effect.Effect<void> } | undefined;
+      let acceptedRun:
+        | { readonly prompt: string; readonly release: Effect.Effect<void> }
+        | undefined;
       const releaseClaim = <A>(result: A) =>
         !claimAcquired || request.relayDeliveryId === undefined
           ? Effect.succeed(result)
@@ -1777,9 +1785,11 @@ export const layer = Layer.effect(
                 DELETE FROM scheduled_task_webhook_relay_deliveries
                 WHERE relay_delivery_id = ${request.relayDeliveryId}
               `.pipe(
-                Effect.mapError((cause) => taskError("Could not release webhook delivery.", { taskId: task.id, cause })),
-                Effect.as(result),
-              );
+              Effect.mapError((cause) =>
+                taskError("Could not release webhook delivery.", { taskId: task.id, cause }),
+              ),
+              Effect.as(result),
+            );
       // From the claim until the run is forked nothing may interrupt: a
       // request dropped in between (the relay hangs up after its timeout)
       // would leave a claimed delivery that never runs, or a queue slot that
@@ -2078,30 +2088,35 @@ export const layer = Layer.effect(
           }
           acceptedRun = { prompt: rendered.prompt, release };
           yield* pendingWebhookRuns.record({
-            deliveryId, taskId: task.id, taskCreatedAt: task.createdAt,
-            receivedAt: iso(receivedAt), prompt: rendered.prompt,
+            deliveryId,
+            taskId: task.id,
+            taskCreatedAt: task.createdAt,
+            receivedAt: iso(receivedAt),
+            prompt: rendered.prompt,
           });
           return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
         }).pipe(
           sql.withTransaction,
           Effect.onError(() => acceptedRun?.release ?? Effect.void),
           Effect.matchEffect({
-            onFailure: (cause) => Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
-              Effect.annotateLogs({ taskId: task.id }),
-              Effect.andThen(Effect.logDebug("Webhook delivery record failure", { cause })),
-              Effect.andThen(observe("unavailable")),
-              Effect.as({ _tag: "unavailable" as const }),
-            ),
-            onSuccess: (result) => Effect.gen(function* () {
-              if (acceptedRun !== undefined) {
-                yield* observe("accepted");
-                yield* runWebhookDelivery(task, deliveryId, acceptedRun.prompt).pipe(
-                  Effect.ensuring(acceptedRun.release),
-                  Effect.forkIn(serviceScope),
-                );
-              }
-              return result;
-            }),
+            onFailure: (cause) =>
+              Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
+                Effect.annotateLogs({ taskId: task.id }),
+                Effect.andThen(Effect.logDebug("Webhook delivery record failure", { cause })),
+                Effect.andThen(observe("unavailable")),
+                Effect.as({ _tag: "unavailable" as const }),
+              ),
+            onSuccess: (result) =>
+              Effect.gen(function* () {
+                if (acceptedRun !== undefined) {
+                  yield* observe("accepted");
+                  yield* runWebhookDelivery(task, deliveryId, acceptedRun.prompt).pipe(
+                    Effect.ensuring(acceptedRun.release),
+                    Effect.forkIn(serviceScope),
+                  );
+                }
+                return result;
+              }),
           }),
         ),
       );

@@ -1,5 +1,9 @@
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
-import { animateSidebarLayoutChanges, resolveSidebarThreadSection, resolveSidebarRowAccessibility } from "./Sidebar.logic";
+import {
+  animateSidebarLayoutChanges,
+  resolveSidebarThreadSection,
+  resolveSidebarRowAccessibility,
+} from "./Sidebar.logic";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import * as DateTime from "effect/DateTime";
@@ -422,7 +426,7 @@ describe("sidebar thread lineage helpers", () => {
     expect(resolveSidebarRowThreadId(loopA.id, environmentId, [loopA, loopB])).toBe(loopA.id);
   });
 
-it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
+  it("keeps only top-level, unarchived threads in the Sidebar V2 project scope", () => {
     const parentId = ThreadId.make("thread-parent");
     const projectId = ProjectId.make("project-visible");
     const environmentId = EnvironmentId.make("environment-visible");

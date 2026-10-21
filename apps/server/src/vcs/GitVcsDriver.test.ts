@@ -408,7 +408,12 @@ it.effect.each([
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-ignored-later-" });
-      const { cwd: parent, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+      const {
+        cwd: parent,
+        git,
+        gitDir,
+        checkpointRef,
+      } = yield* makeCheckpointFixture(driver, root);
       const cwd = path.join(parent, "sub");
       yield* fs.makeDirectory(cwd);
       for (const file of committed) {
@@ -1291,28 +1296,33 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("checkpoint capture still fails when a clean filter rejects a file [Jones compatibility]", () =>
-  Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const driver = yield* GitVcsDriver.makeVcsDriverShape();
-    const root = yield* fileSystem.makeTempDirectoryScoped({
-      prefix: "t3-checkpoint-filter-failure-",
-    });
-    const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
-    yield* fileSystem.writeFileString(path.join(cwd, ".gitattributes"), "file.txt filter=reject\n");
-    yield* git(["config", "filter.reject.clean", "false"]);
-    yield* git(["config", "filter.reject.required", "true"]);
-    const originalIndex = yield* fileSystem.readFile(path.join(gitDir, "index"));
+it.effect(
+  "checkpoint capture still fails when a clean filter rejects a file [Jones compatibility]",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const driver = yield* GitVcsDriver.makeVcsDriverShape();
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-checkpoint-filter-failure-",
+      });
+      const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+      yield* fileSystem.writeFileString(
+        path.join(cwd, ".gitattributes"),
+        "file.txt filter=reject\n",
+      );
+      yield* git(["config", "filter.reject.clean", "false"]);
+      yield* git(["config", "filter.reject.required", "true"]);
+      const originalIndex = yield* fileSystem.readFile(path.join(gitDir, "index"));
 
-    const result = yield* Effect.result(
-      driver.checkpoints.captureCheckpoint({ cwd, checkpointRef }),
-    );
+      const result = yield* Effect.result(
+        driver.checkpoints.captureCheckpoint({ cwd, checkpointRef }),
+      );
 
-    assert.strictEqual(result._tag, "Failure");
-    assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
-    assert.isFalse(yield* driver.checkpoints.hasCheckpointRef({ cwd, checkpointRef }));
-  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+      assert.strictEqual(result._tag, "Failure");
+      assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
+      assert.isFalse(yield* driver.checkpoints.hasCheckpointRef({ cwd, checkpointRef }));
+    }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
 it.effect("checkpoint recovery refuses excessive candidates before probing", () =>

@@ -1345,13 +1345,17 @@ const make = Effect.gen(function* () {
         candidate.origin === "app_owned" &&
         candidate.threadId === scope.thread.threadId,
     );
-    if (task === undefined || (task.childThreadId === null && task.remoteChild === undefined && task.driver !== "remote")) {
+    if (
+      task === undefined ||
+      (task.childThreadId === null && task.remoteChild === undefined && task.driver !== "remote")
+    ) {
       return yield* failure(
         "task_not_found",
         `Delegated task ${taskId} does not belong to thread ${scope.thread.threadId}.`,
       );
     }
-    if (task.childThreadId === null) return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
+    if (task.childThreadId === null)
+      return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
     const childControls = yield* threadManagement
       .getThreadRecords(
         task.childThreadId,
@@ -2164,7 +2168,9 @@ const make = Effect.gen(function* () {
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
       const childProject = yield* DelegatedTaskWorkspace.resolveDelegatedTaskProject({
-        request: input, parentProjectId: parent.thread.projectId, isRetryOfAcceptedDelegation,
+        request: input,
+        parentProjectId: parent.thread.projectId,
+        isRetryOfAcceptedDelegation,
         loadProject: requireProject,
       });
       const target = yield* resolveTargetRechecking({
@@ -2185,8 +2191,11 @@ const make = Effect.gen(function* () {
       );
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined =
         yield* DelegatedTaskWorkspace.resolveExplicitDelegatedTaskWorkspace({
-          request: input, isRetryOfAcceptedDelegation, project: requireProject(childProject.projectId),
-          git: gitDriver, launches: threadLaunch,
+          request: input,
+          isRetryOfAcceptedDelegation,
+          project: requireProject(childProject.projectId),
+          git: gitDriver,
+          launches: threadLaunch,
         });
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
@@ -2235,7 +2244,9 @@ const make = Effect.gen(function* () {
           runtimeMode,
           interactionMode,
           ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-          ...(childProject.commandProjectId === undefined ? {} : { projectId: childProject.commandProjectId }),
+          ...(childProject.commandProjectId === undefined
+            ? {}
+            : { projectId: childProject.commandProjectId }),
           // Async delegations wake the parent on every child terminal; wait
           // delegations deliver through the blocking tool call, so a wake is
           // only needed if the parent settled first (timeout, disconnect).
@@ -2890,7 +2901,8 @@ const make = Effect.gen(function* () {
           ...(parent === undefined ? {} : { senderThreadId: parent.thread.id }),
           messageId,
           text: composeAgentMessage({
-            body: input.message, acceptedAt: yield* Clock.currentTimeMillis,
+            body: input.message,
+            acceptedAt: yield* Clock.currentTimeMillis,
             ...(parent === undefined ? {} : { sender: parent.thread }),
           }),
           attachments: [],
@@ -2936,7 +2948,9 @@ const make = Effect.gen(function* () {
         runId: result.run?.id ?? null,
         status: result.run === null ? "idle" : runOutcome(result.run),
         timedOut: result.timedOut,
-        ...(result.resultRun === undefined ? {} : { resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) } }),
+        ...(result.resultRun === undefined
+          ? {}
+          : { resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) } }),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {

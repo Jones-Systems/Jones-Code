@@ -189,7 +189,6 @@ describe("DesktopPreReadyPlatform", () => {
     },
   );
 
-
   it.effect(
     "acquires a synchronous pre-ready layer before an asynchronous Clerk-shaped layer",
     () =>

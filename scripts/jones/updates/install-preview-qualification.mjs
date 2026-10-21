@@ -923,12 +923,9 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
       // Incompatibility pauses a connection without changing its saved user preference.
       // Seed only this isolated loopback fixture, then reload before taking the baseline.
       const origin = new URL(syntheticOrigin);
-      require(
-        origin.protocol === "http:" &&
-          origin.hostname === "127.0.0.1" &&
-          origin.origin === syntheticOrigin,
-        "Saved Off seeding requires the exact synthetic origin",
-      );
+      require(origin.protocol === "http:" &&
+        origin.hostname === "127.0.0.1" &&
+        origin.origin === syntheticOrigin, "Saved Off seeding requires the exact synthetic origin");
       await new Promise((resolve, reject) => {
         const transaction = state.database.transaction("catalog", "readwrite");
         const store = transaction.objectStore("catalog");
@@ -939,22 +936,20 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
             const catalog = JSON.parse(request.result);
             const target = catalog.targets?.[0];
             const profile = catalog.profiles?.[0];
-            require(
-              catalog.schemaVersion === 1 &&
-                catalog.targets?.length === 1 &&
-                target?._tag === "BearerConnectionTarget" &&
-                target.label === "Synthetic incompatible Jones host" &&
-                typeof target.environmentId === "string" &&
-                target.environmentId.length > 0 &&
-                catalog.profiles?.length === 1 &&
-                profile?._tag === "BearerConnectionProfile" &&
-                profile.environmentId === target.environmentId &&
-                profile.connectionId === target.connectionId &&
-                profile.httpBaseUrl === syntheticOrigin &&
-                Array.isArray(catalog.disabledEnvironmentIds) &&
-                catalog.disabledEnvironmentIds.length === 0,
-              "Saved Off seeding requires exactly one newly paired synthetic target",
-            );
+            require(catalog.schemaVersion === 1 &&
+              catalog.targets?.length === 1 &&
+              target?._tag === "BearerConnectionTarget" &&
+              target.label === "Synthetic incompatible Jones host" &&
+              typeof target.environmentId === "string" &&
+              target.environmentId.length > 0 &&
+              catalog.profiles?.length === 1 &&
+              profile?._tag === "BearerConnectionProfile" &&
+              profile.environmentId === target.environmentId &&
+              profile.connectionId === target.connectionId &&
+              profile.httpBaseUrl === syntheticOrigin &&
+              Array.isArray(catalog.disabledEnvironmentIds) &&
+              catalog.disabledEnvironmentIds.length ===
+                0, "Saved Off seeding requires exactly one newly paired synthetic target");
             store.put(
               JSON.stringify({ ...catalog, disabledEnvironmentIds: [target.environmentId] }),
               "document",

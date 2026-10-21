@@ -675,7 +675,11 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
 
-    const writeInput = { threadId: input.threadId, terminalId, data: projectScriptTerminalInput(commandLine) };
+    const writeInput = {
+      threadId: input.threadId,
+      terminalId,
+      data: projectScriptTerminalInput(commandLine),
+    };
     const write: Effect.Effect<
       void,
       | TerminalError

@@ -1409,7 +1409,9 @@ function ComposerPromptEditorTiptapInner(
             !literalText && importFragment
               ? importPastedComposerText(clipboardData, importFragment)
               : pastedText;
-          const tokens = literalText ? [] : collectComposerPromptInlineTokens(`${text}\n`, text.length);
+          const tokens = literalText
+            ? []
+            : collectComposerPromptInlineTokens(`${text}\n`, text.length);
           const isChip = (token: (typeof tokens)[number] | undefined) =>
             token?.type === "mention" ||
             (token?.type === "skill" && skillLabelFor(token.value) !== null);

@@ -297,7 +297,9 @@ describe("MessagesTimeline attachments", () => {
     expect(text()).toContain("screenshot.png");
     expect(text()).not.toContain("t3code — Tests");
     await withoutPreview.unmount();
-    await using withPreview = await renderTimeline([snapShot("data:image/png;base64,iVBORw0KGgo=")]);
+    await using withPreview = await renderTimeline([
+      snapShot("data:image/png;base64,iVBORw0KGgo="),
+    ]);
     expect(text()).toContain("Terminal");
     expect(text()).toContain("t3code — Tests");
   });
@@ -336,7 +338,9 @@ describe("MessagesTimeline history and thread links", () => {
 
   it("opens the parent thread from the top of an empty subagent timeline", async () => {
     const open = vi.fn();
-    await using screen3 = await renderTimeline([], { parentThreadLink: { title: "Architecture audit", open } });
+    await using screen3 = await renderTimeline([], {
+      parentThreadLink: { title: "Architecture audit", open },
+    });
     expect(text()).toContain("Subagent of");
     expect(text()).toContain("Architecture audit");
     expect(text()).not.toContain("Send a message to start the conversation");
@@ -429,13 +433,15 @@ describe("MessagesTimeline history and thread links", () => {
     let previous: Screen | undefined;
     const show = async (entry: Entry, props: Partial<TimelineProps> = {}) => {
       await previous?.unmount();
-      previous = views.use(await renderElement(
-        <RegistryProvider
-          initialValues={[[serverEnvironment.providersValueAtom(ENVIRONMENT_ID), providers]]}
-        >
-          <MessagesTimeline {...baseProps()} timelineEntries={[entry]} {...props} />
-        </RegistryProvider>,
-      ));
+      previous = views.use(
+        await renderElement(
+          <RegistryProvider
+            initialValues={[[serverEnvironment.providersValueAtom(ENVIRONMENT_ID), providers]]}
+          >
+            <MessagesTimeline {...baseProps()} timelineEntries={[entry]} {...props} />
+          </RegistryProvider>,
+        ),
+      );
     };
 
     await show(
@@ -760,12 +766,15 @@ describe("MessagesTimeline send anchor", () => {
     const onAnchorReady = vi.fn();
     const sent = message("Newest prompt.", {}, "message-2");
     const props = baseProps();
-    await using screen9 = await renderTimeline([message("Earlier reply.", { role: "assistant" }), sent], {
-      ...props,
-      anchorMessageId: MessageId.make("message-2"),
-      onAnchorReady,
-      contentInsetEndAdjustment: 144,
-    });
+    await using screen9 = await renderTimeline(
+      [message("Earlier reply.", { role: "assistant" }), sent],
+      {
+        ...props,
+        anchorMessageId: MessageId.make("message-2"),
+        onAnchorReady,
+        contentInsetEndAdjustment: 144,
+      },
+    );
     await vi.waitFor(() =>
       expect(onAnchorReady).toHaveBeenCalledWith(MessageId.make("message-2"), 1),
     );
@@ -774,11 +783,14 @@ describe("MessagesTimeline send anchor", () => {
   it("does not anchor a follow-up user message that is not the newest turn", async () => {
     const onAnchorReady = vi.fn();
     const props = baseProps();
-    await using screen10 = await renderTimeline([message("First prompt."), message("Newest prompt.", {}, "message-2")], {
-      ...props,
-      anchorMessageId: MessageId.make("message-2"),
-      onAnchorReady,
-    });
+    await using screen10 = await renderTimeline(
+      [message("First prompt."), message("Newest prompt.", {}, "message-2")],
+      {
+        ...props,
+        anchorMessageId: MessageId.make("message-2"),
+        onAnchorReady,
+      },
+    );
     await vi.waitFor(() => {
       const state = props.listRef.current?.getState();
       expect(state?.sizeAtIndex(state.data.length - 1) ?? 0).toBeGreaterThan(0);

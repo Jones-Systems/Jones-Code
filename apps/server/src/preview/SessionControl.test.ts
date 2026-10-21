@@ -176,7 +176,6 @@ describe("SessionControl", () => {
   });
 });
 
-
 describe("Jones preview receive deadlines", () => {
   it("uses the receive wall clock even when the monotonic clock has another origin", async () => {
     vi.useFakeTimers();
@@ -192,8 +191,15 @@ describe("Jones preview receive deadlines", () => {
       });
       await started.promise;
       let actions = 0;
-      const expired = expect(control.agent("agent", async () => { actions++; }, budget.deadlineMs))
-        .rejects.toBeInstanceOf(BrowserActionNotStarted);
+      const expired = expect(
+        control.agent(
+          "agent",
+          async () => {
+            actions++;
+          },
+          budget.deadlineMs,
+        ),
+      ).rejects.toBeInstanceOf(BrowserActionNotStarted);
       await vi.advanceTimersByTimeAsync(50);
       await expired;
       held.resolve();
@@ -212,14 +218,22 @@ describe("Jones preview receive deadlines", () => {
       const budget = new BrowserRequestDeadline(50);
       const held = Promise.withResolvers<void>();
       const started = Promise.withResolvers<void>();
-      const first = budget.response(control.agent("agent", async () => {
-        budget.start();
-        started.resolve();
-        await held.promise;
-      }, budget.deadlineMs));
+      const first = budget.response(
+        control.agent(
+          "agent",
+          async () => {
+            budget.start();
+            started.resolve();
+            await held.promise;
+          },
+          budget.deadlineMs,
+        ),
+      );
       await started.promise;
       const events: string[] = [];
-      const second = control.agent("agent", async () => { events.push("second"); });
+      const second = control.agent("agent", async () => {
+        events.push("second");
+      });
       await vi.advanceTimersByTimeAsync(100);
       expect(events).toEqual([]);
       held.resolve();

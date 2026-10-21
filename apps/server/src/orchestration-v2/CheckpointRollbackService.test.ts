@@ -698,37 +698,35 @@ describe("rollback history reads", () => {
     }).pipe(Effect.provide(layerHistory)),
   );
 
-  it.effect(
-    "rewinds stopped runs repeatedly without counting discarded provider turns again",
-    () =>
-      Effect.gen(function* () {
-        const history = yield* seedRollbackHistory;
-        yield* history.rollback(5);
-        yield* history.rollback(2);
-        yield* history.rollback(0);
-        yield* history.rollback(0);
+  it.effect("rewinds stopped runs repeatedly without counting discarded provider turns again", () =>
+    Effect.gen(function* () {
+      const history = yield* seedRollbackHistory;
+      yield* history.rollback(5);
+      yield* history.rollback(2);
+      yield* history.rollback(0);
+      yield* history.rollback(0);
 
-        assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-        assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
-        assert.sameMembers(
-          history.committed
-            .filter((event) => event.type === "run.updated")
-            .map((event) => event.payload.id),
-          [1, 2, 3, 4, 5, 6].map(history.runId),
-        );
-        const records = yield* history.store.getThreadRecords(history.threadId, [
-          "runs",
-          "nodes",
-          "checkpoints",
-        ]);
-        assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
-        assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
-        assert.sameMembers(
-          records.checkpoints
-            .filter((checkpoint) => checkpoint.status === "ready")
-            .map((checkpoint) => checkpoint.id),
-          [history.checkpointId(0), history.checkpointId(8)],
-        );
-      }).pipe(Effect.provide(layerHistory)),
+      assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
+      assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
+      assert.sameMembers(
+        history.committed
+          .filter((event) => event.type === "run.updated")
+          .map((event) => event.payload.id),
+        [1, 2, 3, 4, 5, 6].map(history.runId),
+      );
+      const records = yield* history.store.getThreadRecords(history.threadId, [
+        "runs",
+        "nodes",
+        "checkpoints",
+      ]);
+      assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
+      assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
+      assert.sameMembers(
+        records.checkpoints
+          .filter((checkpoint) => checkpoint.status === "ready")
+          .map((checkpoint) => checkpoint.id),
+        [history.checkpointId(0), history.checkpointId(8)],
+      );
+    }).pipe(Effect.provide(layerHistory)),
   );
 });

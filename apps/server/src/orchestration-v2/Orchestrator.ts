@@ -2694,8 +2694,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ORDER BY sequence DESC LIMIT 1
       `.pipe(mapDispatchError(command));
       const deletionRow = deletionRows[0];
-      if (deletionRow === undefined || deletionRow.command_id === null)
-        return yield* existingError;
+      if (deletionRow === undefined || deletionRow.command_id === null) return yield* existingError;
       const deletionCommandId = CommandId.make(deletionRow.command_id);
       const deletion = (yield* eventSink
         .readByCommandId({ commandId: deletionCommandId })

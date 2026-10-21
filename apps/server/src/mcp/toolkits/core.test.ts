@@ -55,9 +55,6 @@ import * as EnvironmentHandlers from "./environment/handlers.ts";
 import * as AttachmentHandlers from "./attachment/handlers.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 
-
-
-
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),

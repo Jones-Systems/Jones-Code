@@ -1289,7 +1289,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const attachmentId = `effect:${commandId}:attachment.cleanup`;
         // Observe the completed initial SQL read before changing durable status, so the
         // fence must wake from a notification rather than pass on a late first read.
-        const forkAfterPendingRead = (effect: Effect.Effect<void, EffectOutbox.EffectOutboxError>) =>
+        const forkAfterPendingRead = (
+          effect: Effect.Effect<void, EffectOutbox.EffectOutboxError>,
+        ) =>
           Effect.gen(function* () {
             const readCompleted = yield* Deferred.make<void>();
             const tracer = Tracer.make({

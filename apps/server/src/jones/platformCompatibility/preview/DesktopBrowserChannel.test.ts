@@ -84,8 +84,6 @@ const runtimeEvidenceOver = (events: ReadonlyArray<Record<string, unknown>>) =>
     return yield* decodeRuntimeEvidence(result);
   });
 
-
-
 it.layer(NodeServices.layer)("DesktopBrowserChannel runtime evidence", (it) => {
   it.effect.each(["legacy", "replacement", "detached"] as const)(
     "keeps %s attachment evidence current without inventing runtime identity",

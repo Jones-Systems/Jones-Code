@@ -628,7 +628,8 @@ const make = Effect.gen(function* () {
         cause,
       });
     }
-    const parseFailure = cause === undefined ? Option.none<unknown>() : Option.some(Cause.squash(cause));
+    const parseFailure =
+      cause === undefined ? Option.none<unknown>() : Option.some(Cause.squash(cause));
     const providerHistory = yield* sql<{
       readonly providerName: string;
       readonly providerInstanceId: string | null;

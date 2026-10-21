@@ -134,14 +134,16 @@ function mockAnsweredUsage(view: Omit<UsageView, "shown">) {
   }));
 }
 
-function setupUsage(view: Omit<UsageView, "shown"> = {
-  merged: mergeUsage([], USAGE_CONTRACT_VERSION),
-  environments,
-  selectedEnvironments: environments,
-  isPending: false,
-  isPartial: false,
-  refresh: vi.fn(),
-}): Disposable {
+function setupUsage(
+  view: Omit<UsageView, "shown"> = {
+    merged: mergeUsage([], USAGE_CONTRACT_VERSION),
+    environments,
+    selectedEnvironments: environments,
+    isPending: false,
+    isPartial: false,
+    refresh: vi.fn(),
+  },
+): Disposable {
   const key = "t3code:usage-page-preferences:v1";
   const previous = localStorage.getItem(key);
   saveUsagePagePreferences({ metric: "tokens", windowDays: 30 });

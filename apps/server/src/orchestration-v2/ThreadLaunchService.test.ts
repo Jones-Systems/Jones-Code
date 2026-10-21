@@ -884,10 +884,10 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
           const ancillary = (yield* layerOutbox.listByCommandId(dId)).filter(
             (effect) => effect.status === "pending",
           );
-          assert.deepEqual(
-            ancillary.map((effect) => effect.request.type).sort(),
-            ["preview.cleanup", "scheduled-tasks.cleanup"],
-          );
+          assert.deepEqual(ancillary.map((effect) => effect.request.type).sort(), [
+            "preview.cleanup",
+            "scheduled-tasks.cleanup",
+          ]);
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           assert.equal(yield* worker.drain(ancillary.length), ancillary.length);
           for (const effect of ancillary) {
@@ -3740,9 +3740,7 @@ it.effect.each(
         assert.equal(child.thread.modelSelection.model, "child-model");
         const expectedCommitChecks = [
           [{ cwd: parentWorktree ?? "/repo", revision: "HEAD" }],
-          ...(parentWorktree === null
-            ? []
-            : [[{ cwd: "/repo", revision: "parent-local-commit" }]]),
+          ...(parentWorktree === null ? [] : [[{ cwd: "/repo", revision: "parent-local-commit" }]]),
         ];
         assert.deepEqual(resolveCommit.mock.calls, expectedCommitChecks);
         assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "parent-local-commit");

@@ -930,10 +930,7 @@ export function shouldRecedeSidebarThread(input: {
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  | "hasPendingApprovals"
-  | "hasPendingUserInput"
-  | "pendingSubagentRequest"
-  | "runtime"
+  "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
 > & { blockedOnThreadWait?: boolean | undefined };
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {

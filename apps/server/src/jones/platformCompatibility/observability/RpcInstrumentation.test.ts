@@ -1,6 +1,12 @@
 import { assert, describe, it } from "@effect/vitest";
-import { AuthOrchestrationReadScope, type AuthEnvironmentScope, ScheduledTaskError, ScheduledTaskId, WS_METHODS, WsRpcGroup } from "@t3tools/contracts";
-
+import {
+  AuthOrchestrationReadScope,
+  type AuthEnvironmentScope,
+  ScheduledTaskError,
+  ScheduledTaskId,
+  WS_METHODS,
+  WsRpcGroup,
+} from "@t3tools/contracts";
 
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,10 +18,12 @@ import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 import * as RpcTest from "effect/rpc/RpcTest";
 
-
 import { RPC_REQUIRED_SCOPES } from "../../../auth/RpcAuthorization.ts";
 import * as RpcAuthorization from "../../../auth/RpcAuthorization.ts";
-import { RpcInstrumentation, rpcInstrumentationLayer } from "../../../observability/RpcInstrumentation.ts";
+import {
+  RpcInstrumentation,
+  rpcInstrumentationLayer,
+} from "../../../observability/RpcInstrumentation.ts";
 
 type WsRpcMethod = keyof typeof RPC_REQUIRED_SCOPES;
 
@@ -60,7 +68,6 @@ const rpcSpans = (ended: ReadonlyArray<Tracer.NativeSpan>) =>
 
 // RpcTest keeps Effect's own RpcServer/RpcClient spans, which ws.ts turns off with
 // `disableTracing: true`.
-
 
 const exitTag = (span: Tracer.NativeSpan | undefined) =>
   span?.status._tag === "Ended" ? span.status.exit._tag : undefined;
@@ -238,10 +245,6 @@ describe("WS RPC instrumentation middleware", () => {
       }),
     ),
   );
-
-  
-
-  
 });
 
 it.effect("labels the Jones CI read with its pull request owner", () =>

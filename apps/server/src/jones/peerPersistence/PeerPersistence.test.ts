@@ -73,72 +73,76 @@ it.effect("fresh startup keeps experimental peer links entirely in the Jones led
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("released schema 63 keeps its rows through Jones migration and accepts upstream migrations", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA foreign_keys = ON`;
-    yield* runMigrations({ toMigrationInclusive: 63 });
-    yield* sql`
+it.effect(
+  "released schema 63 keeps its rows through Jones migration and accepts upstream migrations",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`PRAGMA foreign_keys = ON`;
+      yield* runMigrations({ toMigrationInclusive: 63 });
+      yield* sql`
       INSERT INTO orchestration_command_receipts
         (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
       VALUES ('synthetic-peer-command', 'thread', 'synthetic-thread', '2026-10-21', 1, 'accepted')
     `;
-    const objects = yield* sql<{
-      readonly type: string;
-      readonly name: string;
-      readonly sql: string | null;
-    }>`
+      const objects = yield* sql<{
+        readonly type: string;
+        readonly name: string;
+        readonly sql: string | null;
+      }>`
       SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
     `;
-    const tables = objects.filter(({ type }) => type === "table");
-    const rowsBefore = yield* Effect.forEach(tables, ({ name }) => sql`SELECT * FROM ${sql(name)}`);
+      const tables = objects.filter(({ type }) => type === "table");
+      const rowsBefore = yield* Effect.forEach(
+        tables,
+        ({ name }) => sql`SELECT * FROM ${sql(name)}`,
+      );
 
-    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 63 }), []);
-    yield* JonesMigrations.runMigrations();
-    yield* assertJonesPeerSchema;
-    const objectsAfter = yield* sql`
+      assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 63 }), []);
+      yield* JonesMigrations.runMigrations();
+      yield* assertJonesPeerSchema;
+      const objectsAfter = yield* sql`
       SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
     `;
-    for (const object of objects) assert.deepInclude(objectsAfter, object);
-    assert.deepStrictEqual(
-      yield* Effect.forEach(tables, ({ name }) => sql`SELECT * FROM ${sql(name)}`),
-      rowsBefore,
-    );
+      for (const object of objects) assert.deepInclude(objectsAfter, object);
+      assert.deepStrictEqual(
+        yield* Effect.forEach(tables, ({ name }) => sql`SELECT * FROM ${sql(name)}`),
+        rowsBefore,
+      );
 
-    assert.deepStrictEqual(
-      yield* runMigrations(),
-      migrationManifest.filter(([id]) => id > 63),
-    );
-    assert.deepStrictEqual(
-      yield* sql`SELECT command_id FROM orchestration_command_receipts`,
-      [{ command_id: "synthetic-peer-command" }],
-    );
-    yield* assertJonesPeerSchema;
+      assert.deepStrictEqual(
+        yield* runMigrations(),
+        migrationManifest.filter(([id]) => id > 63),
+      );
+      assert.deepStrictEqual(yield* sql`SELECT command_id FROM orchestration_command_receipts`, [
+        { command_id: "synthetic-peer-command" },
+      ]);
+      yield* assertJonesPeerSchema;
 
-    // Real upstream migrations own 64–67; synthetic later migrations prove
-    // Jones still leaves future upstream IDs available without predicting their contents.
-    const future = [68, 69, 70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
-    const executed = yield* Migrator.make({})({
-      loader: Migrator.fromRecord(
-        Object.fromEntries(
-          future.map(([id, name]) => [
-            `${id}_${name}`,
-            sql`CREATE TABLE ${sql(`synthetic_upstream_${id}`)} (id TEXT PRIMARY KEY)`.pipe(
-              Effect.asVoid,
-            ),
-          ]),
+      // Real upstream migrations own 64–67; synthetic later migrations prove
+      // Jones still leaves future upstream IDs available without predicting their contents.
+      const future = [68, 69, 70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
+      const executed = yield* Migrator.make({})({
+        loader: Migrator.fromRecord(
+          Object.fromEntries(
+            future.map(([id, name]) => [
+              `${id}_${name}`,
+              sql`CREATE TABLE ${sql(`synthetic_upstream_${id}`)} (id TEXT PRIMARY KEY)`.pipe(
+                Effect.asVoid,
+              ),
+            ]),
+          ),
         ),
-      ),
-    });
-    assert.deepStrictEqual(executed, future);
-    const futureHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runMigrations(), []);
-    assert.deepStrictEqual(
-      yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
-      futureHistory,
-    );
-    yield* assertJonesPeerSchema;
-  }).pipe(Effect.provide(memory)),
+      });
+      assert.deepStrictEqual(executed, future);
+      const futureHistory = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        futureHistory,
+      );
+      yield* assertJonesPeerSchema;
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("pairing creates a sparse Jones row and unlink removes only the local link", () =>

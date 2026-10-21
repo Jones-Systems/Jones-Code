@@ -1234,10 +1234,9 @@ it.effect(
                 return span;
               },
             });
-            const rejected = yield* service.triggerWebhook(requestFor(task)).pipe(
-              Effect.withTracer(tracer),
-              Effect.forkChild,
-            );
+            const rejected = yield* service
+              .triggerWebhook(requestFor(task))
+              .pipe(Effect.withTracer(tracer), Effect.forkChild);
             yield* Deferred.await(rejectionReadStarted);
             // Acceptance owns the SQL transaction until the valid request releases its gate.
             assert.isFalse(yield* Deferred.isDone(rejectionReadFinished));

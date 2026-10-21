@@ -233,7 +233,6 @@ async function rename(title: string) {
 }
 
 describe("project settings permissions", () => {
-
   it.each([
     ["loading", () => AsyncResult.initial<AuthSessionState, Error>(), "checking"],
     [

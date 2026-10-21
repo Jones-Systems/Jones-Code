@@ -186,10 +186,12 @@ function describeInitialUpdates(input: {
   readonly updateProviders: ReadonlyArray<ProviderUpdateCandidate>;
   readonly oneClickProviders: ReadonlyArray<ProviderUpdateCandidate>;
 }): string {
-  const fromSettings = dedupeProvidersByDriver(input.updateProviders.filter(
-    (provider) => provider.versionAdvisory.canUpdate,
-  ));
-  const manual = dedupeProvidersByDriver(input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate));
+  const fromSettings = dedupeProvidersByDriver(
+    input.updateProviders.filter((provider) => provider.versionAdvisory.canUpdate),
+  );
+  const manual = dedupeProvidersByDriver(
+    input.updateProviders.filter((provider) => !provider.versionAdvisory.canUpdate),
+  );
   return [
     input.oneClickProviders.length > 0
       ? "Install the update now or review provider settings."

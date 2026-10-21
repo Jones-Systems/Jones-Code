@@ -13,7 +13,12 @@ import {
   useThreadShell,
 } from "../../state/entities";
 import { UsageLimitRecoveryCard } from "./UsageLimitRecoveryCard";
-import { StackActions, useFocusEffect, useIsFocused, useNavigation } from "@react-navigation/native";
+import {
+  StackActions,
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+} from "@react-navigation/native";
 import {
   effectiveSnoozed,
   threadWokeAt,

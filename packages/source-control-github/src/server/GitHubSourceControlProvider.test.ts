@@ -456,12 +456,14 @@ describe("GitHubSourceControlProvider change request lookups by head", () => {
     });
     return Effect.gen(function* () {
       const gh = yield* GitHubSourceControlProvider.make;
-      const open = yield* gh.listChangeRequests({
-        cwd: "/repo",
-        headSelector: "me:main",
-        state: "open",
-        limit: 1,
-      }).pipe(Effect.forkChild);
+      const open = yield* gh
+        .listChangeRequests({
+          cwd: "/repo",
+          headSelector: "me:main",
+          state: "open",
+          limit: 1,
+        })
+        .pipe(Effect.forkChild);
       const rows = yield* Fiber.join(open);
       assert.deepStrictEqual(
         (yield* Fiber.join(open)).map((pr) => pr.number),

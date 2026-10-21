@@ -630,11 +630,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     ? undefined
     : currentModelSelection.instanceId;
   const configuredDefaultModelSelection = props.serverConfig?.settings
-    ? resolveProjectSettings(
-        props.serverConfig.settings,
-        props.selectedThread.projectId,
-        project,
-      ).settings.defaultModelSelection
+    ? resolveProjectSettings(props.serverConfig.settings, props.selectedThread.projectId, project)
+        .settings.defaultModelSelection
     : null;
   const modelOptions = buildModelOptions(
     props.serverConfig,

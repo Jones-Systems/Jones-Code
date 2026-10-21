@@ -3728,9 +3728,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       )
         throw new Error("Replaced target or parent");
       const realPath = await NodeFSP.realpath(worktreePath);
-      if (
-        realPath !== path.resolve(parentRealPath, path.relative(before.parentPath, worktreePath))
-      )
+      if (realPath !== path.resolve(parentRealPath, path.relative(before.parentPath, worktreePath)))
         throw new Error("Replaced path ancestry");
       const dotGitPath = path.join(worktreePath, ".git");
       const dotGit = await NodeFSP.lstat(dotGitPath);
@@ -4062,9 +4060,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* journal
         .afterEffect(
           step,
-          Result.isSuccess(result) && claim !== undefined
-            ? "settled_success"
-            : "failed_or_unknown",
+          Result.isSuccess(result) && claim !== undefined ? "settled_success" : "failed_or_unknown",
           claim,
         )
         .pipe(Effect.mapError(mapJournalError));

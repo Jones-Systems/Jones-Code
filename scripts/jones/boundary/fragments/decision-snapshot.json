@@ -22,9 +22,7 @@
     "apps/server/src/mcp/McpInvocationContext.test.ts",
     "apps/server/src/mcp/McpSessionRegistry.test.ts"
   ],
-  "tombstones": [
-    "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
-  ],
+  "tombstones": ["apps/server/src/mcp/toolkits/worktree/registration.test.ts"],
   "allowedImports": [
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",

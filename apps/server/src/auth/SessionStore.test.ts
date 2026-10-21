@@ -2,10 +2,7 @@ import * as AuthSessions from "../persistence/AuthSessions.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  EnvironmentId,
-  AuthSessionId,
-} from "@t3tools/contracts";
+import { EnvironmentId, AuthSessionId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";

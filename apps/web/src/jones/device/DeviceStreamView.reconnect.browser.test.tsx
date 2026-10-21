@@ -101,27 +101,32 @@ async function setup() {
     }
     resources.use(stubGlobal("fetch", () => Promise.resolve(new Response("prime"))));
     resources.use(
-      stubGlobal("WebSocket", class {
-        static OPEN = 1;
-        readyState = 1;
-        onmessage?: (event: { data: ArrayBuffer }) => void;
-        send() {}
-        close() {}
-      }),
+      stubGlobal(
+        "WebSocket",
+        class {
+          static OPEN = 1;
+          readyState = 1;
+          onmessage?: (event: { data: ArrayBuffer }) => void;
+          send() {}
+          close() {}
+        },
+      ),
     );
     container = document.createElement("div");
     container.style.cssText = "width: 400px; height: 800px; display: flex";
-    resources.use(await render(
-      <DeviceStreamView
-        hostId="local"
-        environmentId={EnvironmentId.make("test")}
-        deviceId="test"
-        platform="ios"
-        visible={true}
-        allowPhoneView={false}
-      />,
-      { container },
-    ));
+    resources.use(
+      await render(
+        <DeviceStreamView
+          hostId="local"
+          environmentId={EnvironmentId.make("test")}
+          deviceId="test"
+          platform="ios"
+          visible={true}
+          allowPhoneView={false}
+        />,
+        { container },
+      ),
+    );
     return Object.assign(resources, { images });
   } catch (error) {
     await resources.disposeAsync();

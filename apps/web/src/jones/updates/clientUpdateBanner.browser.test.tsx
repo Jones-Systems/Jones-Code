@@ -121,10 +121,7 @@ describe("client notice environment lifecycle", () => {
     });
     expect(
       [...screen.container.querySelectorAll("button")].map((button) => button.textContent),
-    ).toEqual([
-      "Download aaaaaaa",
-      "Dismiss client version notice",
-    ]);
+    ).toEqual(["Download aaaaaaa", "Dismiss client version notice"]);
     // A newer stable server and equal sources never offer a download.
     targets.length = 0;
     for (const quiet of [

@@ -29,19 +29,22 @@ describe("Jones environment release compatibility", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
   it("uses the upstream feed only when the caller identifies an upstream environment", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
-      '<feed><entry><id>tag:github.com,2008:Repository/1/v1.0.0-preview.20260924.3</id></entry></feed>',
-    ));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          "<feed><entry><id>tag:github.com,2008:Repository/1/v1.0.0-preview.20260924.3</id></entry></feed>",
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
 
     expect(await findEnvironmentUpdate("1.0.0-preview.20260923.1", signal, true)).toBe(
       "1.0.0-preview.20260924.3",
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://github.com/pingdotgg/t3code/releases.atom",
-      { signal, headers: { Accept: "application/atom+xml" } },
-    );
+    expect(fetchMock).toHaveBeenCalledWith("https://github.com/pingdotgg/t3code/releases.atom", {
+      signal,
+      headers: { Accept: "application/atom+xml" },
+    });
   });
-
 });

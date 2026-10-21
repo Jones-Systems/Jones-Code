@@ -1032,9 +1032,9 @@ describe("orchestrator MCP toolkit", () => {
               return Effect.gen(function* () {
                 // Start the real TestClock sleep immediately: its synchronous acquire
                 // registers the timer before this child suspends on the sleep latch.
-                const sleeper = yield* testClock.sleep(duration).pipe(
-                  Effect.forkChild({ startImmediately: true }),
-                );
+                const sleeper = yield* testClock
+                  .sleep(duration)
+                  .pipe(Effect.forkChild({ startImmediately: true }));
                 if (millis === 1) {
                   yield* Queue.offer(deadlineSleeps, undefined);
                 } else {

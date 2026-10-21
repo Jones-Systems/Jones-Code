@@ -15,12 +15,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as ServerConfig from "../config.ts";
 import { makeCodexAppServerSpawnCommand } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import {
-  classifyScope,
-  make,
-  ownedAgentSlice,
-  type ScopeState,
-} from "./agentScope.ts";
+import { classifyScope, make, ownedAgentSlice, type ScopeState } from "./agentScope.ts";
 
 const running: ScopeState = {
   loadState: "loaded",
@@ -71,7 +66,10 @@ const withFakeSystemd = <A, E>(
       run: ({ args }) =>
         Effect.sync(() => {
           calls.push(args);
-          if (options.oomPolicy === false && args.some((arg) => arg.startsWith("--property=OOMPolicy="))) {
+          if (
+            options.oomPolicy === false &&
+            args.some((arg) => arg.startsWith("--property=OOMPolicy="))
+          ) {
             return output("", 1);
           }
           const [, verb, unit = ""] = args;

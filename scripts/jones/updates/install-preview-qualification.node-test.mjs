@@ -634,18 +634,22 @@ function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remot
   const hintName = "t3code:connection-compatibility-hints";
   const catalog = JSON.stringify({
     schemaVersion: 1,
-    targets: [{
-      _tag: "BearerConnectionTarget",
-      environmentId: "synthetic-remote",
-      connectionId: "synthetic-connection",
-      label: "Synthetic incompatible Jones host",
-    }],
-    profiles: [{
-      _tag: "BearerConnectionProfile",
-      environmentId: "synthetic-remote",
-      connectionId: "synthetic-connection",
-      httpBaseUrl: "http://127.0.0.1:4100",
-    }],
+    targets: [
+      {
+        _tag: "BearerConnectionTarget",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        label: "Synthetic incompatible Jones host",
+      },
+    ],
+    profiles: [
+      {
+        _tag: "BearerConnectionProfile",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        httpBaseUrl: "http://127.0.0.1:4100",
+      },
+    ],
     disabledEnvironmentIds,
     credentials: ["DO-NOT-PUBLISH"],
   });
@@ -851,50 +855,72 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("saved Off seeding changes only the isolated target preference before checkpoint", async () => {
-  const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
-  const store = fixture.data.get(fixture.runtimeName).stores;
-  const before = JSON.parse(store.get("catalog"));
-  await fixture.run("hold");
-  NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
-  NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
-    ...before,
-    disabledEnvironmentIds: ["synthetic-remote"],
-  });
-  await fixture.run("close");
-  await fixture.run("hold");
-  await fixture.run("checkpoint");
-  NodeAssert.ok(Object.values(await fixture.run("verify")).every((value) => value === true));
-  await fixture.run("close");
-  NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
-});
-
-NodeTest.test("saved Off seeding refuses nonmatching or ambiguous synthetic catalogs without writes", async () => {
-  for (const mutate of [
-    (catalog) => { catalog.targets[0].label = "Unrelated host"; },
-    (catalog) => { catalog.targets.push({ ...catalog.targets[0] }); },
-    (catalog) => { catalog.profiles[0].httpBaseUrl = "https://unrelated.invalid"; },
-    (catalog) => { catalog.profiles[0].environmentId = "other"; },
-    (catalog) => { catalog.disabledEnvironmentIds = ["other"]; },
-  ]) {
+NodeTest.test(
+  "saved Off seeding changes only the isolated target preference before checkpoint",
+  async () => {
     const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
     const store = fixture.data.get(fixture.runtimeName).stores;
-    const catalog = JSON.parse(store.get("catalog"));
-    mutate(catalog);
-    const before = JSON.stringify(catalog);
-    store.set("catalog", before);
+    const before = JSON.parse(store.get("catalog"));
     await fixture.run("hold");
-    await NodeAssert.rejects(fixture.run("seed-off"), /exactly one newly paired synthetic target/);
-    NodeAssert.equal(store.get("catalog"), before);
+    NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+    NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+      ...before,
+      disabledEnvironmentIds: ["synthetic-remote"],
+    });
+    await fixture.run("close");
+    await fixture.run("hold");
+    await fixture.run("checkpoint");
+    NodeAssert.ok(Object.values(await fixture.run("verify")).every((value) => value === true));
+    await fixture.run("close");
     NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
-  }
-  const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
-  const before = fixture.data.get(fixture.runtimeName).stores.get("catalog");
-  await fixture.run("hold");
-  await NodeAssert.rejects(fixture.run("seed-off", "https://unrelated.invalid"), /exact synthetic origin/);
-  NodeAssert.equal(fixture.data.get(fixture.runtimeName).stores.get("catalog"), before);
-  NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
-});
+  },
+);
+
+NodeTest.test(
+  "saved Off seeding refuses nonmatching or ambiguous synthetic catalogs without writes",
+  async () => {
+    for (const mutate of [
+      (catalog) => {
+        catalog.targets[0].label = "Unrelated host";
+      },
+      (catalog) => {
+        catalog.targets.push({ ...catalog.targets[0] });
+      },
+      (catalog) => {
+        catalog.profiles[0].httpBaseUrl = "https://unrelated.invalid";
+      },
+      (catalog) => {
+        catalog.profiles[0].environmentId = "other";
+      },
+      (catalog) => {
+        catalog.disabledEnvironmentIds = ["other"];
+      },
+    ]) {
+      const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+      const store = fixture.data.get(fixture.runtimeName).stores;
+      const catalog = JSON.parse(store.get("catalog"));
+      mutate(catalog);
+      const before = JSON.stringify(catalog);
+      store.set("catalog", before);
+      await fixture.run("hold");
+      await NodeAssert.rejects(
+        fixture.run("seed-off"),
+        /exactly one newly paired synthetic target/,
+      );
+      NodeAssert.equal(store.get("catalog"), before);
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    }
+    const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+    const before = fixture.data.get(fixture.runtimeName).stores.get("catalog");
+    await fixture.run("hold");
+    await NodeAssert.rejects(
+      fixture.run("seed-off", "https://unrelated.invalid"),
+      /exact synthetic origin/,
+    );
+    NodeAssert.equal(fixture.data.get(fixture.runtimeName).stores.get("catalog"), before);
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+  },
+);
 
 NodeTest.test(
   "IDB proof emits only booleans and detects a real-shaped version upgrade with exact cleanup",

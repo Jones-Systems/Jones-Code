@@ -3173,7 +3173,10 @@ export const layerWsRpc = (
               ),
         [WS_METHODS.deviceOpen]: (input) =>
           threadWorkspaceRoot(input.threadId).pipe(
-            Effect.provideService(ThreadManagementService.ThreadManagementService, threadManagement),
+            Effect.provideService(
+              ThreadManagementService.ThreadManagementService,
+              threadManagement,
+            ),
             Effect.provideService(ProjectService.ProjectService, projectService),
             Effect.flatMap((workspaceRoot) => deviceService.open(input, { workspaceRoot })),
           ),

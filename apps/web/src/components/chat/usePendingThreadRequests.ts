@@ -17,13 +17,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import { create } from "zustand";
-import {
-  useLayoutEffect,
-  useEffect,
-  useRef,
-  useState,
-  type SetStateAction,
-} from "react";
+import { useLayoutEffect, useEffect, useRef, useState, type SetStateAction } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { useStableCallback } from "../../hooks/useStableCallback";

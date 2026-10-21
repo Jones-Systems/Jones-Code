@@ -1,10 +1,5 @@
 import * as DateTime from "effect/DateTime";
-import {
-  assert,
-  it,
-  expect,
-  vi,
-} from "@effect/vitest";
+import { assert, it, expect, vi } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -79,7 +74,7 @@ it.layer(NodeServices.layer)("GitWorkflowService", (it) => {
     ),
   );
 
-it.effect("keeps remote worktree lookup failures typed when repository resolution fails", () => {
+  it.effect("keeps remote worktree lookup failures typed when repository resolution fails", () => {
     const lookup = vi.fn(() => null);
     return Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
@@ -122,7 +117,7 @@ it.effect("keeps remote worktree lookup failures typed when repository resolutio
     );
   });
 
-it.effect("reports a non-Git VCS repository as not a Git repository", () =>
+  it.effect("reports a non-Git VCS repository as not a Git repository", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
       const isRepository = yield* workflow.isRepository("/jj-repo");
@@ -151,7 +146,7 @@ it.effect("reports a non-Git VCS repository as not a Git repository", () =>
     ),
   );
 
-it.effect("returns an empty local status when no VCS repository is detected", () =>
+  it.effect("returns an empty local status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
       const status = yield* workflow.localStatus({ cwd: "/not-a-repo" });
@@ -177,7 +172,7 @@ it.effect("returns an empty local status when no VCS repository is detected", ()
     ),
   );
 
-it.effect("returns an empty full status when no VCS repository is detected", () =>
+  it.effect("returns an empty full status when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
       const status = yield* workflow.status({ cwd: "/not-a-repo" });
@@ -208,7 +203,7 @@ it.effect("returns an empty full status when no VCS repository is detected", () 
     ),
   );
 
-it.effect("does not call GitManager status methods when no VCS repository is detected", () => {
+  it.effect("does not call GitManager status methods when no VCS repository is detected", () => {
     const localStatus = vi.fn();
     const remoteStatus = vi.fn();
     const status = vi.fn();
@@ -241,7 +236,7 @@ it.effect("does not call GitManager status methods when no VCS repository is det
     }).pipe(Effect.provide(layerTest));
   });
 
-it.effect("returns an empty ref list when no VCS repository is detected", () =>
+  it.effect("returns an empty ref list when no VCS repository is detected", () =>
     Effect.gen(function* () {
       const workflow = yield* GitWorkflowService.GitWorkflowService;
       const refs = yield* workflow.listRefs({ cwd: "/not-a-repo" });
@@ -262,7 +257,7 @@ it.effect("returns an empty ref list when no VCS repository is detected", () =>
     ),
   );
 
-it.effect("structures workflow detection failures without exposing upstream details", () => {
+  it.effect("structures workflow detection failures without exposing upstream details", () => {
     const cause = new VcsRepositoryDetectionError({
       operation: "VcsDriverRegistry.detect",
       cwd: "/repo",
@@ -289,7 +284,7 @@ it.effect("structures workflow detection failures without exposing upstream deta
     );
   });
 
-it.effect("structures command detection failures without exposing upstream details", () => {
+  it.effect("structures command detection failures without exposing upstream details", () => {
     const cause = new VcsRepositoryDetectionError({
       operation: "VcsDriverRegistry.detect",
       cwd: "/repo",
