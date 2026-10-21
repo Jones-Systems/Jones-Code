@@ -1,7 +1,8 @@
+import "~/index.css";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 vi.mock(import("~/hooks/useThreadRouteTarget"), () => ({
   useThreadRouteTarget: () => null,
@@ -118,4 +119,20 @@ it("ignores swipe dismissal for an explicit-only toast", async () => {
   await userEvent.click(closeButton());
   await expect.poll(() => closeButton()).toBeNull();
   expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it("keeps ordinary expandable toasts at their original width", async () => {
+  await act(async () => {
+    toastManager.add({
+      title: "Ordinary notice",
+      timeout: 0,
+      data: { expandableContent: <p>{"Detail ".repeat(100)}</p> },
+    });
+  });
+  const toast = closeButton().closest<HTMLElement>("[data-position]")!;
+  const width = toast.getBoundingClientRect().width;
+  expect(width).toBeGreaterThan(0);
+  await userEvent.click(page.getByRole("button", { name: "Show details" }));
+  expect(document.querySelector('[data-slot="toast-expandable-panel"]')).not.toBeNull();
+  expect(toast.getBoundingClientRect().width).toBe(width);
 });
