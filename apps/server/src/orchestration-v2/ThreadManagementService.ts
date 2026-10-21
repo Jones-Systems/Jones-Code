@@ -1427,7 +1427,11 @@ const make = Effect.gen(function* () {
         }),
     getTimelinePage: (threadId, options) =>
       ensureProjectionTranscript(threadId).pipe(
-        Effect.andThen(orchestrator.getTimelinePage(threadId, options)),
+        Effect.andThen(
+          options.tail
+            ? orchestrator.getTimelinePage(threadId, options).pipe(NodeSqliteClient.readOnly)
+            : orchestrator.getTimelinePage(threadId, options),
+        ),
       ),
     getMessageCount: (threadId) =>
       ensureProjectionTranscript(threadId).pipe(

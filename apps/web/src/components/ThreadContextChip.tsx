@@ -7,7 +7,7 @@ import { ContextChip, ContextChipLabel } from "./ContextChip";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 export function ThreadContextChip(props: {
-  record: Pick<ThreadContextRecord, "environmentId" | "threadId" | "title">;
+  record: Pick<ThreadContextRecord, "environmentId" | "threadId" | "title" | "excerpt">;
   copyMarkdown?: string;
 }) {
   const { environmentId, threadId } = props.record;
@@ -29,7 +29,14 @@ export function ThreadContextChip(props: {
           </ContextChip>
         }
       />
-      <TooltipPopup side="top">{shell ? "Open thread" : "Thread no longer available"}</TooltipPopup>
+      <TooltipPopup side="top">
+        {shell ? "Open thread" : "Thread no longer available"}
+        {props.record.excerpt?.status === "captured"
+          ? " — bounded point-in-time context attached"
+          : props.record.excerpt?.status === "unavailable"
+            ? ` — context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
+            : ""}
+      </TooltipPopup>
     </Tooltip>
   );
 }

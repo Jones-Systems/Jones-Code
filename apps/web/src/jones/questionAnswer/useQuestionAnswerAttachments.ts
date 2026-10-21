@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../threadReferenceExcerpt/useThreadReferenceCapture";
 import { useEffect, useState } from "react";
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -7,7 +8,6 @@ import {
 } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { fileAttachmentTooLargeMessage } from "@t3tools/client-runtime/state/attachments";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import {
   useComposerDraftStore,
@@ -43,9 +43,6 @@ import {
 } from "../../lib/composerContextRecords";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
 import { readThreadShell } from "../../state/entities";
-import { orchestrationEnvironment } from "../../state/orchestration";
-import { useAtomCommand } from "../../state/use-atom-command";
-import { threadContextAttachment } from "../../lib/threadContextAttachment";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { assetEnvironment } from "../../state/assets";
 import { readPreparedConnection } from "../../state/session";
@@ -71,14 +68,12 @@ export function useQuestionAnswerAttachments(input: {
   const keys = prompt.questions.map((q) =>
     questionAttachmentDraftId(environmentId, threadId, prompt.requestId, q.id),
   );
+  const addCapturedThreadContexts = useThreadReferenceCapture(target, target);
   const draft = useComposerDraftStore((state) => state.draftsByThreadKey[target]);
   const uploads = useAttachmentUploadStore((state) => state.uploadsByImageId);
   const preparationCount = useQuestionAttachmentPreparation((state) => state.counts[target] ?? 0);
   const [error, setError] = useState<{ target: string; message: string } | null>(null);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
-  const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
-    reportFailure: false,
-  });
   const fileLimit = fileAttachmentStagingLimit(capabilities);
   const attachments = [...(draft?.images ?? []), ...(draft?.files ?? [])];
   const canAttach = !disabled && input.allowAdding && capabilities.supportsQuestionAttachments;
@@ -229,26 +224,13 @@ export function useQuestionAnswerAttachments(input: {
     insert: (text: string) => void,
     isCurrent: () => boolean,
   ) => {
-    if (disabled || !input.allowAdding) return;
+    if (disabled || !input.allowAdding || !isCurrent()) return;
     const records = refs.flatMap((ref) => {
-      if (ref.environmentId !== environmentId) {
-        void importFile(async () => {
-          const result = await loadThreadTranscript({
-            environmentId: ref.environmentId,
-            input: { threadId: ref.threadId },
-          });
-          if (result._tag !== "Success") throw squashAtomCommandFailure(result);
-          return threadContextAttachment(ref.environmentId, result.value);
-        }, isCurrent);
-        return [];
-      }
       const shell = readThreadShell(ref);
       return shell ? [threadContextRecord(ref, shell.title)] : [];
     });
     if (records.length) {
-      useComposerDraftStore
-        .getState()
-        .addThreadContexts(target, records, { appendReference: false });
+      addCapturedThreadContexts(records, { appendReference: false });
       insert(
         records
           .map((record) => formatInlineContextReference(threadContextReference(record)))
@@ -264,20 +246,7 @@ export function useQuestionAnswerAttachments(input: {
     const records = new Map(knownRecords.map((record) => [record.contextId, record]));
     for (const record of knownRecords) {
       if (record.kind === "thread") {
-        if (record.environmentId === environmentId) {
-          useComposerDraftStore
-            .getState()
-            .addThreadContexts(target, [record], { appendReference: false });
-        } else {
-          void importFile(async () => {
-            const result = await loadThreadTranscript({
-              environmentId: record.environmentId,
-              input: { threadId: record.threadId },
-            });
-            if (result._tag !== "Success") throw squashAtomCommandFailure(result);
-            return threadContextAttachment(record.environmentId, result.value);
-          });
-        }
+        addCapturedThreadContexts([record], { appendReference: false });
       }
       if (record.kind !== "image" && record.kind !== "file") continue;
       const sourceEnvironmentId = fragment.source.environmentId;
@@ -300,10 +269,7 @@ export function useQuestionAnswerAttachments(input: {
     return replaceComposerContextReferences(text, (occurrence) => {
       const record = records.get(occurrence.contextId);
       if (!record) return occurrence.source;
-      if (record.kind === "thread")
-        return record.environmentId === environmentId
-          ? formatThreadLink(record.threadId, occurrence.label)
-          : occurrence.label;
+      if (record.kind === "thread") return occurrence.source;
       if (record.kind === "image" || record.kind === "file") return record.name;
       return occurrence.source;
     });
