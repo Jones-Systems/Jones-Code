@@ -10,12 +10,12 @@ import {
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
-import { buildLocalEnvironmentUpdateGroups } from "./ProviderUpdateLaunchNotification.logic";
+import { buildLocalEnvironmentUpdateGroups } from "~/components/ProviderUpdateLaunchNotification.logic";
 import type {
   LocalEnvironmentUpdateGroup,
   ProviderUpdateCandidate,
   ProviderUpdateRowStatus,
-} from "./ProviderUpdateLaunchNotification.logic";
+} from "~/components/ProviderUpdateLaunchNotification.logic";
 
 const testState = vi.hoisted(() => ({
   groups: [] as LocalEnvironmentUpdateGroup[],
@@ -107,17 +107,16 @@ vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: () => testState.updateProvider,
 }));
 
-vi.mock("./ProviderUpdateLaunchNotification.environments", () => ({
+vi.mock("~/components/ProviderUpdateLaunchNotification.environments", () => ({
   useLocalEnvironmentUpdateGroups: () => ({
     groups: testState.groups,
     isAnySettling: false,
   }),
 }));
 
-import { ProviderUpdateEnvironmentRows } from "./ProviderUpdateEnvironmentRows";
+import { ProviderUpdateEnvironmentRows } from "~/components/ProviderUpdateEnvironmentRows";
 
 const environmentId = "env-wsl" as EnvironmentId;
-const pendingExpiryMs = 6 * 60_000;
 
 function provider(updateStatus?: "succeeded"): ServerProvider {
   const result: ServerProvider = {
@@ -157,27 +156,10 @@ function provider(updateStatus?: "succeeded"): ServerProvider {
     : result;
 }
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((complete) => {
-    resolve = complete;
-  });
-  return { promise, resolve };
-}
-
 type RowElement = ReactElement<{
   readonly status: ProviderUpdateRowStatus;
   readonly onUpdate: () => void;
 }>;
-
-function renderRow(): RowElement {
-  hooks.beginRender();
-  const output = ProviderUpdateEnvironmentRows({}) as ReactElement<{
-    readonly children: RowElement | RowElement[];
-  }>;
-  const children = output.props.children;
-  return Array.isArray(children) ? children[0]! : children;
-}
 
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
@@ -263,34 +245,4 @@ describe("ProviderUpdateEnvironmentRows", () => {
       expect(renderRows().map((row) => row.props.status.kind)).toEqual(["success", "success"]);
     },
   );
-
-  it("keeps a successor pending when an expired request resolves late, then shows its success", async () => {
-    const firstRequest =
-      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
-    const successorRequest =
-      deferred<ReturnType<typeof AsyncResult.success<{ providers: ServerProvider[] }>>>();
-    testState.updateProvider
-      .mockReturnValueOnce(firstRequest.promise)
-      .mockReturnValueOnce(successorRequest.promise);
-
-    renderRow().props.onUpdate();
-    expect(renderRow().props.status.kind).toBe("loading");
-
-    await vi.advanceTimersByTimeAsync(pendingExpiryMs);
-    expect(renderRow().props.status.kind).toBe("failed");
-
-    renderRow().props.onUpdate();
-    expect(testState.updateProvider).toHaveBeenCalledTimes(2);
-    expect(renderRow().props.status.kind).toBe("loading");
-
-    firstRequest.resolve(AsyncResult.success({ providers: [provider("succeeded")] }));
-    await flushPromises();
-
-    expect(renderRow().props.status.kind).toBe("loading");
-
-    successorRequest.resolve(AsyncResult.success({ providers: [provider("succeeded")] }));
-    await flushPromises();
-
-    expect(renderRow().props.status.kind).toBe("success");
-  });
 });

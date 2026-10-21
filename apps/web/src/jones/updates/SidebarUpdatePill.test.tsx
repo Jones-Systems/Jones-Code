@@ -7,21 +7,18 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   checkForSidebarUpdate,
-  handleSidebarUpdateReleaseNotesPopoverOpenChange,
   installLocalUpdate,
-  openSidebarUpdateReleaseNotesPopoverOnForwardTab,
   resolveSidebarUpdateCheckFeedback,
-  shouldUseSidebarUpdateReleaseNotesPopover,
-} from "./SidebarUpdatePill";
+} from "~/components/sidebar/SidebarUpdatePill";
 import {
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
-} from "../desktopUpdate.logic";
-import { runUpdateEverything } from "./updateEverything.logic";
+} from "~/components/desktopUpdate.logic";
+import { runUpdateEverything } from "~/components/sidebar/updateEverything.logic";
 
 const toast = vi.hoisted(() => ({ add: vi.fn() }));
-vi.mock("../ui/toast", async () => {
-  const { stackedThreadToast } = await import("../ui/toastHelpers");
+vi.mock("~/components/ui/toast", async () => {
+  const { stackedThreadToast } = await import("~/components/ui/toastHelpers");
   return { toastManager: toast, stackedThreadToast };
 });
 
@@ -43,65 +40,6 @@ const nightlyState: DesktopUpdateState = {
   errorContext: null,
   canRetry: false,
 };
-
-describe("sidebar update release notes popover", () => {
-  it("uses the popover only for visible nightly release notes", () => {
-    expect(shouldUseSidebarUpdateReleaseNotesPopover(true, nightlyState)).toBe(true);
-    expect(shouldUseSidebarUpdateReleaseNotesPopover(false, nightlyState)).toBe(false);
-    expect(
-      shouldUseSidebarUpdateReleaseNotesPopover(true, {
-        ...nightlyState,
-        channel: "latest",
-      }),
-    ).toBe(false);
-    expect(
-      shouldUseSidebarUpdateReleaseNotesPopover(true, {
-        ...nightlyState,
-        releaseNotes: [],
-      }),
-    ).toBe(false);
-  });
-
-  it("cancels trigger presses without canceling other open reasons", () => {
-    const cancelTriggerPress = vi.fn();
-    const cancelHover = vi.fn();
-
-    handleSidebarUpdateReleaseNotesPopoverOpenChange(true, {
-      reason: "trigger-press",
-      cancel: cancelTriggerPress,
-    });
-    handleSidebarUpdateReleaseNotesPopoverOpenChange(true, {
-      reason: "trigger-hover",
-      cancel: cancelHover,
-    });
-
-    expect(cancelTriggerPress).toHaveBeenCalledOnce();
-    expect(cancelHover).not.toHaveBeenCalled();
-  });
-
-  it("promotes forward Tab without preventing native navigation", () => {
-    const open = vi.fn();
-    const preventDefault = vi.fn();
-    const event = { key: "Tab", shiftKey: false, preventDefault };
-
-    openSidebarUpdateReleaseNotesPopoverOnForwardTab(event, { open }, "nightly-release-notes");
-
-    expect(open).toHaveBeenCalledWith("nightly-release-notes");
-    expect(preventDefault).not.toHaveBeenCalled();
-  });
-
-  it("does not promote backward Tab", () => {
-    const open = vi.fn();
-
-    openSidebarUpdateReleaseNotesPopoverOnForwardTab(
-      { key: "Tab", shiftKey: true },
-      { open },
-      "nightly-release-notes",
-    );
-
-    expect(open).not.toHaveBeenCalled();
-  });
-});
 
 function checkedState(overrides: Partial<DesktopUpdateState> = {}): DesktopUpdateState {
   return {

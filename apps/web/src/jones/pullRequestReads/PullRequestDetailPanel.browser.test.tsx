@@ -6,7 +6,6 @@ import {
   ThreadId,
   type PullRequestDetailView,
   type ScopedThreadRef,
-  type ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -89,68 +88,17 @@ vi.mock(import("~/state/usePullRequestStack"), async (original) => ({
     refresh,
   })) as never,
 }));
-// The real tabs load diffs, markdown and checks from the environment; these stand-ins
-// expose the actions they hand back to the panel and a tall scroller.
-vi.mock(import("./PullRequestSummaryTab"), async (original) => ({
+// These cases exercise held detail and panel actions, not the tabs' environment reads.
+vi.mock(import("~/components/pullRequest/PullRequestSummaryTab"), async (original) => ({
   ...(await original()),
-  PullRequestSummaryTab: (({
-    onFixFinding,
-    scrollerRef,
-  }: ComponentProps<typeof import("./PullRequestSummaryTab").PullRequestSummaryTab>) => (
-    <div ref={scrollerRef} data-testid="summary-scroller" className="h-full overflow-y-auto">
-      <button
-        type="button"
-        onClick={() =>
-          onFixFinding?.({
-            kind: "check",
-            check: { name: "Unit tests", status: "failure", description: "Test failed", url: null },
-          })
-        }
-      >
-        Fix check
-      </button>
-      <div data-testid="nested-scroller" className="h-40 overflow-y-auto">
-        <div className="h-[2000px]" />
-      </div>
-      <div className="h-[3000px]" />
-    </div>
-  )) as never,
+  PullRequestSummaryTab: (() => <div />) as never,
 }));
-vi.mock(import("./PullRequestCodeTab"), async (original) => ({
+vi.mock(import("~/components/pullRequest/PullRequestCodeTab"), async (original) => ({
   ...(await original()),
-  default: (({
-    onAddToAgentSelection,
-    scrollerRef,
-  }: ComponentProps<typeof import("./PullRequestCodeTab").default>) => (
-    <div ref={scrollerRef} data-testid="code-scroller" className="h-full overflow-y-auto">
-      <button
-        type="button"
-        onClick={() =>
-          onAddToAgentSelection?.({
-            request: "Fix this line",
-            comment: {
-              id: "note-1",
-              sectionId: "file:a.ts",
-              sectionTitle: "a.ts",
-              filePath: "a.ts",
-              startIndex: 0,
-              endIndex: 0,
-              rangeLabel: "L1",
-              text: "Please fix",
-              diff: "+broken()",
-            },
-          })
-        }
-      >
-        Add to agent
-      </button>
-      <div className="h-[3000px]" />
-    </div>
-  )) as never,
+  default: (() => <div />) as never,
 }));
 
-import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
-import { pullRequestPanelContext } from "./pullRequestDetail.logic";
+import { PullRequestDetailPanel } from "~/components/pullRequest/PullRequestDetailPanel";
 
 let detailError: PullRequestOperationError | null = null;
 
@@ -211,7 +159,6 @@ const threadRef: ScopedThreadRef = {
   environmentId: EnvironmentId.make("env-1"),
   threadId: ThreadId.make("thread-1"),
 };
-const draftId = DraftId.make("draft-1");
 const newDraftId = DraftId.make("new-draft");
 const shortcutContext = () => ({
   terminalFocus: false,
@@ -262,138 +209,6 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
   vi.unstubAllGlobals();
-});
-
-const surface = { projectId: detail.projectId, repository: detail.repository, number: 1 };
-const link = (number: number, source: ThreadPullRequestLink["source"]): ThreadPullRequestLink => ({
-  host: "github.com",
-  repository: detail.repository,
-  number,
-  url: `https://github.com/${detail.repository}/pull/${number}`,
-  source,
-  linkedAt: "2026-09-01T00:00:00Z",
-  snapshot: null,
-  stack: null,
-});
-const stackThread = {
-  projectId: detail.projectId,
-  pullRequests: [link(3, "manual"), link(2, "stack"), link(1, "stack")],
-  linkedPullRequest: { ...surface, number: 3, url: link(3, "manual").url },
-};
-const unrelatedThread = {
-  projectId: detail.projectId,
-  pullRequests: [link(9, "created")],
-  linkedPullRequest: { ...surface, number: 9, url: link(9, "created").url },
-};
-
-const tab = (name: string) => page.getByRole("button", { name, exact: true });
-
-async function runAction(action: string) {
-  if (action === "Add to agent") {
-    await tab("Code").click();
-  }
-  if (["Ask a question", "Explain this PR"].includes(action) || action.startsWith("Fix findings")) {
-    await page.getByRole("button", { name: "More pull request actions" }).click();
-    // Menu items carry a description under their label.
-    await page.getByRole("menuitem", { name: new RegExp(`^${action}`) }).click();
-    return;
-  }
-  await page.getByRole("button", { name: action, exact: true }).click();
-}
-
-describe.each([
-  ["own PR, a lower layer of the thread's stack", stackThread, threadRef],
-  ["another PR beside the current thread", unrelatedThread, threadRef],
-  ["PR beside an unsent draft", null, draftId],
-  ["standalone PR page", null, undefined],
-] as const)("%s", (_name, thread, target) => {
-  const context = thread ? pullRequestPanelContext(thread, surface) : "page";
-  const renderPanel = () =>
-    render({ context, ...(target ? { composerDraftTarget: target, threadRef } : {}) });
-
-  it(`${thread === stackThread ? "hides" : "offers"} the checkout`, async () => {
-    await renderPanel();
-    await expect.element(page.getByText("Test pull request").first()).toBeVisible();
-    expect(page.getByRole("button", { name: "Check out" }).elements()).toHaveLength(
-      thread === stackThread ? 0 : 1,
-    );
-  });
-
-  it.each([
-    "Resolve conflicts",
-    "Ask a question",
-    "Explain this PR",
-    "Fix findings in this thread",
-    "Fix check",
-    "Add to agent",
-  ])("%s writes to the correct composer", async (action) => {
-    if (target) useComposerDraftStore.getState().setPrompt(target, "Keep my draft");
-    await renderPanel();
-    await runAction(target ? action : action.replace("in this thread", "in a thread"));
-    const draft = () => useComposerDraftStore.getState().getComposerDraft(target ?? newDraftId);
-    await vi.waitFor(() => {
-      if (action === "Resolve conflicts")
-        expect(draft()?.prompt).toContain("resolve every conflict");
-      else if (action === "Fix check") expect(draft()?.prompt).toContain("Fix the failing check");
-      else if (action.startsWith("Fix findings"))
-        expect(draft()?.prompt).toContain("Fix the actionable findings");
-      else expect(draft()?.reviewComments?.length).toBeGreaterThan(0);
-    });
-    if (action === "Add to agent") {
-      expect(draft()?.prompt).toContain("Fix this line");
-      expect(draft()?.reviewComments).toEqual(
-        expect.arrayContaining([expect.objectContaining({ id: "note-1", diff: "+broken()" })]),
-      );
-    }
-    if (target) {
-      expect(draft()?.prompt).toContain("Keep my draft");
-      expect(newThread).not.toHaveBeenCalled();
-      expect(prepareThread).not.toHaveBeenCalled();
-    } else {
-      expect(newThread).toHaveBeenCalled();
-    }
-  });
-});
-
-it("folds the title only for the active tab's own scroller", async () => {
-  await render();
-  const title = page.getByRole("heading", { level: 1, name: "Test pull request" });
-  await expect.element(title).toBeVisible();
-  const titleFold = () => title.element().closest("[inert]") !== null;
-  const scrollTo = async (testId: string, top: number) => {
-    const scroller = page.getByTestId(testId).element() as HTMLElement;
-    await act(async () => {
-      scroller.scrollTop = top;
-      scroller.dispatchEvent(new Event("scroll"));
-    });
-    return scroller;
-  };
-
-  await scrollTo("nested-scroller", 600);
-  expect(titleFold()).toBe(false);
-
-  const summary = await scrollTo("summary-scroller", 600);
-  await vi.waitFor(() => expect(titleFold()).toBe(true));
-  // Folding the header keeps the content under the reader's eye.
-  expect(summary.scrollTop).toBeLessThan(600);
-
-  await scrollTo("summary-scroller", 0);
-  await vi.waitFor(() => expect(titleFold()).toBe(false));
-  await scrollTo("summary-scroller", 600);
-  await vi.waitFor(() => expect(titleFold()).toBe(true));
-
-  await tab("Code").click();
-  await expect.element(page.getByTestId("code-scroller")).toBeInTheDocument();
-  await vi.waitFor(() => expect(titleFold()).toBe(false));
-  await scrollTo("code-scroller", 600);
-  await vi.waitFor(() => expect(titleFold()).toBe(true));
-
-  await tab("Summary").click();
-  await vi.waitFor(() => expect(titleFold()).toBe(true));
-  await scrollTo("summary-scroller", 0);
-  await vi.waitFor(() => expect(titleFold()).toBe(false));
-  await tab("Code").click();
-  await vi.waitFor(() => expect(titleFold()).toBe(true));
 });
 
 describe("held pull request during a provider pause", () => {

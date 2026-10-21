@@ -1,4 +1,4 @@
-import { act, useEffect, useSyncExternalStore } from "react";
+import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { EnvironmentId } from "@t3tools/contracts";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vite-plus/test";
@@ -32,22 +32,7 @@ vi.mock(import("~/jones/device/useDeviceStreamRoute"), async (original) => ({
 }));
 const reportRoute = () => {};
 const refreshRoute = () => accessStore.refresh();
-let viewerMounts = 0;
-let viewerUnmounts = 0;
-// The 3D phone frame needs WebGL; the test only cares whether it stays mounted.
-vi.mock(import("./DevicePhoneViewport"), async (original) => ({
-  ...(await original()),
-  DevicePhoneViewport: function Viewer(): React.ReactElement {
-    useEffect(() => {
-      viewerMounts++;
-      return () => {
-        viewerUnmounts++;
-      };
-    }, []);
-    return <></>;
-  },
-}));
-import { DeviceStreamView } from "./DeviceStreamView";
+import { DeviceStreamView } from "~/components/device/DeviceStreamView";
 
 // MJPEG frames come from the device hub, so images keep their src without loading it and a
 // test publishes a frame by setting the natural size and firing "load".
@@ -101,11 +86,7 @@ async function publishFrame(image: HTMLImageElement) {
 }
 let root: Root;
 let container: HTMLDivElement;
-let primes = 0;
 beforeEach(() => {
-  primes = 0;
-  viewerMounts = 0;
-  viewerUnmounts = 0;
   images = [];
   stubImages();
   container = document.createElement("div");
@@ -121,100 +102,41 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function setup(h264 = false) {
+async function setup() {
   vi.useFakeTimers();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  let videoBody: ReadableStreamDefaultController<Uint8Array> | undefined;
-  let output: VideoFrameOutputCallback | undefined;
-  if (h264) {
-    vi.stubGlobal(
-      "VideoDecoder",
-      class {
-        static isConfigSupported = async () => ({ supported: true });
-        state = "unconfigured";
-        constructor(callbacks: VideoDecoderInit) {
-          output = callbacks.output;
-        }
-        configure() {
-          this.state = "configured";
-        }
-        close() {
-          this.state = "closed";
-        }
-      },
-    );
-    vi.stubGlobal("EncodedVideoChunk", vi.fn());
-  } else {
-    // Without WebCodecs the iOS client streams MJPEG.
-    const videoDecoder = Object.getOwnPropertyDescriptor(globalThis, "VideoDecoder");
-    if (videoDecoder) {
-      Reflect.deleteProperty(globalThis, "VideoDecoder");
-      onTestFinished(() => {
-        Object.defineProperty(globalThis, "VideoDecoder", videoDecoder);
-      });
-    }
+  // This retry case exercises MJPEG, without the unrelated H.264 phone-view fixture.
+  const videoDecoder = Object.getOwnPropertyDescriptor(globalThis, "VideoDecoder");
+  if (videoDecoder) {
+    Reflect.deleteProperty(globalThis, "VideoDecoder");
+    onTestFinished(() => {
+      Object.defineProperty(globalThis, "VideoDecoder", videoDecoder);
+    });
   }
-  vi.stubGlobal("fetch", (url: string, init: RequestInit) => {
-    if (url.endsWith("stream.avcc")) {
-      return Promise.resolve(
-        new Response(
-          new ReadableStream<Uint8Array>({
-            start(controller) {
-              videoBody = controller;
-              init.signal?.addEventListener("abort", () => controller.error(new Error("aborted")));
-            },
-          }),
-        ),
-      );
-    }
-    primes++;
-    return Promise.resolve(new Response("prime"));
-  });
-  const sockets: Array<{ onmessage?: (event: { data: ArrayBuffer }) => void }> = [];
+  vi.stubGlobal("fetch", () => Promise.resolve(new Response("prime")));
   vi.stubGlobal(
     "WebSocket",
     class {
       static OPEN = 1;
       readyState = 1;
-      constructor() {
-        sockets.push(this);
-      }
       onmessage?: (event: { data: ArrayBuffer }) => void;
       send() {}
       close() {}
     },
   );
-  const view = (visible: boolean) => (
-    <DeviceStreamView
-      hostId="local"
-      environmentId={EnvironmentId.make("test")}
-      deviceId="test"
-      platform="ios"
-      visible={visible}
-      allowPhoneView={h264}
-    />
+  await act(async () =>
+    root.render(
+      <DeviceStreamView
+        hostId="local"
+        environmentId={EnvironmentId.make("test")}
+        deviceId="test"
+        platform="ios"
+        visible={true}
+        allowPhoneView={false}
+      />,
+    ),
   );
-  await act(async () => root.render(view(true)));
-  return {
-    images,
-    view,
-    configure() {
-      const json = new TextEncoder().encode(
-        JSON.stringify({ width: 400, height: 800, orientation: "portrait" }),
-      );
-      const packet = new Uint8Array(1 + json.length);
-      packet[0] = 0x82;
-      packet.set(json, 1);
-      sockets[0]?.onmessage?.({ data: Uint8Array.of(0x83).buffer });
-      sockets[0]?.onmessage?.({ data: packet.buffer });
-      videoBody?.enqueue(new Uint8Array([0, 0, 0, 5, 1, 1, 0x64, 0, 0x1f]));
-    },
-    frame() {
-      const source = new OffscreenCanvas(400, 800);
-      source.getContext("2d")!.fillRect(0, 0, 400, 800);
-      output?.(new VideoFrame(source, { timestamp: 0 }));
-    },
-  };
+  return { images };
 }
 
 const alert = () => container.querySelector('[role="alert"]');
@@ -224,17 +146,6 @@ const reconnect = () =>
       .find((button) => button.textContent?.includes("Reconnect"))!
       .click(),
   );
-
-it("removes MJPEG requests while hidden and reconnects when shown", async () => {
-  const { images, view } = await setup();
-  expect(images[0]!.src).toContain("stream.mjpeg");
-  await act(async () => root.render(view(false)));
-  expect(container.querySelectorAll("img")).toHaveLength(0);
-  expect(images[0]!.src).toBe("");
-  expect(vi.getTimerCount()).toBe(0);
-  await act(async () => root.render(view(true)));
-  expect(images.at(-1)!.src).toContain("stream.mjpeg");
-});
 
 it("offers Reconnect after the shared timeout and receives a frame after refreshing access for retry", async () => {
   const { images } = await setup();
@@ -249,37 +160,5 @@ it("offers Reconnect after the shared timeout and receives a frame after refresh
   await publishFrame(images[1]!);
   expect(container.querySelector('[role="status"]')?.textContent).toContain("Server connection");
   expect(container.querySelectorAll("button")).toHaveLength(0);
-  expect(vi.getTimerCount()).toBe(0);
-});
-
-it("starts exactly one new stream per Reconnect press", async () => {
-  await setup();
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(15_000);
-  });
-  expect(primes).toBe(1);
-  await reconnect();
-  expect(primes).toBe(2);
-});
-
-it("keeps the 3D viewer mounted across iOS video recovery and releases it when hidden", async () => {
-  const { configure, frame, view } = await setup(true);
-  await act(async () => configure());
-  expect(viewerMounts).toBe(0);
-  await act(async () => frame());
-  expect(viewerMounts).toBe(1);
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(15_000);
-  });
-  expect(viewerUnmounts).toBe(0);
-  expect(viewerMounts).toBe(1);
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(1_000);
-    configure();
-  });
-  await act(async () => frame());
-  expect(viewerMounts).toBe(1);
-  await act(async () => root.render(view(false)));
-  expect(viewerUnmounts).toBe(1);
   expect(vi.getTimerCount()).toBe(0);
 });

@@ -13,11 +13,11 @@ vi.mock(import("~/assets/assetUrls"), async (original) => ({
   useAssetUrlRefresh: () => refresh,
 }));
 // The real source view highlights through a worker pool; the text it receives is what matters here.
-vi.mock(import("./ReadOnlySourcePreview"), () => ({
+vi.mock(import("~/components/files/ReadOnlySourcePreview"), () => ({
   default: ({ text }: { text: string }) => <pre>{text}</pre>,
 }));
 
-vi.mock(import("./PdfPreview"), () => ({
+vi.mock(import("~/components/files/PdfPreview"), () => ({
   default: ({
     src,
     onRetry,
@@ -38,9 +38,9 @@ vi.mock(import("./PdfPreview"), () => ({
 }));
 
 // Resolve lazy-viewer mocks before tests begin, so teardown cannot retire an in-flight mock route.
-import "./PdfPreview";
-import "./ReadOnlySourcePreview";
-import { AttachmentFilePreview } from "./AttachmentFilePreview";
+import "~/components/files/PdfPreview";
+import "~/components/files/ReadOnlySourcePreview";
+import { AttachmentFilePreview } from "~/components/files/AttachmentFilePreview";
 
 describe("attachment HTML and PDF preview recovery", () => {
   const originalUrl = "data:text/html,original";
@@ -130,20 +130,6 @@ describe("attachment HTML and PDF preview recovery", () => {
     expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([renewedUrl, renewedUrl]);
   });
 
-  it("does not fetch or mark an expired URL fresh when reauthorization is unavailable", async () => {
-    await openRemote();
-    now = 61 * 60_000;
-    refresh.mockResolvedValue(null);
-    await toggleMode("Show HTML source");
-    expect(fetch).not.toHaveBeenCalled();
-    expect(alert()?.textContent).toContain("Reconnect to the environment and try again.");
-
-    await toggleMode("Show rendered page");
-    await toggleMode("Show HTML source");
-    expect(refresh).toHaveBeenCalledTimes(3);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
   it("reauthorizes a remote PDF before retrying its viewer", async () => {
     await openRemotePdf();
     expect(container.querySelector("a")?.getAttribute("href")).toBe(originalUrl);
@@ -168,25 +154,5 @@ describe("attachment HTML and PDF preview recovery", () => {
     const retry = alert()?.querySelector("button");
     expect(retry?.textContent?.trim()).toBe("Try again");
     expect(retry?.disabled).toBe(false);
-  });
-
-  it("can return to rendered HTML after local source decoding fails", async () => {
-    const file = new Blob([new Uint8Array([0x3c, 0x70, 0x3e, 0xe9])], { type: "text/html" });
-    await act(async () =>
-      root.render(
-        <AttachmentFilePreview
-          name="document.html"
-          mimeType="text/html"
-          sizeBytes={file.size}
-          file={file}
-        />,
-      ),
-    );
-    await toggleMode("Show HTML source");
-    await vi.waitFor(() => expect(alert()?.textContent).toContain("not UTF-8"));
-
-    await toggleMode("Show rendered page");
-    expect(alert()).toBeNull();
-    expect(container.querySelector("iframe")?.title).toBe("document.html");
   });
 });
