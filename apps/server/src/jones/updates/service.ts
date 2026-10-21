@@ -48,6 +48,7 @@ import {
 } from "./preparation/supervisor.ts";
 import { adoptPreparedStage, adoptVerifiedStage } from "./preparation/rebind.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
+import { awaitHandoffOutcome } from "./handoffOutcome.ts";
 import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
@@ -198,7 +199,6 @@ export const layer = Layer.effect(
     const qualifiedSelfUpdate = yield* SelfUpdate.withRunningThreadContinuation({
       mode: config.mode,
       selfUpdate,
-      reconcileQualifiedOperation: reconcileOperation,
       prepare: startup.markRunningProviderSessionsForContinuation.pipe(
         Effect.mapError(
           (cause) =>
@@ -666,17 +666,30 @@ export const layer = Layer.effect(
                     admit().catch(() => "Running work on this host could not be read."),
                   ),
                 }),
-            launcherHolds:
-              operationId === undefined
-                ? Effect.succeed(false)
-                : reconcileOperation(operationId).pipe(
-                    Effect.map(
-                      (receipt) =>
-                        receipt.state === "pending" ||
-                        receipt.state === "committed" ||
-                        receipt.state === "rolled-back",
-                    ),
-                  ),
+            handoffOutcome: (cause) =>
+              awaitHandoffOutcome({
+                operationId,
+                cause,
+                reconcile: reconcileOperation,
+                ...(launcher.qualifiedOutcomes === true && launcher.reconcileUpdate !== undefined
+                  ? { query: launcher.reconcileUpdate }
+                  : {}),
+              }).pipe(
+                Effect.tap((outcome) =>
+                  outcome === "rejected" && operationId !== undefined
+                    ? qualifiedSelfUpdate
+                        .releaseRejectedHandoff(operationId)
+                        .pipe(
+                          Effect.catchCause((cause) =>
+                            Effect.logWarning(
+                              "Could not clear continuations of a rejected update handoff",
+                              { cause },
+                            ),
+                          ),
+                        )
+                    : Effect.void,
+                ),
+              ),
             // Queued runs the fence refused to start stay queued; start them again here.
             ...(Option.isNone(orchestrator)
               ? {}
@@ -790,6 +803,8 @@ export const layer = Layer.effect(
     const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
       Effect.gen(function* () {
         const prior = yield* reconcileOperation(input.operationId);
+        if (prior.state === "rejected")
+          return blocked("The launcher refused this exact operation before accepting it.");
         if (prior.state !== "absent") {
           const binding = prior.binding;
           if (

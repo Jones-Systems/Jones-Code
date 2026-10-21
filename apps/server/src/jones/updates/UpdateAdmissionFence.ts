@@ -1,4 +1,5 @@
 import { ServerSelfUpdateError } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -56,6 +57,11 @@ export interface AdmissionTicket {
    * ticket held it, so held queued runs can be started again.
    */
   readonly release: Effect.Effect<boolean>;
+  /**
+   * Runs `decide` in the fence's own scope, outliving the installation that handed off, while
+   * admission stays closed. It ends with this process if no proof arrives.
+   */
+  readonly settle: (decide: Effect.Effect<void>) => Effect.Effect<void>;
 }
 
 type FenceState =
@@ -129,6 +135,7 @@ export class UpdateAdmissionFence extends Context.Service<
 >()("t3/jones/updates/UpdateAdmissionFence") {}
 
 export const make = Effect.gen(function* () {
+  const scope = yield* Effect.scope;
   const state = yield* Ref.make<FenceState>({ phase: "open" });
   /** Completed, and replaced, each time a release reopens admission. */
   const reopenedSignal = yield* Ref.make(Deferred.makeUnsafe<void>());
@@ -205,6 +212,7 @@ export const make = Effect.gen(function* () {
             }),
           ),
         ),
+        settle: (decide) => Effect.forkIn(decide, scope).pipe(Effect.asVoid),
       } satisfies AdmissionTicket;
     });
   return UpdateAdmissionFence.of({
@@ -260,17 +268,20 @@ const withdrawn = (reason: string) =>
 /**
  * Runs one qualified installation with admission fenced from its final check until the launcher
  * accepts it. `install` must call `onPrepared` last before the launcher handoff, passing its
- * continuity capture, and `onAccepted` once the launcher accepts. Any failure before acceptance
- * reopens admission; after a failed handoff `launcherHolds` decides whether the launcher took the
- * operation anyway, in which case admission stays closed until this process exits. When admission
- * reopens after refusing work, `reopened` restarts what the refusal held.
+ * continuity capture, and `onAccepted` once the launcher accepts. A failure before the handoff
+ * reopens admission. After a failed handoff admission stays closed while `handoffOutcome` waits,
+ * in the background, for the launcher's proof: accepted keeps it closed until this process exits,
+ * rejected reopens it. No proof, a timeout or an unreadable receipt never reopens it. When
+ * admission reopens after refusing work, `reopened` restarts what the refusal held.
  */
 export const fencedInstall = <A>(options: {
   readonly fence: UpdateAdmissionFence["Service"];
   readonly mode: AdmissionFenceMode;
   /** The final quiet check, made with the fence raised; a reason withdraws the installation. */
   readonly finalCheck?: Effect.Effect<string | undefined>;
-  readonly launcherHolds: Effect.Effect<boolean>;
+  readonly handoffOutcome: (
+    cause: Cause.Cause<ServerSelfUpdateError>,
+  ) => Effect.Effect<"accepted" | "rejected">;
   readonly reopened?: Effect.Effect<void>;
   readonly install: (hooks: {
     readonly onPrepared: (
@@ -316,9 +327,20 @@ export const fencedInstall = <A>(options: {
             ),
           );
           if (!handedOff) return release;
-          return options.launcherHolds.pipe(
-            Effect.catchCause(() => Effect.succeed(false)),
-            Effect.flatMap((holds) => (holds ? held.accept : release)),
+          return held.settle(
+            options.handoffOutcome(exit.cause).pipe(
+              Effect.flatMap((outcome) => (outcome === "accepted" ? held.accept : release)),
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.void
+                  : Effect.logWarning(
+                      "Update handoff outcome is unproven; admission stays closed",
+                      {
+                        cause,
+                      },
+                    ),
+              ),
+            ),
           );
         }),
       ),

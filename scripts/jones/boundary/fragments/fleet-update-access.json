@@ -38,6 +38,8 @@
     "apps/server/src/jones/updates/UpdateAdmissionFence.ts",
     "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
     "apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts",
+    "apps/server/src/jones/updates/handoffOutcome.ts",
+    "apps/server/src/jones/updates/handoffOutcome.test.ts",
     "apps/web/src/jones/fleetUpdates/followerStatus.ts",
     "apps/web/src/jones/fleetUpdates/followerStatus.test.ts",
     "apps/server/src/jones/updates/preparation/protocol.ts",

@@ -1,12 +1,15 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import { ScheduledTaskUpsertInput, type ScheduledTask } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 import * as ThreadLaunchService from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -186,6 +189,97 @@ it.effect("an accepted delivery held for an update runs when the update is calle
         assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "succeeded");
         const { delivery } = yield* service.getWebhookDelivery({ id: task.id, deliveryId });
         assert.equal(delivery.outcome, "accepted");
+        assert.equal(yield* pendingRuns, 0);
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+/**
+ * Starts an installation whose launcher never answers, so its handoff outcome is unknown until
+ * `proof` settles it; interrupting the returned fiber cancels the installation.
+ */
+const unansweredHandoff = (
+  fence: Fence.UpdateAdmissionFence["Service"],
+  proof: Deferred.Deferred<"accepted" | "rejected">,
+) =>
+  Effect.gen(function* () {
+    const handingOff = yield* Deferred.make<void>();
+    const install = yield* Fence.fencedInstall({
+      fence,
+      mode: "manual",
+      handoffOutcome: () => Deferred.await(proof),
+      install: ({ onPrepared }) =>
+        onPrepared(Effect.void).pipe(
+          Effect.andThen(Deferred.succeed(handingOff, undefined)),
+          Effect.andThen(Effect.never),
+        ),
+    }).pipe(Effect.forkChild);
+    yield* Deferred.await(handingOff);
+    return install;
+  });
+
+it.effect(
+  "an accepted delivery stays held through a cancelled update until its rejection is proven",
+  () =>
+    Effect.gen(function* () {
+      const fence = yield* Fence.make;
+      const proof = yield* Deferred.make<"accepted" | "rejected">();
+      const install = yield* unansweredHandoff(fence, proof);
+      yield* lifetime(fence, ({ service, attempts }) =>
+        Effect.gen(function* () {
+          const { task } = yield* service.upsert(yield* hookTask("scheduled-task:unknown"));
+          const deliveryId = yield* deliver(service, task);
+          const held = yield* Queue.take(attempts);
+          // Cancelling the update leaves its launcher outcome unknown; time proves nothing.
+          yield* Fiber.interrupt(install);
+          yield* TestClock.adjust("1 hour");
+          yield* settle;
+          assert.equal(yield* Queue.size(attempts), 0);
+          assert.equal(yield* pendingRuns, 1);
+          assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "running");
+          // The launcher proves it refused the handoff: the delivery runs once, under its id.
+          yield* Deferred.succeed(proof, "rejected");
+          const retried = yield* Queue.take(attempts);
+          assert.equal(retried.commandId, held.commandId);
+          assert.equal(retried.commandId, `scheduled-task:${task.id}:webhook:${deliveryId}`);
+          yield* settle;
+          assert.equal(yield* Queue.size(attempts), 0);
+          assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "succeeded");
+          assert.equal(yield* pendingRuns, 0);
+        }),
+      );
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a delivery held while an acceptance is proven late reruns only after the restart", () =>
+  Effect.gen(function* () {
+    const fence = yield* Fence.make;
+    const proof = yield* Deferred.make<"accepted" | "rejected">();
+    const install = yield* unansweredHandoff(fence, proof);
+    const before = yield* lifetime(fence, ({ service, attempts }) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(yield* hookTask("scheduled-task:late-accept"));
+        const deliveryId = yield* deliver(service, task);
+        const held = yield* Queue.take(attempts);
+        yield* Fiber.interrupt(install);
+        yield* Deferred.succeed(proof, "accepted");
+        yield* TestClock.adjust("1 hour");
+        yield* settle;
+        assert.equal(yield* Queue.size(attempts), 0);
+        assert.equal(yield* pendingRuns, 1);
+        assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "running");
+        return { task, deliveryId, held };
+      }),
+    );
+    assert.equal(yield* pendingRuns, 1);
+    yield* lifetime(yield* Fence.make, ({ service, attempts, tick }) =>
+      Effect.gen(function* () {
+        yield* tick;
+        const rerun = yield* Queue.take(attempts);
+        assert.equal(rerun.commandId, before.held.commandId);
+        assert.equal(yield* Queue.size(attempts), 0);
+        assert.equal((yield* service.list()).tasks[0]?.lastRunStatus, "succeeded");
         assert.equal(yield* pendingRuns, 0);
       }),
     );

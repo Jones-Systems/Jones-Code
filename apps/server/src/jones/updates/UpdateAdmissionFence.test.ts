@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as TestClock from "effect/testing/TestClock";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../../orchestration-v2/EffectOutbox.ts";
 import * as CommandReceiptStore from "../../orchestration-v2/CommandReceiptStore.ts";
@@ -55,6 +56,17 @@ const attachedFence = Effect.gen(function* () {
 });
 
 const launcherRefused = new ServerSelfUpdateError({ reason: "The launcher refused the update." });
+
+/** Lets the fence's background settlement of a failed handoff run. */
+const drain = Effect.forEach(Array.from({ length: 50 }), () => Effect.yieldNow, { discard: true });
+
+const busy = (fence: FenceService) =>
+  fence.raise("manual").pipe(
+    Effect.match({
+      onSuccess: () => false,
+      onFailure: (error) => error._tag === "UpdateAdmissionBusy",
+    }),
+  );
 
 /**
  * A qualified installation reduced to the order the fence depends on: preparation, the capture
@@ -144,6 +156,26 @@ describe("UpdateAdmissionFence", () => {
     }),
   );
 
+  it.effect("a stale settlement cannot reopen or accept a later installation's fence", () =>
+    Effect.gen(function* () {
+      const fence = yield* attachedFence;
+      const first = yield* fence.raise("manual");
+      assert.isTrue(yield* first.handOff);
+      yield* first.settle(first.release.pipe(Effect.asVoid));
+      yield* drain;
+      assert.isUndefined(yield* refusal(fence));
+      const second = yield* fence.raise("manual");
+      assert.isTrue(yield* second.handOff);
+      // A late or duplicate outcome for the first handoff arrives while the second holds the fence.
+      yield* first.settle(first.release.pipe(Effect.asVoid));
+      yield* first.settle(first.accept);
+      yield* drain;
+      assert.strictEqual(yield* refusal(fence), "handing-off");
+      assert.isTrue(yield* second.release);
+      assert.isUndefined(yield* refusal(fence));
+    }),
+  );
+
   it.effect("a released ticket cannot change a later installation's fence", () =>
     Effect.gen(function* () {
       const fence = yield* attachedFence;
@@ -184,7 +216,7 @@ describe("fencedInstall", () => {
     install: ReturnType<typeof scriptedInstall>,
     options: {
       readonly finalCheck?: Effect.Effect<string | undefined>;
-      readonly launcherHolds?: Effect.Effect<boolean>;
+      readonly handoffOutcome?: () => Effect.Effect<"accepted" | "rejected">;
       readonly reopened?: Effect.Effect<void>;
       readonly mode?: Fence.AdmissionFenceMode;
     } = {},
@@ -193,7 +225,7 @@ describe("fencedInstall", () => {
       fence,
       mode: options.mode ?? "automatic",
       finalCheck: options.finalCheck ?? Effect.succeed(undefined),
-      launcherHolds: options.launcherHolds ?? Effect.succeed(false),
+      handoffOutcome: options.handoffOutcome ?? (() => Effect.succeed("rejected" as const)),
       ...(options.reopened === undefined ? {} : { reopened: options.reopened }),
       install,
     });
@@ -295,6 +327,7 @@ describe("fencedInstall", () => {
       ).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(exit));
       assert.isUndefined(findActivationWithdrawal(failure(exit)));
+      yield* drain;
       assert.isUndefined(yield* refusal(fence));
       assert.strictEqual(restarts, 1);
     }),
@@ -307,6 +340,7 @@ describe("fencedInstall", () => {
       yield* automatic(fence, scriptedInstall([], { launcher: Effect.succeed(false) }), {
         reopened: Effect.sync(() => restarts++),
       }).pipe(Effect.exit);
+      yield* drain;
       assert.isUndefined(yield* refusal(fence));
       assert.strictEqual(restarts, 0);
     }),
@@ -319,39 +353,118 @@ describe("fencedInstall", () => {
       yield* automatic(
         fence,
         scriptedInstall([], { launcher: refusal(fence).pipe(Effect.as(false)) }),
-        { launcherHolds: Effect.succeed(true), reopened: Effect.sync(() => restarts++) },
+        {
+          handoffOutcome: () => Effect.succeed("accepted"),
+          reopened: Effect.sync(() => restarts++),
+        },
       ).pipe(Effect.exit);
+      yield* drain;
       assert.strictEqual(yield* refusal(fence), "accepted");
       assert.strictEqual(restarts, 0);
     }),
   );
 
-  it.effect("an unreadable launcher state after a failed handoff reopens admission", () =>
+  // HFR-440-F1: an unreadable or missing launcher answer once reopened admission here.
+  it.effect("an unreadable launcher outcome after a failed handoff keeps admission closed", () =>
     Effect.gen(function* () {
       const fence = yield* attachedFence;
+      let restarts = 0;
       yield* automatic(fence, scriptedInstall([], { launcher: Effect.succeed(false) }), {
-        launcherHolds: Effect.die("unreadable"),
+        handoffOutcome: () => Effect.die("unreadable"),
+        reopened: Effect.sync(() => restarts++),
       }).pipe(Effect.exit);
-      assert.isUndefined(yield* refusal(fence));
+      yield* drain;
+      assert.strictEqual(yield* refusal(fence), "handing-off");
+      assert.isTrue(yield* busy(fence));
+      assert.strictEqual(restarts, 0);
     }),
   );
 
-  it.effect("cancelling during the handoff asks the launcher before reopening", () =>
+  it.effect("an unproven handoff keeps admission closed however long it waits", () =>
     Effect.gen(function* () {
-      for (const holds of [false, true]) {
+      const fence = yield* attachedFence;
+      let restarts = 0;
+      yield* automatic(fence, scriptedInstall([], { launcher: Effect.succeed(false) }), {
+        handoffOutcome: () => Effect.never,
+        reopened: Effect.sync(() => restarts++),
+      }).pipe(Effect.exit);
+      yield* TestClock.adjust("1 day");
+      yield* drain;
+      assert.strictEqual(yield* refusal(fence), "handing-off");
+      assert.isTrue(yield* busy(fence));
+      assert.strictEqual(restarts, 0);
+    }),
+  );
+
+  it.effect(
+    "a rejection proven after the handoff failed reopens once and restarts refused work",
+    () =>
+      Effect.gen(function* () {
+        const fence = yield* attachedFence;
+        const proof = yield* Deferred.make<"accepted" | "rejected">();
+        const restarted = yield* Deferred.make<void>();
+        let restarts = 0;
+        yield* automatic(fence, scriptedInstall([], { launcher: Effect.succeed(false) }), {
+          handoffOutcome: () => Deferred.await(proof),
+          reopened: Effect.sync(() => restarts++).pipe(
+            Effect.andThen(Deferred.succeed(restarted, undefined)),
+          ),
+        }).pipe(Effect.exit);
+        yield* drain;
+        // Work arriving while the outcome is unknown is refused, and restarted on reopening.
+        assert.strictEqual(yield* refusal(fence), "handing-off");
+        assert.strictEqual(restarts, 0);
+        yield* Deferred.succeed(proof, "rejected");
+        yield* fence.awaitAdmission;
+        yield* Deferred.await(restarted);
+        yield* drain;
+        assert.isUndefined(yield* refusal(fence));
+        assert.strictEqual(restarts, 1);
+        const next = yield* fence.raise("manual");
+        assert.isTrue(yield* next.handOff);
+      }),
+  );
+
+  it.effect("an acceptance proven after the handoff failed stays closed until exit", () =>
+    Effect.gen(function* () {
+      const fence = yield* attachedFence;
+      const proof = yield* Deferred.make<"accepted" | "rejected">();
+      let restarts = 0;
+      yield* automatic(fence, scriptedInstall([], { launcher: Effect.succeed(false) }), {
+        handoffOutcome: () => Deferred.await(proof),
+        reopened: Effect.sync(() => restarts++),
+      }).pipe(Effect.exit);
+      yield* drain;
+      assert.strictEqual(yield* refusal(fence), "handing-off");
+      yield* Deferred.succeed(proof, "accepted");
+      yield* drain;
+      assert.strictEqual(yield* refusal(fence), "accepted");
+      assert.isTrue(yield* busy(fence));
+      assert.strictEqual(restarts, 0);
+    }),
+  );
+
+  it.effect("cancelling during the handoff waits for the launcher's proof before reopening", () =>
+    Effect.gen(function* () {
+      for (const outcome of ["rejected", "accepted"] as const) {
         const fence = yield* attachedFence;
         const waiting = yield* Deferred.make<void>();
+        const proof = yield* Deferred.make<"accepted" | "rejected">();
         const fiber = yield* automatic(
           fence,
           scriptedInstall([], {
             launcher: Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never)),
           }),
-          { launcherHolds: Effect.succeed(holds) },
+          { handoffOutcome: () => Deferred.await(proof) },
         ).pipe(Effect.forkChild);
         yield* Deferred.await(waiting);
         assert.strictEqual(yield* refusal(fence), "handing-off");
         yield* Fiber.interrupt(fiber);
-        assert.strictEqual(yield* refusal(fence), holds ? "accepted" : undefined);
+        yield* drain;
+        assert.strictEqual(yield* refusal(fence), "handing-off");
+        yield* Deferred.succeed(proof, outcome);
+        yield* drain;
+        assert.strictEqual(yield* refusal(fence), outcome === "accepted" ? "accepted" : undefined);
       }
     }),
   );
@@ -365,7 +478,7 @@ describe("fencedInstall", () => {
         scriptedInstall([], {
           capture: Deferred.succeed(capturing, undefined).pipe(Effect.andThen(Effect.never)),
         }),
-        { launcherHolds: Effect.die("must not be asked before the handoff") },
+        { handoffOutcome: () => Effect.die("must not be asked before the handoff") },
       ).pipe(Effect.forkChild);
       yield* Deferred.await(capturing);
       yield* Fiber.interrupt(fiber);
@@ -597,11 +710,16 @@ describe("update admission through the event sink", () => {
       const [active, queued] = yield* f.runs();
       yield* f.finish(active!);
       let duringHandoff: string | undefined;
+      const resumed = yield* Deferred.make<void>();
       const exit = yield* Fence.fencedInstall({
         fence: f.fence,
         mode: "automatic",
-        launcherHolds: Effect.succeed(false),
-        reopened: f.orchestrator.resumeQueuedRuns.pipe(Effect.orDie, Effect.asVoid),
+        handoffOutcome: () => Effect.succeed("rejected"),
+        reopened: f.orchestrator.resumeQueuedRuns.pipe(
+          Effect.orDie,
+          Effect.andThen(Deferred.succeed(resumed, undefined)),
+          Effect.asVoid,
+        ),
         install: scriptedInstall([], {
           launcher: Effect.gen(function* () {
             yield* f.orchestrator.resumeQueuedRuns.pipe(Effect.orDie);
@@ -613,6 +731,7 @@ describe("update admission through the event sink", () => {
       }).pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(exit));
       assert.strictEqual(duringHandoff, "queued");
+      yield* Deferred.await(resumed);
       assert.notStrictEqual(
         (yield* f.runs()).find((run) => run.id === queued!.id)?.status,
         "queued",

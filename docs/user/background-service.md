@@ -152,12 +152,16 @@ its build. A laptop app too old to report its build cannot release a host:
 update the laptop app, or disable automatic updates for that host to choose its
 builds there. A host already running a newer build than the laptop's waits
 instead of going back. A webhook delivery the host accepts while it hands off to
-an update runs after the restart, or as soon as the installation stops.
+an update runs after the restart, or once the host confirms the update did not
+start.
 
 The connection row shows each host's progress and any action needed. If the
 connection drops during installation, Jones checks what the host accepted before
-sending another installation request. An uncertain outcome stays on hold;
-repeatedly clicking Install does not resolve missing evidence.
+sending another installation request. An uncertain outcome stays on hold until the
+host's service confirms whether it accepted the update; if it did not, the host
+resumes held work and allows Install again by itself. A host whose service has not
+been refreshed since this check was added holds until its service restarts.
+Repeatedly clicking Install does not resolve missing evidence.
 
 Choose **Continue eligible active threads after this host updates** when enrolling
 if you want that behavior. Explicit user stops and queue holds remain in force;

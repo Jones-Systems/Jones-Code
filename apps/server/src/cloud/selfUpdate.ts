@@ -1,4 +1,3 @@
-import type { OperationReconciliation } from "../jones/updates/launcherOperation.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Qualified Install delegates to the Node-only launcher boundary; staging runs off-process.
 import {
@@ -156,15 +155,14 @@ export const withRunningThreadContinuation = Effect.fn(
   readonly clear: (
     threadIds: ReadonlyArray<ThreadId>,
   ) => Effect.Effect<void, ServerSelfUpdateError>;
-  readonly reconcileQualifiedOperation?: (
-    operationId: string,
-  ) => Effect.Effect<OperationReconciliation>;
 }) {
   const desktopContinuationTokens = yield* Ref.make(HashSet.empty<string>());
+  // Held after an uncertain handoff until the launcher proves it rejected.
   const qualifiedInstallInFlight = yield* Ref.make<
     | {
         readonly operationId: string | undefined;
         readonly uncertain: boolean;
+        readonly threadIds: ReadonlyArray<ThreadId>;
       }
     | undefined
   >(undefined);
@@ -241,7 +239,26 @@ export const withRunningThreadContinuation = Effect.fn(
     );
   };
 
-  return ServerSelfUpdate.of({
+  /**
+   * The launcher proved the uncertain handoff of `operationId` ended without acceptance: its
+   * continuation markers are cleared and another Install may start.
+   */
+  const releaseRejectedHandoff = (operationId: string) =>
+    Effect.gen(function* () {
+      const inFlight = yield* Ref.get(qualifiedInstallInFlight);
+      if (inFlight?.operationId !== operationId || !inFlight.uncertain) return;
+      yield* input
+        .clear(inFlight.threadIds)
+        .pipe(
+          Effect.ensuring(
+            Ref.update(qualifiedInstallInFlight, (current) =>
+              current === inFlight ? undefined : current,
+            ),
+          ),
+        );
+    });
+
+  const service = ServerSelfUpdate.of({
     update,
     ...(input.selfUpdate.installQualified === undefined
       ? {}
@@ -264,20 +281,11 @@ export const withRunningThreadContinuation = Effect.fn(
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
             return Effect.gen(function* () {
-              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
-              if (
-                request.operationId !== undefined &&
-                inFlight?.operationId === request.operationId &&
-                inFlight.uncertain &&
-                input.reconcileQualifiedOperation !== undefined
-              ) {
-                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
-                if (receipt.operationId === request.operationId && receipt.state === "absent")
-                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
-                    current === inFlight ? undefined : current,
-                  );
-              }
-              const attempt = { operationId: request.operationId, uncertain: false };
+              const attempt = {
+                operationId: request.operationId,
+                uncertain: false,
+                threadIds: [] as ReadonlyArray<ThreadId>,
+              };
               const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
                 current === undefined ? ([true, attempt] as const) : ([false, current] as const),
               );
@@ -314,7 +322,11 @@ export const withRunningThreadContinuation = Effect.fn(
                     current !== attempt
                       ? current
                       : handoffAccepted || uncertainQualifiedHandoff(cause)
-                        ? { ...attempt, uncertain: !handoffAccepted }
+                        ? {
+                            ...attempt,
+                            uncertain: !handoffAccepted,
+                            threadIds: continuationThreadIds,
+                          }
                         : undefined,
                   ).pipe(Effect.andThen(Effect.failCause(cause))),
                 ),
@@ -351,6 +363,7 @@ export const withRunningThreadContinuation = Effect.fn(
         );
       }),
   });
+  return { ...service, releaseRejectedHandoff };
 });
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {

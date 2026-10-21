@@ -84,12 +84,29 @@ service-state entry. These Jones receipts live under `runtime/jones-update-opera
 outside the database rollback pair.
 
 An absent reservation and absent matching service state permit submission with the
-same ID. A reservation without matching native state or a retained terminal outcome
-requires reconciliation; it does not authorize another replacement with any ID. The
-launcher inspects at most 4,096 receipt entries and fails closed on malformed,
-unreadable, or larger receipt stores. Receipt preparation failures preserve the old
-child and any partial reservation. Only an exact operation proven absent can clear
-its uncertain in-memory handoff fence. Readback of an operation and observation of the currently installed source are separate checks.
+same ID. Only the request that reserved an operation can accept it, and the launcher
+runs requests one at a time, so a reservation that service state does not name and
+that has no outcome belongs to a request that ended, or a launcher that is gone,
+without accepting it. The launcher records such an operation as `rejected`: before
+it answers the refusing request, before another request or stage retirement, and at
+startup. A rejected operation never starts and does not block the next one. Receipts
+are published whole, through an exclusive hard link from a temporary file. A failed
+outcome, or a receipt store that is malformed, unreadable or over 4,096 entries,
+still blocks any further replacement until reconciled. Readback of an operation and
+observation of the currently installed source are separate checks.
+
+A timeout or missing reply proves nothing about a handoff: the launcher can still
+be finishing the reservation's durability writes when the server stops waiting.
+After a failed handoff the server therefore asks the launcher. A launcher that
+advertises `updateOutcomeProtocol: 1` answers `reconcile-update` in IPC order, after
+every earlier request from that server, so an operation it never reserved can no
+longer be accepted by any of them. It answers `accepted` when its state names the
+operation or holds its terminal outcome, `rejected` for a recorded or newly
+recorded rejection or an unreserved operation, and `unknown` otherwise. The server
+asks again on `unknown`, backing off to every 30 seconds, until the process exits.
+Under an older launcher only acceptance or a refusal it sent can be proven, so an
+unanswered handoff stays held until the process exits. A proven rejection clears
+the attempt's continuation markers and allows another Install.
 
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
@@ -110,15 +127,18 @@ the SQLite writer: a transaction admitted before the fence rose holds the writer
 so the check sees its work. Until the launcher accepts, new work withdraws an
 automatic activation and leaves its stage ready; a manual Install refuses it
 instead. From the handoff on, new work is refused with a message to send it again,
-and nothing is recorded, so the same command id is accepted later. A failure,
-refusal or cancellation before acceptance reopens admission and restarts the queued
-runs it held; after an uncertain handoff the launcher's own record decides.
+and nothing is recorded, so the same command id is accepted later. A failure or
+cancellation before the handoff, or a refusal the launcher sent, reopens admission
+and restarts the queued runs it held. After any other failed or cancelled handoff,
+admission stays closed until the launcher proves the outcome: rejection reopens it,
+and acceptance keeps it closed until the process exits.
 
 A scheduled task's message is held rather than refused, because the scheduler
 records any dispatch failure as a failed run and drops an accepted webhook delivery
-with it. A held dispatch records nothing. It continues under its command id when
-admission reopens, and the restart after an accepted handoff interrupts it from
-outside, which leaves the delivery's pending record for the next server.
+with it. A held dispatch records nothing, and stays held while a handoff's outcome is
+unknown. It continues under its command id when admission reopens, and the restart
+after an accepted handoff interrupts it from outside, which leaves the delivery's
+pending record for the next server.
 
 ## Following hosts
 
