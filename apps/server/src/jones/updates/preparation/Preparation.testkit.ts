@@ -24,7 +24,7 @@ export const BASELINE = "0.0.0-preview.20261002.100";
 export const VERSION = "0.0.0-preview.20261002.101.2";
 export const INSTALLED = "c".repeat(40);
 export const SOURCE = "a".repeat(40);
-export const TREE = "b".repeat(40);
+const TREE = "b".repeat(40);
 export const fixtureHost: PreparationHost = {
   platform: "linux",
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Fixture payloads run on this host's architecture with an injected Linux platform.
@@ -72,7 +72,7 @@ export interface PreparationHome {
 }
 
 /** Writes a runtime payload: an executable `t3` and a client, padded to at least `bytes`. */
-export async function writePayload(
+async function writePayload(
   directory: string,
   options: { readonly t3?: string; readonly bytes?: number } = {},
 ): Promise<void> {

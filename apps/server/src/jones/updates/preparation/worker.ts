@@ -31,7 +31,7 @@ const HEARTBEAT_MS = 2_000;
 /** Below the supervisor's grace, so a worker that cannot unwind still ends its own group first. */
 const HARD_EXIT_MS = 20_000;
 
-export class PreparationAborted extends Error {
+class PreparationAborted extends Error {
   readonly reason: "cancelled" | "parent-exited" | "deadline";
   constructor(reason: PreparationAborted["reason"]) {
     super(
@@ -117,7 +117,7 @@ async function runJob(
  * Runs the job described by `<jobDir>/request.json` and publishes `<jobDir>/result.json`.
  * Returns the exit code: 0 once a result is durable, otherwise non-zero.
  */
-export async function runPreparationWorker(jobDir: string): Promise<number> {
+async function runPreparationWorker(jobDir: string): Promise<number> {
   try {
     NodeOS.setPriority(NodeOS.constants.priority.PRIORITY_LOW);
   } catch {

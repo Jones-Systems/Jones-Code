@@ -42,7 +42,7 @@ export interface BoundedProcessResult {
  * Runs one command with the worker's environment, discarding stderr. A timeout, output limit or
  * abort kills the child; an abort rejects with the signal's reason once the child has closed.
  */
-export function runBoundedProcess(input: {
+function runBoundedProcess(input: {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
   readonly timeoutMs: number;
@@ -102,7 +102,7 @@ export function runBoundedProcess(input: {
 }
 
 /** The same bound service preflight the in-process path ran; the candidate reads its own manifest. */
-export async function preflightQualifiedCandidate(input: {
+async function preflightQualifiedCandidate(input: {
   readonly entryPath: string;
   readonly databasePath: string;
   readonly version: string;
@@ -155,7 +155,7 @@ export async function preflightQualifiedCandidate(input: {
  * packaged worker cannot start would strand the host, so staging refuses it. Any protocol is
  * accepted: the candidate's server only ever talks to its own worker.
  */
-export async function probeCandidatePreparationWorker(
+async function probeCandidatePreparationWorker(
   entryPath: string,
   signal?: AbortSignal,
 ): Promise<void> {
