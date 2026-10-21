@@ -6564,9 +6564,31 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const interrupt = yield* harness.runtime
               .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
               .pipe(Effect.exit);
+            if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1") {
+              // Temporary probe projects metadata only, never replay frame bodies.
+              const metadata = (value: unknown, depth = 0): unknown => {
+                if (depth > 10 || value === null || typeof value !== "object") return undefined;
+                if (Array.isArray(value)) return value.slice(0, 16).map((entry) => metadata(entry, depth + 1));
+                const result: Record<string, unknown> = {};
+                for (const key of ["_tag", "name", "code", "method", "id", "cursor", "label"]) {
+                  const field = Reflect.get(value, key);
+                  if (typeof field === "string" || typeof field === "number") result[key] = field;
+                }
+                for (const key of ["cause", "reasons", "error", "defect", "actual", "expected"])
+                  if (Reflect.has(value, key)) result[key] = metadata(Reflect.get(value, key), depth + 1);
+                return result;
+              };
+              console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({ adapter: "codex", stage: "interrupt-exit", detail: metadata(interrupt) }));
+            }
             assert.equal(interrupt._tag, "Failure");
           }
           yield* harness.firstTerminal;
+          if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1")
+            console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({
+              adapter: "codex", stage: "terminal",
+              terminals: harness.terminalEvents().map((event) => ({ status: event.status, failureCode: event.failure?.code })),
+              items: harness.events.flatMap((event) => event.type === "turn_item.updated" ? [{ type: event.turnItem.type, status: event.turnItem.status }] : []).slice(-32),
+            }));
           const items = harness.events.flatMap((event) =>
             event.type === "turn_item.updated" && event.turnItem.type === "compaction"
               ? [event.turnItem]

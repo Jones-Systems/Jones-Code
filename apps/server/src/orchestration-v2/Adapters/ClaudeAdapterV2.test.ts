@@ -14178,6 +14178,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     (arrival) =>
       Effect.scoped(
         Effect.gen(function* () {
+          // Temporary bounded CI probe; remove after the two-case diagnosis.
+          let diagnosticCount = 0;
+          const diagnostic = (stage: string, detail?: unknown) => Effect.sync(() => {
+            if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1" && diagnosticCount++ < 64)
+              console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({ adapter: "claude", stage, detail }));
+          });
           const transcriptReadStarted = yield* Deferred.make<void>();
           const releaseTranscriptRead = yield* Deferred.make<void>();
           const closeStarted = yield* Deferred.make<void>();
@@ -14186,7 +14192,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             const harness = yield* makeWorkflowHarnessWithOptions({
               freshQueueOnReopen: true,
               close: (messages) =>
-                Deferred.succeed(closeStarted, undefined).pipe(
+                diagnostic("query-close-called").pipe(
+                  Effect.andThen(Deferred.succeed(closeStarted, undefined)),
                   Effect.andThen(Queue.shutdown(messages)),
                 ),
             });
@@ -14287,9 +14294,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               .offerAndWait(liveProgress("done", "00000000-0000-4000-8000-000000003207"))
               .pipe(Effect.forkScoped);
             yield* Deferred.await(transcriptReadStarted);
+            yield* diagnostic("transcript-read-held");
             const replay = yield* start("attempt-workflow-waiting-replay", 2, true).pipe(
               Effect.forkScoped({ startImmediately: true }),
             );
+            yield* diagnostic("replay-forked");
             if (arrival === "query close") {
               const stop = yield* harness.runtime
                 .interruptTurn({
@@ -14300,11 +14309,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   }),
                   requestRuntimeRestart: true,
                 })
-                .pipe(Effect.forkScoped);
+                .pipe(Effect.onExit((exit) => diagnostic("stop-exit", exit._tag)), Effect.forkScoped);
+              yield* diagnostic("waiting-close");
               yield* Deferred.await(closeStarted);
+              yield* diagnostic("close-started");
               yield* Deferred.succeed(releaseTranscriptRead, undefined);
+              yield* diagnostic("transcript-read-released");
               yield* Fiber.join(progress);
+              yield* diagnostic("progress-joined");
               yield* Fiber.join(stop);
+              yield* diagnostic("stop-joined");
               assert.isTrue(Exit.isFailure(yield* Fiber.await(replay)));
             } else {
               const offered = yield* Deferred.make<void>();
@@ -14319,7 +14333,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               yield* Queue.take(harness.terminalReceipts);
               assert.lengthOf(harness.continuationRequests, 1);
             }
+            yield* diagnostic("starting-next-user");
             yield* start("attempt-workflow-waiting-next-user", 3, false);
+            yield* diagnostic("next-user-started");
           }).pipe(
             Effect.provideService(WorkflowAgentTranscriptReadObserver, () =>
               Effect.gen(function* () {
