@@ -227,6 +227,26 @@ async function available(client: JonesActionsClient): Promise<JonesActionsCandid
 }
 
 describe("Jones Actions qualification", () => {
+  it.each([undefined, "2026-10-02T10:00:00Z", "invalid", "2026-02-30T10:00:00Z"])(
+    "keeps build time %s outside the candidate and its handle",
+    async (run_started_at) => {
+      const baseline = fixture();
+      const stamped = fixture({ run: { run_started_at } });
+      const original = await check(baseline.client);
+      const result = await check(stamped.client);
+      expect(original.state).toBe("available");
+      expect(result.state).toBe("available");
+      if (original.state !== "available" || result.state !== "available")
+        throw new Error("Fixture candidate unavailable");
+      expect(result.buildStartedAt).toBe(
+        run_started_at === "2026-10-02T10:00:00Z" ? run_started_at : undefined,
+      );
+      expect(JSON.stringify(result.candidate)).toBe(JSON.stringify(original.candidate));
+      expect(jonesCandidateHandle(result.candidate)).toBe(jonesCandidateHandle(original.candidate));
+      expect(stamped.calls).toEqual(baseline.calls);
+      if (result.buildStartedAt === undefined) expect(result).not.toHaveProperty("buildStartedAt");
+    },
+  );
   it("binds canonical main run/attempt, same-source CI and source ancestry", async () => {
     const { client, calls } = fixture();
     const candidate = await available(client);

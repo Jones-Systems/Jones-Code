@@ -24,6 +24,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: artifact-cli-linux-${{ github.event.pull_request.number || github.ref }}
@@ -100,7 +101,32 @@ jobs:
           echo "ARTIFACT_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Bind Jones source identity
-        run: node scripts/stamp-jones-build.ts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          build_started_at=
+          if metadata=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT"); then
+            if ! build_started_at=$(printf '%s' "$metadata" | node --input-type=module -e '
+              import fs from "node:fs";
+              try {
+                const value = JSON.parse(fs.readFileSync(0, "utf8")).run_started_at;
+                if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) ||
+                    !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value.replace(/Z$/, ".000Z")) {
+                  process.exit(1);
+                }
+                process.stdout.write(value);
+              } catch {
+                process.exit(1);
+              }
+            '); then
+              echo "::warning::Build time metadata invalid; omitting build time"
+              build_started_at=
+            fi
+          else
+            echo "::warning::Build time unavailable; omitting build time"
+          fi
+          JONES_BUILD_STARTED_AT="$build_started_at" node scripts/stamp-jones-build.ts
 
       - name: Build server and web client
         run: vp run --filter t3 build

@@ -963,6 +963,7 @@ interface StagePackageJson {
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
   readonly jonesSource?: JonesBuildSource;
+  readonly jonesBuildStartedAt?: string;
   readonly startupGateProtocol?: 1;
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
   readonly private: true;
@@ -3798,12 +3799,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
-  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata({
-    ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
-    ...("startupGateProtocol" in desktopPackageJson
-      ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
-      : {}),
-  });
+  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata(desktopPackageJson);
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     ...companionPackageMetadata(options.variant),

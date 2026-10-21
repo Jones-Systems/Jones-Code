@@ -75,6 +75,7 @@ describe("Jones build source stamp", () => {
                   ? "d".repeat(40)
                   : input.sha,
             GITHUB_ENV: envFile,
+            JONES_BUILD_STARTED_AT: undefined,
           },
           stdio: ["ignore", "pipe", "pipe"],
         },
@@ -90,6 +91,11 @@ describe("Jones build source stamp", () => {
           startupGateProtocol: 1,
           jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
         });
+        expect(
+          JSON.parse(
+            await NodeFSP.readFile(NodePath.join(input.root, `apps/${name}/package.json`), "utf8"),
+          ),
+        ).not.toHaveProperty("jonesBuildStartedAt");
       }
       expect(JSON.parse(await NodeFSP.readFile(serverFile, "utf8"))).toHaveProperty(
         "version",
@@ -134,6 +140,7 @@ describe("Jones build source stamp", () => {
           JONES_EXPECTED_SOURCE_SHA: expected,
           GITHUB_SHA: expected === undefined ? "d".repeat(40) : input.sha,
           GITHUB_ENV: envFile,
+          JONES_BUILD_STARTED_AT: undefined,
         },
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -141,6 +148,82 @@ describe("Jones build source stamp", () => {
     );
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(error);
+    expect(await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(
+      before,
+    );
+    await expect(NodeFSP.lstat(envFile)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it.each([undefined, "", "2026-10-20T21:13:43Z", "2028-02-29T15:00:00.12Z"])(
+    "stamps both manifests with optional build time %s and replaces stale metadata",
+    async (startedAt) => {
+      const input = await fixture();
+      const manifests = ["server", "desktop"].map((name) =>
+        NodePath.join(input.root, `apps/${name}/package.json`),
+      );
+      for (const file of manifests) {
+        const manifest = JSON.parse(await NodeFSP.readFile(file, "utf8"));
+        manifest.jonesBuildStartedAt = "2025-01-01T00:00:00Z";
+        await NodeFSP.writeFile(file, JSON.stringify(manifest));
+      }
+      NodeChildProcess.execFileSync(
+        process.execPath,
+        [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
+        {
+          cwd: input.root,
+          env: {
+            ...process.env,
+            JONES_EXPECTED_SOURCE_SHA: input.sha,
+            JONES_BUILD_STARTED_AT: startedAt,
+            GITHUB_ENV: undefined,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      for (const file of manifests) {
+        const manifest = JSON.parse(await NodeFSP.readFile(file, "utf8"));
+        expect(manifest).toMatchObject({
+          version: "1.2.3",
+          retained: { nested: true },
+          startupGateProtocol: 1,
+          jonesSource: { repository: "Jones-Systems/Jones-Code", sha: input.sha, tree: input.tree },
+        });
+        if (startedAt) expect(manifest.jonesBuildStartedAt).toBe(startedAt);
+        else expect(manifest).not.toHaveProperty("jonesBuildStartedAt");
+      }
+    },
+  );
+  it.each([
+    "null",
+    " ",
+    "2026-10-20T21:13:43+00:00",
+    "2026-02-30T21:13:43Z",
+    "2026-02-29T21:13:43Z",
+    "2026-10-20T24:00:00Z",
+    "2026-10-20T21:13:43.1234Z",
+  ])("refuses invalid build time %s before any writes", async (startedAt) => {
+    const input = await fixture();
+    const manifests = ["server", "desktop"].map((name) =>
+      NodePath.join(input.root, `apps/${name}/package.json`),
+    );
+    const before = await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")));
+    const envFile = NodePath.join(input.root, "build-env");
+    const result = NodeChildProcess.spawnSync(
+      process.execPath,
+      [NodePath.join(input.root, "scripts/stamp-jones-build.ts")],
+      {
+        cwd: input.root,
+        env: {
+          ...process.env,
+          JONES_EXPECTED_SOURCE_SHA: input.sha,
+          JONES_BUILD_STARTED_AT: startedAt,
+          GITHUB_ENV: envFile,
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Invalid Jones build start time.");
     expect(await Promise.all(manifests.map((file) => NodeFSP.readFile(file, "utf8")))).toEqual(
       before,
     );
