@@ -6682,7 +6682,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     questionIndex={activePendingQuestionIndex}
                     onToggleOption={onSelectActivePendingUserInputOption}
                     onAdvance={onAdvanceActivePendingUserInput}
-                    onChangeCustomAnswer={onChangeActivePendingUserInputCustomAnswer}
+                    onChangeCustomAnswer={(questionId, value) => {
+                      onChangeActivePendingUserInputCustomAnswer(
+                        questionId,
+                        value,
+                        collapseExpandedComposerCursor(value, value.length, isLiteralPendingAnswer),
+                        value.length,
+                        false,
+                      );
+                    }}
                     onPrevious={onPreviousActivePendingUserInputQuestion}
                     onDismiss={onDismissActivePendingUserInput}
                   />
