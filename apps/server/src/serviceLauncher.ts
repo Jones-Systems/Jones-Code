@@ -59,6 +59,8 @@ import {
   readOperationReservation,
   reconcileUpdateOperation,
   reserveUpdateOperation,
+  resolveUpdateOperation,
+  settleAbandonedUpdateOperations,
 } from "./jones/updates/launcherOperation.ts";
 
 import { assertStageNotRevoked, retireNativeStage } from "./jones/updates/stageRevocation.ts";
@@ -908,6 +910,13 @@ export class Launcher {
     // CLI writing the marker and writing the new state still runs the old
     // version, and the marker has to outlive it.
     await NodeFSP.rm(stopMarkerPath(this.#baseDir), { force: true }).catch(() => undefined);
+    // The launcher that reserved an operation it never recorded as pending is gone.
+    await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(
+      (cause: unknown) =>
+        process.stderr.write(
+          `[service-launcher] Abandoned update operations remain unresolved: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+        ),
+    );
     const restartPending = restartPendingPath(this.#baseDir);
     const awaitedVersion = await NodeFSP.readFile(restartPending, "utf8").catch(() => undefined);
     if (awaitedVersion?.trim() === this.#state.activeVersion) {
@@ -1041,6 +1050,7 @@ export class Launcher {
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
       updateOperationsProtocol: 1,
       updateRetirementProtocol: 1,
+      updateOutcomeProtocol: 1,
       ...(this.#startupGateProtocol === undefined
         ? {}
         : { startupGateProtocol: this.#startupGateProtocol }),
@@ -1134,6 +1144,21 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "reconcile-update") {
+      // Answered in IPC order, after every earlier request from this child has finished.
+      const resolved = await resolveUpdateOperation(
+        this.#baseDir,
+        message.operationId,
+        this.#state.update,
+      ).catch(() => ({ outcome: "unknown" as const }));
+      await sendMessage(child.process, {
+        type: "update-outcome",
+        operationId: message.operationId,
+        queryId: message.queryId,
+        ...resolved,
+      }).catch(() => undefined);
+      return;
+    }
     if (message.type === "request-retire-update") {
       let retired = false;
       let reason: string | undefined;
@@ -1171,12 +1196,18 @@ export class Launcher {
     message: Extract<ServiceLauncherChildMessage, { readonly type: "request-update" }>,
     receivedAt: number,
   ): Promise<void> {
-    const reject = (reason: string) =>
-      sendMessage(child.process, {
+    const reject = async (reason: string) => {
+      // This request ends here without acceptance; its receipts must say so before it answers.
+      if (message.operationId !== undefined)
+        await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update).catch(
+          () => undefined,
+        );
+      await sendMessage(child.process, {
         type: "update-rejected",
         reason,
         ...(message.operationId === undefined ? {} : { operationId: message.operationId }),
       });
+    };
     if (child.role !== "active") {
       await reject("Only the active server can request an update.");
       return;
@@ -1200,6 +1231,10 @@ export class Launcher {
         this.#state.update,
       );
       if (existing.state !== "absent") {
+        if (existing.state === "rejected") {
+          await reject("The launcher already refused this update operation; start another.");
+          return;
+        }
         if (existing.state === "blocked") {
           await reject("The update operation is ambiguous and requires reconciliation.");
           return;
@@ -1346,6 +1381,7 @@ export class Launcher {
       if (message.stagedHandle !== undefined)
         await assertStageNotRevoked(this.#baseDir, message.stagedHandle, message.operationId);
       await this.#updateOperationIO.archive(this.#baseDir, this.#state.update);
+      await settleAbandonedUpdateOperations(this.#baseDir, this.#state.update);
       await assertNoUnreconciledUpdateOperations(this.#baseDir, this.#state.update);
       if (message.operationId !== undefined) {
         if (qualified === undefined) {
@@ -1359,7 +1395,7 @@ export class Launcher {
         );
       }
     } catch {
-      // A failed fsync may leave a reservation. Preserve it for reconciliation
+      // A failed fsync may leave a reservation; the refusal records it as rejected
       // while the unchanged active child continues serving.
       await reject(
         "operation-reconciliation-required: Native operation receipts could not be durably prepared; the current server remains active.",
@@ -1367,8 +1403,8 @@ export class Launcher {
       return;
     }
     if (qualified !== undefined && this.#exchangeExpired(receivedAt)) {
-      // Receipt preparation can consume the exchange budget too. A reservation
-      // already written stays available for reconciliation; no Install was accepted.
+      // Receipt preparation can consume the exchange budget too. The refusal
+      // records the reservation as rejected; no Install was accepted.
       await reject(
         "request-expired: Native operation preparation outlasted the server's launcher exchange; Install was not admitted.",
       ).catch(() => undefined);

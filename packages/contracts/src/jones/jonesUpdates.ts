@@ -56,6 +56,20 @@ export const JonesUpdateCapability = Schema.Struct({
   ),
 });
 
+/**
+ * Present only on a host enrolled to follow a laptop. Such a host offers, stages and installs
+ * exactly `leaderSource`, the laptop's committed source, and only a build whose commit has
+ * `leaderTree`; null means the laptop has not published one yet, so the host holds. Hosts without
+ * a policy select their own builds.
+ */
+export const JonesUpdatePolicy = Schema.Struct({
+  role: Schema.Literal("follower"),
+  leaderSource: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+  /** Sent with every published `leaderSource`. */
+  leaderTree: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+});
+export type JonesUpdatePolicy = typeof JonesUpdatePolicy.Type;
+
 /** The staged handle is immutable even when a later check discovers another build. */
 export const JonesUpdateState = Schema.Struct({
   source: Schema.Literal("jones-actions"),
@@ -100,6 +114,7 @@ export const JonesUpdateState = Schema.Struct({
       pendingJones: Schema.Array(Schema.Number),
     }),
   ),
+  policy: Schema.optionalKey(JonesUpdatePolicy),
 });
 export type JonesUpdateState = typeof JonesUpdateState.Type;
 

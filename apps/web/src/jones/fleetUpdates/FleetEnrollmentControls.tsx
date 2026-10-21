@@ -6,6 +6,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
+import { describeFollower } from "./followerStatus";
 import {
   fleetDesktopState,
   fleetHost,
@@ -122,6 +123,11 @@ export function FleetEnrollmentControls({
       label={label}
       enrolled={enrollment?.enabled === true}
       readiness={readiness}
+      follower={
+        enrollment?.enabled === true && status?.follower !== undefined
+          ? describeFollower(status.follower)
+          : undefined
+      }
       campaign={
         latest === undefined
           ? undefined

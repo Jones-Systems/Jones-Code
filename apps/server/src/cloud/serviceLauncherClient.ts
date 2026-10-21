@@ -131,6 +131,19 @@ export class ServiceLauncherClient extends Context.Service<
     readonly qualifiedStaging?: boolean;
     readonly qualifiedOperations?: boolean;
     readonly qualifiedRetirement?: boolean;
+    /** The launcher reports how a handoff ended from its durable operation receipts. */
+    readonly qualifiedOutcomes?: boolean;
+    /**
+     * Asks the launcher how the handoff of `operationId` ended, after every earlier request from
+     * this server. `unknown`, or any failure, proves nothing.
+     */
+    readonly reconcileUpdate?: (operationId: string) => Effect.Effect<
+      {
+        readonly outcome: "accepted" | "rejected" | "unknown";
+        readonly reason?: string;
+      },
+      ServiceLauncherClientError
+    >;
     readonly retireUpdate?: (
       input: ServiceUpdateRetirement,
     ) => Effect.Effect<
@@ -299,6 +312,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     );
 
   let acceptedMigrationPlan: MigrationPlan | undefined = context?.update?.migrationPlan;
+  let queries = 0;
   const requestUpdate = (input: {
     readonly targetVersion: string;
     readonly dbPath: string;
@@ -451,6 +465,32 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
     qualifiedStaging: context?.qualifiedUpdatesProtocol === 1,
     qualifiedOperations: context?.updateOperationsProtocol === 1,
     qualifiedRetirement: context?.updateRetirementProtocol === 1,
+    qualifiedOutcomes: context?.updateOutcomeProtocol === 1,
+    reconcileUpdate: (operationId) =>
+      context?.updateOutcomeProtocol !== 1
+        ? Effect.succeed({
+            outcome: "unknown" as const,
+            reason: "bootstrap-required: The launcher cannot report update outcomes.",
+          })
+        : Effect.suspend(() => {
+            const queryId = ++queries;
+            return exchange(
+              { type: "reconcile-update", operationId, queryId },
+              (reply) =>
+                reply.type === "update-outcome" &&
+                reply.operationId === operationId &&
+                reply.queryId === queryId,
+            ).pipe(
+              Effect.map((reply) => {
+                if (reply.type !== "update-outcome")
+                  throw new Error("Unexpected outcome response.");
+                return {
+                  outcome: reply.outcome,
+                  ...(reply.reason === undefined ? {} : { reason: reply.reason }),
+                };
+              }),
+            );
+          }),
     retireUpdate: (input) =>
       context?.updateRetirementProtocol !== 1
         ? Effect.succeed({

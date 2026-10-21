@@ -19,6 +19,8 @@ import {
   compareJonesSource,
   createJonesUpdateAtoms,
   jonesExactSourceResultError,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdateActionError,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
@@ -561,6 +563,30 @@ describe("exact-source action resolution", () => {
   };
   const unavailable = (decision: ReturnType<typeof resolve>) =>
     decision.status === "unavailable" ? decision.reason : decision.step.kind;
+
+  it("lets a host that follows its laptop take only the laptop's installed source", () => {
+    const leader = { role: "follower" as const, leaderSource: target };
+    expect(resolve(hostState({ policy: leader }))).toMatchObject({ status: "ready" });
+    const other = resolve(
+      hostState({ policy: { role: "follower", leaderSource: "b".repeat(40) } }),
+    );
+    expect(unavailable(other)).toBe("follows-laptop");
+    expect(other.status === "unavailable" ? other.message : "").toContain("bbbbbbb");
+    expect(
+      unavailable(resolve(hostState({ policy: { role: "follower", leaderSource: null } }))),
+    ).toBe("follows-laptop");
+    const staged = hostState({
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: { ...offered, sourceSha: "c".repeat(40) },
+      policy: leader,
+    });
+    expect(jonesFollowerHold(staged)).toContain("aaaaaaa");
+    expect(jonesFollowerHold({ ...staged, provenance: targetBuild })).toBeUndefined();
+    const { policy: _policy, ...standalone } = staged;
+    expect(jonesFollowerHold(standalone)).toBeUndefined();
+    expect(jonesFollowerSummary(staged)).toBe("Follows its laptop · takes only source aaaaaaa");
+  });
 
   it("downloads the target by source when the host advertises exact selection, whatever it offers", () => {
     // The host's own latest offer must never decide the target.

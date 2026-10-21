@@ -4,13 +4,13 @@ import * as Schema from "effect/Schema";
 import type {
   JonesActionsCandidate,
   JonesActionsCheckResult,
-  JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 import {
   JonesUpdater,
   readCurrentJonesBuildStartedAt,
   type JonesUpdaterHost,
 } from "./JonesUpdater.ts";
+import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
 const candidate: JonesActionsCandidate = {
   schema: 1,
@@ -48,10 +48,13 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
     installedSource: async () => "a".repeat(40),
     platform: "linux",
     architecture: "x64",
-    cacheRoot: "fixture",
-    stage: async () => {
+    prepare: async () => {
       effects.push("stage");
-      return { stagedHandle: "fixed-handle", version: candidate.version };
+      return {
+        stagedHandle: "fixed-handle",
+        version: candidate.version,
+        payloadSha256: "e".repeat(64),
+      };
     },
     install: async () => {
       effects.push("install");
@@ -65,7 +68,6 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
         candidate: available,
         ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
       }),
-      stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
     },
   );
   return {
@@ -344,10 +346,16 @@ describe("exact-source staging for this host", () => {
         installedSource: async () => "a".repeat(40),
         platform: "linux",
         architecture: "x64",
-        cacheRoot: "fixture",
-        stage: async () => {
+        prepare: async (staged, { onVerifying }) => {
+          downloads.push(staged.artifactId);
+          await download(staged.artifactId);
+          onVerifying();
           effects.push("stage");
-          return { stagedHandle: "fixed-handle", version: candidate.version };
+          return {
+            stagedHandle: "fixed-handle",
+            version: candidate.version,
+            payloadSha256: "e".repeat(64),
+          };
         },
         install: async () => {
           effects.push("install");
@@ -360,11 +368,6 @@ describe("exact-source staging for this host", () => {
         check: async (input) => {
           checks.push(input.targetSource);
           return check(input.targetSource);
-        },
-        stage: async (staged) => {
-          downloads.push(staged.artifactId);
-          await download(staged.artifactId);
-          return { receipt: { sha256: "e".repeat(64) } } as JonesStagedArtifact;
         },
       },
     );
@@ -754,4 +757,199 @@ it("rechecks install guards after the in-flight check settles", async () => {
   await check;
   expect((await install).message).toContain("does not match");
   expect(f.effects).toEqual(["stage"]);
+});
+
+describe("follower policy on the host updater", () => {
+  const environmentId = EnvironmentId.make("fixture");
+  const currentVersion = "0.0.0-preview.20261002.1";
+  const leader = candidate.source;
+  const other = "f".repeat(40);
+  const following = (leaderSource: string) =>
+    ({ role: "follower", leaderSource, leaderTree: candidate.tree }) as const;
+  function follower(overrides: Partial<JonesUpdaterHost> = {}) {
+    const checks: Array<string | undefined> = [];
+    const installs: string[] = [];
+    let offered = candidate;
+    const updater = new JonesUpdater(
+      {
+        initialState: {
+          source: "jones-actions",
+          channel: "jones-main",
+          phase: "no-new",
+          environmentId,
+          currentVersion,
+          capability: { check: true, download: true, install: true },
+        },
+        installedSource: async () => "a".repeat(40),
+        platform: "linux",
+        architecture: "x64",
+        prepare: async () => ({
+          stagedHandle: "fixed-handle",
+          version: offered.version,
+          payloadSha256: "e".repeat(64),
+        }),
+        install: async (request) => {
+          installs.push(request.stagedHandle);
+        },
+        ...overrides,
+      },
+      {
+        check: async (input): Promise<JonesActionsCheckResult> => {
+          checks.push(input.targetSource);
+          return { state: "available", candidate: offered };
+        },
+      },
+    );
+    return {
+      updater,
+      checks,
+      installs,
+      offer: (source: string) => {
+        offered = { ...candidate, source, artifactId: candidate.artifactId + 1 };
+      },
+    };
+  }
+  const install = { stagedHandle: "fixed-handle", environmentId, currentVersion };
+
+  it("holds every manual path until the laptop reports its installed build", async () => {
+    const f = follower();
+    await f.updater.check();
+    expect(f.updater.snapshot().phase).toBe("available");
+    const held = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(held).toMatchObject({ phase: "no-new", policy: { leaderSource: null } });
+    expect(held.provenance).toBeUndefined();
+    expect((await f.updater.check()).message).toContain("Waiting for the laptop");
+    expect(f.checks).toEqual([undefined]);
+    const download = await f.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: leader,
+    });
+    expect(download.phase).toBe("blocked");
+    expect(f.updater.snapshot().phase).toBe("no-new");
+    // A campaign from an older laptop app carries no source proof the host can verify.
+    const campaign = await f.updater.stageExact(leader);
+    expect(campaign.phase).toBe("blocked");
+    expect(campaign.message).toContain("predates following");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("blocked");
+    expect(f.installs).toEqual([]);
+  });
+
+  it("holds a leader record that predates source trees until the laptop reports again", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader });
+    expect((await f.updater.check(leader)).phase).toBe("blocked");
+    expect((await f.updater.stageExact(leader)).phase).toBe("blocked");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+  });
+
+  it("offers, stages and installs only the laptop's committed source", async () => {
+    const f = follower();
+    f.updater.setPolicy(following(leader));
+    await f.updater.check();
+    expect(f.checks).toEqual([leader]);
+    expect(f.updater.snapshot().provenance?.sourceSha).toBe(leader);
+    expect((await f.updater.stageExact(other)).message).toContain("bbbbbbb");
+    expect((await f.updater.stageExact(leader)).stagedHandle).toBe("fixed-handle");
+    expect((await f.updater.install(install)).phase).toBe("installing");
+    expect(f.installs).toEqual(["fixed-handle"]);
+  });
+
+  it("does not offer or stage the laptop's commit when the repository records another tree", async () => {
+    const f = follower();
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({ phase: "blocked" });
+    expect(checked.message).toContain("source tree");
+    expect(checked.provenance).toBeUndefined();
+    const staged = await f.updater.stageExact(leader);
+    expect(staged.phase).toBe("blocked");
+    expect(staged.message).toContain("source tree");
+    expect(f.updater.snapshot().stagedHandle).toBeUndefined();
+    expect(f.installs).toEqual([]);
+  });
+
+  it("refuses a staged build whose tree the laptop's report no longer matches", async () => {
+    const f = follower();
+    f.updater.setPolicy(following(leader));
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy({ role: "follower", leaderSource: leader, leaderTree: "9".repeat(40) });
+    const refused = await f.updater.install(install);
+    expect(refused).toMatchObject({ phase: "blocked" });
+    expect(refused.message).toContain("source tree");
+    expect(f.installs).toEqual([]);
+  });
+
+  it("refuses a staged build that is not the laptop's current build, even an older one", async () => {
+    const f = follower();
+    await f.updater.stageExact(leader);
+    f.updater.setPolicy(following(other));
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+    for (const origin of ["manual", "fleet"] as const) {
+      const refused = await f.updater.install({ ...install, origin });
+      expect(refused).toMatchObject({ phase: "blocked" });
+      expect(refused.message).toContain("fffffff");
+    }
+    expect(f.installs).toEqual([]);
+    expect(f.updater.snapshot().phase).toBe("staged");
+  });
+
+  it("stops an unaccepted preparation when the laptop moves on, then stages its new build", async () => {
+    const signals: AbortSignal[] = [];
+    const f = follower({
+      prepare: (staged, { signal }) => {
+        signals.push(signal);
+        if (signals.length > 1)
+          return Promise.resolve({
+            stagedHandle: "fixed-handle",
+            version: staged.version,
+            payloadSha256: "e".repeat(64),
+          });
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("preparation was cancelled")), {
+            once: true,
+          }),
+        );
+      },
+    });
+    f.updater.setPolicy(following(leader));
+    const superseded = f.updater.stageExact(leader);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(f.updater.snapshot().phase).toBe("downloading");
+    f.offer(other);
+    f.updater.setPolicy(following(other));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(await superseded).toMatchObject({
+      phase: "no-new",
+      message: "The laptop's installed build changed. Checking for it…",
+    });
+    expect(f.updater.snapshot().provenance).toBeUndefined();
+    expect(await f.updater.stageExact(other)).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: other },
+    });
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
+  });
+
+  it("keeps the stage ready when an automatic activation is withdrawn before the handoff", async () => {
+    let withdraw = true;
+    const f = follower({
+      install: async () => {
+        if (!withdraw) return;
+        withdraw = false;
+        throw new Error("launcher not contacted", {
+          cause: new AutomaticActivationWithdrawn("Input arrived."),
+        });
+      },
+    });
+    f.updater.setPolicy(following(leader));
+    await f.updater.stageExact(leader);
+    const withdrawn = await f.updater.install({ ...install, origin: "fleet" });
+    expect(withdrawn).toMatchObject({ phase: "staged", stagedHandle: "fixed-handle" });
+    expect(withdrawn.message).toContain("Input arrived.");
+    expect(withdrawn.outcome).toBeUndefined();
+    expect((await f.updater.install(install)).phase).toBe("installing");
+  });
 });

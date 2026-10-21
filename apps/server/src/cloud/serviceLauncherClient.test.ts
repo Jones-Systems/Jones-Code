@@ -788,3 +788,58 @@ it.effect(
       ).toEqual({ type: "request-retire-update", ...input });
     }),
 );
+
+it.effect(
+  "asks for a handoff outcome only with capability and pairs each answer with its question",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        updateOperationsProtocol: 1,
+      };
+      const operationId = "12345678-1234-4234-8234-123456789abc";
+      const oldHost = new FakeLauncherProcess(context);
+      const old = yield* makeClient(oldHost, "1.0.0");
+      expect(old.qualifiedOutcomes).toBe(false);
+      expect((yield* old.reconcileUpdate!(operationId)).outcome).toBe("unknown");
+      expect(oldHost.sent).toEqual([]);
+
+      const host = new FakeLauncherProcess({ ...context, updateOutcomeProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      expect(client.qualifiedOutcomes).toBe(true);
+      // A question the launcher never answers proves nothing and leaves no listener behind.
+      const unanswered = yield* Effect.forkChild(client.reconcileUpdate!(operationId), {
+        startImmediately: true,
+      });
+      yield* TestClock.adjust(Duration.seconds(30));
+      const timedOut = yield* Fiber.join(unanswered).pipe(Effect.flip);
+      expect(timedOut.operation).toBe("timeout");
+      expect(host.listenerCount()).toBe(0);
+      const asked = yield* Effect.forkChild(client.reconcileUpdate!(operationId), {
+        startImmediately: true,
+      });
+      expect(host.sent).toEqual([
+        { type: "reconcile-update", operationId, queryId: 1 },
+        { type: "reconcile-update", operationId, queryId: 2 },
+      ]);
+      // The late answer to the first question, and one for another operation, are ignored.
+      host.emit({ type: "update-outcome", operationId, queryId: 1, outcome: "rejected" });
+      host.emit({
+        type: "update-outcome",
+        operationId: "22345678-1234-4234-8234-123456789abc",
+        queryId: 2,
+        outcome: "rejected",
+      });
+      expect(host.listenerCount()).toBe(2);
+      host.emit({ type: "update-outcome", operationId, queryId: 2, outcome: "accepted" });
+      expect(yield* Fiber.join(asked)).toEqual({ outcome: "accepted" });
+      expect(host.listenerCount()).toBe(0);
+      expect(
+        decodeServiceLauncherContext(JSON.stringify({ ...context, updateOutcomeProtocol: 2 }))
+          ?.updateOutcomeProtocol,
+      ).toBeUndefined();
+    }),
+);

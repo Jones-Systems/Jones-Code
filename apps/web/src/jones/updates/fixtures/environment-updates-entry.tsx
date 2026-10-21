@@ -20,6 +20,7 @@ import {
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
 import { BuildVersion } from "../updateDisplay";
 import type { JonesInstalledComparison } from "../installedSourceComparison";
+import { describeFollower } from "../../fleetUpdates/followerStatus";
 
 // Synthetic presentation-only states: no connection, bridge, host request, or installation.
 const repository = "Jones-Systems/Jones-Code";
@@ -76,6 +77,8 @@ interface Scenario {
     readonly enrolled: boolean;
     readonly readiness: FleetHostReadiness;
     readonly campaign?: { laptopPhase: string; hostPhase: string; reason?: string };
+    /** The host's own progress when it follows this laptop by itself. */
+    readonly follower?: string;
     readonly notice?: string;
   };
 }
@@ -185,6 +188,93 @@ function scenarios(): readonly Scenario[] {
         enrolled: true,
         readiness: "qualified",
         campaign: { laptopPhase: "committed", hostPhase: "waiting", reason: "host offline" },
+      },
+    },
+    {
+      key: "follower-ready",
+      label: "Mac mini (follows this laptop)",
+      kind: "server",
+      subtitle: "SSH mjones@mac-mini · Connected",
+      routes: [{ label: "SSH", address: "mjones@mac-mini", inUse: true }],
+      build: {
+        state: state(id("follower-ready"), {
+          phase: "staged",
+          message: "Downloaded and verified. Install is a separate action.",
+          provenance: offered,
+          stagedHandle: "staged-follower",
+          policy: { role: "follower", leaderSource: offeredSha },
+        }),
+        freshness: "fresh",
+        comparison: "matches",
+        installedComparison: "older",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower(
+          {
+            protocol: 1,
+            leaderSource: offeredSha,
+            state: "waiting-for-quiet",
+            reason:
+              "Waiting for running turns or delegated tasks (1), terminal commands (1) to finish.",
+            notBefore: "2026-10-20T22:45:00.000Z",
+          },
+          () => "10:45 PM",
+        ),
+      },
+    },
+    {
+      key: "follower-held",
+      label: "VPS (follows this laptop)",
+      kind: "cloud",
+      subtitle: "via T3 Connect · Connected",
+      routes: [{ label: "T3 Connect", address: "relay · vps", inUse: true }],
+      build: {
+        state: state(id("follower-held"), {
+          phase: "staged",
+          message: "Downloaded and verified. Install is a separate action.",
+          provenance: { ...offered, sourceSha: "5f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c" },
+          stagedHandle: "staged-other",
+          policy: { role: "follower", leaderSource: offeredSha },
+        }),
+        freshness: "fresh",
+        comparison: "different",
+        installedComparison: "older",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower({
+          protocol: 1,
+          leaderSource: offeredSha,
+          state: "preparing",
+        }),
+      },
+    },
+    {
+      key: "follower-waiting",
+      label: "Lab box (follows this laptop)",
+      kind: "linux",
+      subtitle: "Remote link · Connected",
+      routes: [{ label: "Remote link", address: "http://lab-box.example:3773", inUse: true }],
+      build: {
+        state: state(id("follower-waiting"), {
+          phase: "no-new",
+          message: "Waiting for the laptop to report its installed build.",
+          policy: { role: "follower", leaderSource: null },
+        }),
+        freshness: "fresh",
+        installedComparison: "unavailable",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower({
+          protocol: 1,
+          leaderSource: null,
+          state: "waiting-for-leader",
+        }),
       },
     },
     {
@@ -404,6 +494,7 @@ function ScenarioRow({
             enrolled={enrolled}
             readiness={scenario.fleet.readiness}
             campaign={scenario.fleet.campaign}
+            follower={scenario.fleet.follower}
             notice={scenario.fleet.notice}
             continueThreads={continueThreads}
             busy={false}

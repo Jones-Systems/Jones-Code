@@ -93,12 +93,29 @@ service-state entry. These Jones receipts live under `runtime/jones-update-opera
 outside the database rollback pair.
 
 An absent reservation and absent matching service state permit submission with the
-same ID. A reservation without matching native state or a retained terminal outcome
-requires reconciliation; it does not authorize another replacement with any ID. The
-launcher inspects at most 4,096 receipt entries and fails closed on malformed,
-unreadable, or larger receipt stores. Receipt preparation failures preserve the old
-child and any partial reservation. Only an exact operation proven absent can clear
-its uncertain in-memory handoff fence. Readback of an operation and observation of the currently installed source are separate checks.
+same ID. Only the request that reserved an operation can accept it, and the launcher
+runs requests one at a time, so a reservation that service state does not name and
+that has no outcome belongs to a request that ended, or a launcher that is gone,
+without accepting it. The launcher records such an operation as `rejected`: before
+it answers the refusing request, before another request or stage retirement, and at
+startup. A rejected operation never starts and does not block the next one. Receipts
+are published whole, through an exclusive hard link from a temporary file. A failed
+outcome, or a receipt store that is malformed, unreadable or over 4,096 entries,
+still blocks any further replacement until reconciled. Readback of an operation and
+observation of the currently installed source are separate checks.
+
+A timeout or missing reply proves nothing about a handoff: the launcher can still
+be finishing the reservation's durability writes when the server stops waiting.
+After a failed handoff the server therefore asks the launcher. A launcher that
+advertises `updateOutcomeProtocol: 1` answers `reconcile-update` in IPC order, after
+every earlier request from that server, so an operation it never reserved can no
+longer be accepted by any of them. It answers `accepted` when its state names the
+operation or holds its terminal outcome, `rejected` for a recorded or newly
+recorded rejection or an unreserved operation, and `unknown` otherwise. The server
+asks again on `unknown`, backing off to every 30 seconds, until the process exits.
+Under an older launcher only acceptance or a refusal it sent can be proven, so an
+unanswered handoff stays held until the process exits. A proven rejection clears
+the attempt's continuation markers and allows another Install.
 
 Desktop updates have a separate two-phase handoff because installing the app stops
 its bundled backend. Preparation returns a token while the connection is alive;
@@ -106,6 +123,91 @@ the client commits that token only after receiving it. Otherwise backend shutdow
 could lose the only successful RPC result. The client must then observe the
 prepared version after reconnecting. If installation fails, desktop restarts the
 stopped backends and replays the failure for the same token.
+
+## Admission fence
+
+A process that hands off to an update must not start provider work that the
+stopped process then loses. The event sink checks the
+[fence](../../apps/server/src/jones/updates/UpdateAdmissionFence.ts) inside the
+transaction that records a process-bound effect, or a run that prepares a
+workspace, so every origin passes it; an open fence reads one reference and never
+waits. An installation raises it just before its final quiet check, which runs on
+the SQLite writer: a transaction admitted before the fence rose holds the writer,
+so the check sees its work. Until the launcher accepts, new work withdraws an
+automatic activation and leaves its stage ready; a manual Install refuses it
+instead. From the handoff on, new work is refused with a message to send it again,
+and nothing is recorded, so the same command id is accepted later. A failure or
+cancellation before the handoff, or a refusal the launcher sent, reopens admission
+and restarts the queued runs it held. After any other failed or cancelled handoff,
+admission stays closed until the launcher proves the outcome: rejection reopens it,
+and acceptance keeps it closed until the process exits.
+
+A scheduled task's message is held rather than refused, because the scheduler
+records any dispatch failure as a failed run and drops an accepted webhook delivery
+with it. A held dispatch records nothing, and stays held while a handoff's outcome is
+unknown. It continues under its command id when admission reopens, and the restart
+after an accepted handoff interrupts it from outside, which leaves the delivery's
+pending record for the next server.
+
+## Following hosts
+
+An enrolled service host follows the laptop's committed source. The desktop
+renderer relays the repository, commit and tree of the laptop's native active
+install; the host checks that tree against the one the repository records for the
+commit. It stores the report under `runtime/jones-fleet`, bound to the enrollment
+ID, so re-enrolling discards it and the host can still install while the laptop
+sleeps. A source without its tree is not proof: a record written before the laptop
+sent one counts as no report. The ceiling is enforced in `JonesUpdater`, the one
+path behind HTTP check, download, exact download, Install, fleet staging and fleet
+activation; hiding a button is not the control. Until the laptop reports, every
+path holds, including an older laptop's campaign. A host already installed ahead of
+the laptop holds instead of going back.
+
+The host prepares the laptop's source itself and retires any other unaccepted
+stage first. It does not prefetch an uncommitted laptop build: every retirement
+adds a launcher revocation receipt, and the launcher refuses more than 4,096.
+Campaigns still stage the laptop's next build early on hosts that do not follow,
+but preparing it does not supersede hosts still catching up to the committed
+build; the next commit retires them. Automatic activation, including a campaign
+activation from an older laptop, waits for 30 minutes without client input, at
+least 15 minutes since the previous automatic activation, and no work a restart
+would cut. The activation time is recorded before dispatch, and the final check
+runs under the admission fence. A pending request answerable by message survives a
+restart; a live or non-resumable approval does not, and holds activation until a
+provider adapter can declare that a pending approval rebinds to its resumed
+session.
+
+## Off-process preparation
+
+Download, archive and tree hashes, extraction and candidate validation run in a
+[worker](../../apps/server/src/jones/updates/preparation/worker.ts) started from
+the server's own build as `__jones-preparation-worker`, which `bin.ts` dispatches
+before the CLI loads. Because the worker is the same build, its protocol always
+matches its parent's, and it needs no separate packaging. The serving process only
+[supervises](../../apps/server/src/jones/updates/preparation/supervisor.ts) it.
+Jobs run one at a time: the supervisor queues them, and the worker holds a
+per-home lock, so a second server on the same home is refused. The worker runs at
+the lowest scheduling priority; that is not a CPU cap.
+
+The parent never trusts the worker's report on its own. It
+[rereads](../../apps/server/src/jones/updates/preparation/rebind.ts) the bounded
+durable stage receipt, requires it to equal that report, and checks the receipt's
+home, database, active runtime and candidate provenance. Tree hashes stay in the
+worker: Install verifies the stage again in a verify job, and the launcher verifies
+it again at activation. Staging refuses a Linux candidate that cannot answer
+`__jones-preparation-worker --protocol`, since an installed host could not prepare
+its next update without it. Darwin candidates are never launched while staging, so
+only the desktop artifact smoke proves their packaged worker.
+
+Each job lives in `runtime/jones-preparation/jobs/<id>` on the home's own disk.
+That directory holds the worker's `TMPDIR` and extraction scratch, and the parent
+holds the job's owner lock while the worker runs. Cancellation, a deadline, a
+missed heartbeat or an output bound stops the worker's whole process group. A
+worker whose parent exits sees end-of-file on stdin and stops itself. A sweep job
+at startup and after every failed job removes what a killed worker left. It takes
+a job directory only when its owner lock is free, and it also removes unpublished
+Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
+two newest completed downloads, so failing candidates do not accumulate.
 
 ## Recovering interrupted threads
 

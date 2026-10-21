@@ -1,5 +1,6 @@
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import {
   makeDeletionAdmission,
   type DeletionAdmissionInput,
@@ -450,6 +451,9 @@ const layerBase: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
+    // Jones: keeps new provider work out of a process that is handing off to an update.
+    const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
+    if (Option.isSome(admission)) yield* admission.value.attach;
     const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
@@ -779,6 +783,7 @@ const layerBase: Layer.Layer<
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           yield* applyStoredEvents(committed);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.linkEffects({
@@ -1175,6 +1180,7 @@ const layerBase: Layer.Layer<
             );
           }
           yield* applyStoredEvents(storedEvents);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,

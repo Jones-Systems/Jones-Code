@@ -19,6 +19,7 @@ import type {
   OrchestrationV2ThreadHistoryPage,
 } from "@t3tools/contracts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
+import { isUpdateAdmissionRefusal } from "../jones/updates/UpdateAdmissionFence.ts";
 import * as CapturedRuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
@@ -2151,7 +2152,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     }).pipe(
       Effect.catch((cause) =>
-        options?.reviewed === undefined ? failQueuedRunStart(threadId, cause) : Effect.fail(cause),
+        options?.reviewed !== undefined
+          ? Effect.fail(cause)
+          : // Jones: a start refused while this process hands off to an update stays queued.
+            isUpdateAdmissionRefusal(cause)
+            ? Effect.logInfo("Queued V2 run held while this host hands off to an update", {
+                threadId,
+              })
+            : failQueuedRunStart(threadId, cause),
       ),
     );
 
