@@ -61,9 +61,10 @@
       "id": "usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
-        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx",
+        "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
-      "scope": "Jones usage range, refresh, and provider-detail integration retains cached content and selected dates beside upstream browser navigation coverage."
+      "scope": "Jones usage range, refresh, and provider-detail integration retains cached content and selected dates beside upstream browser navigation coverage. Jones-owned compact totals, model token stats and table headers provide all-token Cache %, cache-write counters and paired model cost/token percentages. UsagePage and UsageModelDialog retain small mounting hooks; the shared token segment and share-bar interfaces add an optional zero-counter legend label while positive bar segments keep their existing behavior. Existing usage integration tests retain their application harness to verify provider scope and independent percentages."
     },
     {
       "id": "physical-process-evidence",

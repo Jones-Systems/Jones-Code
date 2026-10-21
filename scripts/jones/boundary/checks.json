@@ -106,10 +106,11 @@
       "id": "jones-usage",
       "tests": [
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
-        "apps/web/src/components/usage/UsagePage.browser.test.tsx"
+        "apps/web/src/components/usage/UsagePage.browser.test.tsx",
+        "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx apps/web/src/components/usage/UsagePage.browser.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.test.tsx src/components/usage/usageBreakdown.test.ts src/components/usage/UsagePage.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

@@ -447,6 +447,54 @@ describe("UsagePage provider and model details", () => {
     );
   }
 
+  it("shows a compact all-token cache percentage and reported cache writes", async () => {
+    const totals = [...container.querySelectorAll("section")].find(
+      (section) => section.querySelector("h2")?.textContent === "Totals",
+    )!;
+    expect(metric(totals, "Cache %")).toBe("49.6%");
+    expect(metric(totals, "Cache write")).toBe("80");
+    expect(totals.textContent).not.toContain("600 / ");
+
+    await clickLabel("Codex usage details");
+    expect(metric(details(), "Cache %")).toBe("50.0%");
+    expect(metric(details(), "Cache write")).toBe("30");
+    await clickLabel("codex-unpriced token details");
+    const modelDetails = container.querySelector<HTMLElement>(
+      '[role="region"][aria-label="codex-unpriced token details"]',
+    )!;
+    expect(metric(modelDetails, "Cache write")).toBe("0 reported");
+  });
+
+  it("keeps cost and token shares separate across metric changes and provider focus", async () => {
+    const percentages = () =>
+      [...container.querySelectorAll("thead th[aria-label]")].map((cell) =>
+        cell.getAttribute("aria-label"),
+      );
+    expect(percentages()).toEqual(["Cost percentage", "Token percentage"]);
+    const claude = container.querySelector("tbody tr")!;
+    expect(claude.querySelector("td:nth-child(4)")?.textContent).toBe("66.7%");
+    expect(claude.querySelector("td:nth-child(6)")?.textContent).toBe("66.9%");
+    await clickText("Cost");
+    expect(percentages()).toEqual(["Cost percentage", "Token percentage"]);
+    await clickLabel("Codex usage details");
+    const known = container.querySelector("tbody tr")!;
+    expect(known.querySelector("td:nth-child(4)")?.textContent).toBe("100.0%");
+    expect(known.querySelector("td:nth-child(6)")?.textContent).toBe("92.5%");
+    const unknown = container.querySelectorAll("tbody tr")[1]!;
+    expect(unknown.querySelector("td:nth-child(4)")?.textContent).toBe("—");
+    expect(unknown.querySelector("td:nth-child(6)")?.textContent).toBe("7.5%");
+  });
+
+  it("uses an empty cache percentage when no tokens were reported", async () => {
+    mockAnsweredUsage({ ...usageFixture(), merged: mergeUsage([], USAGE_CONTRACT_VERSION) });
+    await act(() => renderer.render(<UsagePage />));
+    const totals = [...container.querySelectorAll("section")].find(
+      (section) => section.querySelector("h2")?.textContent === "Totals",
+    )!;
+    expect(metric(totals, "Cache %")).toBe("—");
+    expect(metric(totals, "Cache write")).toBe("0 reported");
+  });
+
   it("opens one provider, scopes its details and shares, and keeps summary/chart aggregate", async () => {
     const summary = container.querySelector(".text-4xl")?.textContent;
     const chart = container.querySelector('[data-testid="usage-chart"]')!.outerHTML;
@@ -458,7 +506,7 @@ describe("UsagePage provider and model details", () => {
     expect(modelNames()).toEqual(["codex-known", "codex-unpriced"]);
     expect(metric(details(), "Uncached input")).toBe("110");
     expect(metric(details(), "Cached input")).toBe("200");
-    expect(metric(details(), "Cache creation")).toBe("30");
+    expect(metric(details(), "Cache write")).toBe("30");
     expect(metric(details(), "Output")).toBe("60");
     expect(metric(details(), "Reasoning · included in output")).toBe("15");
     expect(metric(details(), "Processed tokens")).toBe("400");
