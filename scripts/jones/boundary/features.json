@@ -1036,7 +1036,8 @@
         "apps/server/src/orchestration-v2/http.test.ts",
         "packages/client-runtime/src/jones/threadShellCompatibility.test.ts",
         "packages/contracts/src/jones/environmentIdentity.test.ts",
-        "packages/contracts/src/jones/threadMessageMetadata.test.ts"
+        "packages/contracts/src/jones/threadMessageMetadata.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/ThreadMetadataMcpService.test.ts"
       ],
       "scope": "Read-only exact thread attention with optional independent capability, global snapshot cursor, separate UI status/pill/unseen completion, own request identity and live child request propagation. Web and desktop status decisions and shared client shell presentation use the same pure projector. Proposed plans do not produce attention pills; unseen completion and explicit requests retain precedence. The existing upstream Sidebar.logic integration assertion is updated to prove the shared projector no longer infers a request from a settled plan turn. No transcript bodies, request details, thread cursor, send authority, database mutation or corpus capability changes. In-memory synthetic HTTP tests cover authentication, read scope and exact target isolation. Cross-host compatibility keeps attention semantics shared with the client shell and supplies canonical thread membership keys to the existing sidebar/filter harnesses."
     },
