@@ -637,7 +637,7 @@ jobs:
         run: vp run lint:mobile
 
   native_enrollment_qualification:
-    name: Native Enrollment (${{ matrix.os }}, Node 26.8.2)
+    name: Native Enrollment (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
@@ -645,9 +645,23 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             architecture: x64
+            node: "24.22.1"
+            sqlite: "3.53.4"
           - os: macos-15
             platform: darwin
             architecture: arm64
+            node: "24.22.1"
+            sqlite: "3.53.4"
+          - os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+            node: "26.8.2"
+            sqlite: "3.53.4"
+          - os: macos-15
+            platform: darwin
+            architecture: arm64
+            node: "26.8.2"
+            sqlite: "3.53.4"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -669,11 +683,12 @@ jobs:
       - name: Setup the standalone CLI runtime
         uses: actions/setup-node@v6
         with:
-          node-version: 26.8.2
+          node-version: ${{ matrix.node }}
 
       - name: Qualify native enrollment and store authority on the actual runtime
         env:
-          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: 26.8.2
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: ${{ matrix.node }}
+          JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE: ${{ matrix.sqlite }}
           QUALIFICATION_PLATFORM: ${{ matrix.platform }}
           QUALIFICATION_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
@@ -683,8 +698,8 @@ jobs:
           import { lstatSync, realpathSync } from 'node:fs';
           import { tmpdir } from 'node:os';
           import { join, parse, sep } from 'node:path';
-          assert.equal(process.versions.node, '26.8.2');
-          assert.equal(process.versions.sqlite, '3.53.4');
+          assert.equal(process.versions.node, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE);
+          assert.equal(process.versions.sqlite, process.env.JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE);
           assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
           assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
           console.log({ node: process.versions.node, sqlite: process.versions.sqlite, executable: realpathSync(process.execPath), platform: process.platform, architecture: process.arch });
