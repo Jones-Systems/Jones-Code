@@ -1,5 +1,6 @@
 import { RegistryContext } from "@effect/atom-react";
 import { EnvironmentId } from "@t3tools/contracts";
+import { pendingSubagentRequestsByThread } from "@t3tools/client-runtime/state/threadShell";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";
@@ -47,7 +48,7 @@ vi.mock(import("../state/threads"), async (original) => {
     ...actual,
     environmentThreadShells: {
       ...actual.environmentThreadShells,
-      pendingSubagentRequestsAtom: (() => noRequestsAtom) as never,
+      pendingSubagentRequestsAtom: ((id: string) => requestsAtom(id)) as never,
     },
   };
 });
@@ -73,7 +74,14 @@ import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
 
 let registry: AtomRegistry.AtomRegistry;
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
-const noRequestsAtom = Atom.make(new Map());
+const requestsAtom = Atom.family((id: string) =>
+  Atom.make((get) => {
+    const snapshot = get(shellAtom(id)) as ReturnType<typeof shell> | null;
+    const threads =
+      snapshot && Option.isSome(snapshot.snapshot) ? snapshot.snapshot.value.threads : [];
+    return pendingSubagentRequestsByThread(threads as never);
+  }),
+);
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 
 class TestNotification extends EventTarget {
@@ -231,3 +239,39 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     expect(notification.close).toHaveBeenCalled();
   },
 );
+
+it("alerts on the parent when its delegated subagent asks for approval", async () => {
+  await using app = setup();
+  state.environmentIds = ["one"];
+  state.mode = "notifications-and-sound";
+  state.inApp = true;
+  focused = true;
+  const parent = toV2ThreadShell(thread);
+  const delegatedShell = (approval: boolean) => ({
+    status: "live",
+    snapshot: Option.some({
+      threads: [
+        parent,
+        {
+          ...toV2ThreadShell({ ...thread, id: "child", hasPendingApprovals: approval }),
+          title: "Review the login form",
+          creationSource: "mcp",
+          lineage: {
+            rootThreadId: "thread",
+            parentThreadId: "thread",
+            relationshipToParent: "subagent",
+          },
+        },
+      ],
+    }),
+  });
+  state.shells.set("one", delegatedShell(false));
+  await app.render();
+  state.shells.set("one", delegatedShell(true));
+  await app.render();
+  await app.render();
+  expect(state.toast).toHaveBeenCalledTimes(1);
+  expect(state.toast).toHaveBeenLastCalledWith(
+    expect.objectContaining({ title: "Approval needed", description: "Test thread" }),
+  );
+});

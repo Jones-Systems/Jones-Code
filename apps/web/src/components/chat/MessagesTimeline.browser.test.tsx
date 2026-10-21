@@ -249,6 +249,24 @@ describe("compact reasoning math", () => {
       " and ",
       "x^2",
     ]);
+  });
+});
+
+describe("MessagesTimeline attachments", () => {
+  it("renders unknown attachment types as inert rows instead of crashing", async () => {
+    await using screen = await renderTimeline([
+      message("Read the report.", {
+        attachments: [
+          {
+            type: "recording",
+            id: "attachment-voice-memo",
+            name: "voice-memo.ogg",
+            mimeType: "audio/ogg",
+            sizeBytes: 42,
+          },
+        ] as never,
+      }),
+    ]);
     expect(text()).toContain("voice-memo.ogg");
     expect(buttons("Download voice-memo.ogg")).toHaveLength(0);
     expect(container.querySelector("a[href], img")).toBeNull();
@@ -691,12 +709,15 @@ describe("MessagesTimeline scroll position", () => {
     const props = baseProps();
     function Thread() {
       const composer = useComposerFocusState();
+      const [liveFollowEnabled, setLiveFollowEnabled] = useState(true);
       return (
-        <>
+        <div className="contents" onWheelCapture={() => setLiveFollowEnabled(false)}>
           <button onClick={() => composer.setIsComposerScrollCollapsed(true)}>Collapse</button>
           <output>{composer.isComposerScrollCollapsed ? "collapsed" : "resting"}</output>
           <MessagesTimeline
             {...props}
+            liveFollowEnabled={liveFollowEnabled}
+            onManualNavigation={() => setLiveFollowEnabled(false)}
             onToolOutputCollapsedAtEnd={composer.restoreAfterTimelineReachedEnd}
             timelineEntries={[
               ...tallEntries,
@@ -708,7 +729,7 @@ describe("MessagesTimeline scroll position", () => {
               }),
             ]}
           />
-        </>
+        </div>
       );
     }
     await using screen8 = await renderElement(<Thread />);
