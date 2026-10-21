@@ -1251,6 +1251,15 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
+  const noticeBuild = (sha, version = "0.0.45-preview.20261011.1.1") => `(() => {
+    const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
+      .filter(node => {
+        const detail = node.getAttribute('aria-label') ?? '';
+        return detail.split('\\n').includes(${JSON.stringify(version)}) &&
+          detail.endsWith(${JSON.stringify(`source ${sha}`)});
+      });
+    return labels.length === 1 && labels[0].textContent === ${JSON.stringify(sha.slice(0, 7))};
+  })()`;
   const noticeTitles = (label, titles) =>
     check(
       label,
@@ -1312,7 +1321,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   noticeCount(1);
   check(
     "Initial preview pair renders the expected full source and abbreviation",
-    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource)}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource)}) && ${noticeBuild(syntheticSource)}`,
   );
   click('[data-testid="notice-banners"] >> role=button[name="Dismiss client version notice"]');
   noticeCount(0);
@@ -1333,11 +1342,11 @@ export function rendererSteps(origin, sourceSha, runId) {
   ]);
   check(
     "Changed full source retains the same displayed abbreviation",
-    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeText}.includes(${JSON.stringify(syntheticSource.slice(0, 12))})`,
+    `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeBuild(syntheticSource.slice(0, -1) + "c")}`,
   );
   capture("client-notice-changed-full-source", [
     "Laptop: Different preview sources",
-    syntheticSource.slice(0, 12),
+    syntheticSource.slice(0, 7),
   ]);
   control("notice-pair-equal");
   noticeCount(0);
@@ -1362,8 +1371,8 @@ export function rendererSteps(origin, sourceSha, runId) {
     "Laptop: Client update available",
   ]);
   check(
-    "Stable guidance keeps the ordinary version and update-or-reload instructions",
-    `${noticeText}.includes('Server 0.1.0') && ${noticeText}.includes('Update this app or reload an updated web client.')`,
+    "Stable guidance retains full version details and update-or-reload instructions",
+    `${noticeBuild(syntheticSource, "0.1.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
   details();
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
@@ -1372,7 +1381,7 @@ export function rendererSteps(origin, sourceSha, runId) {
     [
       "Laptop: Client update available",
       "Update this app or reload an updated web client.",
-      "Server 0.1.0",
+      syntheticSource.slice(0, 7),
     ],
     ["Which source is newer is unknown."],
   );

@@ -1022,6 +1022,52 @@ NodeTest.test(
 );
 
 NodeTest.test(
+  "notice assertions require short labels with exact full source and version details",
+  () => {
+    const steps = rendererSteps("http://fixture.invalid", "d".repeat(40), "synthetic");
+    const labels = [
+      "Initial preview pair renders the expected full source and abbreviation",
+      "Changed full source retains the same displayed abbreviation",
+      "Stable guidance retains full version details and update-or-reload instructions",
+    ];
+    for (const label of labels) {
+      const step = steps.find((item) => item.label === label);
+      NodeAssert.ok(step);
+      const sha = "a".repeat(39) + (label.startsWith("Changed") ? "c" : "b");
+      const version = label.startsWith("Stable") ? "0.1.0" : "0.0.45-preview.20261011.1.1";
+      const badge = (source = sha, fullVersion = version, text = sha.slice(0, 7)) => ({
+        textContent: text,
+        getAttribute: () => `Build time not recorded\n${fullVersion}\nsource ${source}`,
+      });
+      const read = (badges) =>
+        new Function("document", "window", `return ${step.expression}`)(
+          {
+            querySelector: (selector) => ({
+              textContent: selector.includes("notice-server")
+                ? `Synthetic server ${version}; source ${sha}`
+                : "Client ddddddd; Server aaaaaaa. Update this app or reload an updated web client.",
+            }),
+            querySelectorAll: (selector) => {
+              NodeAssert.equal(selector, '[data-testid="notice-banners"] [aria-label]');
+              return badges;
+            },
+          },
+          { __jonesInstallPreview: { snapshot: () => ({}) } },
+        );
+      NodeAssert.equal(read([badge()]), true);
+      for (const invalid of [
+        [],
+        [badge(), badge()],
+        [badge(sha.slice(0, -1) + "e")],
+        [badge(sha, version + "-other")],
+        [badge(sha, version, "wrong")],
+      ])
+        NodeAssert.equal(read(invalid), false);
+    }
+  },
+);
+
+NodeTest.test(
   "a failed controlled page action is captured before native tab closure without retry",
   async () => {
     const failure = new Error(
