@@ -1179,6 +1179,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                 ProviderRegistryMock.layer(),
                 Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
                   namedProjectsRoot: `${cwd}/unused-projects`,
+                  isScratchProject: () => Effect.succeed(false),
                   folderForThread: () => Effect.succeed(Option.none()),
                 }),
               );
