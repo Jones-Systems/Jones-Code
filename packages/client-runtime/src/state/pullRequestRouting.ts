@@ -316,11 +316,23 @@ export function createPullRequestRouter() {
         { concurrency: 4, discard: true },
       );
     });
-    // A failed viewed-files batch may have applied some paths. Other writes invalidate on success.
-    const finish = (operation: ReturnType<typeof request<T>>) =>
+    // Failed or interrupted writes may have applied remotely. Refresh readers unless rejection
+    // proves dispatch never happened; viewed-files batches always invalidate their narrow cache.
+    type RoutedOperation = Effect.Effect<
+      Effect.Success<ReturnType<typeof request<T>>>,
+      Effect.Error<ReturnType<typeof request<T>>> | PullRequestOperationError,
+      Effect.Services<ReturnType<typeof request<T>>>
+    >;
+    const finish = (operation: RoutedOperation) =>
       tag === WS_METHODS.pullRequestsSetFilesViewed
         ? operation.pipe(Effect.ensuring(invalidateReaders))
-        : operation.pipe(Effect.tap(() => invalidateReaders));
+        : operation.pipe(
+            Effect.onExit((exit) =>
+              Exit.isSuccess(exit) || !rejectedBeforeDispatch(Cause.squash(exit.cause))
+                ? invalidateReaders
+                : Effect.void,
+            ),
+          );
     const alternatives = [];
     for (const [id, entry] of entries) {
       if (id === origin.target.environmentId) continue;

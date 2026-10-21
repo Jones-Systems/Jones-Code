@@ -57,6 +57,26 @@ export const make = Effect.fn("KeyedLock.make")(function* <Key>(): Effect.fn.Ret
         (semaphore) => semaphore.withPermit(effect),
         () => release(key),
       ),
+    tryWithLock: <A, E, R>(
+      key: Key,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<Option.Option<A>, E, R> =>
+      Effect.acquireUseRelease(
+        Effect.flatMap(Semaphore.make(1), (semaphore) =>
+          Ref.modify(locks, (current) => {
+            // Reserving the key also respects waiters whose permit has not been handed over yet.
+            if (current.has(key)) return [Option.none<Semaphore.Semaphore>(), current] as const;
+            const next = new Map(current);
+            next.set(key, { semaphore, users: 1 });
+            return [Option.some(semaphore), next] as const;
+          }),
+        ),
+        (reserved): Effect.Effect<Option.Option<A>, E, R> =>
+          Option.isSome(reserved)
+            ? reserved.value.withPermitsIfAvailable(1)(effect)
+            : Effect.succeed(Option.none<A>()),
+        (reserved) => (Option.isSome(reserved) ? release(key) : Effect.void),
+      ),
     activeKeys: Effect.map(Ref.get(locks), (current) => Array.from(current.keys())),
   } satisfies KeyedLock<Key>;
 });

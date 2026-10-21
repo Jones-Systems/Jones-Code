@@ -1167,12 +1167,13 @@ export const make = Effect.gen(function* () {
           compatibilityHint: _previousHint,
           ...rest
         } = entry;
+        const hinted = hint !== undefined ? { ...rest, compatibilityHint: hint } : rest;
         // Compatibility pauses connections without changing the user's saved on/off choice.
         const next: ConnectionCatalogEntry =
           error === null
             ? hinted
             : {
-                ...rest,
+                ...hinted,
                 unsupportedReason: error.message,
                 ...(error.serverUpdateRequired === true ? { serverUpdateRequired: true } : {}),
               };

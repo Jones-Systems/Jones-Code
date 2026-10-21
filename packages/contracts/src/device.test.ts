@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
+  DeviceDirectAccess,
   DeviceServiceState,
+  SshDeviceHostConfig,
   EasDeviceHostConfig,
   EasDeviceHostConfigs,
   SshDeviceHostConfigs,

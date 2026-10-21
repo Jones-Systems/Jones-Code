@@ -474,6 +474,7 @@ const makeReader = Effect.fnUntraced(function* (options: SqliteClientConfig) {
 
 const CHECKPOINT_FRAMES = 1000;
 const CHECKPOINT_IDLE_MS = 100;
+const CHECKPOINT_BUSY_TIMEOUT_MS = 1000;
 const CHECKPOINT_BACKPRESSURE_FRAMES = 10 * CHECKPOINT_FRAMES;
 
 const readSafeSqliteInteger = (value: unknown) => {
@@ -500,7 +501,8 @@ const initialize = () => {
   if (db !== undefined) return;
   // The writer switches to WAL after constructing the client.
   db = new DatabaseSync(workerData.filename);
-  db.exec("PRAGMA busy_timeout = 5000;");
+  // Bound startup contention before the first lock-taking prepare.
+  db.exec("PRAGMA busy_timeout = " + workerData.busyTimeoutMs + ";");
   const mode = String(db.prepare("PRAGMA journal_mode").get().journal_mode).toLowerCase();
   if (mode !== "wal") throw new Error("database uses journal_mode " + mode + ", not wal");
   // macOS requires F_FULLFSYNC to flush the drive cache.
@@ -508,6 +510,7 @@ const initialize = () => {
   frames = db.prepare("PRAGMA wal_checkpoint(NOOP)");
   checkpoint = db.prepare("PRAGMA wal_checkpoint(PASSIVE)");
   truncate = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.exec("PRAGMA busy_timeout = 5000;");
 };
 const atCeiling = (state) => state.log >= workerData.backpressureFrames;
 const exceedsSizeLimit = () =>
@@ -631,6 +634,7 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
         filename,
         frames: CHECKPOINT_FRAMES,
         backpressureFrames: CHECKPOINT_BACKPRESSURE_FRAMES,
+        busyTimeoutMs: CHECKPOINT_BUSY_TIMEOUT_MS,
         idleMs: CHECKPOINT_IDLE_MS,
       },
     });

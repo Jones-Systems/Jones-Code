@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  PreviewAutomationRuntimeIdentity,
   PreviewAutomationHost,
   PreviewAutomationOpenInput,
   PreviewAutomationStatus,

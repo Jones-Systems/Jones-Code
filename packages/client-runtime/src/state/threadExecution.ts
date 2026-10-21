@@ -53,6 +53,9 @@ function summarizeThreadRun(
   projection: OrchestrationV2ThreadProjection,
   run: OrchestrationV2ThreadProjection["runs"][number],
 ): ThreadRunSummary {
+  const settlement = projection.attempts.find(
+    (attempt) => attempt.id === run.activeAttemptId,
+  )?.providerSettlement;
   const turnStatus = ACTIVITY_RUN_STATUSES.has(run.status)
     ? latestProviderTurnForAttempt(projection.providerTurns, run.activeAttemptId)?.status
     : undefined;

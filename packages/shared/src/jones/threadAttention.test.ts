@@ -86,6 +86,26 @@ const completed = () =>
   );
 
 describe("shared native thread attention", () => {
+  it.each(["preparing", "starting", "running", "waiting", "completed"] as const)(
+    "preserves upstream nonblocking input semantics while %s",
+    (status) => {
+      const thread = shell({
+        latestRunId: RunId.make("run"),
+        status,
+        pendingRuntimeRequest: { ...request("user_input"), blocking: false },
+      });
+      expect(shellAttentionInput(thread).hasPendingUserInput).toBe(
+        status === "waiting" || status === "completed",
+      );
+      expect(
+        shellAttentionInput({
+          ...thread,
+          pendingRuntimeRequest: { ...request("user_input"), blocking: true },
+        }).hasPendingUserInput,
+      ).toBe(true);
+    },
+  );
+
   it("prioritizes own or child approvals, then input, then runtime status", () => {
     const base = shellAttentionInput(shell({ latestRunId: RunId.make("run"), status: "running" }));
     for (const [override, status, pill] of [

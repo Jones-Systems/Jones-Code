@@ -3,6 +3,8 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  OrchestratorMcpThreadSettleInput,
+  OrchestratorMcpThreadSettleResult,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
 } from "./orchestratorMcp.ts";

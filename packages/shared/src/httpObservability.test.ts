@@ -23,6 +23,7 @@ describe("HTTP observability redaction", () => {
           headers: {
             authorization: "Bearer bearer-value",
             dpop: "proof-value",
+            "expo-session": "expo-session-value",
             accept: "application/json",
           },
         }),
@@ -46,11 +47,12 @@ describe("HTTP observability redaction", () => {
       );
       assert.strictEqual(attributes["url.query"], "wsTicket=REDACTED&Signature=REDACTED&x=1");
       assert.strictEqual(attributes["http.request.header.dpop"], "<redacted>");
+      assert.strictEqual(attributes["http.request.header.expo-session"], "<redacted>");
       assert.strictEqual(attributes["http.request.header.authorization"], "<redacted>");
       assert.strictEqual(attributes["http.request.header.accept"], "application/json");
 
       const recorded = JSON.stringify(attributes);
-      for (const secret of ["ticket-value", "signed-value", "bearer-value", "proof-value"]) {
+      for (const secret of ["ticket-value", "signed-value", "bearer-value", "proof-value", "expo-session-value"]) {
         assert.notInclude(recorded, secret);
       }
     }),
