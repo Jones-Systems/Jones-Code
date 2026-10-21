@@ -2251,13 +2251,15 @@ describe("orchestrator MCP toolkit", () => {
             expect(delegatedStatus).toMatchObject({
               childRunId: delegated.childRunId,
               status: "completed",
+              summary: delegatedResult,
+              resultContextTransferId: delegated.resultContextTransferId,
               hasPendingChildRuns: false,
               latestTerminalRunId: delegated.childRunId,
               latestTerminalStatus: "completed",
-              latestTerminalSummary: delegatedResult,
+              latestTerminalSummary: null,
             });
             expect(delegatedStatus.resultContextTransferId).not.toBeNull();
-            expect(delegatedStatus.latestTerminalResultContextTransferId).not.toBeNull();
+            expect(delegatedStatus.latestTerminalResultContextTransferId).toBeNull();
 
             yield* expectOffersToStay(0);
 
