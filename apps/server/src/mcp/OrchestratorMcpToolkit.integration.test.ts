@@ -51,6 +51,7 @@ import {
   ThreadMetadataMcpUpdateResult,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -477,21 +478,66 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
   };
 }
 
+// Temporary opt-in diagnosis; separate budgets keep sleep noise from hiding phases.
+const clockProbeEnabled = process.env.T3_L3_MCP_CLOCK_PROBE === "1";
+const clockProbeCounts = { phase: 0, sleep: 0, projection: 0 };
+const clockProbeLimits = { phase: 512, sleep: 64, projection: 128 };
+let clockProbeSequence = 0;
+const traceClockProbe = (
+  phase: string,
+  details: Readonly<Record<string, unknown>> = {},
+) =>
+  !clockProbeEnabled
+    ? Effect.void
+    : Effect.sync(() => {
+        const category = phase.startsWith("sleep.") ? "sleep"
+          : phase === "projection.update" ? "projection" : "phase";
+        if (clockProbeCounts[category] >= clockProbeLimits[category]) return;
+        clockProbeCounts[category] += 1;
+        console.info("L3_MCP_CLOCK", JSON.stringify({
+          entry: ++clockProbeSequence, phase, ...details,
+        }));
+      });
+const probeProjection = (projection: OrchestrationV2ThreadProjection) => ({
+  runs: projection.runs.slice(-8).map((run) => ({ id: run.id, status: run.status })),
+  providerTurns: projection.providerTurns.slice(-8).map((turn) => ({
+    id: turn.id, status: turn.status,
+  })),
+  subagents: projection.subagents.slice(-8).map((task) => ({
+    id: task.id, status: task.status, completionState: task.completionDelivery?.state,
+  })),
+});
+
 const waitForProjection = Effect.fn("test.waitForProjection")(function* (
   orchestrator: Orchestrator.OrchestratorV2Shape,
   threadId: ThreadId,
   predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
+  yield* traceClockProbe("projection.start", {
+    threadId, predicate: predicate.toString().slice(0, 300),
+  });
   // Capture the durable cursor before reading so a concurrent update cannot be missed.
   const eventSink = yield* EventSink.EventSinkV2;
   const afterSequence = yield* eventSink.latestSequence({ threadId });
   const current = yield* orchestrator.getThreadProjection(threadId);
-  if (predicate(current)) return current;
+  yield* traceClockProbe("projection.current", {
+    threadId, afterSequence, ...probeProjection(current),
+  });
+  if (predicate(current)) {
+    yield* traceClockProbe("projection.ready", { threadId });
+    return current;
+  }
+  let updates = 0;
   const observed = yield* eventSink.stream({ threadId, afterSequence }).pipe(
-    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
+    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId).pipe(
+      Effect.tap((projection) => clockProbeEnabled && ++updates <= 2
+        ? traceClockProbe("projection.update", { threadId, ...probeProjection(projection) })
+        : Effect.void),
+    )),
     Stream.filter(predicate),
     Stream.runHead,
   );
+  yield* traceClockProbe("projection.tail-ended", { threadId, matched: Option.isSome(observed) });
   return yield* Option.match(observed, {
     onNone: () =>
       Effect.die(new Error(`Projection stream ended before the milestone for ${threadId}.`)),
@@ -1009,9 +1055,17 @@ describe("orchestrator MCP toolkit", () => {
         Effect.gen(function* () {
           const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
           // Initialize the epoch before building layers or registering worker sleeps.
+          yield* traceClockProbe("fixture.epoch-start");
           yield* TestClock.setTime(acceptedAt);
+          yield* traceClockProbe("fixture.epoch-ready");
           const testClock = yield* TestClock.testClockWith(Effect.succeed);
           const wallTimeOffset = yield* Ref.make(0);
+          let sleepId = 0;
+          const clockState = () => ({
+            rawMillis: testClock.currentTimeMillisUnsafe(),
+            offsetMillis: Ref.getUnsafe(wallTimeOffset),
+            monotonicNanos: testClock.monotonicTimeNanosUnsafe().toString(),
+          });
           const fixtureClock: TestClock.TestClock = {
             ...testClock,
             currentTimeMillisUnsafe: () =>
@@ -1023,7 +1077,32 @@ describe("orchestrator MCP toolkit", () => {
             currentTimeNanos: Effect.sync(() => fixtureClock.currentTimeNanosUnsafe()),
             monotonicTimeNanosUnsafe: () => testClock.monotonicTimeNanosUnsafe(),
             monotonicTimeNanos: testClock.monotonicTimeNanos,
-            sleep: (duration) => testClock.sleep(duration),
+            adjust: (duration) => !clockProbeEnabled ? testClock.adjust(duration)
+              : Effect.gen(function* () {
+                  yield* traceClockProbe("clock.adjust-start", {
+                    durationMs: Duration.toMillis(Duration.fromInputUnsafe(duration)), ...clockState(),
+                  });
+                  yield* testClock.adjust(duration).pipe(
+                    Effect.onExit((exit) => traceClockProbe("clock.adjust-exit", {
+                      exit: exit._tag, ...clockState(),
+                    })),
+                  );
+                }),
+            sleep: (duration) => {
+              const durationMs = Duration.toMillis(duration);
+              if (!clockProbeEnabled || (durationMs !== 1 && durationMs !== 500)) {
+                return testClock.sleep(duration);
+              }
+              return Effect.gen(function* () {
+                const id = ++sleepId;
+                yield* traceClockProbe("sleep.start", { id, durationMs, ...clockState() });
+                yield* testClock.sleep(duration).pipe(
+                  Effect.onExit((exit) => traceClockProbe("sleep.exit", {
+                    id, durationMs, exit: exit._tag, ...clockState(),
+                  })),
+                );
+              });
+            },
           };
           // Registered MCP handlers capture their clock. Share the wall-time offset with
           // them, while TestClock still owns tracked sleeps and monotonic deadlines.
@@ -1035,10 +1114,15 @@ describe("orchestrator MCP toolkit", () => {
                 Effect.suspend(() =>
                   Ref.getAndSet(wallTimeOffset, millis - testClock.currentTimeMillisUnsafe()),
                 ),
-                () => effect,
-                (previous) => Ref.set(wallTimeOffset, previous),
+                () => traceClockProbe("wall-time.enter", { millis, ...clockState() }).pipe(
+                  Effect.andThen(effect),
+                ),
+                (previous) => Ref.set(wallTimeOffset, previous).pipe(
+                  Effect.andThen(traceClockProbe("wall-time.restored", { millis })),
+                ),
               );
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
+          yield* traceClockProbe("fixture.workspace-ready");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
           const deliveryTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -1098,12 +1182,14 @@ describe("orchestrator MCP toolkit", () => {
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
+              yield* traceClockProbe("continuation.start", { count });
               if ((yield* Ref.get(continuationOffers)).length < count) {
                 yield* Stream.fromQueue(continuationOfferCounts).pipe(
                   Stream.filter((observed) => observed >= count),
                   Stream.runHead,
                 );
               }
+              yield* traceClockProbe("continuation.ready", { count });
               return yield* Ref.get(continuationOffers);
             });
           const expectOffersToStay = (count: number) =>
@@ -1231,6 +1317,7 @@ describe("orchestrator MCP toolkit", () => {
           yield* Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             const server = yield* McpServer.McpServer;
+            yield* traceClockProbe("fixture.layers-ready", clockState());
             yield* orchestrator.dispatch({
               type: "thread.create",
               createdBy: "user",
@@ -1285,9 +1372,13 @@ describe("orchestrator MCP toolkit", () => {
               name: string,
               args: Record<string, unknown>,
             ) =>
-              server
-                .callTool({ name, arguments: args })
-                .pipe(
+              traceClockProbe("tool.start", {
+                name, requestId: args.clientRequestId, timeoutMs: args.timeoutMs,
+              }).pipe(
+                  Effect.andThen(server.callTool({ name, arguments: args })),
+                  Effect.onExit((exit) => traceClockProbe("tool.exit", {
+                    name, requestId: args.clientRequestId, exit: exit._tag,
+                  })),
                   Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
                   Effect.provideService(McpSchema.McpServerClient, client),
                 );
@@ -3043,7 +3134,9 @@ describe("orchestrator MCP toolkit", () => {
               timeoutMs: 1,
             }).pipe(Effect.forkChild);
             yield* TestClock.adjust("1 millis");
+            yield* traceClockProbe("thread-deadline.join", clockState());
             const activeTimeoutCall = yield* Fiber.join(activeTimeoutFiber);
+            yield* traceClockProbe("thread-deadline.joined", clockState());
             const activeTimeout = yield* decodeThreadWaitResult(
               activeTimeoutCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -3194,7 +3287,9 @@ describe("orchestrator MCP toolkit", () => {
               clientRequestId: "delegate-wait-upgrade-1",
             }).pipe(Effect.forkChild);
             yield* TestClock.adjust("1 millis");
+            yield* traceClockProbe("delegate-deadline.join", clockState());
             const upgradedCall = yield* Fiber.join(upgradedFiber);
+            yield* traceClockProbe("delegate-deadline.joined", clockState());
             const upgradedDelegated = yield* decodeDelegateTaskResult(
               upgradedCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -4332,7 +4427,9 @@ describe("orchestrator MCP toolkit", () => {
                 thirdFanoutDelivery.messageId,
               ]),
             );
+            yield* traceClockProbe("fixture.body-complete", clockState());
           }).pipe(Effect.provide(layerTest), Effect.provideService(Clock.Clock, fixtureClock));
+          yield* traceClockProbe("fixture.layer-effect-complete", clockState());
         }),
       ),
   );
