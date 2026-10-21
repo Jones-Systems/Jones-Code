@@ -1295,6 +1295,30 @@
         "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "scope": "Display-only Eastern Time minute build labels backed by optional exact workflow-attempt start metadata. Shared formatting covers default month/day and compact day labels, adjacent collisions, DST, and honest old-build fallback. Narrow upstream hooks forward optional metadata and render labels while full versions, source ancestry, candidate handles, receipts and persisted selections retain their existing meaning. Existing descriptor, updater and packager harnesses retain integration cases because they own those boundaries."
+    },
+    {
+      "id": "thread-reference-only",
+      "tests": [
+        "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/lib/composerContextRecords.test.ts",
+        "apps/web/src/lib/composerContextReferences.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "packages/shared/src/jones/threadReferenceProjection.test.ts",
+        "packages/shared/src/composerContextReferences.test.ts",
+        "packages/contracts/src/jones/threadReferenceExcerpt.test.ts",
+        "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/web/src/components/chat/pendingDraftWork.test.ts",
+        "packages/contracts/src/composerContext.test.ts"
+      ],
+      "scope": "Web/desktop main-composer drop, picker and clipboard plus question-answer thread references capture bounded programmatic recent context from the source environment, retain clickable identity, and never export JSONL/full transcript. Latest3 run exchanges include selected canonical activity; up to6 older exchanges include incoming text and last nonempty non-streaming recorded assistant (historical final channel unavailable). Schemas retain old identity-only records; shared projection caps escaped excerpt additions. New read RPC uses existing orchestration-read authorization and internal tail projection preserves visibility/fork rules. ProjectionStore/ThreadManagement/RPC/auth/constants edits are narrow existing-owner integrations; message formatter and questionAttachments generation counters remain accepted shared edits because extracting their owning state/formatter would duplicate machinery. Existing exported transcript API/stored files remain. Mobile creation remains identity-only, current web/client dispatch is V2, strict legacy bootstrap is excluded. No new provider-adapter or database schema changes. Existing thread-chip tooltip adds capture status without new layout; exhaustive RPC instrumentation assigns the new read to its existing family."
     }
   ]
 }
