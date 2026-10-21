@@ -16,6 +16,7 @@ import {
   servePeer,
 } from "../../peer/PeerLinks.testkit.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
+import * as JonesMigrations from "../persistence/Migrations.ts";
 import { peerEnvironmentLinksTable } from "./table.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -65,14 +66,14 @@ it.effect("fresh startup keeps experimental peer links entirely in the Jones led
       upstream.map(({ migration_id, name }) => [migration_id, name] as const),
       migrationManifest,
     );
-    assert.strictEqual(upstream.at(-1)?.migration_id, 63);
+    assert.strictEqual(upstream.at(-1)?.migration_id, 67);
     yield* assertJonesPeerSchema;
     assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("released schema 63 keeps its rows and leaves IDs 64–67 available to upstream", () =>
+it.effect("released schema 63 keeps its rows through Jones migration and accepts upstream migrations", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
@@ -92,7 +93,8 @@ it.effect("released schema 63 keeps its rows and leaves IDs 64–67 available to
     const tables = objects.filter(({ type }) => type === "table");
     const rowsBefore = yield* Effect.forEach(tables, ({ name }) => sql`SELECT * FROM ${sql(name)}`);
 
-    assert.deepStrictEqual(yield* runMigrations(), []);
+    assert.deepStrictEqual(yield* runMigrations({ toMigrationInclusive: 63 }), []);
+    yield* JonesMigrations.runMigrations();
     yield* assertJonesPeerSchema;
     const objectsAfter = yield* sql`
       SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name
@@ -103,9 +105,19 @@ it.effect("released schema 63 keeps its rows and leaves IDs 64–67 available to
       rowsBefore,
     );
 
-    // Synthetic future migrations prove these numbers remain free without
-    // adopting or predicting the contents of any future upstream migration.
-    const future = [64, 65, 66, 67].map((id) => [id, `SyntheticFuture${id}`] as const);
+    assert.deepStrictEqual(
+      yield* runMigrations(),
+      migrationManifest.filter(([id]) => id > 63),
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT command_id FROM orchestration_command_receipts`,
+      [{ command_id: "synthetic-peer-command" }],
+    );
+    yield* assertJonesPeerSchema;
+
+    // Real upstream migrations own 64–67; synthetic later migrations prove
+    // Jones still leaves future upstream IDs available without predicting their contents.
+    const future = [68, 69, 70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
     const executed = yield* Migrator.make({})({
       loader: Migrator.fromRecord(
         Object.fromEntries(

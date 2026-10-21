@@ -1,6 +1,5 @@
 import * as AuthSessions from "../persistence/AuthSessions.ts";
-
-
+import { PersistenceSqlError } from "../persistence/Errors.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -90,7 +89,72 @@ const makeDiskSessionStoreLayer = Effect.fn("makeDiskSessionStoreLayer")(functio
   );
 });
 
+const repositoryFailure = new PersistenceSqlError({
+  operation: "AuthSessionRepository.getById:query",
+  detail: "sqlite is unavailable",
+});
+
+const layerFailingSessionLookupRepository = Layer.succeed(AuthSessions.AuthSessionRepository, {
+  create: () => Effect.void,
+  createReplacingActive: () => Effect.succeed([]),
+  createIfAbsent: () => Effect.void,
+  getById: () => Effect.fail(repositoryFailure),
+  listActive: () => Effect.succeed([]),
+  revoke: () => Effect.fail(repositoryFailure),
+  revokeAllExcept: () => Effect.fail(repositoryFailure),
+  setLastConnectedAt: () => Effect.void,
+  setClientConnection: () => Effect.void,
+});
+
+const layerFailingSessionLookupCredential = Layer.effect(
+  SessionStore.SessionStore,
+  SessionStore.make,
+).pipe(
+  Layer.provide(layerFailingSessionLookupRepository),
+  Layer.provide(ServerSecretStore.layer),
+  Layer.provide(SqlitePersistence.layerMemory),
+  Layer.provide(layerServerEnvironment(EnvironmentId.make("test-environment"))),
+  Layer.provide(layerServerConfig()),
+);
+
 it.layer(NodeServices.layer)("SessionStore.layer", (it) => {
+  it.effect("preserves repository failures while verifying session and websocket credentials", () =>
+    Effect.gen(function* () {
+      const sessions = yield* SessionStore.SessionStore;
+      const issued = yield* sessions.issue({
+        method: "bearer-access-token",
+        subject: "repository-failure",
+      });
+      const websocket = yield* sessions.issueWebSocketToken(issued.sessionId);
+
+      const sessionError = yield* Effect.flip(sessions.verify(issued.token));
+      const websocketError = yield* Effect.flip(sessions.verifyWebSocketToken(websocket.token));
+      const revokeError = yield* Effect.flip(sessions.revoke(issued.sessionId));
+      const revokeOthersError = yield* Effect.flip(sessions.revokeAllExcept(issued.sessionId));
+
+      expect(sessionError._tag).toBe("SessionCredentialVerificationError");
+      expect(websocketError._tag).toBe("WebSocketTokenVerificationError");
+      expect(sessionError.cause).toBe(repositoryFailure);
+      expect(websocketError.cause).toBe(repositoryFailure);
+      if (sessionError._tag === "SessionCredentialVerificationError") {
+        expect(sessionError.sessionId).toBe(issued.sessionId);
+      }
+      if (websocketError._tag === "WebSocketTokenVerificationError") {
+        expect(websocketError.sessionId).toBe(issued.sessionId);
+      }
+      expect(revokeError).toMatchObject({
+        _tag: "SessionRevocationError",
+        sessionId: issued.sessionId,
+        cause: repositoryFailure,
+      });
+      expect(revokeOthersError).toMatchObject({
+        _tag: "OtherSessionsRevocationError",
+        currentSessionId: issued.sessionId,
+        cause: repositoryFailure,
+      });
+    }).pipe(Effect.provide(layerFailingSessionLookupCredential)),
+  );
+
   it.effect.each(["revoke", "revokeAllExcept", "replace"] as const)(
     "invalidates every connection for a session on %s and leaves other sessions active",
     (operation) =>

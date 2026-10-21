@@ -22,6 +22,7 @@ import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import * as ServerConfig from "./config.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ServerLogger from "./serverLogger.ts";
+import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import { logStartupPairingIssued, maybeOpenBrowser } from "./jones/startupAccessLogging.ts";
 
 interface ExportedRequest {
@@ -231,6 +232,80 @@ describe("ServerLoggerLive", () => {
       Effect.gen(function* () {
         // A failed launch records its error, which names the target, on its span.
         const failingLaunch = maybeOpenBrowser(pairingUrl).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              layerConfig({ noBrowser: false }),
+              Layer.mock(ExternalLauncher.ExternalLauncher)({
+                launchBrowser: (target) =>
+                  Effect.fail(
+                    new ExternalLauncherBrowserSpawnError({
+                      target,
+                      command: "xdg-open",
+                      args: [target],
+                      cause: new Error("spawn xdg-open ENOENT"),
+                    }),
+                  ).pipe(Effect.withSpan("externalLauncher.launchBrowser")),
+              }),
+            ),
+          ),
+        );
+        const { spans } = yield* logInSpanThrough({}, failingLaunch);
+
+        const recorded = JSON.stringify(
+          spans.map((span) => ({
+            name: span.name,
+            events: span.events.map(([name, , attributes]) => [name, attributes]),
+            exit:
+              span.status._tag === "Ended" && Exit.isFailure(span.status.exit)
+                ? Cause.pretty(span.status.exit.cause)
+                : null,
+          })),
+        );
+        assert.include(recorded, "browser auto-open unavailable");
+        assert.notInclude(recorded, pairingToken);
+      }),
+    );
+  });
+  describe("upstream startup pairing URL", () => {
+    const pairingToken = "PAIRTOKEN7Q4K9";
+    const pairingUrl = `http://localhost:3773/pair#token=${pairingToken}`;
+    const announce = ServerRuntimeStartup.announceStartupPairingUrl(pairingUrl).pipe(
+      Effect.andThen(ServerRuntimeStartup.logBrowserAutoOpenUnavailable),
+    );
+
+    it.effect("prints the full URL but keeps its token out of exported log records", () =>
+      Effect.gen(function* () {
+        const { requests } = yield* logInSpanThrough(
+          { otlpLogsUrl: "https://collector.example.com/v1/logs" },
+          announce,
+        );
+
+        const body = requests.map((request) => request.body).join("\n");
+        assert.include(body, "Authentication required");
+        assert.notInclude(body, pairingToken);
+        const printed = (yield* TestConsole.logLines).map((line) =>
+          Array.isArray(line) ? line.join(" ") : String(line),
+        );
+        assert.isTrue(printed.some((line) => line.includes(`pairingUrl: ${pairingUrl}`)));
+      }).pipe(Effect.provide(TestConsole.layer)),
+    );
+
+    it.effect("keeps the token off the span events the trace file records", () =>
+      Effect.gen(function* () {
+        const { spans } = yield* logInSpanThrough({}, announce);
+
+        const events = JSON.stringify(
+          spans.flatMap((span) => span.events.map(([name, , attributes]) => [name, attributes])),
+        );
+        assert.include(events, "Authentication required");
+        assert.notInclude(events, pairingToken);
+      }).pipe(Effect.provide(TestConsole.layer)),
+    );
+
+    it.effect("keeps the token out of traces when the browser fails to open", () =>
+      Effect.gen(function* () {
+        // A failed launch records its error, which names the target, on its span.
+        const failingLaunch = ServerRuntimeStartup.maybeOpenBrowser(pairingUrl).pipe(
           Effect.provide(
             Layer.mergeAll(
               layerConfig({ noBrowser: false }),
