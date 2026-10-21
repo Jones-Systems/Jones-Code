@@ -2112,6 +2112,10 @@
     {
       "from": "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx",
       "to": "apps/mobile/src/jones/updates/environmentMaintenance.ts"
+    },
+    {
+      "from": "apps/server/src/project/AgentSessionImporter.test.ts",
+      "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
     }
   ]
 }

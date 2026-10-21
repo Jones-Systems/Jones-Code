@@ -7,9 +7,7 @@
       "expression": "`${pathToFileURL(licenseGeneratorSource).href}?version=${String(generatorVersion)}`",
       "reason": "Metro imports the pinned license generator through a cache-busted file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": [
-        "scripts/lib/third-party-licenses.ts"
-      ]
+      "targets": ["scripts/lib/third-party-licenses.ts"]
     },
     {
       "from": "apps/mobile/metro.config.js",
@@ -17,9 +15,7 @@
       "expression": "pathToFileURL(path.join(__dirname, \"scripts\", \"generate-device-stream.mts\")).href",
       "reason": "Metro imports its pinned local device-stream generator through a file URL; expression evaluation is unsupported.",
       "anchors": [],
-      "targets": [
-        "apps/mobile/scripts/generate-device-stream.mts"
-      ]
+      "targets": ["apps/mobile/scripts/generate-device-stream.mts"]
     },
     {
       "from": "apps/mobile/src/features/settings/mobileThirdPartyLicenses.ts",
@@ -36,9 +32,7 @@
           "sha256": "161275b7f9e4e0465eedf71526d073ea7b5761e5819646044a51b03064f830bd"
         }
       ],
-      "targets": [
-        "scripts/lib/third-party-licenses.ts"
-      ]
+      "targets": ["scripts/lib/third-party-licenses.ts"]
     },
     {
       "from": "apps/mobile/src/features/devices/DeviceStreamWebView.tsx",
@@ -163,9 +157,7 @@
           "sha256": "f9acced1f779de8622f6612aacce6042288b2f8a510e531e151037e49e5f03db"
         }
       ],
-      "targets": [
-        "apps/mobile/modules/t3-source-text/index.ts"
-      ]
+      "targets": ["apps/mobile/modules/t3-source-text/index.ts"]
     },
     {
       "from": "scripts/npm-launcher/bin.mjs",
@@ -178,9 +170,24 @@
           "sha256": "37ffba6778b35d3574677a02d6ec49684da014b69cf4c81c012b2bdcaa74deef"
         }
       ],
-      "targets": [
-        "scripts/npm-launcher/t3.mjs"
-      ]
+      "targets": ["scripts/npm-launcher/t3.mjs"]
+    },
+    {
+      "from": "apps/mobile/scripts/sync-context-chip-icons.mjs",
+      "sourceSha256": "74ab3084e08f5341b581d09756a3e5fd925fe2f7b6a34d372ddee0750e935029",
+      "expression": "NodeURL.pathToFileURL(NodePath.join(lucideIconsDirectory, `${name}.js`)).href",
+      "reason": "The upstream icon generator loads the finite checked-in lucideIcons name list from the lucide-react external dependency resolved through the web manifest. Dependency-internal file-URL loading is unsupported; exact source and manifest hashes bind the loader and icon list. Generated assets are not read or claimed verified.",
+      "anchors": [
+        {
+          "path": "apps/web/package.json",
+          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
+        },
+        {
+          "path": "scripts/package.json",
+          "sha256": "a60c9ef2fd2dbb13f7da02290fd0ba707fa61389503b9e961cf973511737eb1d"
+        }
+      ],
+      "targets": []
     }
   ]
 }
