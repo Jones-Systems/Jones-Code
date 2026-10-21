@@ -1317,7 +1317,7 @@
     "packages/shared/src/httpObservability.test.ts": "jones-owned",
     "apps/server/src/jones/requestEconomy/foregroundReads.test.ts": "jones-owned",
     "apps/server/src/orchestration-v2/testkit/fixtures/delegated_task_status/codex_transcript.ndjson": "jones-tests-in-upstream",
-    "apps/server/src/orchestration-v2/testkit/fixtures/thread_fork_native/codex_transcript.ndjson": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/testkit/fixtures/thread_fork_native/codex_transcript.ndjson": "upstream-deleted",
     "packages/client-runtime/src/state/serverConfigProjection.ts": "accepted-shared",
     "packages/client-runtime/src/state/serverConfigProjection.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/settings/ProviderOrderControls.tsx": "jones-owned",
@@ -1580,7 +1580,10 @@
     "apps/web/src/components/CommandPalette.tsx": "hook",
     "apps/web/src/uiStateStore.ts": "accepted-shared",
     "apps/web/src/uiStateStore.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream"
+    "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/checkpointing/CheckpointDiffQuery.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/ThreadStop.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -1651,7 +1654,8 @@
     "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
     "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
     "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
-    "apps/web/src/components/usage/UsagePage.jones.test.tsx"
+    "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+    "apps/server/src/orchestration-v2/testkit/fixtures/thread_fork_native/codex_transcript.ndjson"
   ],
   "allowedImports": [
     {
@@ -2169,6 +2173,10 @@
     {
       "from": "apps/server/src/project/AgentSessionImporter.test.ts",
       "to": "apps/server/src/orchestration-v2/RecordedTypes.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+      "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
     }
   ]
 }
