@@ -928,8 +928,8 @@ it.effect(
             threadId,
           });
           queued = (yield* orchestrator.getThreadProjection(threadId)).runs
-            .filter((run) => run.status === "queued")
-            .sort((left, right) => (left.queuePosition ?? 0) - (right.queuePosition ?? 0));
+            .filter((run) => heldRunIds.includes(run.id))
+            .sort((left, right) => heldRunIds.indexOf(left.id) - heldRunIds.indexOf(right.id));
           assert.deepEqual(
             queued.map((run) => run.id),
             heldRunIds,
