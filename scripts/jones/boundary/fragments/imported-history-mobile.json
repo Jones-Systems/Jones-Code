@@ -11,6 +11,14 @@
   "allowedImports": [
     {
       "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadQueueControl.tsx",
+      "to": "packages/client-runtime/src/jones/importedHistory/continuation.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
       "to": "apps/mobile/src/jones/importedHistory/runtime.ts"
     },
     {

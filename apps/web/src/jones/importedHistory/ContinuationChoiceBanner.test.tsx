@@ -35,7 +35,16 @@ vi.mock("../../composerDraftStore", () => ({
 }));
 vi.mock("../../components/chat/ComposerBanner", () => {
   const Part = ({ children }: ComponentProps<"div">) => <div>{children}</div>;
-  return { ComposerBanner: { Root: Part, Row: Part, Content: Part, Actions: Part } };
+  return {
+    ComposerBanner: {
+      Root: Part,
+      Attachment: Part,
+      Icon: Part,
+      Row: Part,
+      Content: Part,
+      Actions: Part,
+    },
+  };
 });
 vi.mock("../../components/ui/button", () => ({
   Button: ({ children, onClick, disabled }: ComponentProps<"button">) => (
@@ -99,9 +108,11 @@ it("accepted admission stays pending across remount and offers observation witho
   await act(async () => {
     tree = create(<ContinuationChoiceBanner {...props} />);
   });
+  expect(tree.root.findAllByType("button")[0]!.children.join("")).toBe("Start fresh conversation");
   await act(async () => {
     await tree.root.findAllByType("button")[0]!.props.onClick();
   });
+  expect(tree.root.findByType("button").children.join("")).toBe("Check continuation status");
   expect(h.start).toHaveBeenCalledTimes(1);
   expect(tree.root.findByProps({ role: "status" }).children.join("")).toContain(
     "execution is not confirmed",
@@ -124,4 +135,28 @@ it("accepted admission stays pending across remount and offers observation witho
   await act(async () => {
     tree.unmount();
   });
+});
+
+it("explains unavailable native context without offering a disabled start", async () => {
+  h.saved = null;
+  let tree!: ReactTestRenderer;
+  const dismiss = vi.fn();
+  await act(async () => {
+    tree = create(
+      <ContinuationChoiceBanner
+        environmentId={EnvironmentId.make("environment:test")}
+        threadId={ThreadId.make("thread:test")}
+        prepared={null}
+        reason="existing_native_context_requires_review"
+        onDismiss={dismiss}
+      />,
+    );
+  });
+  expect(tree.root.findByProps({ role: "status" }).children.join("")).toContain(
+    "existing provider conversation",
+  );
+  expect(tree.root.findAllByType("button")).toHaveLength(1);
+  await act(async () => tree.root.findByType("button").props.onClick());
+  expect(dismiss).toHaveBeenCalledTimes(1);
+  await act(async () => tree.unmount());
 });

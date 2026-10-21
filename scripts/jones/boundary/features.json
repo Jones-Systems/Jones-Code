@@ -558,6 +558,7 @@
         "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
         "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
         "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
+        "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.browser.test.tsx",
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "apps/web/src/composerDraftStore.test.ts",
         "apps/web/src/components/ChatView.logic.test.ts",

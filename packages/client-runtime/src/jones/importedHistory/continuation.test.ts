@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import { v2Projection } from "../../state/orchestrationV2TestFixtures.ts";
 import {
   CommandId,
   ThreadId,
@@ -8,6 +9,8 @@ import {
   type ImportedHistoryOutcome,
 } from "@t3tools/contracts";
 import {
+  importedHistoryContinuationEligible,
+  importedHistoryReasonText,
   ImportedHistoryLockUnavailable,
   createImportedHistoryChoiceController,
   resolveImportedHistoryOutcome,
@@ -236,5 +239,59 @@ describe("imported history reviewed admission", () => {
     h.observe.mockResolvedValueOnce(outcome("rejected"));
     await h.controller.observe();
     expect(h.storage.read()).toBeNull();
+  });
+});
+
+describe("imported history continuation eligibility", () => {
+  type Projection = NonNullable<Parameters<typeof importedHistoryContinuationEligible>[0]>;
+  const projection = (patch: object = {}) =>
+    ({
+      thread: { ...v2Projection.thread, historyOrigin: "v1_import" },
+      runs: [],
+      providerThreads: [],
+      ...patch,
+    }) as Projection;
+  it("allows only imported threads with complete context and no completed run", () => {
+    expect(importedHistoryContinuationEligible(projection())).toBe(true);
+    expect(importedHistoryContinuationEligible(null)).toBe(false);
+    expect(importedHistoryContinuationEligible(undefined)).toBe(false);
+    expect(
+      importedHistoryContinuationEligible(projection({ thread: { historyOrigin: "native" } })),
+    ).toBe(false);
+    expect(
+      importedHistoryContinuationEligible(projection({ runs: [{ status: "completed" }] })),
+    ).toBe(false);
+    expect(importedHistoryContinuationEligible(projection({ runs: undefined }))).toBe(false);
+    expect(importedHistoryContinuationEligible(projection({ providerThreads: undefined }))).toBe(
+      false,
+    );
+  });
+  it("rejects every native context field, including incomplete provider context", () => {
+    const empty = {
+      providerSessionId: null,
+      nativeThreadRef: null,
+      nativeConversationHeadRef: null,
+    };
+    expect(importedHistoryContinuationEligible(projection({ providerThreads: [empty] }))).toBe(
+      true,
+    );
+    for (const field of Object.keys(empty)) {
+      for (const value of ["existing-context", undefined]) {
+        expect(
+          importedHistoryContinuationEligible(
+            projection({ providerThreads: [{ ...empty, [field]: value }] }),
+          ),
+        ).toBe(false);
+      }
+    }
+  });
+  it("gives readable reasons while preserving descriptive failures", () => {
+    expect(importedHistoryReasonText("existing_native_context_requires_review")).toContain(
+      "existing provider conversation",
+    );
+    expect(importedHistoryReasonText("future_server_reason")).not.toContain("future_server_reason");
+    expect(importedHistoryReasonText("Connection closed. Try again.")).toBe(
+      "Connection closed. Try again.",
+    );
   });
 });

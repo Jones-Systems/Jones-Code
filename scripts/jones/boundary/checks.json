@@ -1073,13 +1073,15 @@
         "packages/client-runtime/src/jones/importedHistory/commands.test.ts",
         "packages/client-runtime/src/jones/importedHistory/continuation.test.ts",
         "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx",
+        "apps/web/src/jones/importedHistory/ContinuationChoiceBanner.browser.test.tsx",
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx",
         "apps/web/src/composerDraftStore.test.ts",
         "apps/web/src/components/ChatView.logic.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/importedHistoryCanonical.test.ts packages/client-runtime/src/jones/importedHistory/commands.test.ts packages/client-runtime/src/jones/importedHistory/continuation.test.ts apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx apps/web/src/composerDraftStore.test.ts apps/web/src/components/ChatView.logic.test.ts apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts",
+        "vp test run packages/shared/src/jones/importedHistoryCanonical.test.ts packages/client-runtime/src/jones/importedHistory/commands.test.ts packages/client-runtime/src/jones/importedHistory/continuation.test.ts apps/web/src/jones/importedHistory/ContinuationChoiceBanner.test.tsx apps/web/src/composerDraftStore.test.ts apps/web/src/components/ChatView.logic.test.ts apps/server/src/jones/nativeCreation/NativeCreationPreparation.test.ts",
+        "vp run --filter @t3tools/web test --project browser src/jones/importedHistory/ContinuationChoiceBanner.browser.test.tsx src/components/chat/QueuedRunsControl.browser.test.tsx",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter t3 typecheck",
