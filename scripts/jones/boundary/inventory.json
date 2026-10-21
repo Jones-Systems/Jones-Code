@@ -1521,7 +1521,10 @@
     "apps/web/src/components/CommandPalette.tsx": "hook",
     "apps/web/src/uiStateStore.ts": "accepted-shared",
     "apps/web/src/uiStateStore.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream"
+    "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
+    "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
+    "apps/server/src/git/GitManager.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

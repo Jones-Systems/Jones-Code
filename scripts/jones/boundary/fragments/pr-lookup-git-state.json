@@ -1,0 +1,19 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "pr-lookup-git-state",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/git/prLookupGitState.ts",
+    "apps/server/src/jones/git/prLookupGitState.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/git/GitManager.ts",
+    "apps/server/src/orchestration-v2/ThreadPullRequestService.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/git/GitManager.ts",
+      "to": "apps/server/src/jones/git/prLookupGitState.ts"
+    }
+  ]
+}

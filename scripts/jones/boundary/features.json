@@ -1364,6 +1364,15 @@
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
       "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+    },
+    {
+      "id": "pr-lookup-git-state",
+      "tests": [
+        "apps/server/src/jones/git/prLookupGitState.test.ts",
+        "apps/server/src/git/GitManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+      ],
+      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. ThreadPullRequestService defers terminal confirmation only for discovery; its mandatory fresh check before writes remains. Integration tests stay with their existing Git and orchestration harnesses. Ref probes, foreground actions and installed runtime are unchanged."
     }
   ]
 }
