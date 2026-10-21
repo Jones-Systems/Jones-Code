@@ -734,6 +734,10 @@ describe("EnvironmentRegistry", () => {
           yield* Deferred.await(disconnected);
           expect(yield* Ref.get(harness.releasedSessions)).toBe(1);
           expect(Option.isNone(yield* SubscriptionRef.get(supervisor.session))).toBe(true);
+          yield* SubscriptionRef.changes(supervisor.state).pipe(
+            Stream.filter((state) => !state.desired),
+            Stream.runHead,
+          );
           expect((yield* SubscriptionRef.get(supervisor.state)).desired).toBe(false);
           yield* Deferred.succeed(release, undefined);
           expect(yield* Fiber.join(update)).toBe(true);
@@ -905,7 +909,9 @@ describe("EnvironmentRegistry", () => {
         expect(blocked.enabled).toBe(true);
         expect(blocked.serverUpdateRequired).toBe(true);
         expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([reloadHint]);
-        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(false);
+        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(
+          false,
+        );
       }).pipe(Effect.provide(harness.layer));
     }),
   );
