@@ -713,6 +713,10 @@ describe("EnvironmentRegistry", () => {
           const entry = (yield* SubscriptionRef.get(registry.entries)).get(
             RELAY_TARGET.environmentId,
           )!;
+          const supervisor = yield* registry.run(
+            RELAY_TARGET.environmentId,
+            EnvironmentSupervisor.EnvironmentSupervisor,
+          );
           const update = yield* registry
             .recordUpdateCompatibility(entry, updateDescriptor(false))
             .pipe(Effect.forkChild({ startImmediately: true }));
@@ -720,14 +724,17 @@ describe("EnvironmentRegistry", () => {
           const blocked = (yield* SubscriptionRef.get(registry.entries)).get(
             RELAY_TARGET.environmentId,
           )!;
-          expect(blocked.enabled).toBe(false);
+          // Compatibility pauses transport; it does not overwrite the saved On choice.
+          expect(blocked.enabled).toBe(true);
           expect(blocked.serverUpdateRequired).toBe(true);
           expect(blocked.unsupportedReason).toBeDefined();
           expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(
-            true,
+            false,
           );
           yield* Deferred.await(disconnected);
           expect(yield* Ref.get(harness.releasedSessions)).toBe(1);
+          expect(Option.isNone(yield* SubscriptionRef.get(supervisor.session))).toBe(true);
+          expect((yield* SubscriptionRef.get(supervisor.state)).desired).toBe(false);
           yield* Deferred.succeed(release, undefined);
           expect(yield* Fiber.join(update)).toBe(true);
           expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([]);
@@ -737,11 +744,16 @@ describe("EnvironmentRegistry", () => {
           const compatible = (yield* SubscriptionRef.get(registry.entries)).get(
             RELAY_TARGET.environmentId,
           )!;
-          expect(compatible.enabled).toBe(false);
+          expect(compatible.enabled).toBe(true);
           expect(compatible.unsupportedReason).toBeUndefined();
           expect(compatible.compatibilityHint).toBeUndefined();
+          yield* awaitConnectionState(
+            registry,
+            RELAY_TARGET.environmentId,
+            (state) => state.phase === "connected",
+          );
           expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(
-            true,
+            false,
           );
         }).pipe(
           Effect.ensuring(Deferred.succeed(release, undefined)),
@@ -877,14 +889,23 @@ describe("EnvironmentRegistry", () => {
           RELAY_TARGET.environmentId,
         )!;
         expect(
-          yield* registry
-            .recordUpdateCompatibility(entry, updateDescriptor(false))
-            .pipe(Effect.flip),
+          yield* registry.setEnabled(RELAY_TARGET.environmentId, false).pipe(Effect.flip),
         ).toBe(failure);
         expect((yield* SubscriptionRef.get(registry.entries)).get(RELAY_TARGET.environmentId)).toBe(
           entry,
         );
         expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([]);
+        // A compatibility observation is not an authoritative Off request.
+        expect(yield* registry.recordUpdateCompatibility(entry, updateDescriptor(false))).toBe(
+          true,
+        );
+        const blocked = (yield* SubscriptionRef.get(registry.entries)).get(
+          RELAY_TARGET.environmentId,
+        )!;
+        expect(blocked.enabled).toBe(true);
+        expect(blocked.serverUpdateRequired).toBe(true);
+        expect(yield* Ref.get(harness.storedCompatibilityHints)).toEqual([reloadHint]);
+        expect((yield* Ref.get(harness.storedDisabled)).has(RELAY_TARGET.environmentId)).toBe(false);
       }).pipe(Effect.provide(harness.layer));
     }),
   );

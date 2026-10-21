@@ -24,6 +24,7 @@ import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as Socket from "effect/socket/Socket";
 import * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
 import { Rpc, RpcClient, RpcClientError, RpcGroup, RpcMessage, RpcSerialization } from "effect/rpc";
 
 import {

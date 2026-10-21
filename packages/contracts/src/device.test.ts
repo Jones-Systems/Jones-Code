@@ -1,13 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Schema } from "effect";
 import {
-  DeviceDirectAccess,
   DeviceServiceState,
   SshDeviceHostConfig,
   EasDeviceHostConfig,
   EasDeviceHostConfigs,
   SshDeviceHostConfigs,
 } from "./device.ts";
+import { DeviceDirectAccess } from "./jones/deviceMedia.ts";
 import { secretSettingsFields } from "./settings.ts";
 
 const decodeSshHosts = Schema.decodeUnknownSync(SshDeviceHostConfigs);

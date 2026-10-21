@@ -193,16 +193,30 @@ const withContendedCheckpointClient = <A, E>(
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-contention-" });
     const filename = path.join(directory, "state.sqlite");
+    let holderClosed = false;
     const holder = yield* Effect.acquireRelease(
       Effect.sync(() => new NodeSqlite.DatabaseSync(filename)),
-      (db) => Effect.sync(() => db.close()),
+      (db) =>
+        Effect.sync(() => {
+          if (holderClosed) return;
+          db.close();
+          holderClosed = true;
+        }),
     );
-    holder.exec("PRAGMA journal_mode = DELETE; CREATE TABLE entries(value TEXT); BEGIN EXCLUSIVE;");
-    let locked = true;
+    holder.exec("PRAGMA journal_mode = DELETE; CREATE TABLE entries(value TEXT);");
+    let locked = false;
     const release = () => {
       if (!locked) return;
-      holder.exec("ROLLBACK; PRAGMA journal_mode = WAL;");
+      // EXCLUSIVE locking mode retains the file lock after rollback. Install WAL
+      // before closing the holder, so the worker cannot observe an unlocked DELETE database.
+      holder.exec("ROLLBACK");
       locked = false;
+      try {
+        assert.equal(holder.prepare("PRAGMA journal_mode = WAL").get()?.journal_mode, "wal");
+      } finally {
+        holder.close();
+        holderClosed = true;
+      }
     };
     yield* Effect.addFinalizer(() => Effect.sync(release));
     const channel = yield* Effect.acquireRelease(
@@ -228,6 +242,11 @@ const withContendedCheckpointClient = <A, E>(
       const sql = yield* SqlClient.SqlClient;
       assert.equal(startedWorkers.length, startedBefore + 1);
       const worker = startedWorkers.at(-1)!;
+      // Client construction must finish the real writer capability/admission probes first.
+      // No worker check has been sent yet; its lazy connection alone meets this lock.
+      holder.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;");
+      locked = true;
+      assert.equal(holder.isTransaction, true);
       // Upstream initializes the checkpoint connection on its first request.
       // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Node workers do not accept a target origin.
       worker.postMessage({ type: "check" });

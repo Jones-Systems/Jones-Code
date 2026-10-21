@@ -4,7 +4,6 @@ import {
   T3_MCP_TOOL_NAMES,
   resolveT3McpToolDefinition,
   resolveT3McpToolPresentation,
-  resolveT3McpToolSummaryAction,
 } from "./t3McpToolPresentation.ts";
 
 describe("resolveT3McpToolPresentation", () => {
@@ -35,7 +34,7 @@ describe("resolveT3McpToolPresentation", () => {
         displayName: "Request settlement of this thread",
         logo: "t3-code",
       });
-      expect(resolveT3McpToolSummaryAction(name)).toBe("thread-settle");
+      expect(resolveT3McpToolDefinition(name)?.summaryAction ?? null).toBe("thread-settle");
     }
     expect(resolveT3McpToolDefinition("mcp__another-server__t3_thread_settle")).toBeNull();
   });
