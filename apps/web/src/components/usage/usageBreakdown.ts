@@ -70,7 +70,12 @@ export function tokenTypeSegments(
   return [
     { label: "Input", value: tokens.uncachedInputTokens, color: TYPE_COLORS.input },
     { label: "Cache read", value: tokens.cachedInputTokens, color: TYPE_COLORS.cacheRead },
-    { label: "Cache write", value: tokens.cacheCreationTokens, color: TYPE_COLORS.cacheWrite },
+    {
+      label: "Cache write",
+      value: tokens.cacheCreationTokens,
+      color: TYPE_COLORS.cacheWrite,
+      zeroLabel: "0 reported",
+    },
     { label: "Output", value: tokens.outputTokens, color: TYPE_COLORS.output },
   ];
 }
