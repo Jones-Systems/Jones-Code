@@ -57,7 +57,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -108,7 +108,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -134,7 +134,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -178,7 +178,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -221,7 +221,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -283,7 +283,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: false
           run-install: false
 
@@ -322,7 +322,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -454,7 +454,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: false
           run-install: false
 
@@ -624,7 +624,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: |
             args:
@@ -676,7 +676,7 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: true
 
@@ -737,7 +737,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version-file: package.json
+          node-version: 24.22.0
           cache: true
           run-install: |
             args:
