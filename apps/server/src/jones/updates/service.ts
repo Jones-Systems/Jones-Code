@@ -252,67 +252,67 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = (input: JonesNativePrepareInput) =>
-        Effect.gen(function* () {
-          const mismatch =
-            !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
-            !/^[a-f0-9]{64}$/.test(input.transactionId)
-              ? "the request is malformed"
-              : state.stagedHandle !== input.stagedHandle
-                ? "the backend has not observed this staged build"
-                : !state.capability.install
-                  ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
-                  : state.environmentId !== input.environmentId ||
-                      state.currentVersion !== input.currentVersion
-                    ? "the environment or running version differs"
-                    : undefined;
-          if (mismatch !== undefined) {
-            const reason = `Native preparation was refused: ${mismatch}.`;
-            yield* Effect.promise(() =>
-              recordNativePreparationRefusal({
-                home: config.baseDir,
-                handle: input.stagedHandle,
-                transactionId: input.transactionId,
-                reason,
-              }),
-            );
-            return blocked(reason);
-          }
-          yield* Effect.tryPromise({
-            try: () =>
-              prepareNativeContinuationReceipt({
-                home: config.baseDir,
-                databasePath: config.dbPath,
-                environmentId: input.environmentId,
-                version: input.currentVersion,
-                handle: input.stagedHandle,
-                transactionId: input.transactionId,
-                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
-                clear: (ids) =>
-                  run(
-                    startup.clearProviderSessionContinuationMarkers(
-                      ids.map((id) => ThreadId.make(id)),
-                    ),
+      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(function* (
+        input: JonesNativePrepareInput,
+      ) {
+        const mismatch =
+          !/^[a-f0-9]{64}$/.test(input.stagedHandle) || !/^[a-f0-9]{64}$/.test(input.transactionId)
+            ? "the request is malformed"
+            : state.stagedHandle !== input.stagedHandle
+              ? "the backend has not observed this staged build"
+              : !state.capability.install
+                ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
+                : state.environmentId !== input.environmentId ||
+                    state.currentVersion !== input.currentVersion
+                  ? "the environment or running version differs"
+                  : undefined;
+        if (mismatch !== undefined) {
+          const reason = `Native preparation was refused: ${mismatch}.`;
+          yield* Effect.promise(() =>
+            recordNativePreparationRefusal({
+              home: config.baseDir,
+              handle: input.stagedHandle,
+              transactionId: input.transactionId,
+              reason,
+            }),
+          );
+          return blocked(reason);
+        }
+        yield* Effect.tryPromise({
+          try: () =>
+            prepareNativeContinuationReceipt({
+              home: config.baseDir,
+              databasePath: config.dbPath,
+              environmentId: input.environmentId,
+              version: input.currentVersion,
+              handle: input.stagedHandle,
+              transactionId: input.transactionId,
+              prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
+              clear: (ids) =>
+                run(
+                  startup.clearProviderSessionContinuationMarkers(
+                    ids.map((id) => ThreadId.make(id)),
                   ),
-              }),
-            catch: (cause) =>
-              new ServerSelfUpdateError({
-                reason: "Could not prepare the native recovery pair.",
-                cause,
-              }),
-          });
-          return snapshot();
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.succeed(
-              blocked(
-                error.cause instanceof NativePreparationRefusal
-                  ? `Native preparation was refused: ${error.cause.message}`
-                  : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
-              ),
+                ),
+            }),
+          catch: (cause) =>
+            new ServerSelfUpdateError({
+              reason: "Could not prepare the native recovery pair.",
+              cause,
+            }),
+        });
+        return snapshot();
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.succeed(
+            blocked(
+              error.cause instanceof NativePreparationRefusal
+                ? `Native preparation was refused: ${error.cause.message}`
+                : "Native preparation was dispatched but did not complete; its effects need reconciliation.",
             ),
           ),
-        );
+        ),
+      );
       return JonesUpdates.of({
         ...unsupportedOperations,
         prepareNative,
@@ -599,42 +599,43 @@ export const layer = Layer.effect(
       Effect.forever,
       Effect.forkScoped,
     );
-    const installForOperation: JonesUpdates["Service"]["installForOperation"] = (input) =>
-      Effect.gen(function* () {
-        const prior = yield* reconcileOperation(input.operationId);
-        if (prior.state !== "absent") {
-          const binding = prior.binding;
-          if (
-            prior.state === "blocked" ||
-            binding === undefined ||
-            binding.environmentId !== input.environmentId ||
-            binding.currentVersion !== input.currentVersion ||
-            binding.expectedInstalledSource !== input.expectedInstalledSource ||
-            binding.targetSource !== input.targetSource ||
-            binding.stagedHandle !== input.stagedHandle
-          )
-            return blocked(
-              "The operation is ambiguous or its immutable installation binding changed.",
-            );
-          const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
-          return {
-            ...current,
-            updateId: input.operationId,
-            phase: prior.state === "pending" ? "installing" : prior.state,
-            message: "The native launcher retained this exact installation operation.",
-          };
-        }
+    const installForOperation: JonesUpdates["Service"]["installForOperation"] = Effect.fn(
+      "JonesUpdates.installForOperation",
+    )(function* (input: Parameters<JonesUpdates["Service"]["installForOperation"]>[0]) {
+      const prior = yield* reconcileOperation(input.operationId);
+      if (prior.state !== "absent") {
+        const binding = prior.binding;
         if (
-          launcher.qualifiedOperations !== true ||
-          launcher.qualifiedRetirement !== true ||
-          runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
-          updater.snapshot().provenance?.sourceSha !== input.targetSource
+          prior.state === "blocked" ||
+          binding === undefined ||
+          binding.environmentId !== input.environmentId ||
+          binding.currentVersion !== input.currentVersion ||
+          binding.expectedInstalledSource !== input.expectedInstalledSource ||
+          binding.targetSource !== input.targetSource ||
+          binding.stagedHandle !== input.stagedHandle
         )
           return blocked(
-            "The installed source, staged source, or operation-capable launcher changed.",
+            "The operation is ambiguous or its immutable installation binding changed.",
           );
-        return yield* Effect.promise(() => updater.install(input));
-      });
+        const { outcome: _outcome, updateId: _updateId, ...current } = updater.snapshot();
+        return {
+          ...current,
+          updateId: input.operationId,
+          phase: prior.state === "pending" ? "installing" : prior.state,
+          message: "The native launcher retained this exact installation operation.",
+        };
+      }
+      if (
+        launcher.qualifiedOperations !== true ||
+        launcher.qualifiedRetirement !== true ||
+        runtimeReceipt?.sourceSha !== input.expectedInstalledSource ||
+        updater.snapshot().provenance?.sourceSha !== input.targetSource
+      )
+        return blocked(
+          "The installed source, staged source, or operation-capable launcher changed.",
+        );
+      return yield* Effect.promise(() => updater.install(input));
+    });
     return JonesUpdates.of({
       retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
       fleetOperationsSupported:

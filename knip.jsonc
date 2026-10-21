@@ -24,6 +24,8 @@
       // explicit Windows artifact verifier, and electron-builder macOS signer.
       "entry": [
         "knip-schemas.ts",
+        // Retained upstream release CLI; its publishing workflow stays disabled.
+        "resolve-nightly-release.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
