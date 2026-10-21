@@ -25,6 +25,7 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   applyCompanionPackageVariant,
   companionPackageMetadata,
@@ -981,6 +982,7 @@ interface StagePackageJson {
   readonly buildVersion: string;
   readonly t3codeCommitHash: string;
   readonly jonesSource?: JonesBuildSource;
+  readonly jonesBuildStartedAt?: string;
   readonly startupGateProtocol?: 1;
   readonly t3codeWebAuthn?: MacWebAuthnEntitlements;
   readonly private: true;
@@ -3967,12 +3969,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
-  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata({
-    ...("jonesSource" in desktopPackageJson ? { jonesSource: desktopPackageJson.jonesSource } : {}),
-    ...("startupGateProtocol" in desktopPackageJson
-      ? { startupGateProtocol: desktopPackageJson.startupGateProtocol }
-      : {}),
-  });
+  const jonesBuildMetadata = yield* decodeJonesDesktopBuildMetadata(desktopPackageJson);
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     ...companionPackageMetadata(options.variant),
@@ -4298,7 +4295,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
 }).pipe(
   Command.withDescription("Build a desktop artifact for T3 Code."),
-  Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
+  Command.withHandler((input) =>
+    resolveBuildOptions(input).pipe(
+      Effect.flatMap(requireJonesBuildTarget),
+      Effect.flatMap(buildDesktopArtifact),
+    ),
+  ),
 );
 
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);

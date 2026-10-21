@@ -1,3 +1,4 @@
+import { parseJonesBuildStartedAt } from "@t3tools/shared/jones/buildTime";
 import type { DesktopAppBranding } from "@t3tools/contracts";
 import { formatAppDisplayName } from "./branding.logic";
 
@@ -29,3 +30,5 @@ export const APP_SOURCE_SHA = /^[a-f0-9]{40}$/.test(import.meta.env.APP_SOURCE_S
   ? import.meta.env.APP_SOURCE_SHA
   : undefined;
 export const DESKTOP_DOWNLOAD_URL = "https://github.com/Jones-Systems/Jones-Code/releases";
+
+export const APP_BUILD_STARTED_AT = parseJonesBuildStartedAt(import.meta.env.APP_BUILD_STARTED_AT);

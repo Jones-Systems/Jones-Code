@@ -9,7 +9,7 @@ import * as Schema from "effect/Schema";
 
 import { QueueDispatchCapability } from "./queueProtocol.ts";
 import { ThreadCorpusCapability } from "./threadCorpusProtocol.ts";
-import { JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
+import { JonesBuildStartedAt, JonesSourceIdentity } from "./jones/fleetUpdates/source.ts";
 
 import {
   EnvironmentId,
@@ -224,6 +224,7 @@ export const ExecutionEnvironmentDescriptor = Schema.Struct({
   platform: ExecutionEnvironmentPlatform,
   serverVersion: TrimmedNonEmptyString,
   jonesSource: Schema.optionalKey(JonesSourceIdentity),
+  jonesBuildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   orchestrationProtocolVersion: Schema.optionalKey(Schema.Int),
   capabilities: ExecutionEnvironmentCapabilities,
 });

@@ -111,7 +111,7 @@ The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`, `artifa
 | Upstream workflow                   | Main trigger                             | Jones-Code disposition | Reason                                                              |
 | ----------------------------------- | ---------------------------------------- | ---------------------- | ------------------------------------------------------------------- |
 | `ci.yml`                            | PR, push to `main`                       | Active                 | Checks, tests, and builds on GitHub-hosted runners.                 |
-| `cursor-hygiene-webhook.yml`        | Removed upstream                        | Retired                | Absent at the pinned upstream baseline; keep the tombstone.         |
+| `cursor-hygiene-webhook.yml`        | Removed upstream                         | Retired                | Absent at the pinned upstream baseline; keep the tombstone.         |
 | `deploy-relay.yml`                  | Push, manual                             | Deferred               | Deploys a service using upstream credentials.                       |
 | `desktop-macos-preview-publish.yml` | Workflow completion, privileged PR event | Deferred               | Publishes preview artifacts with secrets.                           |
 | `desktop-macos-preview.yml`         | PR                                       | Deferred               | Preview build requires a separate hosted-runner design.             |
@@ -128,9 +128,15 @@ The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`, `artifa
 | `release.yml`                       | Push, schedule, manual                   | Deferred               | Scheduled and tag-driven release pipeline.                          |
 | `thread-transfer-report.yml`        | Workflow completion                      | Not applicable         | Upstream report publishing.                                         |
 | `web-preview.yml`                   | PR                                       | Deferred               | Web preview deployment and credentials.                             |
-| `windows-tests.yml`                 | Manual                                   | Deferred               | Blacksmith Windows runner; Windows coverage is pending.             |
+| `windows-tests.yml`                 | Manual                                   | Retired                | Jones Code does not support Windows.                                |
 
 The removed `setup-apt-mirrors` action configured a Blacksmith-specific apt mirror. CI now uses the hosted Ubuntu image's apt sources. Core `ci.yml` checks do not publish desktop or CLI releases, deploy the relay, run Windows tests, or run the mobile fingerprint check. The three artifact workflows build downloadable trial files without publishing a Release. Restore a deferred workflow only in a separate reviewed PR, replace its runner and credentials with Jones-Code-owned capabilities, and verify its first run. Do not re-enable upstream schedules or privileged events as a side effect of merging upstream.
+
+Jones Code supports Apple Silicon macOS and Linux build targets only. Keep Windows
+and Intel or universal Mac builds, package shortcuts, and dedicated test runners
+disabled during upstream imports. Preserve the Jones target guards in both artifact
+builders and the Windows workflow tombstone. Retained upstream helper tests run on
+supported hosts; they do not build or execute unsupported platform artifacts.
 
 CI retains the release smoke checks for package versions, lockfile regeneration, and updater manifests. The relay state-output and Discord published-release workflow integration tests are conditionally omitted while `release.yml` is absent, because they read shell steps from that workflow; restoring the workflow automatically restores both checks. The remaining Discord formatting, HTTP and CLI tests stay enabled. The CLI archive verifier remains in source as an explicit Knip entry and is used by the Linux and Mac CLI artifact workflows. Keep these boundaries when syncing release tooling from upstream.
 

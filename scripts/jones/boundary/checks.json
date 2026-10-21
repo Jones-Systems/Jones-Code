@@ -108,7 +108,8 @@
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
         "packages/shared/src/jones/usageMergeCompatibility.test.ts",
         "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx",
-        "apps/server/src/usage/UsageService.test.ts"
+        "apps/server/src/usage/UsageService.test.ts",
+        "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
       "commands": [
         "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx --maxWorkers=1",
@@ -116,7 +117,8 @@
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run packages/shared/src/jones/usageMergeCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/server/src/usage/UsageService.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/usage/UsageService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.test.tsx src/components/usage/usageBreakdown.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -218,9 +220,7 @@
     },
     {
       "id": "jones-provider-restart-identity",
-      "tests": [
-        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "vp run --filter t3 typecheck"
@@ -228,12 +228,8 @@
     },
     {
       "id": "jones-environment-sidebar-filters",
-      "tests": [
-        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ]
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
     },
     {
       "id": "jones-remote-host-status",
@@ -260,9 +256,7 @@
     },
     {
       "id": "jones-boundary",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ],
+      "tests": ["scripts/jones/check-boundary.test.ts"],
       "commands": [
         "vp test run scripts/jones/check-boundary.test.ts",
         "node scripts/jones/check-boundary.ts --strict --json",
@@ -271,9 +265,7 @@
     },
     {
       "id": "jones-provider-settlement",
-      "tests": [
-        "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts"
       ]
@@ -485,12 +477,8 @@
     },
     {
       "id": "jones-process-placement-build",
-      "tests": [
-        "native/process-placement/build.test.mjs"
-      ],
-      "commands": [
-        "node --test native/process-placement/build.test.mjs"
-      ]
+      "tests": ["native/process-placement/build.test.mjs"],
+      "commands": ["node --test native/process-placement/build.test.mjs"]
     },
     {
       "id": "jones-workstream-appearance",
@@ -817,12 +805,8 @@
     },
     {
       "id": "jones-performance-health",
-      "tests": [
-        "apps/server/scripts/jones/sqliteHealth.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/scripts/jones/sqliteHealth.test.ts"
-      ]
+      "tests": ["apps/server/scripts/jones/sqliteHealth.test.ts"],
+      "commands": ["vp test run apps/server/scripts/jones/sqliteHealth.test.ts"]
     },
     {
       "id": "jones-performance-diagnostics",
@@ -840,9 +824,7 @@
     },
     {
       "id": "jones-performance-migration-restore",
-      "tests": [
-        "scripts/jones/performance/migration-restore.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/performance/migration-restore.node-test.mjs"],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/performance/migration-restore.node-test.mjs"
       ]
@@ -1361,9 +1343,7 @@
     },
     {
       "id": "jones-desktop-workstreams-shell",
-      "tests": [
-        "apps/desktop/src/shell/DesktopShellEnvironment.test.ts"
-      ],
+      "tests": ["apps/desktop/src/shell/DesktopShellEnvironment.test.ts"],
       "commands": [
         "vp test run apps/desktop/src/shell/DesktopShellEnvironment.test.ts",
         "vp run --filter @t3tools/desktop typecheck"
@@ -1671,9 +1651,7 @@
     },
     {
       "id": "jones-runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"],
       "commands": [
         "vp test run apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts --maxWorkers=1",
         "vp run --filter t3 typecheck",
@@ -2233,6 +2211,75 @@
         "vp lint apps/server/src/jones/updates/recoverStagedSelection.ts apps/server/src/jones/updates/recoverStagedSelection.test.ts scripts/jones/updates/recover-staged-selection.ts scripts/jones/updates/recover-staged-selection.test.ts apps/server/src/jones/updates/stagedSelection.ts",
         "vp run --filter t3 typecheck",
         "tsc-rs --project scripts/tsconfig.json --noEmit",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-apple-silicon-platforms",
+      "tests": [
+        "scripts/jones/platforms/supportedTargets.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/lib/build-target-arch.test.ts",
+        "scripts/jones/preview-companion/packageVariant.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.test.ts scripts/lib/build-target-arch.test.ts scripts/jones/preview-companion/packageVariant.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/platforms/supportedTargets.ts scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.ts scripts/build-cli-archive.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-readable-build-labels",
+      "tests": [
+        "packages/shared/src/jones/buildTime.test.ts",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/jones/jonesUpdates.buildTime.test.ts",
+        "scripts/stamp-jones-build.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/mobile/src/jones/updates/buildVersion.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/buildVersion.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/buildTime.test.ts packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts scripts/stamp-jones-build.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts apps/mobile/src/jones/updates/buildVersion.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/jones/updates/clientUpdateBanner.test.tsx apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx apps/web/src/jones/environmentFilters/environmentFilters.test.ts apps/web/src/jones/updates/installedSourceComparison.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/build-desktop-artifact.test.ts scripts/jones/updates/build-provenance.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/mobile --filter @t3tools/web --filter @t3tools/desktop --filter @t3tools/scripts --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs"
+      ]
+    },
+    {
+      "id": "jones-presentation-order",
+      "tests": [
+        "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx",
+        "apps/web/src/jones/presentationOrder/environmentOrder.test.ts",
+        "apps/web/src/jones/presentationOrder/projectOrder.test.ts",
+        "apps/web/src/uiStateStore.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/hooks/useHandleNewThread.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/uiStateStore.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/hooks/useHandleNewThread.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run --project browser src/jones/presentationOrder/SortableOrderList.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/components/CommandPalette.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/DraftHeroHeadline.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/settings/settingsSearch.ts apps/web/src/hooks/useHandleNewThread.test.ts apps/web/src/hooks/useHandleNewThread.ts apps/web/src/hooks/useLogicalProjectEnvironments.ts apps/web/src/hooks/useSidebarProjectGroups.ts apps/web/src/jones/workQueue/PromptsSettings.tsx apps/web/src/uiStateStore.test.ts apps/web/src/uiStateStore.ts apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx apps/web/src/jones/presentationOrder/SortableOrderList.tsx apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/environmentOrder.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

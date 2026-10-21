@@ -7,6 +7,7 @@ export interface ShareSegment {
   readonly label: string;
   readonly value: number;
   readonly color: string;
+  readonly zeroLabel?: string;
 }
 
 export function UsageShareBar({
@@ -21,6 +22,7 @@ export function UsageShareBar({
   readonly aside?: ReactNode;
 }) {
   const visible = segments.filter((segment) => segment.value > 0);
+  const legend = segments.filter((segment) => segment.value > 0 || segment.zeroLabel !== undefined);
   const total = visible.reduce((sum, segment) => sum + segment.value, 0);
   if (total <= 0) return null;
 
@@ -52,15 +54,19 @@ export function UsageShareBar({
         ))}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {visible.map((segment) => (
-          <span key={segment.label} className="flex items-center gap-1.5">
+        {legend.map((segment) => (
+          <span key={segment.label} className="flex items-center gap-1.5 whitespace-nowrap">
             <span
               aria-hidden
               className="size-2 rounded-xs"
               style={{ backgroundColor: segment.color }}
             />
             <span className="text-muted-foreground">{segment.label}</span>
-            <span className="text-foreground tabular-nums">{format(segment.value)}</span>
+            <span className="text-foreground tabular-nums">
+              {segment.value === 0
+                ? (segment.zeroLabel ?? format(segment.value))
+                : format(segment.value)}
+            </span>
           </span>
         ))}
       </div>

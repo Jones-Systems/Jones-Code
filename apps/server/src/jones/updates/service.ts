@@ -40,7 +40,11 @@ import {
 } from "./launcherOperation.ts";
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
-import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
+import {
+  readCurrentJonesBuildStartedAt,
+  JonesUpdater,
+  type JonesStagedRetirementInput,
+} from "./JonesUpdater.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
@@ -97,6 +101,7 @@ export const layer = Layer.effect(
     const context = yield* Effect.context<never>();
     const run = Effect.runPromiseWith(context);
     const version = launcher.currentVersion ?? packageJson.version;
+    const currentBuildStartedAt = readCurrentJonesBuildStartedAt(packageJson, version);
     const receiptStarted = yield* Clock.currentTimeMillis;
     const runtimeReceipt = isPreviewRuntime(version)
       ? yield* Effect.tryPromise(() =>
@@ -480,6 +485,7 @@ export const layer = Layer.effect(
           : { phase: "blocked" as const, message: restoreFailure }),
         ...(environmentId === undefined ? {} : { environmentId }),
         currentVersion: version,
+        ...(currentBuildStartedAt === undefined ? {} : { currentBuildStartedAt }),
         ...(installedSource === undefined ? {} : { installedSource }),
         ...(launcher.qualifiedUpdateMigrationPlan === undefined
           ? {}

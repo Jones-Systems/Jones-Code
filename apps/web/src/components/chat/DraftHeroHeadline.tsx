@@ -20,14 +20,13 @@ import {
 } from "~/logicalProject";
 import {
   buildSidebarProjectPickerEntries,
-  buildSidebarProjectSnapshots,
   projectGroupsSpanEnvironments,
 } from "~/sidebarProjectGrouping";
-import { useProjects, useThreadShells } from "~/state/entities";
+import { useProjects } from "~/state/entities";
 import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { ProjectEnvironmentBadge } from "../ProjectEnvironmentBadge";
 import { ProjectFavicon } from "../ProjectFavicon";
-import { sortLogicalProjectsForSidebar } from "../Sidebar.logic";
+import { useSidebarProjectGroups } from "~/hooks/useSidebarProjectGroups";
 import {
   Combobox,
   ComboboxEmpty,
@@ -63,11 +62,9 @@ export function DraftHeroHeadline({
   activeProjectTitle,
 }: DraftHeroHeadlineProps) {
   const projects = useProjects();
-  const threads = useThreadShells();
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
-  const projectSortOrder = useClientSettings((settings) => settings.sidebarProjectSortOrder);
   const setLogicalProjectDraftThreadId = useComposerDraftStore(
     (store) => store.setLogicalProjectDraftThreadId,
   );
@@ -82,19 +79,7 @@ export function DraftHeroHeadline({
   const [pickerQuery, setPickerQuery] = useState("");
   const pickerFilter = useComboboxFilter();
 
-  const environmentLabelById = new Map(
-    environments.map((environment) => [environment.environmentId, environment.label] as const),
-  );
-  const projectGroups = sortLogicalProjectsForSidebar(
-    buildSidebarProjectSnapshots({
-      projects,
-      settings: projectGroupingSettings,
-      primaryEnvironmentId,
-      resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
-    }),
-    threads,
-    projectSortOrder,
-  );
+  const projectGroups = useSidebarProjectGroups();
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const environmentMachineById = new Map(
     environments.map(

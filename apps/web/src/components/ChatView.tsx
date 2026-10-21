@@ -1,3 +1,4 @@
+import { ClientServerBuildLabels } from "../jones/updates/ClientServerBuildLabels";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import {
@@ -2519,8 +2520,7 @@ export default function ChatView(props: ChatViewProps) {
                 }
               />
               <TooltipPopup side="top">
-                {versionMismatchServerLabel} {versionMismatch.serverVersion}{" "}
-                <span aria-hidden="true">→</span> {versionMismatch.clientVersion}
+                {versionMismatchServerLabel}: <ClientServerBuildLabels builds={versionMismatch} />
               </TooltipPopup>
             </Tooltip>
           ) : (

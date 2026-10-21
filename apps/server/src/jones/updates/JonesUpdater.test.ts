@@ -6,7 +6,11 @@ import type {
   JonesActionsCheckResult,
   JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
-import { JonesUpdater, type JonesUpdaterHost } from "./JonesUpdater.ts";
+import {
+  JonesUpdater,
+  readCurrentJonesBuildStartedAt,
+  type JonesUpdaterHost,
+} from "./JonesUpdater.ts";
 
 const candidate: JonesActionsCandidate = {
   schema: 1,
@@ -31,6 +35,7 @@ const candidate: JonesActionsCandidate = {
 function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   const effects: string[] = [];
   let available = candidate;
+  let buildStartedAt: string | undefined;
   const host: JonesUpdaterHost = {
     initialState: {
       source: "jones-actions",
@@ -55,19 +60,82 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   const updater = new JonesUpdater(
     { ...host, ...overrides },
     {
-      check: async () => ({ state: "available", candidate: available }),
+      check: async () => ({
+        state: "available",
+        candidate: available,
+        ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
+      }),
       stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
     },
   );
   return {
     updater,
     effects,
+    setBuildStartedAt: (value: string | undefined) => {
+      buildStartedAt = value;
+    },
     newer: () => {
       available = { ...candidate, artifactId: 5, source: "f".repeat(40) };
     },
   };
 }
+describe("installed Jones build time", () => {
+  const version = "0.0.45-preview.20261020.42.1";
+  const startedAt = "2026-10-20T21:13:43Z";
+  it.each([
+    { metadata: { version, jonesBuildStartedAt: startedAt }, expected: startedAt },
+    { metadata: { version }, expected: undefined },
+    { metadata: { version, jonesBuildStartedAt: "invalid" }, expected: undefined },
+    { metadata: { version: "another-build", jonesBuildStartedAt: startedAt }, expected: undefined },
+    { metadata: { jonesBuildStartedAt: startedAt }, expected: undefined },
+  ])(
+    "pairs installed time only with the exact current version: $metadata",
+    ({ metadata, expected }) => {
+      expect(readCurrentJonesBuildStartedAt(metadata, version)).toBe(expected);
+    },
+  );
+});
+
 describe("host-owned Jones updater", () => {
+  it("carries candidate time through download and keeps the staged time across later checks", async () => {
+    const f = fixture();
+    const buildStartedAt = "2026-10-20T21:13:43Z";
+    f.setBuildStartedAt(buildStartedAt);
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBe(buildStartedAt);
+    expect(
+      (await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source }))
+        .provenance?.buildStartedAt,
+    ).toBe(buildStartedAt);
+    f.newer();
+    f.setBuildStartedAt("2026-10-20T22:13:43Z");
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBe(buildStartedAt);
+    expect(candidate).not.toHaveProperty("buildStartedAt");
+  });
+  it("clears an offered time when a subsequent candidate has no recorded time", async () => {
+    const f = fixture();
+    f.setBuildStartedAt("2026-10-20T21:13:43Z");
+    await f.updater.check();
+    f.newer();
+    f.setBuildStartedAt(undefined);
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBeUndefined();
+    expect(
+      (await f.updater.download({ artifactId: 5, sourceSha: "f".repeat(40) })).provenance
+        ?.buildStartedAt,
+    ).toBeUndefined();
+  });
+  it("does not invent a candidate time for a restored staged selection", async () => {
+    const before = fixture();
+    await before.updater.check();
+    const restored = await before.updater.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    const f = fixture({ initialState: restored });
+    f.setBuildStartedAt("2026-10-20T21:13:43Z");
+    expect((await f.updater.check()).provenance?.buildStartedAt).toBeUndefined();
+    expect(f.updater.snapshot().stagedHandle).toBe("fixed-handle");
+  });
+
   it("stages only the pinned source and retains a conflicting existing handle", async () => {
     const f = fixture();
     const wrong = await f.updater.stageExact("f".repeat(40));
@@ -314,6 +382,15 @@ describe("exact-source staging for this host", () => {
   const offered = async (): Promise<JonesActionsCheckResult> => ({
     state: "available",
     candidate,
+  });
+
+  it("keeps exact-source staging time paired with its own check result", async () => {
+    const buildStartedAt = "2026-10-20T21:13:43Z";
+    const f = exact(async () => ({ state: "available", candidate, buildStartedAt }));
+    expect((await f.updater.stageExact(candidate.source)).provenance?.buildStartedAt).toBe(
+      buildStartedAt,
+    );
+    expect(f.downloads).toEqual([candidate.artifactId]);
   });
 
   it("downloads exactly the artifact its check returned for the target, no install", async () => {

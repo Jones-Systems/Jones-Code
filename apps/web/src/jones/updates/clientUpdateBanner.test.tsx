@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -7,6 +8,7 @@ import { useClientUpdateBanners, type ClientUpdateBannerInput } from "./clientUp
 const branding = vi.hoisted(() => ({
   APP_VERSION: "0.0.45-preview.20261010.1",
   APP_SOURCE_SHA: "a".repeat(40),
+  APP_BUILD_STARTED_AT: "2026-10-20T21:13:43Z",
 }));
 vi.mock("../../branding", () => branding);
 // The production action binds live connection atoms; its controller is tested on its own.
@@ -25,6 +27,7 @@ const environment = (id: string, sha = "b".repeat(40), version = branding.APP_VE
       platform: { os: "linux", arch: "x64" } as const,
       capabilities: { repositoryIdentity: true },
       serverVersion: version,
+      jonesBuildStartedAt: "2026-10-20T21:13:47Z",
       jonesSource: { repository: "Jones-Systems/Jones-Code" as const, sha, tree: sha },
     },
   },
@@ -53,13 +56,7 @@ function render(props: ClientUpdateBannerInput) {
 const output = () => JSON.stringify(tree!.toJSON());
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  const values = new Map<string, string>();
-  vi.stubGlobal("window", {
-    localStorage: {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => values.set(key, value),
-    },
-  });
+  window.localStorage.clear();
 });
 afterEach(() => {
   act(() => tree?.unmount());
@@ -81,6 +78,8 @@ describe("client notice environment lifecycle", () => {
     expect(output()).toContain("Client");
     expect(output()).toContain("Server");
     expect(output()).toContain("aaaaaaaaaaaa");
+    expect(output()).toContain("1020·1713:43");
+    expect(output()).toContain("1020·1713:47");
     expect(tree!.root.findAllByType("button").map((b) => b.children.join(""))).toEqual([
       "Dismiss client version notice",
     ]);

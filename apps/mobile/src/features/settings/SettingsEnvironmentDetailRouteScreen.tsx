@@ -1,4 +1,6 @@
 import { findEnvironmentUpdate as findJonesEnvironmentUpdate } from "../../jones/updates/environmentMaintenance";
+import { JonesBuildVersion } from "../../jones/updates/JonesBuildVersion";
+import { mobileJonesBuildRef, mobileJonesBuildDescription } from "../../jones/updates/buildVersion";
 import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
 import { jonesUpdates } from "../../jones/updates/jonesUpdates";
 import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
@@ -99,6 +101,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const version = config?.environment.serverVersion;
   const checkedRelease = release?.fromVersion === version ? release : null;
   const capabilities = config?.environment.capabilities;
+  const buildRef = (value: string) => mobileJonesBuildRef(value, config?.environment, jonesState);
+  const buildDescription = (value: string) => mobileJonesBuildDescription(buildRef(value));
 
   async function run(label: string, action: () => Promise<void>) {
     if (pendingRef.current) return;
@@ -129,7 +133,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
       return;
     Dialog.alert(
       `Update ${environment?.environmentLabel ?? "environment"}?`,
-      `Install T3 Code ${targetVersion}. ${capabilities.serverSelfUpdate === "desktop-managed" ? "The desktop app will close and relaunch." : "The server will restart and reconnect."} Running threads may be interrupted.`,
+      `Install T3 Code ${buildDescription(targetVersion)}. ${capabilities.serverSelfUpdate === "desktop-managed" ? "The desktop app will close and relaunch." : "The server will restart and reconnect."} Running threads may be interrupted.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -158,7 +162,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
               });
               if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
               setRelease(null);
-              setNotice(`Updated to ${result.value.targetVersion}.`);
+              setNotice(`Updated to ${buildDescription(result.value.targetVersion)}.`);
             }),
         },
       ],
@@ -251,7 +255,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
               <>
                 <SettingsSection title="T3 Code">
                   <View className="gap-1 p-4">
-                    <Text className="text-base text-foreground">Version {version}</Text>
+                    <JonesBuildVersion build={buildRef(config.environment.serverVersion)} />
                     {running ? (
                       <Text className="text-sm text-foreground-muted">
                         {updateState.stage === "resuming"
@@ -266,7 +270,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     {checkedRelease ? (
                       <Text className="text-sm text-foreground-muted">
                         {checkedRelease.targetVersion
-                          ? `Version ${checkedRelease.targetVersion} is available.`
+                          ? `Version ${buildDescription(checkedRelease.targetVersion)} is available.`
                           : "You are up to date."}
                       </Text>
                     ) : null}
@@ -303,7 +307,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                             clearTimeout(timeout);
                             checkController.current = null;
                             // `run` owns the error message, so a failed lookup rethrows to it.
-                            if (AsyncResult.isFailure(result)) throw squashAtomCommandFailure(result);
+                            if (AsyncResult.isFailure(result))
+                              throw squashAtomCommandFailure(result);
                             setRelease({ fromVersion, targetVersion: result.value });
                           });
                         }}
@@ -312,7 +317,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       supportsEnvironmentUpdate(config.environment.capabilities) ? (
                         <SettingsActionRow
                           icon="arrow.up.circle"
-                          label={`Update to ${checkedRelease.targetVersion}`}
+                          label={`Update to ${buildDescription(checkedRelease.targetVersion)}`}
                           disabled={disabled}
                           loading={pending === "server" || running}
                           onPress={requestServerUpdate}

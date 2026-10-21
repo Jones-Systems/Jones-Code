@@ -319,8 +319,14 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "project-order",
     title: "Project order",
-    to: "/settings/general",
-    searchTerms: ["sort projects sidebar manual created recent"],
+    to: "/settings/jones-code",
+    searchTerms: ["sort projects sidebar manual created recent reorder drag move draft"],
+  },
+  {
+    id: "environment-order",
+    title: "Environment order",
+    to: "/settings/jones-code",
+    searchTerms: ["sort environments run on host machine reorder drag move"],
   },
   {
     id: "snooze-limited-threads",

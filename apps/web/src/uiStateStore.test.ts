@@ -19,6 +19,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
   return {
     projectExpandedById: {},
     projectOrder: [],
+    environmentOrder: [],
     sidebarProjectScopeKey: null,
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
@@ -29,6 +30,10 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
 }
 
 describe("uiStateStore pure functions", () => {
+  it("defaults absent environment order for older saved state", () => {
+    expect(parsePersistedState({}).environmentOrder).toEqual([]);
+  });
+
   it("stores server timestamps without moving visit state backwards", () => {
     const threadId = ThreadId.make("thread-1");
     const initialState = makeUiState();
@@ -102,6 +107,7 @@ describe("parsePersistedState", () => {
         invalid: "no" as unknown as boolean,
       },
       projectOrder: ["physical-b", "", "physical-a", "physical-b"],
+      environmentOrder: ["remote", "", "local", "remote", 42 as unknown as string],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
         invalid: "not-a-date",
@@ -121,6 +127,7 @@ describe("parsePersistedState", () => {
         logical: false,
       },
       projectOrder: ["physical-b", "physical-a"],
+      environmentOrder: ["remote", "local"],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
@@ -204,6 +211,7 @@ describe("uiStateStore persistence", () => {
         logical: false,
       },
       projectOrder: ["physical-b", "physical-a"],
+      environmentOrder: ["remote", "local"],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
@@ -226,6 +234,7 @@ describe("uiStateStore persistence", () => {
         logical: false,
       },
       projectOrder: ["physical-b", "physical-a"],
+      environmentOrder: ["remote", "local"],
       threadLastVisitedAtById: {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },

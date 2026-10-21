@@ -62,9 +62,10 @@
         "apps/web/src/components/usage/UsagePage.jones.test.tsx",
         "packages/shared/src/jones/usageMergeCompatibility.test.ts",
         "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx",
-        "apps/server/src/usage/UsageService.test.ts"
+        "apps/server/src/usage/UsageService.test.ts",
+        "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
-      "scope": "Jones usage range, refresh, provider detail, merge compatibility and chart interaction coverage retains cached content, selected dates and the restored chart geometry/hover cases."
+      "scope": "Jones usage range, refresh, provider detail, merge compatibility and chart interaction coverage retains cached content, selected dates and the restored chart geometry/hover cases. Jones-owned compact totals, model token stats and table headers provide all-token Cache %, cache-write counters and paired model cost/token percentages. UsagePage and UsageModelDialog retain small mounting hooks; the shared token segment and share-bar interfaces add an optional zero-counter legend label while positive bar segments keep their existing behavior. Existing usage integration tests retain their application harness to verify provider scope and independent percentages."
     },
     {
       "id": "physical-process-evidence",
@@ -141,16 +142,12 @@
     },
     {
       "id": "provider-restart-identity",
-      "tests": [
-        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
     },
     {
       "id": "environment-sidebar-filters",
-      "tests": [
-        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ],
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
       "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
     },
     {
@@ -201,16 +198,12 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": [
-        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ]
+      "tests": ["scripts/jones/check-boundary.test.ts"]
     },
     {
       "id": "provider-settlement",
@@ -397,9 +390,7 @@
     },
     {
       "id": "mcp-pin-placement",
-      "tests": [
-        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
     },
     {
@@ -1008,9 +999,7 @@
     },
     {
       "id": "runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ]
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     },
     {
       "id": "provider-conversation-reselection",
@@ -1353,6 +1342,59 @@
         "apps/server/src/jones/updates/stagedSelection.test.ts"
       ],
       "scope": "Standalone operator recovery reattaches one existing verified native staged handle through the native selection writer under the existing updater lock. Dry-run creates no files; apply preserves receipts, payloads, active state and native install controls. Tests cover exact binding, conflicting pointers, revocation, unknown write and durability effects. No product entry point, installation, service control or adoption change."
+    },
+    {
+      "id": "apple-silicon-platforms",
+      "tests": [
+        "scripts/jones/platforms/supportedTargets.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/lib/build-target-arch.test.ts",
+        "scripts/jones/preview-companion/packageVariant.test.ts"
+      ],
+      "scope": "Jones packaging supports mac arm64 and Linux arm64/x64. Private builder entrypoints call one typed Jones target gate before staging or build side effects; shared builder hooks avoid duplicating upstream packaging machinery. Root package scripts remove Windows and Intel Mac shortcuts. Upstream platform helpers and tests remain intact. The removed Windows test workflow is tombstoned."
+    },
+    {
+      "id": "readable-build-labels",
+      "tests": [
+        "packages/shared/src/jones/buildTime.test.ts",
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "packages/contracts/src/jones/fleetUpdates/source.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/jones/jonesUpdates.buildTime.test.ts",
+        "scripts/stamp-jones-build.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/mobile/src/jones/updates/buildVersion.test.ts",
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/web/src/jones/updates/buildVersion.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
+        "apps/web/src/versionSkew.test.ts",
+        "apps/web/src/jones/updates/versionSkew.test.ts",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "apps/web/src/jones/updates/installedSourceComparison.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/jones/updates/build-provenance.test.ts",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
+      ],
+      "scope": "Display-only Eastern Time minute build labels backed by optional exact workflow-attempt start metadata. Shared formatting covers default month/day and compact day labels, adjacent collisions, DST, and honest old-build fallback. Narrow upstream hooks forward optional metadata and render labels while full versions, source ancestry, candidate handles, receipts and persisted selections retain their existing meaning. Existing descriptor, updater and packager harnesses retain integration cases because they own those boundaries."
+    },
+    {
+      "id": "presentation-order",
+      "tests": [
+        "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx",
+        "apps/web/src/jones/presentationOrder/environmentOrder.test.ts",
+        "apps/web/src/jones/presentationOrder/projectOrder.test.ts",
+        "apps/web/src/uiStateStore.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/hooks/useHandleNewThread.test.ts"
+      ],
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings → Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     }
   ]
 }

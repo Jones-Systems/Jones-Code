@@ -8,7 +8,7 @@ import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
 import * as Schema from "effect/Schema";
 
-import { APP_SOURCE_SHA, APP_VERSION } from "./branding";
+import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "./branding";
 import {
   isJonesPreviewBuildPair,
   resolveJonesClientUpdateNotice,
@@ -23,6 +23,10 @@ export interface VersionMismatch {
   readonly clientVersion: string;
   readonly serverVersion: string;
   readonly hint: string;
+  readonly clientBuildStartedAt?: string | undefined;
+  readonly serverBuildStartedAt?: string | undefined;
+  readonly clientSourceSha?: string | undefined;
+  readonly serverSourceSha?: string | undefined;
 }
 
 const VERSION_MISMATCH_DISMISSALS_STORAGE_KEY = "t3code:version-mismatch-dismissals:v1";
@@ -99,16 +103,27 @@ export function resolveVersionMismatch(
 export function resolveServerConfigClientUpdateNotice(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ) {
-  return resolveJonesClientUpdateNotice(serverConfig?.environment.serverVersion, APP_VERSION, {
-    clientSourceSha: APP_SOURCE_SHA,
-    serverSourceSha: serverConfig?.environment.jonesSource?.sha,
-  });
+  const notice = resolveJonesClientUpdateNotice(
+    serverConfig?.environment.serverVersion,
+    APP_VERSION,
+    {
+      clientSourceSha: APP_SOURCE_SHA,
+      serverSourceSha: serverConfig?.environment.jonesSource?.sha,
+    },
+  );
+  return notice === null
+    ? null
+    : {
+        ...notice,
+        clientBuildStartedAt: APP_BUILD_STARTED_AT,
+        serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
+      };
 }
 
 export function resolveServerConfigVersionMismatch(
   serverConfig: Pick<ServerConfig, "environment"> | null | undefined,
 ): VersionMismatch | null {
-  return resolveVersionMismatch(
+  const mismatch = resolveVersionMismatch(
     serverConfig?.environment.serverVersion,
     APP_VERSION,
     resolveJonesSourceCurrency({
@@ -116,6 +131,15 @@ export function resolveServerConfigVersionMismatch(
       targetSource: APP_SOURCE_SHA,
     }),
   );
+  return mismatch === null
+    ? null
+    : {
+        ...mismatch,
+        clientBuildStartedAt: APP_BUILD_STARTED_AT,
+        serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
+        clientSourceSha: APP_SOURCE_SHA,
+        serverSourceSha: serverConfig?.environment.jonesSource?.sha,
+      };
 }
 
 export function resolveServerSelfUpdateCapability(

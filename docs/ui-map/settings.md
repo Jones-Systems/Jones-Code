@@ -26,7 +26,7 @@ that each setting or external integration works.
 | `storage`                | [Storage](../../apps/web/src/routes/settings.storage.tsx)                           | Environment state; destructive cleanup is outside a navigation check.                                  |
 | `connections`            | [Connections](../../apps/web/src/routes/settings.connections.tsx)                   | Device-only route; administration requires suitable scopes and isolated endpoints.                     |
 | `archived`               | [Archive](../../apps/web/src/routes/settings.archived.tsx)                          | Synthetic archived threads for restore checks.                                                         |
-| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only route rendering PromptsSettings.                                                           |
+| `jones-code`             | [Jones Code](../../apps/web/src/routes/settings.jones-code.tsx)                     | Device-only prompt defaults and project/environment ordering across connected environments.            |
 | `diagnostics`            | [Diagnostics](../../apps/web/src/routes/settings.diagnostics.tsx)                   | Environment-specific view; reachable from General/search, excluded from ordinary section navigation.   |
 | `open-source-licenses`   | [Open source licenses](../../apps/web/src/routes/settings.open-source-licenses.tsx) | General's link; distinct breadcrumb but General remains the selected sidebar section.                  |
 
@@ -125,3 +125,34 @@ The primary verification owner must record expected/observed results for the
 specific paths exercised. Native capture/menu delivery, external authentication,
 remote connection variants, setting writes and untested shared consumers remain
 gaps. This map addition is not a full maintenance pass or product qualification.
+
+### Project and environment order
+
+Source: [presentationOrder](../../apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx).
+Reach it at `/settings/jones-code`, General → Organization → Manage order, or
+settings search for Project order / Environment order. This device-only section
+does not use the project/environment scope selectors. Choose Manual to expose
+the project list; drag handles support keyboard sorting and rows provide arrows.
+Project and environment resets are independent. Restore device defaults clears
+both saved orders. Existing contextual promotion of the current project in the
+new-thread palette remains in effect.
+
+Runtime check **2026-10-21** on the task candidate based on
+`7f56cb697d7bb230e34a2d301cfc1f3c79f4743d`, affected-check group
+`jones-presentation-order`: T3 Browser, local Vite source, isolated synthetic
+state, two paired loopback environments, light theme, device scale 2, viewports
+1280×800 and 480×900. The PR records the exact committed candidate and uploaded
+before/after captures; this is shared-renderer evidence, not packaged-build proof.
+
+Verified: selecting Manual, moving the secondary-only project first, reordering
+environments, saved UI-state readback, reload persistence, matching sidebar picker
+order, palette order after its existing current-project promotion, independent
+resets, and long-name layout without horizontal overflow. Narrow lists retained
+39px side insets. The reset restored activity ordering and primary-first default
+environment ordering without changing the other list. Synthetic projection
+fixtures establish display behavior only; no provider turn was submitted.
+
+Keyboard move/cancel and arrow behavior have focused browser-test coverage.
+Draft-picker and Run-on integration are source/typecheck covered; full live
+multi-checkout Run-on and disconnected/reconnected journeys remain unverified.
+Native mobile uses separate preferences and is outside this renderer feature.
