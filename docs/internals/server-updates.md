@@ -148,6 +148,38 @@ restart; a live or non-resumable approval does not, and holds activation until a
 provider adapter can declare that a pending approval rebinds to its resumed
 session.
 
+## Off-process preparation
+
+Download, archive and tree hashes, extraction and candidate validation run in a
+[worker](../../apps/server/src/jones/updates/preparation/worker.ts) started from
+the server's own build as `__jones-preparation-worker`, which `bin.ts` dispatches
+before the CLI loads. Because the worker is the same build, its protocol always
+matches its parent's, and it needs no separate packaging. The serving process only
+[supervises](../../apps/server/src/jones/updates/preparation/supervisor.ts) it.
+Jobs run one at a time: the supervisor queues them, and the worker holds a
+per-home lock, so a second server on the same home is refused. The worker runs at
+the lowest scheduling priority; that is not a CPU cap.
+
+The parent never trusts the worker's report on its own. It
+[rereads](../../apps/server/src/jones/updates/preparation/rebind.ts) the bounded
+durable stage receipt, requires it to equal that report, and checks the receipt's
+home, database, active runtime and candidate provenance. Tree hashes stay in the
+worker: Install verifies the stage again in a verify job, and the launcher verifies
+it again at activation. Staging refuses a Linux candidate that cannot answer
+`__jones-preparation-worker --protocol`, since an installed host could not prepare
+its next update without it. Darwin candidates are never launched while staging, so
+only the desktop artifact smoke proves their packaged worker.
+
+Each job lives in `runtime/jones-preparation/jobs/<id>` on the home's own disk.
+That directory holds the worker's `TMPDIR` and extraction scratch, and the parent
+holds the job's owner lock while the worker runs. Cancellation, a deadline, a
+missed heartbeat or an output bound stops the worker's whole process group. A
+worker whose parent exits sees end-of-file on stdin and stops itself. A sweep job
+at startup and after every failed job removes what a killed worker left. It takes
+a job directory only when its owner lock is free, and it also removes unpublished
+Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
+two newest completed downloads, so failing candidates do not accumulate.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

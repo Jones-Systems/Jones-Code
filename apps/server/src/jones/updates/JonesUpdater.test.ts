@@ -4,7 +4,6 @@ import * as Schema from "effect/Schema";
 import type {
   JonesActionsCandidate,
   JonesActionsCheckResult,
-  JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesUpdaterHost } from "./JonesUpdater.ts";
 import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
@@ -44,10 +43,13 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
     installedSource: async () => "a".repeat(40),
     platform: "linux",
     architecture: "x64",
-    cacheRoot: "fixture",
-    stage: async () => {
+    prepare: async () => {
       effects.push("stage");
-      return { stagedHandle: "fixed-handle", version: candidate.version };
+      return {
+        stagedHandle: "fixed-handle",
+        version: candidate.version,
+        payloadSha256: "e".repeat(64),
+      };
     },
     install: async () => {
       effects.push("install");
@@ -55,10 +57,7 @@ function fixture(overrides: Partial<JonesUpdaterHost> = {}) {
   };
   const updater = new JonesUpdater(
     { ...host, ...overrides },
-    {
-      check: async () => ({ state: "available", candidate: available }),
-      stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
-    },
+    { check: async () => ({ state: "available", candidate: available }) },
   );
   return {
     updater,
@@ -277,10 +276,16 @@ describe("exact-source staging for this host", () => {
         installedSource: async () => "a".repeat(40),
         platform: "linux",
         architecture: "x64",
-        cacheRoot: "fixture",
-        stage: async () => {
+        prepare: async (staged, { onVerifying }) => {
+          downloads.push(staged.artifactId);
+          await download(staged.artifactId);
+          onVerifying();
           effects.push("stage");
-          return { stagedHandle: "fixed-handle", version: candidate.version };
+          return {
+            stagedHandle: "fixed-handle",
+            version: candidate.version,
+            payloadSha256: "e".repeat(64),
+          };
         },
         install: async () => {
           effects.push("install");
@@ -293,11 +298,6 @@ describe("exact-source staging for this host", () => {
         check: async (input) => {
           checks.push(input.targetSource);
           return check(input.targetSource);
-        },
-        stage: async (staged) => {
-          downloads.push(staged.artifactId);
-          await download(staged.artifactId);
-          return { receipt: { sha256: "e".repeat(64) } } as JonesStagedArtifact;
         },
       },
     );
@@ -704,8 +704,11 @@ describe("follower policy on the host updater", () => {
         installedSource: async () => "a".repeat(40),
         platform: "linux",
         architecture: "x64",
-        cacheRoot: "fixture",
-        stage: async () => ({ stagedHandle: "fixed-handle", version: offered.version }),
+        prepare: async () => ({
+          stagedHandle: "fixed-handle",
+          version: offered.version,
+          payloadSha256: "e".repeat(64),
+        }),
         install: async (request) => {
           installs.push(request.stagedHandle);
         },
@@ -716,7 +719,6 @@ describe("follower policy on the host updater", () => {
           checks.push(input.targetSource);
           return { state: "available", candidate: offered };
         },
-        stage: async () => ({ receipt: { sha256: "e".repeat(64) } }) as JonesStagedArtifact,
       },
     );
     return {
@@ -811,6 +813,45 @@ describe("follower policy on the host updater", () => {
     }
     expect(f.installs).toEqual([]);
     expect(f.updater.snapshot().phase).toBe("staged");
+  });
+
+  it("stops an unaccepted preparation when the laptop moves on, then stages its new build", async () => {
+    const signals: AbortSignal[] = [];
+    const f = follower({
+      prepare: (staged, { signal }) => {
+        signals.push(signal);
+        if (signals.length > 1)
+          return Promise.resolve({
+            stagedHandle: "fixed-handle",
+            version: staged.version,
+            payloadSha256: "e".repeat(64),
+          });
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(new Error("preparation was cancelled")), {
+            once: true,
+          }),
+        );
+      },
+    });
+    f.updater.setPolicy(following(leader));
+    const superseded = f.updater.stageExact(leader);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    expect(f.updater.snapshot().phase).toBe("downloading");
+    f.offer(other);
+    f.updater.setPolicy(following(other));
+    expect(signals[0]?.aborted).toBe(true);
+    expect(await superseded).toMatchObject({
+      phase: "no-new",
+      message: "The laptop's installed build changed. Checking for it…",
+    });
+    expect(f.updater.snapshot().provenance).toBeUndefined();
+    expect(await f.updater.stageExact(other)).toMatchObject({
+      phase: "staged",
+      stagedHandle: "fixed-handle",
+      provenance: { sourceSha: other },
+    });
+    expect(signals).toHaveLength(2);
+    expect(signals[1]?.aborted).toBe(false);
   });
 
   it("keeps the stage ready when an automatic activation is withdrawn before the handoff", async () => {

@@ -31,6 +31,9 @@ interface HarnessOptions {
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
+/** These cases fake `installQualified`, so staged verification is never reached. */
+const verifyStaged: ServerSelfUpdate.QualifiedStageVerifier = () =>
+  Promise.reject(new Error("staged verification is faked by installQualified"));
 const releaseHttpClient = (order: string[]) =>
   HttpClient.make((request) =>
     Effect.gen(function* () {
@@ -481,7 +484,11 @@ it.effect(
       });
       const install = wrapped.installQualified;
       if (install === undefined) return yield* Effect.die("missing qualified Install");
-      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      const request = {
+        stagedHandle: "fixed-candidate",
+        continueRunningThreads: true,
+        verifyStaged,
+      };
       yield* install(request).pipe(Effect.flip);
       const duplicate = yield* install(request).pipe(Effect.flip);
       expect(duplicate.reason).toContain("needs reconciliation");
@@ -521,7 +528,11 @@ it.effect(
       });
       const install = wrapped.installQualified;
       if (install === undefined) return yield* Effect.die("missing qualified Install");
-      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      const request = {
+        stagedHandle: "fixed-candidate",
+        continueRunningThreads: true,
+        verifyStaged,
+      };
       yield* install(request).pipe(Effect.flip);
       yield* install(request).pipe(Effect.flip);
       expect(events).toEqual(["prepare", "clear", "prepare", "clear"]);
@@ -563,7 +574,7 @@ it.effect("expires only qualified preparation, clears continuations and admits a
       },
     });
     const install = wrapped.installQualified!;
-    const request = { stagedHandle: "fixed", continueRunningThreads: true };
+    const request = { stagedHandle: "fixed", continueRunningThreads: true, verifyStaged };
     const fiber = yield* Effect.forkChild(install(request).pipe(Effect.flip));
     yield* Deferred.await(entered);
     yield* TestClock.adjust("20 minutes");
@@ -613,6 +624,7 @@ it.effect("keeps continuation marking outside the qualified preparation deadline
       wrapped.installQualified!({
         stagedHandle: "fixed",
         continueRunningThreads: true,
+        verifyStaged,
       }),
     );
     yield* Deferred.await(marking);

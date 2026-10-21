@@ -71,6 +71,8 @@ it.live.each(["send", "disconnect", "timeout"] as const)(
             operationId,
             stagedHandle: binding.stagedHandle,
             continueRunningThreads: true,
+            // The faked installQualified never reaches staged verification.
+            verifyStaged: () => Promise.reject(new Error("unexpected staged verification")),
           };
           yield* install(request).pipe(Effect.flip);
           expect(attempts).toBe(1);

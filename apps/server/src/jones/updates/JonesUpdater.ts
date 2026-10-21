@@ -6,11 +6,7 @@ import type {
   JonesUpdateDownloadInput,
   JonesUpdateInstallInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
-import {
-  JonesActionsClient,
-  type JonesActionsCandidate,
-  type JonesStagedArtifact,
-} from "@t3tools/shared/jones/jonesActions";
+import { JonesActionsClient, type JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
 import {
   findActivationWithdrawal,
   followerTargetRefusal,
@@ -26,17 +22,27 @@ export interface JonesStagedRetirementInput {
   readonly stagedHandle: string;
 }
 
+/** One downloaded, verified and staged build, bound to this host. */
+export interface JonesPreparedStage {
+  readonly stagedHandle: string;
+  readonly version: string;
+  readonly payloadSha256: string;
+  readonly migrationPlan?: JonesUpdateState["migrationPlan"];
+}
+
 export interface JonesUpdaterHost {
   readonly initialState: JonesUpdateState;
   readonly installedSource: () => Promise<string>;
   readonly platform: "linux" | "darwin";
   readonly architecture: "x64" | "arm64";
-  readonly cacheRoot: string;
-  readonly stage: (artifact: JonesStagedArtifact) => Promise<{
-    stagedHandle: string;
-    version: string;
-    migrationPlan?: JonesUpdateState["migrationPlan"];
-  }>;
+  /**
+   * Downloads, verifies and stages exactly `candidate`. The host runs this off the serving
+   * process; the signal stops a preparation whose target was superseded.
+   */
+  readonly prepare: (
+    candidate: JonesActionsCandidate,
+    options: { readonly signal: AbortSignal; readonly onVerifying: () => void },
+  ) => Promise<JonesPreparedStage>;
   readonly install: (
     request: JonesUpdaterInstallInput,
     reportStep?: (step: "marking" | "verifying" | "preflight" | "capturing" | "handoff") => void,
@@ -94,6 +100,14 @@ export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
 
 const FOLLOWER_WAITING = "Waiting for the laptop to report its installed build.";
 
+/** A follower's laptop moved on; the unaccepted preparation of its earlier build is dropped. */
+class PreparationSuperseded extends Error {
+  constructor() {
+    super("The laptop's installed build changed while this build was being prepared.");
+    this.name = "PreparationSuperseded";
+  }
+}
+
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
 export class JonesUpdater {
   private state: JonesUpdateState;
@@ -102,13 +116,21 @@ export class JonesUpdater {
   private candidate: JonesActionsCandidate | undefined;
   /** The one check run on this host, keyed by its target (`latest` for the newest main build). */
   private inflight: { readonly key: string; readonly promise: Promise<JonesCheckRun> } | undefined;
+  /** The one unaccepted preparation; a policy change can stop it. Installs are never here. */
+  private preparation:
+    | {
+        readonly source: string;
+        readonly controller: AbortController;
+        readonly done: Promise<JonesUpdateState>;
+      }
+    | undefined;
   private readonly listeners = new Set<() => void>();
 
   private readonly host: JonesUpdaterHost;
-  private readonly actions: Pick<JonesActionsClient, "check" | "stage">;
+  private readonly actions: Pick<JonesActionsClient, "check">;
   constructor(
     host: JonesUpdaterHost,
-    actions: Pick<JonesActionsClient, "check" | "stage"> = new JonesActionsClient(),
+    actions: Pick<JonesActionsClient, "check"> = new JonesActionsClient(),
   ) {
     this.host = host;
     this.actions = actions;
@@ -162,6 +184,14 @@ export class JonesUpdater {
       return this.snapshot();
     const { policy: _previous, ...rest } = this.state;
     this.state = policy === undefined ? rest : { ...rest, policy };
+    // Latest wins: a follower stops preparing a build its laptop no longer runs.
+    const running = this.preparation;
+    if (
+      running !== undefined &&
+      typeof policy?.leaderSource === "string" &&
+      running.source !== policy.leaderSource
+    )
+      running.controller.abort(new PreparationSuperseded());
     const offeredOther =
       policy !== undefined &&
       this.state.stagedHandle === undefined &&
@@ -370,6 +400,10 @@ export class JonesUpdater {
     if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
     const settled = this.stagedOutcome(targetSource);
     if (settled !== undefined) return settled;
+    // A superseded preparation releases the host as soon as it is stopped; the newer target
+    // goes next. A running one is observed through the busy host, never awaited.
+    const running = this.preparation;
+    if (running?.controller.signal.aborted === true) await running.done;
     const run = await this.checkRun(targetSource);
     // Download only the candidate this run returned for the target; a skipped run, or a build
     // offered by any other check, must not be staged.
@@ -426,15 +460,42 @@ export class JonesUpdater {
   }
 
   /** Downloads and stages exactly `candidate` under the busy latch; the caller has chosen it. */
-  private async stageCandidate(candidate: JonesActionsCandidate): Promise<JonesUpdateState> {
+  private stageCandidate(candidate: JonesActionsCandidate): Promise<JonesUpdateState> {
     if (this.busy || !this.state.capability.download || this.state.stagedHandle !== undefined)
-      return this.snapshot();
+      return Promise.resolve(this.snapshot());
     this.busy = true;
+    const controller = new AbortController();
+    let settle!: (state: JonesUpdateState) => void;
+    const done = new Promise<JonesUpdateState>((resolve) => (settle = resolve));
+    this.preparation = { source: candidate.source, controller, done };
     this.publish({ phase: "downloading", message: "Downloading the selected main build…" });
+    const finish = (state: JonesUpdateState) => {
+      this.preparation = undefined;
+      this.busy = false;
+      settle(state);
+    };
+    void this.prepareCandidate(candidate, controller.signal).then(finish, (cause: unknown) =>
+      finish(this.fail(cause)),
+    );
+    return done;
+  }
+
+  /** Publishes the outcome, including a failure, as the host's state. */
+  private async prepareCandidate(
+    candidate: JonesActionsCandidate,
+    signal: AbortSignal,
+  ): Promise<JonesUpdateState> {
     try {
-      const artifact = await this.actions.stage(candidate, this.host.cacheRoot);
-      this.publish({ phase: "verifying", message: "Verifying and staging the downloaded build…" });
-      const staged = await this.host.stage(artifact);
+      const staged = await this.host.prepare(candidate, {
+        signal,
+        onVerifying: () => {
+          if (!signal.aborted)
+            this.publish({
+              phase: "verifying",
+              message: "Verifying and staging the downloaded build…",
+            });
+        },
+      });
       this.clearOutcome();
       return this.publish({
         phase: "staged",
@@ -444,13 +505,20 @@ export class JonesUpdater {
         provenance: {
           ...candidateProvenance(candidate),
           version: staged.version,
-          payloadSha256: artifact.receipt.sha256,
+          payloadSha256: staged.payloadSha256,
         },
       });
     } catch (error) {
+      if (signal.reason instanceof PreparationSuperseded) {
+        const { provenance: _provenance, ...rest } = this.state;
+        this.state = rest;
+        if (this.candidate?.source === candidate.source) this.candidate = undefined;
+        return this.publish({
+          phase: "no-new",
+          message: "The laptop's installed build changed. Checking for it…",
+        });
+      }
       return this.fail(error);
-    } finally {
-      this.busy = false;
     }
   }
 

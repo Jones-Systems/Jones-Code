@@ -1,7 +1,6 @@
-import type { MigrationPlan } from "../jones/updates/migrationPlan.ts";
 import type { OperationReconciliation } from "../jones/updates/launcherOperation.ts";
 // @effect-diagnostics nodeBuiltinImport:off
-// Qualified staging delegates to the Node-only launcher boundary and owns its scratch lifetime.
+// Qualified Install delegates to the Node-only launcher boundary; staging runs off-process.
 import {
   ServerSelfUpdateError,
   type ServerSelfUpdateCapability,
@@ -27,22 +26,9 @@ import * as Path from "effect/Path";
 import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
-import {
-  validateJonesStagedArtifact,
-  type JonesStagedArtifact,
-} from "@t3tools/shared/jones/jonesActions";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import {
-  currentQualifiedRuntimeBinding,
-  qualifiedRuntimeArtifactFromJonesStage,
-  stageQualifiedRuntime,
-  verifyStagedQualifiedRuntime,
-  type StagedQualifiedRuntime,
-} from "../jones/cloud/qualifiedRuntime.ts";
-import { extractQualifiedLinuxArchive } from "../jones/cloud/qualifiedArchive.ts";
-import { extractQualifiedDarwinRuntime } from "../jones/cloud/qualifiedDarwinRuntime.ts";
-import { withOwnedScratch } from "../jones/cloud/ownedScratch.ts";
+import type { StagedQualifiedRuntime } from "../jones/cloud/qualifiedRuntime.ts";
 
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
@@ -64,6 +50,16 @@ const PREFLIGHT_TIMEOUT = Duration.seconds(30);
 const isServiceLauncherClientError = Schema.is(ServiceLauncherClient.ServiceLauncherClientError);
 const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
+/**
+ * Re-verifies a staged runtime against the active one before Install. Jones staging and this
+ * verification run in the off-process preparation worker, never on the serving event loop.
+ */
+export type QualifiedStageVerifier = (input: {
+  readonly stagedHandle: string;
+  readonly activeVersion: string;
+  readonly signal: AbortSignal;
+}) => Promise<StagedQualifiedRuntime>;
+
 export function resolveServerSelfUpdateCapability(input: {
   readonly desktopManaged: boolean;
   readonly launcherManaged: boolean;
@@ -82,17 +78,12 @@ export class ServerSelfUpdate extends Context.Service<
       ) => Effect.Effect<void, ServerSelfUpdateError>,
       onHandoffAccepted?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
-    readonly stageQualified?: (
-      artifact: JonesStagedArtifact,
-    ) => Effect.Effect<
-      StagedQualifiedRuntime & { readonly migrationPlan?: MigrationPlan },
-      ServerSelfUpdateError
-    >;
     readonly installQualified?: (
       input: {
         readonly stagedHandle: string;
         readonly continueRunningThreads?: boolean;
         readonly operationId?: string;
+        readonly verifyStaged: QualifiedStageVerifier;
       },
       onHandoffAccepted?: () => Effect.Effect<void>,
       onPrepared?: (staged: StagedQualifiedRuntime) => Effect.Effect<void, ServerSelfUpdateError>,
@@ -252,9 +243,6 @@ export const withRunningThreadContinuation = Effect.fn(
 
   return ServerSelfUpdate.of({
     update,
-    ...(input.selfUpdate.stageQualified === undefined
-      ? {}
-      : { stageQualified: input.selfUpdate.stageQualified }),
     ...(input.selfUpdate.installQualified === undefined
       ? {}
       : {
@@ -263,6 +251,7 @@ export const withRunningThreadContinuation = Effect.fn(
               readonly stagedHandle: string;
               readonly continueRunningThreads?: boolean;
               readonly operationId?: string;
+              readonly verifyStaged: QualifiedStageVerifier;
             },
             onAccepted?: () => Effect.Effect<void>,
             onPrepared?: (
@@ -378,8 +367,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     yield* Config.String(CLI_RELEASE_BASE_URL_ENV).pipe(Config.option),
   );
   const inFlight = yield* Ref.make(false);
-  const runtimeContext = yield* Effect.context<never>();
-  const runPromise = Effect.runPromiseWith(runtimeContext);
 
   const capability: ServerSelfUpdateCapability | null =
     serverConfig.mode === "desktop" ? "desktop-managed" : launcher.managed ? "boot-service" : null;
@@ -533,10 +520,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }).pipe(Effect.onError(() => Ref.set(inFlight, false)));
   });
 
-  const requireQualifiedLauncher = (install = false) => {
+  const requireQualifiedLauncher = () => {
     if (
       capability !== "boot-service" ||
-      (install ? launcher.qualifiedUpdates !== true : launcher.qualifiedStaging !== true) ||
+      launcher.qualifiedUpdates !== true ||
       launcher.currentVersion === undefined
     ) {
       throw new Error(
@@ -588,89 +575,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       const decoded = decodeServicePreflightResult(parsed);
       return decoded?.status === "ready" ? decoded.migrationPlan : undefined;
     });
-  const stageQualified = (artifact: JonesStagedArtifact) =>
-    Effect.tryPromise({
-      try: async () => {
-        const activeVersion = requireQualifiedLauncher();
-        const staged = await validateJonesStagedArtifact(
-          NodePath.dirname(artifact.payloadPath),
-          artifact.candidate,
-        );
-        if (
-          staged.candidate.platform !== platform ||
-          staged.candidate.architecture !== arch ||
-          (platform !== "linux" && platform !== "darwin")
-        )
-          throw new Error(
-            "This service requires an Actions artifact matching its native platform.",
-          );
-        const binding = await currentQualifiedRuntimeBinding(serverConfig.baseDir, activeVersion, {
-          platform,
-          architecture: arch,
-        });
-        if (binding.dbPath !== (await NodeFSP.realpath(serverConfig.dbPath)))
-          throw new Error("This qualified staging binding does not match the running database.");
-        await NodeFSP.mkdir(NodePath.join(binding.baseDir, "runtime"), {
-          recursive: true,
-          mode: 0o700,
-        });
-        // Scratch removal can fail after the stage is durable; the stage then stands and the
-        // leftover is reported below instead of failing a valid Download.
-        return await withOwnedScratch(
-          NodePath.join(binding.baseDir, "runtime"),
-          ".jones-extract-",
-          async (scratch) => {
-            if (staged.candidate.platform === "darwin") {
-              await extractQualifiedDarwinRuntime({
-                artifact: staged,
-                destination: scratch,
-                baseDir: binding.baseDir,
-                run: async (command) => {
-                  const result = await runPromise(
-                    runner.run({ ...command, timeout: Duration.minutes(5) }),
-                  );
-                  return { code: result.code ?? 1, stdout: result.stdout };
-                },
-              });
-            } else await extractQualifiedLinuxArchive(staged.payloadPath, scratch);
-            await validateJonesStagedArtifact(
-              NodePath.dirname(staged.payloadPath),
-              staged.candidate,
-            );
-            let migrationPlan: MigrationPlan | undefined;
-            const qualifiedStage = await stageQualifiedRuntime({
-              artifact: qualifiedRuntimeArtifactFromJonesStage(staged, scratch),
-              binding,
-              host: { platform, architecture: arch },
-              validate: async (entryPath) => {
-                // Darwin Download inspects app metadata and ASAR; it never launches
-                // an unsigned candidate against the owner's native service home.
-                if (staged.candidate.platform === "darwin") return;
-                migrationPlan = await runPromise(
-                  validateQualifiedCandidate(entryPath, binding.dbPath, staged.receipt.version),
-                );
-              },
-            });
-            return { ...qualifiedStage, ...(migrationPlan === undefined ? {} : { migrationPlan }) };
-          },
-        );
-      },
-      catch: (cause) =>
-        failWith(
-          cause instanceof Error ? cause.message : "Could not stage the qualified Jones runtime.",
-          cause,
-        ),
-    }).pipe(
-      Effect.tap(({ leftover }) =>
-        leftover === undefined
-          ? Effect.void
-          : Effect.logWarning("Qualified staging left its scratch directory in place.", {
-              path: leftover.path,
-              cause: leftover.cause instanceof Error ? leftover.cause.message : leftover.cause,
-            }),
-      ),
-      Effect.map(({ value }) => value),
-    );
   const installQualified: NonNullable<ServerSelfUpdate["Service"]["installQualified"]> = (
     input,
     onHandoffAccepted = () => Effect.void,
@@ -685,13 +589,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           input.operationId,
           Effect.tryPromise({
             try: (signal) =>
-              verifyStagedQualifiedRuntime(
-                serverConfig.baseDir,
-                requireQualifiedLauncher(true),
-                input.stagedHandle,
-                { platform, architecture: arch },
-                { signal },
-              ),
+              input.verifyStaged({
+                stagedHandle: input.stagedHandle,
+                activeVersion: requireQualifiedLauncher(),
+                signal,
+              }),
             catch: (cause) =>
               failWith(
                 cause instanceof Error ? cause.message : "The staged update binding is invalid.",
@@ -753,7 +655,6 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
   return ServerSelfUpdate.of({
     update,
-    stageQualified,
     installQualified,
     commitDesktopUpdate: (requestId, onHandoffAccepted) =>
       desktopAppUpdate.commit(requestId, onHandoffAccepted),

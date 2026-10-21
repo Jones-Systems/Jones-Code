@@ -42,6 +42,11 @@ import {
 import { parseServiceState } from "../../cloud/serviceProtocol.ts";
 import { readQualifiedBackupReceipt } from "../cloud/qualifiedBackup.ts";
 import { JonesUpdater, type JonesStagedRetirementInput } from "./JonesUpdater.ts";
+import {
+  makePreparationSupervisor,
+  resolvePreparationWorkerCommand,
+} from "./preparation/supervisor.ts";
+import { adoptPreparedStage, adoptVerifiedStage } from "./preparation/rebind.ts";
 import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import { createFleetHostStore } from "../fleetUpdates/store.ts";
 import { readQualifiedRuntimeReceipt } from "../cloud/qualifiedRuntime.ts";
@@ -403,6 +408,65 @@ export const layer = Layer.effect(
     const supported =
       (platform === "linux" && (architecture === "x64" || architecture === "arm64")) ||
       (platform === "darwin" && architecture === "arm64");
+    const preparationHost =
+      (platform === "linux" || platform === "darwin") &&
+      (architecture === "x64" || architecture === "arm64")
+        ? { platform, architecture }
+        : undefined;
+    const cacheRoot = NodePath.join(config.baseDir, "runtime", "jones-actions");
+    // Download, archive and tree hashes, extraction and validation run in a low-priority worker
+    // started from this server's own build, one at a time per host; this process only
+    // supervises it and rebinds its bounded result.
+    const preparationCommand = resolvePreparationWorkerCommand({
+      isExecutable: yield* HostProcess.IsExecutable,
+      execPath: yield* HostProcess.ExecutablePath,
+      entryPath: (yield* HostProcess.Arguments)[1],
+    });
+    const preparation =
+      preparationCommand === undefined
+        ? undefined
+        : makePreparationSupervisor({
+            baseDir: config.baseDir,
+            cacheRoot,
+            command: preparationCommand,
+            env: yield* HostProcess.Environment,
+            observe: (exit) =>
+              void run(
+                Effect.logInfo("Jones update preparation worker exited", {
+                  jobId: exit.jobId,
+                  kind: exit.kind,
+                  pid: exit.pid,
+                  priority: exit.priority,
+                  code: exit.code,
+                  signal: exit.signal,
+                  stopped: exit.stopped,
+                  reaped: exit.reaped,
+                  durationMs: exit.durationMs,
+                }),
+              ),
+          });
+    const preparationUnavailable = () =>
+      new Error(
+        "bootstrap-required: This installation cannot start its update preparation worker.",
+      );
+    const verifyStaged: SelfUpdate.QualifiedStageVerifier = async ({
+      stagedHandle,
+      activeVersion,
+      signal,
+    }) => {
+      if (preparation === undefined || preparationHost === undefined)
+        throw preparationUnavailable();
+      const outcome = await preparation.run(
+        { kind: "verify", stagedHandle, activeVersion, host: preparationHost },
+        { signal },
+      );
+      return adoptVerifiedStage({
+        baseDir: config.baseDir,
+        activeVersion,
+        stagedHandle,
+        staged: outcome.staged,
+      });
+    };
     const terminal = launcher.qualifiedStartupOutcome;
     let restoreFailure: string | undefined;
     const restoreStarted = yield* Clock.currentTimeMillis;
@@ -515,15 +579,15 @@ export const layer = Layer.effect(
           qualifiedStaging: launcher.qualifiedStaging === true,
           qualifiedUpdates: launcher.qualifiedUpdates === true,
           hasCurrentVersion: launcher.currentVersion !== undefined,
-          hasStage: selfUpdate.stageQualified !== undefined,
-          hasInstall: qualifiedSelfUpdate.installQualified !== undefined,
+          hasStage: preparation !== undefined,
+          hasInstall:
+            qualifiedSelfUpdate.installQualified !== undefined && preparation !== undefined,
           hasEnvironment: environmentId !== undefined,
           restoreFailed: restoreFailure !== undefined,
         }),
       },
       platform: platform === "darwin" ? "darwin" : "linux",
       architecture: architecture === "arm64" ? "arm64" : "x64",
-      cacheRoot: NodePath.join(config.baseDir, "runtime", "jones-actions"),
       installedSource: async () =>
         runtimeReceipt?.sourceSha ??
         (
@@ -532,16 +596,48 @@ export const layer = Layer.effect(
             launcher.currentVersion ?? packageJson.version,
           )
         ).sourceSha,
-      stage: async (artifact) => {
-        if (selfUpdate.stageQualified === undefined)
-          throw new Error("bootstrap-required: Qualified staging is unavailable.");
-        const result = await run(selfUpdate.stageQualified(artifact));
-        const { migrationPlan, ...selection } = result;
+      prepare: async (candidate, { signal, onVerifying }) => {
+        if (preparation === undefined) throw preparationUnavailable();
+        const activeVersion = launcher.currentVersion;
+        if (!launcher.managed || launcher.qualifiedStaging !== true || activeVersion === undefined)
+          throw new Error(
+            "bootstrap-required: This host needs a qualified Jones runtime and launcher before installing Actions artifacts.",
+          );
+        if (preparationHost === undefined)
+          throw new Error(
+            "This service requires an Actions artifact matching its native platform.",
+          );
+        const outcome = await preparation.run(
+          {
+            kind: "stage",
+            candidate,
+            cacheRoot,
+            dbPath: config.dbPath,
+            activeVersion,
+            host: preparationHost,
+          },
+          { signal, onPhase: (phase) => (phase === "verifying" ? onVerifying() : undefined) },
+        );
+        const selection = await adoptPreparedStage({
+          baseDir: config.baseDir,
+          dbPath: config.dbPath,
+          activeVersion,
+          candidate,
+          host: preparationHost,
+          staged: outcome.staged,
+        });
         await retainStagedSelection(selection);
+        if (outcome.leftover !== undefined)
+          void run(
+            Effect.logWarning("Qualified staging left its scratch directory in place.", {
+              path: outcome.leftover,
+            }),
+          );
         return {
-          stagedHandle: result.stagedHandle,
-          version: result.receipt.version,
-          ...(migrationPlan === undefined ? {} : { migrationPlan }),
+          stagedHandle: selection.stagedHandle,
+          version: selection.receipt.version,
+          payloadSha256: selection.receipt.archiveSha256,
+          ...(outcome.migrationPlan === undefined ? {} : { migrationPlan: outcome.migrationPlan }),
         };
       },
       retireStaged: async (input) => {
@@ -596,7 +692,7 @@ export const layer = Layer.effect(
                 }),
             install: ({ onPrepared, onAccepted }) =>
               installQualified(
-                { ...input, ...(operationId === undefined ? {} : { operationId }) },
+                { ...input, ...(operationId === undefined ? {} : { operationId }), verifyStaged },
                 () => onAccepted,
                 (staged) =>
                   onPrepared(
@@ -673,6 +769,13 @@ export const layer = Layer.effect(
       ),
     );
     yield* refreshPolicy;
+    // Leftovers of a worker killed in an earlier server lifetime are removed by a fresh worker.
+    if (preparation !== undefined)
+      yield* Effect.sleep("10 seconds").pipe(
+        Effect.andThen(Effect.tryPromise(() => preparation.sweep())),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
     publishCapability(updater.snapshot());
     yield* Effect.promise(() => capabilityWrites.catch(() => {}));
     yield* Effect.sleep("15 seconds").pipe(
