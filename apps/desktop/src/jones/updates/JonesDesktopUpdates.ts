@@ -37,6 +37,15 @@ import {
 } from "./jonesMacStaging.ts";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { jonesPreparationText } from "./jonesNativePreparation.ts";
+import type {
+  JonesDesktopPreparationState,
+  PreparationHold,
+} from "./backgroundPreparationPolicy.ts";
+import {
+  prepareJonesStage,
+  type JonesPreparedStage,
+  type JonesStagingRoots,
+} from "./stagingJobs.ts";
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const BuildMetadata = Schema.Struct({
@@ -257,7 +266,18 @@ export interface JonesDesktopUpdateOptions {
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
   readonly stageApp?: typeof stageJonesMacApp;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
+  /**
+   * Downloads and verifies the artifact and app. Production runs it in the separate preparation
+   * process; the default stages in this process with `client` and `stageApp`.
+   */
+  readonly prepareStage?: (
+    candidate: JonesActionsCandidate,
+    roots: JonesStagingRoots,
+    onVerifying: () => Promise<void>,
+  ) => Promise<JonesPreparedStage>;
 }
+
+export type JonesSupersedeResult = "replaced" | "refused" | "uncertain" | "download-failed";
 
 /** One host-owned checker. Downloads retain a fixed candidate; later checks cannot replace Install. */
 export class JonesDesktopUpdateController {
@@ -269,7 +289,10 @@ export class JonesDesktopUpdateController {
   #currentBuildStartedAt: string | undefined;
   #staged: StagedMacApp | undefined;
   #selectedAttempt: { readonly stagedHandle: string; readonly transactionId: string } | undefined;
-  #busy: "check" | "download" | "install" | "discard" | null = null;
+  #busy: "check" | "download" | "install" | "discard" | "reclaim" | null = null;
+  /** The newest build the last check offered, even while an older one stays staged. */
+  #latest: JonesActionsCandidate | undefined;
+  #latestBuildStartedAt: string | undefined;
   #bootstrap: ActiveInstall | undefined;
   #activationBlocked = false;
   #candidateStartupGateUnavailable = false;
@@ -290,6 +313,37 @@ export class JonesDesktopUpdateController {
   }
   get busy() {
     return this.#busy;
+  }
+  get latestAvailable() {
+    return this.#latest;
+  }
+  get stagedBuild():
+    | { readonly handle: string; readonly source: string; readonly version: string }
+    | undefined {
+    return this.#staged === undefined
+      ? undefined
+      : {
+          handle: this.#staged.handle,
+          source: this.#staged.sourceSha,
+          version: this.#staged.version,
+        };
+  }
+  /** Why automatic preparation must not touch the stage; a claimed install pins it. */
+  get preparationHold(): PreparationHold | undefined {
+    const phase = this.#state.jones?.phase;
+    if (this.#busy === "install" || phase === "preparing" || phase === "installing")
+      return { kind: "install" };
+    if (this.#activationBlocked)
+      return {
+        kind: "blocked",
+        ...(this.#state.message === null ? {} : { message: this.#state.message }),
+      };
+    if (this.#source === undefined || this.#options.disabledByEnv || this.#bootstrap === undefined)
+      return {
+        kind: "unavailable",
+        ...(this.#state.message === null ? {} : { message: this.#state.message }),
+      };
+    return undefined;
   }
   get manifestPath() {
     return NodePath.join(this.#options.home, "runtime", "jones-active-install.json");
@@ -964,6 +1018,8 @@ export class JonesDesktopUpdateController {
         architecture: this.#options.architecture,
       });
       if (result.state === "available") {
+        this.#latest = result.candidate;
+        this.#latestBuildStartedAt = result.buildStartedAt;
         if (this.#staged === undefined) {
           this.#candidate = result.candidate;
           this.#candidateBuildStartedAt = result.buildStartedAt;
@@ -978,7 +1034,11 @@ export class JonesDesktopUpdateController {
           this.#staged === undefined ? "error" : "downloaded",
           `Jones main check blocked: ${result.reason}.`,
         );
-      else
+      else {
+        if (result.state === "no-new") {
+          this.#latest = undefined;
+          this.#latestBuildStartedAt = undefined;
+        }
         await this.#publish(
           this.#staged === undefined
             ? result.state === "no-new"
@@ -994,6 +1054,7 @@ export class JonesDesktopUpdateController {
             ? "The latest main build is still being qualified."
             : undefined,
         );
+      }
       return true;
     } catch {
       await this.#publish(
@@ -1035,16 +1096,20 @@ export class JonesDesktopUpdateController {
         mode: 0o700,
       });
       await this.#publish("downloading", "downloading");
-      const artifact = await this.#client.stage(
-        candidate,
-        NodePath.join(this.updaterRoot, "artifacts"),
-      );
-      await this.#publish("verifying", "downloading");
-      this.#staged = await (this.#options.stageApp ?? stageJonesMacApp)(
-        artifact,
-        NodePath.join(this.updaterRoot, "apps"),
-        this.#options.platform,
-      );
+      const roots = {
+        artifacts: NodePath.join(this.updaterRoot, "artifacts"),
+        apps: NodePath.join(this.updaterRoot, "apps"),
+      };
+      const onVerifying = () => this.#publish("verifying", "downloading");
+      const prepared = await (this.#options.prepareStage === undefined
+        ? prepareJonesStage(candidate, roots, this.#options.platform, {
+            actions: this.#client,
+            stageApp: this.#options.stageApp ?? stageJonesMacApp,
+            onVerifying,
+          })
+        : this.#options.prepareStage(candidate, roots, onVerifying));
+      const artifact = prepared.artifact;
+      this.#staged = await this.#bindPreparedStage(candidate, prepared);
       const selectionFile = await this.#selectionFile();
       await NodeFSP.mkdir(NodePath.dirname(selectionFile), { recursive: true, mode: 0o700 });
       const selection = {
@@ -1155,37 +1220,9 @@ export class JonesDesktopUpdateController {
       return { accepted: false, completed: false };
     }
     this.#busy = "discard";
-    let dispatched = false;
+    const dispatch = { dispatched: false };
     try {
-      const selection = await this.#selectionFile();
-      const raw = await NodeFSP.readFile(selection, "utf8");
-      if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
-        throw new Error("Selection changed.");
-      const helper = await this.#helperPath();
-      dispatched = true;
-      const result = decodeNativeSelectionResult(
-        JSON.parse(
-          await runNativeCommand("/usr/bin/python3", [
-            helper,
-            "--manifest",
-            this.manifestPath,
-            "--discard-staged",
-            handle,
-            "--selection",
-            selection,
-            "--selection-sha256",
-            NodeCrypto.createHash("sha256").update(raw).digest("hex"),
-          ]),
-        ),
-      );
-      if (
-        result.operation !== "discard-staged" ||
-        result.handle !== handle ||
-        result.status === "uncertain"
-      )
-        throw new Error("Native discard outcome is uncertain.");
-      if (result.status !== "discarded") {
-        if (result.status !== "refused") throw new Error("Unexpected native discard outcome.");
+      if ((await this.#runNativeDiscard(handle, dispatch)) === "refused") {
         await this.#publish(
           "blocked",
           "downloaded",
@@ -1205,11 +1242,11 @@ export class JonesDesktopUpdateController {
       );
       return { accepted: true, completed: true };
     } catch {
-      if (dispatched) this.#activationBlocked = true;
+      if (dispatch.dispatched) this.#activationBlocked = true;
       await this.#publish(
         "blocked",
         "downloaded",
-        dispatched
+        dispatch.dispatched
           ? "The discard outcome needs reconciliation; the retained stage remains held."
           : "The downloaded selection could not be verified; its files were preserved.",
       );
@@ -1217,6 +1254,174 @@ export class JonesDesktopUpdateController {
     } finally {
       this.#busy = null;
     }
+  }
+
+  /** The helper's validated discard. The caller owns the busy latch and what it publishes. */
+  async #runNativeDiscard(
+    handle: string,
+    dispatch: { dispatched: boolean },
+  ): Promise<"discarded" | "refused"> {
+    const selection = await this.#selectionFile();
+    const raw = await NodeFSP.readFile(selection, "utf8");
+    if (decodeStageSelection(JSON.parse(raw)).app.handle !== handle)
+      throw new Error("Selection changed.");
+    const helper = await this.#helperPath();
+    dispatch.dispatched = true;
+    const result = decodeNativeSelectionResult(
+      JSON.parse(
+        await runNativeCommand("/usr/bin/python3", [
+          helper,
+          "--manifest",
+          this.manifestPath,
+          "--discard-staged",
+          handle,
+          "--selection",
+          selection,
+          "--selection-sha256",
+          NodeCrypto.createHash("sha256").update(raw).digest("hex"),
+        ]),
+      ),
+    );
+    if (
+      result.operation !== "discard-staged" ||
+      result.handle !== handle ||
+      result.status === "uncertain"
+    )
+      throw new Error("Native discard outcome is uncertain.");
+    if (result.status === "discarded") return "discarded";
+    if (result.status !== "refused") throw new Error("Unexpected native discard outcome.");
+    return "refused";
+  }
+
+  /**
+   * Replaces an unaccepted stage with the newest checked build under one latch hold: native
+   * discard, removal of the replaced payload, then download. A refused discard keeps the stage;
+   * an uncertain one blocks activation exactly like a manual discard.
+   */
+  async supersede(
+    handle: string,
+    next: JonesActionsCandidate,
+    reclaim?: (handle: string) => Promise<void>,
+  ): Promise<JonesSupersedeResult> {
+    const staged = this.#staged;
+    if (
+      this.#busy !== null ||
+      staged?.handle !== handle ||
+      next !== this.#latest ||
+      next.source === staged.sourceSha ||
+      this.#activationBlocked ||
+      this.#options.disabledByEnv ||
+      this.#bootstrap === undefined
+    )
+      return "refused";
+    const nextBuildStartedAt = this.#latestBuildStartedAt;
+    this.#busy = "discard";
+    const dispatch = { dispatched: false };
+    let discarded: "discarded" | "refused" | "failed";
+    try {
+      discarded = await this.#runNativeDiscard(handle, dispatch);
+    } catch {
+      discarded = "failed";
+    }
+    if (discarded !== "discarded") {
+      const uncertain = discarded === "failed" && dispatch.dispatched;
+      if (uncertain) this.#activationBlocked = true;
+      this.#busy = null;
+      await this.#publish(
+        "blocked",
+        "downloaded",
+        uncertain
+          ? "The discard outcome needs reconciliation; the retained stage remains held."
+          : discarded === "refused"
+            ? "The retained stage cannot be discarded while native work needs reconciliation."
+            : "The downloaded selection could not be verified; its files were preserved.",
+      );
+      return uncertain ? "uncertain" : "refused";
+    }
+    this.#staged = undefined;
+    this.#candidate = next;
+    this.#candidateBuildStartedAt = nextBuildStartedAt;
+    this.#selectedAttempt = undefined;
+    this.#candidateStartupGateUnavailable = false;
+    if (reclaim !== undefined) {
+      this.#busy = "reclaim";
+      await this.#publish(
+        "available",
+        "available",
+        `Replacing ${staged.version} with ${next.version}.`,
+      );
+      try {
+        await reclaim(handle);
+      } catch {
+        /* The caller keeps the replaced handle and retries its removal later. */
+      }
+    }
+    this.#busy = null;
+    return (await this.download()).completed ? "replaced" : "download-failed";
+  }
+
+  /** Runs payload removal under the busy latch, so no download can select the same handle. */
+  async reclaimExclusive(reclaim: () => Promise<void>): Promise<boolean> {
+    if (this.#busy !== null) return false;
+    this.#busy = "reclaim";
+    try {
+      await reclaim();
+      return true;
+    } finally {
+      this.#busy = null;
+    }
+  }
+
+  /** Background preparation status rides along with every later publication. */
+  async setPreparationStatus(status: JonesDesktopPreparationState | undefined): Promise<void> {
+    if (JSON.stringify(this.#state.jonesPreparation) === JSON.stringify(status)) return;
+    const { jonesPreparation: _previous, ...rest } = this.#state;
+    this.#state = status === undefined ? rest : { ...rest, jonesPreparation: status };
+    await this.#options.onState(this.#state);
+  }
+
+  /**
+   * Binds a prepared stage to its immutable on-disk receipts before selection, so a reply from
+   * the preparation process is never trusted beyond what those receipts already prove.
+   */
+  async #bindPreparedStage(
+    candidate: JonesActionsCandidate,
+    prepared: JonesPreparedStage,
+  ): Promise<StagedMacApp> {
+    const app = decodeStagedApp(prepared.app);
+    const { artifact } = prepared;
+    if (
+      JSON.stringify(artifact.candidate) !== JSON.stringify(candidate) ||
+      artifact.stagedHandle !== app.handle ||
+      app.sourceSha !== candidate.source ||
+      app.sourceTree !== candidate.tree ||
+      app.version !== candidate.version
+    )
+      throw new Error("The prepared stage does not bind the selected candidate.");
+    await requireJonesStageDirectory(
+      NodePath.join(this.updaterRoot, "artifacts"),
+      app.handle,
+      NodePath.dirname(artifact.payloadPath),
+    );
+    const appDirectory = await requireJonesStageDirectory(
+      await NodeFSP.realpath(NodePath.join(this.updaterRoot, "apps")),
+      app.handle,
+      NodePath.dirname(app.appPath),
+    );
+    if (app.receiptPath !== NodePath.join(appDirectory, "mac-app-receipt.json"))
+      throw new Error("The prepared app receipt is outside its stage.");
+    const info = await NodeFSP.lstat(app.receiptPath);
+    if (!info.isFile() || info.size > 131072) throw new Error("Unknown native app receipt.");
+    const receipt = decodeNativeStageReceipt(
+      JSON.parse(await NodeFSP.readFile(app.receiptPath, "utf8")),
+    );
+    if (
+      JSON.stringify(receipt.app) !== JSON.stringify(app) ||
+      JSON.stringify(receipt.artifact) !== JSON.stringify(artifact) ||
+      JSON.stringify(receipt.candidate) !== JSON.stringify(candidate)
+    )
+      throw new Error("The prepared app receipt does not bind this stage.");
+    return app;
   }
 
   async install(

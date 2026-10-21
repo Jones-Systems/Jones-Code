@@ -17,6 +17,7 @@ import {
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { hashMacApp, hashMacFile, preflightJonesCandidateStartupGate } from "./jonesMacStaging.ts";
+import { prepareJonesStage } from "./stagingJobs.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -1170,6 +1171,127 @@ describe("Jones desktop updates", () => {
       }
     },
   );
+
+  it.each(["discarded", "refused", "uncertain"] as const)(
+    "replaces an unaccepted stage only after a %s native discard proves it",
+    async (status) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        await f.controller.check();
+        const next = f.controller.latestAvailable!;
+        expect(next.artifactId).toBe(99);
+        expect(f.controller.state.jones?.stagedHandle).toBe(handle);
+        expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
+        expect(f.controller.preparationHold).toBeUndefined();
+        let discards = 0;
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function" || !Array.isArray(args))
+            throw new Error("Invalid command fixture.");
+          expect(args[3]).toBe("--discard-staged");
+          discards++;
+          void (async () => {
+            if (status === "discarded") await NodeFSP.unlink(String(args[6]));
+            callback(
+              null,
+              JSON.stringify({ protocol: 1, operation: "discard-staged", handle, status }),
+              "",
+            );
+          })().catch((cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""));
+          return new NodeChildProcess.ChildProcess();
+        });
+
+        // Only the latest checked build may replace the stage; a copy of it is not that build.
+        expect(await f.controller.supersede(handle, { ...next })).toBe("refused");
+        expect(await f.controller.supersede("wrong-handle", next)).toBe("refused");
+        expect(discards).toBe(0);
+
+        const reclaimed: Array<{ handle: string; busy: string | null }> = [];
+        const stages = f.stages();
+        const outcome = await f.controller.supersede(handle, next, async (replaced) => {
+          reclaimed.push({ handle: replaced, busy: f.controller.busy });
+          // The fixture reuses one handle, so its next stage needs the replaced app removed.
+          await NodeFSP.rm(NodePath.join(f.home, "runtime", "jones-updates", "apps", replaced), {
+            recursive: true,
+          });
+        });
+        expect(discards).toBe(1);
+        expect(f.controller.busy).toBeNull();
+        if (status === "discarded") {
+          expect(outcome).toBe("replaced");
+          expect(reclaimed).toEqual([{ handle, busy: "reclaim" }]);
+          expect(f.stages()).toBe(stages + 1);
+          expect(f.controller.state.jones?.provenance?.artifactId).toBe(99);
+          // The replacement carries its own build time, which this check did not report.
+          expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+          expect(f.controller.stagedBuild?.version).toBe(next.version);
+        } else {
+          expect(outcome).toBe(status);
+          expect(reclaimed).toEqual([]);
+          expect(f.stages()).toBe(stages);
+          expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(
+            candidateBuildStartedAt,
+          );
+          expect(f.controller.stagedBuild?.version).toBe(candidate.version);
+          expect(f.controller.preparationHold?.kind).toBe(
+            status === "uncertain" ? "blocked" : undefined,
+          );
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+
+  it("binds an out-of-process preparation to its on-disk receipts before selecting it", async () => {
+    const f = await fixture();
+    try {
+      const prepare =
+        (forge: boolean): NonNullable<JonesDesktopUpdateOptions["prepareStage"]> =>
+        async (selected, roots, onVerifying) => {
+          const prepared = await prepareJonesStage(selected, roots, "darwin", {
+            actions: f.options.client!,
+            stageApp: f.options.stageApp!,
+            onVerifying,
+          });
+          return forge
+            ? { ...prepared, app: { ...prepared.app, appDigest: "0".repeat(64) } }
+            : prepared;
+        };
+      const forged = new JonesDesktopUpdateController({
+        ...f.options,
+        prepareStage: prepare(true),
+      });
+      await forged.configure();
+      await forged.check();
+      expect(await forged.download()).toEqual({ accepted: true, completed: false });
+      expect(forged.state.jones?.stagedHandle).toBeUndefined();
+      await NodeFSP.rm(NodePath.join(f.home, "runtime", "jones-updates", "apps", handle), {
+        recursive: true,
+      });
+
+      const phases: Array<string | undefined> = [];
+      const honest = new JonesDesktopUpdateController({
+        ...f.options,
+        prepareStage: prepare(false),
+        onState: async (state) => {
+          phases.push(state.jones?.phase);
+        },
+      });
+      await honest.configure();
+      await honest.check();
+      expect(await honest.download()).toEqual({ accepted: true, completed: true });
+      expect(honest.state.jones?.stagedHandle).toBe(handle);
+      expect(phases).toContain("verifying");
+    } finally {
+      await f.cleanup();
+    }
+  });
 
   it("retains a markerless candidate without preparing or launching native activation", async () => {
     const f = await fixture();

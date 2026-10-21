@@ -63,6 +63,7 @@ import {
   HOSTED_APP_CHANNEL_LABEL,
 } from "../../branding";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
+import { DesktopBackgroundPreparationRow } from "../../jones/updates/DesktopBackgroundPreparation";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
   canCheckForUpdate,
@@ -517,6 +518,9 @@ export function AboutVersionSection() {
             </Button>
           }
         />
+      ) : null}
+      {hasDesktopBridge ? (
+        <DesktopBackgroundPreparationRow preparation={updateState?.jonesPreparation} />
       ) : null}
       {hasDesktopBridge && updateState?.jones ? (
         <SettingsRow

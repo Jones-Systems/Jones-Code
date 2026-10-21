@@ -12,6 +12,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 
 import * as IpcChannels from "./ipc/channels.ts";
 import * as CompanionChannels from "./jones/previewCompanion/channels.ts";
+import * as JonesUpdateChannels from "./jones/updates/ipcChannels.ts";
 import { mergeLegacyLocalStorage } from "./legacyLocalStorageMerge.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
@@ -320,6 +321,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
   discardUpdate: (stagedHandle) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
+  setJonesBackgroundPreparation: (enabled) =>
+    ipcRenderer.invoke(JonesUpdateChannels.SET_BACKGROUND_PREPARATION, enabled),
   fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
   installUpdate: (stagedHandle, campaignId) =>
     campaignId !== undefined

@@ -22,6 +22,7 @@ import {
   jonesNativeBootstrapCredential,
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
+import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
 import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
@@ -211,6 +212,7 @@ export class DesktopUpdates extends Context.Service<
     ) => Effect.Effect<JonesDesktopDownloadResult & { readonly state: DesktopUpdateState }>;
     readonly install: Effect.Effect<DesktopUpdateActionResult>;
     readonly discardStaged?: (handle: string) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly setBackgroundPreparation?: (enabled: boolean) => Effect.Effect<DesktopUpdateState>;
     readonly installStaged?: (
       handle: string,
       campaignId?: string,
@@ -439,7 +441,13 @@ export const make = Effect.gen(function* () {
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
     const fleet = createDesktopFleetStore({ home: environment.baseDir, profile });
+    const preparation = createJonesDesktopPreparation({
+      bundleDirectory: environment.dirname,
+      stateDirectory: environment.stateDir,
+      platform: environment.platform,
+    });
     const controller = new JonesDesktopUpdateController({
+      ...preparation.controllerOptions,
       home: environment.baseDir,
       appRoot: environment.appRoot,
       appPath: environment.path.resolve(environment.resourcesPath, "../.."),
@@ -500,9 +508,10 @@ export const make = Effect.gen(function* () {
         return backend.value.httpBaseUrl.origin;
       },
     });
-    const check = Effect.promise(() => controller.check());
+    const background = preparation.attach(controller);
+    const check = Effect.promise(() => background.check());
     const install = (handle?: string, campaignId?: string) =>
-      Effect.promise(() => controller.install(handle, campaignId)).pipe(
+      Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       );
     return DesktopUpdates.of({
@@ -527,7 +536,9 @@ export const make = Effect.gen(function* () {
         ),
       ),
       configure: Effect.gen(function* () {
+        yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
         yield* Effect.promise(() => controller.configure());
+        yield* Effect.promise(() => background.start());
         yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
           Effect.andThen(check),
           Effect.asVoid,
@@ -542,19 +553,23 @@ export const make = Effect.gen(function* () {
       }),
       setChannel: () => Ref.get(updateStateRef),
       check: () => check.pipe(Effect.map((checked) => ({ checked, state: controller.state }))),
-      download: Effect.promise(() => controller.download()).pipe(
+      download: Effect.promise(() => background.track(() => controller.download())).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       ),
       downloadSelected: (selection) =>
-        Effect.promise(() => controller.download(selection)).pipe(
+        Effect.promise(() => background.track(() => controller.download(selection))).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
         ),
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),
       discardStaged: (handle) =>
-        Effect.promise(() => controller.discard(handle)).pipe(
+        Effect.promise(() => background.discard(handle)).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
+        ),
+      setBackgroundPreparation: (enabled) =>
+        Effect.promise(() => background.setEnabled(enabled)).pipe(
+          Effect.map(() => controller.state),
         ),
       fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
       installStaged: (handle, campaignId) =>

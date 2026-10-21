@@ -4,6 +4,7 @@ import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
 import { JonesUpdateState, type JonesUpdateDownloadInput } from "./jones/jonesUpdates.ts";
+import { JonesDesktopPreparationState } from "./jones/desktopPreparation.ts";
 import type {
   DesktopDeviceMediaTunnelInput,
   DesktopDeviceMediaTunnel,
@@ -302,6 +303,7 @@ export interface DesktopUpdateState {
   canRetry: boolean;
   notAppliedVersion?: string;
   jones?: JonesUpdateState;
+  jonesPreparation?: JonesDesktopPreparationState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -335,6 +337,7 @@ export const DesktopUpdateStateSchema = Schema.Struct({
   canRetry: Schema.Boolean,
   notAppliedVersion: Schema.optionalKey(Schema.String),
   jones: Schema.optionalKey(JonesUpdateState),
+  jonesPreparation: Schema.optionalKey(JonesDesktopPreparationState),
 });
 
 export const DesktopCliCommandStateSchema = Schema.Struct({
@@ -1218,6 +1221,8 @@ export interface DesktopBridge {
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
   downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
   discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
+  /** Optional: older desktop builds cannot prepare Jones updates in the background. */
+  setJonesBackgroundPreparation?: (enabled: boolean) => Promise<DesktopUpdateState>;
   installUpdate: (stagedHandle?: string, campaignId?: string) => Promise<DesktopUpdateActionResult>;
   fleetUpdates?: (request: FleetDesktopRequest) => Promise<FleetDesktopState>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
