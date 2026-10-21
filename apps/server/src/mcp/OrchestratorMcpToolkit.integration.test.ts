@@ -51,7 +51,6 @@ import {
   ThreadMetadataMcpUpdateResult,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
-import * as Duration from "effect/Duration";
 import * as Queue from "effect/Queue";
 import * as TestClock from "effect/testing/TestClock";
 import * as DateTime from "effect/DateTime";
@@ -299,13 +298,6 @@ function makeDeterministicAdapter(input: {
               const providerTurnId = ProviderTurnId.make(
                 `provider-turn:${input.instanceId}:${turnInput.threadId}:${turnInput.runOrdinal}`,
               );
-              yield* traceMcpWait("adapter.start", {
-                instanceId: input.instanceId, threadId: turnInput.threadId, providerTurnId,
-                runId: turnInput.runId, runOrdinal: turnInput.runOrdinal,
-                providerTurnOrdinal: turnInput.providerTurnOrdinal,
-                attemptId: turnInput.attemptId, rootNodeId: turnInput.rootNodeId,
-                reusedTurnId: turnInputs.has(providerTurnId),
-              });
               runOrdinals.set(providerTurnId, turnInput.runOrdinal);
               turnInputs.set(providerTurnId, turnInput);
               yield* publish([
@@ -400,10 +392,6 @@ function makeDeterministicAdapter(input: {
           interruptTurn: ({ providerThread, providerTurnId }) =>
             Effect.gen(function* () {
               const turnInput = turnInputs.get(providerTurnId);
-              yield* traceMcpWait("adapter.interrupt", {
-                providerTurnId, attemptId: turnInput?.attemptId,
-                providerTurnOrdinal: turnInput?.providerTurnOrdinal,
-              });
               const completedAt = yield* DateTime.now;
               if (turnInput !== undefined) {
                 yield* publish([
@@ -490,74 +478,21 @@ function scheduledTaskFromUpsert(input: ScheduledTaskUpsertInput): ScheduledTask
   };
 }
 
-const mcpWaitProbeEnabled = process.env.T3_L3_MCP_WAIT_PROBE === "1";
-let mcpWaitProbeEntries = 0;
-const mcpWaitProbeCounts = { phase: 0, adapter: 0, projectionUpdate: 0, sleep: 0 };
-const mcpWaitProbeLimits = { phase: 512, adapter: 128, projectionUpdate: 128, sleep: 32 };
-const traceMcpWait = Effect.fn("test.traceMcpWait")(function* (
-  phase: string,
-  details: Readonly<Record<string, unknown>> = {},
-) {
-  if (!mcpWaitProbeEnabled) return;
-  if (phase.startsWith("sleep.") && details.durationMs !== 1) return;
-  const category = phase.startsWith("sleep.") ? "sleep"
-    : phase.startsWith("adapter.") ? "adapter"
-    : phase === "projection.update" ? "projectionUpdate" : "phase";
-  if (mcpWaitProbeCounts[category] >= mcpWaitProbeLimits[category]) return;
-  mcpWaitProbeCounts[category] += 1;
-  const millis = yield* Clock.currentTimeMillis;
-  yield* Effect.sync(() => {
-    mcpWaitProbeEntries += 1;
-    console.info("L3_MCP_WAIT", JSON.stringify({ entry: mcpWaitProbeEntries, millis, phase, ...details }));
-  });
-});
-
-const mcpProjectionProbe = (projection: OrchestrationV2ThreadProjection) => ({
-  runs: projection.runs.slice(-8).map((run) => ({
-    id: run.id, status: run.status, rootNodeId: run.rootNodeId,
-    activeAttemptId: run.activeAttemptId,
-    deliveryTaskIds: run.delegatedCompletion?.delivery?.taskIds.slice(0, 8),
-    completionDisposition: run.delegatedCompletion?.disposition,
-  })),
-  providerTurns: projection.providerTurns.slice(-8).map((turn) => ({
-    id: turn.id, status: turn.status, ordinal: turn.ordinal, runAttemptId: turn.runAttemptId,
-  })),
-  subagents: projection.subagents.slice(-8).map((task) => ({
-    id: task.id, status: task.status, childThreadId: task.childThreadId,
-    completionState: task.completionDelivery?.state,
-  })),
-});
-
 const waitForProjection = Effect.fn("test.waitForProjection")(function* (
   orchestrator: Orchestrator.OrchestratorV2Shape,
   threadId: ThreadId,
   predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
-  yield* traceMcpWait("projection.start", { threadId, predicate: predicate.toString().slice(0, 300) });
   // Capture the durable cursor before reading so a concurrent update cannot be missed.
   const eventSink = yield* EventSink.EventSinkV2;
   const afterSequence = yield* eventSink.latestSequence({ threadId });
   const current = yield* orchestrator.getThreadProjection(threadId);
-  yield* traceMcpWait("projection.current", {
-    threadId,
-    afterSequence,
-    ...mcpProjectionProbe(current),
-  });
-  if (predicate(current)) {
-    yield* traceMcpWait("projection.ready", { threadId });
-    return current;
-  }
-  let updates = 0;
+  if (predicate(current)) return current;
   const observed = yield* eventSink.stream({ threadId, afterSequence }).pipe(
-    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId).pipe(
-      Effect.tap((projection) => ++updates <= 2
-        ? traceMcpWait("projection.update", { threadId, ...mcpProjectionProbe(projection) })
-        : Effect.void),
-    )),
+    Stream.mapEffect(() => orchestrator.getThreadProjection(threadId)),
     Stream.filter(predicate),
     Stream.runHead,
   );
-  yield* traceMcpWait("projection.tail-ended", { threadId, matched: Option.isSome(observed) });
   return yield* Option.match(observed, {
     onNone: () => Effect.die(new Error(`Projection stream ended before the milestone for ${threadId}.`)),
     onSome: Effect.succeed,
@@ -1072,23 +1007,7 @@ describe("orchestrator MCP toolkit", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const clock = yield* Clock.Clock;
-          let sleepId = 0;
-          const probeClock: Clock.Clock = mcpWaitProbeEnabled
-            ? {
-                ...clock,
-                sleep: (duration) => Effect.gen(function* () {
-                  const id = ++sleepId;
-                  yield* traceMcpWait("sleep.start", { id, durationMs: Duration.toMillis(duration) });
-                  yield* clock.sleep(duration).pipe(
-                    Effect.onExit((exit) => traceMcpWait("sleep.exit", { id, durationMs: Duration.toMillis(duration), exit: exit._tag })),
-                  );
-                }),
-              }
-            : clock;
-          yield* traceMcpWait("fixture.start");
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
-          yield* traceMcpWait("fixture.workspace-ready");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
           const deliveryTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -1148,22 +1067,18 @@ describe("orchestrator MCP toolkit", () => {
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
-              yield* traceMcpWait("continuation.start", { count, observed: (yield* Ref.get(continuationOffers)).length });
               if ((yield* Ref.get(continuationOffers)).length < count) {
                 yield* Stream.fromQueue(continuationOfferCounts).pipe(
                   Stream.filter((observed) => observed >= count),
                   Stream.runHead,
                 );
               }
-              yield* traceMcpWait("continuation.ready", { count });
               return yield* Ref.get(continuationOffers);
             });
           const expectOffersToStay = (count: number) =>
             Effect.gen(function* () {
               for (let sample = 0; sample < 4; sample += 1) {
-                yield* traceMcpWait("clock.stability.start", { count, sample });
                 yield* TestClock.adjust("50 millis");
-                yield* traceMcpWait("clock.stability.end", { count, sample });
                 expect(yield* Ref.get(continuationOffers)).toHaveLength(count);
               }
             });
@@ -1285,7 +1200,6 @@ describe("orchestrator MCP toolkit", () => {
           yield* Effect.gen(function* () {
             const orchestrator = yield* Orchestrator.OrchestratorV2;
             const server = yield* McpServer.McpServer;
-            yield* traceMcpWait("fixture.layers-ready");
             yield* orchestrator.dispatch({
               type: "thread.create",
               createdBy: "user",
@@ -1340,12 +1254,12 @@ describe("orchestrator MCP toolkit", () => {
               name: string,
               args: Record<string, unknown>,
             ) =>
-              traceMcpWait("tool.start", { name, requestId: args.clientRequestId, timeoutMs: args.timeoutMs }).pipe(
-                Effect.andThen(server.callTool({ name, arguments: args })),
-                Effect.onExit((exit) => traceMcpWait("tool.exit", { name, exit: exit._tag })),
-                Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
-                Effect.provideService(McpSchema.McpServerClient, client),
-              );
+              server
+                .callTool({ name, arguments: args })
+                .pipe(
+                  Effect.provideService(McpInvocationContext.McpInvocationContext, callScope),
+                  Effect.provideService(McpSchema.McpServerClient, client),
+                );
             const invoke = (name: string, args: Record<string, unknown>) =>
               invokeAs(invocation, name, args);
 
@@ -1385,7 +1299,6 @@ describe("orchestrator MCP toolkit", () => {
             let parentRootNodeId = parentRun.rootNodeId;
             const queueAutomaticCompletion = (suffix: string, taskText: string) =>
               Effect.gen(function* () {
-                yield* traceMcpWait("completion.queue", { suffix, parentRootNodeId, parentRunId: parentRun.id });
                 const delegated = yield* orchestrator.dispatch({
                   type: "delegated_task.request",
                   createdBy: "agent",
@@ -2191,6 +2104,8 @@ describe("orchestrator MCP toolkit", () => {
               turnItemId: card.id,
               answer: { type: "save", secret: "github-webhook-secret" },
             });
+            // requestSecret observes the recorded answer on its next 500 ms poll.
+            yield* TestClock.adjust("500 millis");
             const secretCall = yield* Fiber.join(secretFiber);
             expect(secretCall.isError).toBe(false);
             const secretResult = secretCall.structuredContent as {
@@ -3105,9 +3020,7 @@ describe("orchestrator MCP toolkit", () => {
               runId: activeRun.id,
               timeoutMs: 1,
             }).pipe(Effect.forkChild);
-            yield* traceMcpWait("clock.thread-deadline.start");
             yield* TestClock.adjust("1 millis");
-            yield* traceMcpWait("clock.thread-deadline.join");
             const activeTimeoutCall = yield* Fiber.join(activeTimeoutFiber);
             const activeTimeout = yield* decodeThreadWaitResult(
               activeTimeoutCall.structuredContent,
@@ -3258,9 +3171,7 @@ describe("orchestrator MCP toolkit", () => {
               timeoutMs: 1,
               clientRequestId: "delegate-wait-upgrade-1",
             }).pipe(Effect.forkChild);
-            yield* traceMcpWait("clock.delegate-deadline.start");
             yield* TestClock.adjust("1 millis");
-            yield* traceMcpWait("clock.delegate-deadline.join");
             const upgradedCall = yield* Fiber.join(upgradedFiber);
             const upgradedDelegated = yield* decodeDelegateTaskResult(
               upgradedCall.structuredContent,
@@ -4399,12 +4310,7 @@ describe("orchestrator MCP toolkit", () => {
                 thirdFanoutDelivery.messageId,
               ]),
             );
-            yield* traceMcpWait("fixture.body-complete");
-          }).pipe(
-            Effect.provide(layerTest),
-            Effect.provideService(Clock.Clock, probeClock),
-          );
-          yield* traceMcpWait("fixture.layer-scope-complete");
+          }).pipe(Effect.provide(layerTest));
         }),
       ),
   );
