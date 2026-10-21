@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { ThreadReferenceExcerpt } from "./jones/threadReferenceExcerpt.ts";
 
 import {
   EnvironmentId,
@@ -210,6 +211,7 @@ export const ThreadContextRecord = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
   title: ContextLabel,
+  excerpt: Schema.optionalKey(ThreadReferenceExcerpt),
 });
 export type ThreadContextRecord = typeof ThreadContextRecord.Type;
 

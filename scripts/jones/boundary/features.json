@@ -1240,7 +1240,7 @@
         "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts",
         "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
       ],
-      "scope": "Jones migrations 116–119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned."
+      "scope": "Jones migrations 116\u2013119 register admission, delegation intents, admission integration and peer-link storage in the independent Jones loader. Imported unreleased upstream-ledger migrations 64/65 are removed from this task branch; their files are tombstoned without changing the boundary baseline. PeerLinks retains its existing service and uses the Jones-owned table identifier. Its existing database harness and upstream migration fixtures stay in place to prove integration while Jones isolation, retained-history and migration-plan tests cover the complete manifest. No released Jones migration identity or upstream schema is reassigned."
     },
     {
       "id": "remote-request-evaluation",
@@ -1264,6 +1264,30 @@
         "packages/provider-core/src/server/orchestrationInstructions.test.ts"
       ],
       "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command, database schema or UI changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only."
+    },
+    {
+      "id": "thread-reference-only",
+      "tests": [
+        "apps/web/src/jones/questionAnswer/threadReferenceAnswer.test.ts",
+        "apps/web/src/jones/questionAnswer/QuestionAnswerInteractions.browser.test.tsx",
+        "apps/web/src/pendingUserInput.test.ts",
+        "apps/web/src/lib/composerContextRecords.test.ts",
+        "apps/web/src/lib/composerContextReferences.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "packages/shared/src/jones/threadReferenceProjection.test.ts",
+        "packages/shared/src/composerContextReferences.test.ts",
+        "packages/contracts/src/jones/threadReferenceExcerpt.test.ts",
+        "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceExcerpt.test.ts",
+        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts",
+        "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
+        "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
+        "apps/server/src/auth/RpcAuthorization.test.ts",
+        "apps/server/src/observability/RpcInstrumentation.test.ts",
+        "apps/web/src/components/chat/pendingDraftWork.test.ts",
+        "packages/contracts/src/composerContext.test.ts"
+      ],
+      "scope": "Web/desktop main-composer drop, picker and clipboard plus question-answer thread references capture bounded programmatic recent context from the source environment, retain clickable identity, and never export JSONL/full transcript. Latest3 run exchanges include selected canonical activity; up to6 older exchanges include incoming text and last nonempty non-streaming recorded assistant (historical final channel unavailable). Schemas retain old identity-only records; shared projection caps escaped excerpt additions. New read RPC uses existing orchestration-read authorization and internal tail projection preserves visibility/fork rules. ProjectionStore/ThreadManagement/RPC/auth/constants edits are narrow existing-owner integrations; message formatter and questionAttachments generation counters remain accepted shared edits because extracting their owning state/formatter would duplicate machinery. Existing exported transcript API/stored files remain. Mobile creation remains identity-only, current web/client dispatch is V2, strict legacy bootstrap is excluded. No new provider-adapter or database schema changes. Existing thread-chip tooltip adds capture status without new layout; exhaustive RPC instrumentation assigns the new read to its existing family."
     },
     {
       "id": "staged-selection-recovery",

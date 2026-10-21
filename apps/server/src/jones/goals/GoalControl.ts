@@ -213,8 +213,18 @@ const make = Effect.gen(function* () {
                   (p) => p.id === callerRecords.thread.activeProviderThreadId,
                 );
                 if (
-                  callerProvider?.providerSessionId !== scope.thread.providerSessionId ||
+                  callerProvider === undefined ||
+                  callerProvider.providerSessionId === null ||
                   callerProvider.providerInstanceId !== scope.thread.providerInstanceId
+                )
+                  return false;
+                if (
+                  !(yield* sessions.value.isMcpCallerAttached({
+                    threadId: scope.thread.threadId,
+                    providerSessionId: callerProvider.providerSessionId,
+                    providerInstanceId: scope.thread.providerInstanceId,
+                    mcpCredentialId: scope.thread.providerSessionId,
+                  }))
                 )
                   return false;
               }
