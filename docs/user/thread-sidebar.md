@@ -146,13 +146,15 @@ browser or mobile app keeps its own notifications. The first time you use this
 feature, existing settled threads are left in the settled shelf without notifying
 you about all of them.
 
-An agent can undo a thread's most recent settlement with the
-`t3_thread_settlement_restore` tool, even after a server restart. Undo returns the
+On web and desktop, a settled thread's menu has **Undo settle**, which still works
+after the notification is gone, the page reloads or the server restarts. An agent can
+do the same with the `t3_thread_settlement_restore` tool. Undo returns the
 thread to active work with the pin, pinned and active positions, and wake time it had
-before that settlement. It does not resume watched pull requests, answer requests,
+before its most recent settlement. It does not resume watched pull requests, answer requests,
 queued work or agent sessions that the settlement stopped. Undo is refused once the
 thread has changed since it settled, for example after it is pinned, archived,
-snoozed or settled again.
+snoozed or settled again. Threads settled before your server supported this have
+nothing to undo; use **Un-settle thread** instead.
 
 To reclaim disk space from settled work, turn on **Run in the thread's worktree when the
 thread settles** for one of the project's actions, or set `"runOnSettle": true` on a

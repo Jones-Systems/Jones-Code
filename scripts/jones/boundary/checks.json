@@ -548,6 +548,21 @@
       ]
     },
     {
+      "id": "jones-settlement-restore-client",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
+        "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
+        "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementRestore/ apps/web/src/jones/settlementRestore/ apps/web/src/hooks/useThreadActionMenu.test.ts apps/web/src/hooks/useThreadActions.undo.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-mcp-pin-placement",
       "tests": [
         "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",

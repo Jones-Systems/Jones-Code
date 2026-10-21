@@ -9,7 +9,16 @@
     "apps/server/src/jones/settlementRestore/plan.ts",
     "apps/server/src/jones/settlementRestore/store.ts",
     "apps/server/src/jones/mcp/settlementRestore/handlers.ts",
-    "apps/server/src/jones/mcp/settlementRestore/tools.ts"
+    "apps/server/src/jones/mcp/settlementRestore/tools.ts",
+    "packages/client-runtime/src/jones/settlementRestore/model.ts",
+    "packages/client-runtime/src/jones/settlementRestore/controller.ts",
+    "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
+    "packages/client-runtime/src/jones/settlementRestore/commands.ts",
+    "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
+    "packages/client-runtime/src/jones/settlementRestore/index.ts",
+    "apps/web/src/jones/settlementRestore/settlementRestore.ts",
+    "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+    "apps/web/src/jones/settlementRestore/menu.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -53,6 +62,18 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/settlementRestore/SettlementRestore.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActions.ts",
+      "to": "apps/web/src/jones/settlementRestore/settlementRestore.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.ts",
+      "to": "apps/web/src/jones/settlementRestore/menu.ts"
+    },
+    {
+      "from": "apps/web/src/hooks/useThreadActionMenu.ts",
+      "to": "apps/web/src/jones/settlementRestore/settlementRestore.ts"
     }
   ]
 }
