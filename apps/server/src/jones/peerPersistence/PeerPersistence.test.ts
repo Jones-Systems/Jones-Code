@@ -16,7 +16,7 @@ import {
   servePeer,
 } from "../../peer/PeerLinks.testkit.ts";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
-import * as JonesMigrations from "../persistence/Migrations.ts";
+import * as JonesMigrations from "../persistence/JonesMigrations.ts";
 import { peerEnvironmentLinksTable } from "./table.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });

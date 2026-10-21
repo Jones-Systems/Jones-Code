@@ -396,7 +396,9 @@ if (context.update?.status === "pending") {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" });
+      const root = yield* fs
+        .makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" })
+        .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
       const statePath = path.join(root, "runtime", "service-state.json");
       const databasePath = path.join(root, "userdata", "statev2.sqlite");
       const observationsPath = path.join(root, "environment-observations.jsonl");
@@ -440,10 +442,14 @@ if (context.update?.status === "pending") {
         }),
       );
 
+      yield* fs.chmod(path.join(root, "runtime"), 0o700);
       yield* Effect.promise(() =>
         main().then(
           () => Promise.reject(new Error("launcher unexpectedly completed")),
-          () => Promise.resolve(),
+          (cause: unknown) => {
+            assert.instanceOf(cause, Error);
+            assert.equal((cause as Error).message, "Active child exited unexpectedly (0).");
+          },
         ),
       );
 
