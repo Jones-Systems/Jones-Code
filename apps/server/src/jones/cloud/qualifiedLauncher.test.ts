@@ -8,7 +8,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
-import * as NodeTimersPromises from "node:timers/promises";
+import { observeSlowReservationDurability } from "./qualifiedLauncher.testFixtures.ts";
 import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
 import {
@@ -704,9 +704,7 @@ it("answers a pipelined outcome question only after the slow Install it follows 
     {
       outcomeQueries: true,
       afterOperationReserve: async (baseDir) => {
-        // Slow durability between reservation and acceptance, past the server's timeout.
-        window = (await reconcileUpdateOperation(baseDir, operationId, undefined)).state;
-        await NodeTimersPromises.setTimeout(200);
+        window = await observeSlowReservationDurability(baseDir, operationId);
       },
     },
   );

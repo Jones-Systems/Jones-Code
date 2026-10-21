@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Completion publication times are real file mtimes.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Completion ordering uses explicit synthetic file mtimes.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -58,7 +58,7 @@ describe("preparation sweep", () => {
     await NodeFSP.mkdir(NodePath.join(jobs, "not-a-job"));
     await NodeFSP.mkdir(fixture.cacheRoot, { recursive: true });
     const cacheRoot = await NodeFSP.realpath(fixture.cacheRoot);
-    const selected = await attempt(cacheRoot, "stage-selected", "1".repeat(64), { at: new Date() });
+    const selected = await attempt(cacheRoot, "stage-selected", "1".repeat(64), { at: new Date("2026-01-01T00:00:00.000Z") });
     const unselected = await attempt(cacheRoot, "stage-unselected", "2".repeat(64));
     const unreadable = await attempt(cacheRoot, "stage-unreadable", "3".repeat(64), {
       unreadable: true,
@@ -97,7 +97,7 @@ describe("preparation sweep", () => {
     await NodeFSP.mkdir(fixture.cacheRoot, { recursive: true });
     const cacheRoot = await NodeFSP.realpath(fixture.cacheRoot);
     const day = 24 * 60 * 60 * 1000;
-    const now = Date.now();
+    const now = Date.parse("2026-01-01T00:00:00.000Z");
     const legacy = NodePath.join(cacheRoot, "4".repeat(64));
     await file(NodePath.join(legacy, "github-artifact.zip"));
     await file(
