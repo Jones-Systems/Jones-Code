@@ -18,7 +18,7 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   CommandId,
@@ -242,7 +242,9 @@ export function useThreadComposerState() {
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
   const currentImportedThreadKeyRef = useRef(selectedThreadKey);
-  currentImportedThreadKeyRef.current = selectedThreadKey;
+  useLayoutEffect(() => {
+    currentImportedThreadKeyRef.current = selectedThreadKey;
+  }, [selectedThreadKey]);
   const selectedThreadQueuedMessages = selectedThreadKey
     ? (queuedMessagesByThreadKey[selectedThreadKey] ?? []).filter(
         (message) => message.creation === undefined,

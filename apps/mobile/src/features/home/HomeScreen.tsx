@@ -580,15 +580,15 @@ export function HomeScreen(props: HomeScreenProps) {
     selectedThreadKey,
     searching: props.searchQuery.trim().length > 0,
   });
-  const moveWithinWorkstream = useCallback(
-    (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
-      const target = workstreams.enabled
-        ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
-        : direction;
-      if (target !== null) handleMoveThread(thread, target);
-    },
-    [workstreams.enabled, threadListV2Items, handleMoveThread],
-  );
+  const moveWithinWorkstream = (
+    thread: EnvironmentThreadShell,
+    direction: ThreadMoveDestination,
+  ) => {
+    const target = workstreams.enabled
+      ? mobileWorkstreamMoveDestination(threadListV2Items, thread, direction)
+      : direction;
+    if (target !== null) handleMoveThread(thread, target);
+  };
 
   useThreadJumpShortcuts(threadListV2Items, props.onSelectThread);
   useEffect(() => {
