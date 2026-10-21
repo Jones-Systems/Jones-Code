@@ -48,6 +48,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
         }),
     }),
     v2: {
+      threadReferenceExcerpt: createEnvironmentRpcCommand(runtime, {
+        label: "environment-data:orchestration-v2:thread-reference-excerpt",
+        tag: ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt,
+      }),
       dispatchCommand: createEnvironmentRpcCommand(runtime, {
         label: "environment-data:orchestration-v2:dispatch-command",
         tag: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,

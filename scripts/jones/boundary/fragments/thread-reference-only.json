@@ -1,0 +1,47 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-reference-only",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/threadReferenceExcerpt/capture.test.ts",
+    "apps/web/src/jones/threadReferenceExcerpt/capture.ts",
+    "apps/web/src/jones/threadReferenceExcerpt/useThreadReferenceCapture.ts",
+    "packages/client-runtime/src/jones/threadReferenceExcerpt.test.ts",
+    "packages/client-runtime/src/jones/threadReferenceExcerpt.ts",
+    "packages/shared/src/jones/threadReferenceExcerpt.test.ts",
+    "packages/shared/src/jones/threadReferenceExcerpt.ts",
+    "packages/shared/src/jones/threadReferenceProjection.test.ts"
+  ],
+  "hookPaths": [
+    "packages/client-runtime/src/state/orchestration.ts",
+    "packages/contracts/src/composerContext.ts"
+  ],
+  "tombstones": [
+    "apps/web/src/components/chat/composerThreadImport.ts",
+    "apps/web/src/components/chat/composerThreadImport.test.ts",
+    "apps/web/src/components/chat/composerThreadImport.browser.test.tsx",
+    "apps/web/src/lib/threadContextAttachment.ts",
+    "apps/web/src/lib/threadContextAttachment.test.ts"
+  ],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/composerContext.ts",
+      "to": "packages/contracts/src/jones/threadReferenceExcerpt.ts"
+    },
+    {
+      "from": "packages/shared/src/composerContextReferences.ts",
+      "to": "packages/shared/src/jones/threadReferenceExcerpt.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/orchestration/threadReferenceExcerpt.ts"
+    },
+    {
+      "from": "packages/contracts/src/rpc.ts",
+      "to": "packages/contracts/src/jones/threadReferenceExcerptRpc.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/threadReferenceExcerpt/useThreadReferenceCapture.ts"
+    }
+  ]
+}
