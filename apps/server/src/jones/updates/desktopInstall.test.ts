@@ -18,6 +18,7 @@ import * as Launcher from "../../cloud/serviceLauncherClient.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as JonesUpdates from "./service.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
 
 // Qualification has its own contract tests; this fixture exercises the qualified desktop branch.
@@ -89,6 +90,7 @@ it.effect("hands desktop installation to its controller before any continuation 
     let preparations = 0;
     const dependencies = Layer.mergeAll(
       ServerConfig.layer({ ...config, mode: "desktop" }),
+      UpdateAdmissionFence.layer,
       Layer.succeed(HostProcess.Platform, "darwin"),
       Layer.succeed(HostProcess.Architecture, "arm64"),
       Layer.mock(SelfUpdate.ServerSelfUpdate)({

@@ -65,6 +65,7 @@ async function createTwoHostCampaign(
   const host = vi.fn<FleetCampaignDriver["host"]>(async (environmentId, request) => {
     if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
     if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
+    if (request.action === "leader") throw new Error("This campaign publishes no laptop build.");
     const selectedEnrollment =
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
     const operationId =
@@ -507,6 +508,44 @@ describe("native fleet commit gate", () => {
       ).rejects.toThrow("without resubmission");
     }));
 });
+
+it("keeps hosts catching up to the committed build while the laptop prepares its next one", async () =>
+  fixture(async (home, store) => {
+    const f = await createTwoHostCampaign(home, store);
+    const nextId = "66666666-6666-4666-8666-666666666666";
+    const nextSource = "e".repeat(40);
+    const nextHandle = "f".repeat(64);
+    const nextTransaction = "9".repeat(64);
+    await store.request({
+      action: "prepare",
+      input: { campaignId: nextId, targetSource: nextSource, desktopStagedHandle: nextHandle },
+    });
+    expect((await f.members()).map((member) => member.phase)).toEqual(["waiting", "waiting"]);
+    await advanceFleetCampaigns(f.driver());
+    expect(f.activations).toHaveLength(1);
+    expect([...f.operations.values()].map((operation) => operation.input.targetSource)).toEqual([
+      source,
+      source,
+    ]);
+    // A newer commit replaces the build hosts catch up to; the unstarted host's stage retires.
+    await store.bindInstall({
+      campaignId: nextId,
+      stagedHandle: nextHandle,
+      targetSource: nextSource,
+      transactionId: nextTransaction,
+      fromGeneration: transactionId,
+    });
+    await store.recordOutcome({
+      transactionId: nextTransaction,
+      status: "committed",
+      activeGeneration: nextTransaction,
+      activeSource: nextSource,
+    });
+    expect((await f.members()).map((member) => member.phase).toSorted()).toEqual([
+      "pending",
+      "retiring",
+    ]);
+  }));
 
 it("holds an old unaccepted stage for exact retirement instead of forgetting its occupied slot", async () =>
   fixture(async (_home, store) => {

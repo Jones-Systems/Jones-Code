@@ -4,4 +4,8 @@ export {
   type JonesUpdateBridgeInput,
 } from "./updateBridge.ts";
 export { requestFleetHost, type FleetHostRequest } from "./hostBridge.ts";
-export { advanceFleetCampaigns, type FleetCampaignDriver } from "./campaignController.ts";
+export {
+  advanceFleetCampaigns,
+  type FleetCampaignDriver,
+  type FleetCommittedSource,
+} from "./campaignController.ts";

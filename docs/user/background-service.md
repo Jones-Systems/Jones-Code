@@ -72,6 +72,58 @@ preserved. An update prompt in a client does not prove a Jones artifact is avail
 
 ## Adopt an existing Mac direct-serve installation
 
+For an existing user LaunchAgent named `com.t3tools.t3code.service` that runs
+an owned executable under your home as `t3 serve`, adoption can retain that
+label, active version, port and environment while adding the qualified Jones
+launcher. It preserves the dated installation and archives the exact plist for
+recovery. This interrupts active work and requires an approved host operation.
+
+First obtain the exact active Mac CLI artifact and the launcher artifact, each
+with its retained `github-artifact.zip` and source commit. Adoption verifies
+both against their successful Jones Actions generation and main-source CI.
+The native `runtime/service-state.json` must have no update block and its active
+version must already match the running server and active artifact. A stale
+state file requires a separately approved, backed-up reconciliation; adoption
+refuses it and does not rewrite it.
+
+Run the qualified CLI on the host, replacing every placeholder with the reviewed
+absolute path or full digest:
+
+```sh
+t3 jones host adopt --base-dir /absolute/service/home \
+  --active-artifact-dir /absolute/active-artifact --active-source-commit ACTIVE_COMMIT \
+  --launcher-artifact-dir /absolute/launcher-artifact --launcher-source-commit LAUNCHER_COMMIT \
+  --launchd-label com.t3tools.t3code.service --service-unit-sha256 PLIST_SHA256 \
+  --retained-executable /absolute/user/home/dated-install/t3 --dry-run
+```
+
+Review the effect plan and recovery instructions. The plist hash binds its exact
+bytes; the executable must match the authenticated active archive, the loaded
+LaunchAgent and the running process. Only the two arguments `t3 serve` are
+supported for this legacy shape. The existing plist's other settings remain in
+place. Apply the same command without `--dry-run` only under the approved
+operation, with a current state backup and enough space for both qualified
+runtimes. Do not add the Linux `--legacy-direct-serve` flags or accept unattested
+child capability for this Mac path.
+
+Success requires a new service-managed child with the same version, environment
+and port, a matching `jones-update-capability.json` reporting qualified launcher
+and Install support, and an applied `runtime/jones-host-adoption.json` receipt.
+Use `launchctl print gui/USER_ID/com.t3tools.t3code.service` for this retained
+legacy label; the ordinary Jones service commands above target the Jones label.
+A pending receipt, missing readback or lost command response requires inspection
+before another attempt; adoption never retries service effects automatically.
+
+Recovery is a separate approved operation: verify the current plist against the
+adoption receipt, stop that exact legacy LaunchAgent, restore the archived
+`launch-agent.plist` only after checking its recorded SHA-256 and original mode,
+then run `launchctl bootstrap gui/USER_ID /absolute/path/to/original.plist`.
+Confirm the old executable, port, version and environment. Keep the adoption
+receipt and enrolled runtimes for reconciliation. Any earlier state-file repair
+has its own compare-and-swap recovery; restoring the plist does not undo it.
+
+## Uninstall downloaded runtimes
+
 `t3 uninstall` removes the background service, the `t3` launcher, and the
 downloaded versions after showing you the list and asking once. Your projects,
 threads, and settings under `~/.t3/userdata` are kept, along with `service.env`
@@ -100,6 +152,53 @@ with an up-to-date CLI.
 A missing file is ignored; other read failures stop service startup.
 If the file contains credentials, restrict access to that file with `chmod 600`
 (for the default T3 home, `chmod 600 ~/.t3/service.env`).
+
+## Follow laptop updates automatically
+
+In the Jones desktop app, open **Settings → Connections** and choose **Enroll
+this host** for each server you want to follow laptop updates. Enrollment is
+separate from connecting to a server. A host must first have a verified Jones
+installation and the supported background launcher; **Setup required** means
+that initial host setup is still needed. Enrollment does not replace an existing
+system service or take over an upstream T3 Code installation.
+
+Download the offered laptop update, then choose Install. Enrolled hosts follow
+that exact source only after the laptop successfully switches to it, and never
+move past the laptop. A current host learns the laptop's installed build while
+the desktop app is open, downloads it in the background, and installs it by
+itself once no client has had input for 30 minutes and nothing a restart would
+interrupt is running: turns and delegated tasks, queued messages about to start,
+terminal commands, provider background tasks, and approvals waiting in a live
+provider session. Questions that can still be answered by message after a
+restart, held queues and future scheduled tasks do not hold an update. Automatic
+installs are at least 15 minutes apart, and an install stops before it starts if
+someone begins using the host. Because the host remembers the laptop's build,
+it can finish while the laptop sleeps. Older hosts wait for the desktop app to
+coordinate their rollout, and an offline host updates after it reconnects.
+
+On an enrolled host, Check, Download and Install offer only the laptop's
+installed build, from any client. Install stays off for any other downloaded
+build, including an older one, and a host waits until the laptop has reported
+its build. A laptop app too old to report its build cannot release a host:
+update the laptop app, or disable automatic updates for that host to choose its
+builds there. A host already running a newer build than the laptop's waits
+instead of going back. A webhook delivery the host accepts while it hands off to
+an update runs after the restart, or once the host confirms the update did not
+start.
+
+The connection row shows each host's progress and any action needed. If the
+connection drops during installation, Jones checks what the host accepted before
+sending another installation request. An uncertain outcome stays on hold until the
+host's service confirms whether it accepted the update; if it did not, the host
+resumes held work and allows Install again by itself. A host whose service has not
+been refreshed since this check was added holds until its service restarts.
+Repeatedly clicking Install does not resolve missing evidence.
+
+Choose **Continue eligible active threads after this host updates** when enrolling
+if you want that behavior. Explicit user stops and queue holds remain in force;
+provider approval or unavailable native session state can still require attention.
+Disabling automatic updates stops new dispatch from the laptop; an installation
+already accepted by a host must still finish or reconcile.
 
 ## Platform support
 

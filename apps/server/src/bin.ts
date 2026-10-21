@@ -2,7 +2,8 @@
  * Every ACP agent spawns `t3 acp-mcp-bridge` while opening its session, and terminal-fallback
  * agents run `t3 acp-mcp-call` per tool call, so their startup sits on first-message latency.
  * Both dispatch here before the full CLI module graph (seconds of evaluation) loads; everything
- * else, apart from the bounded native restore command, defers to ./binCli.ts.
+ * else, apart from the bounded native restore command and the update preparation worker,
+ * defers to ./binCli.ts.
  */
 import { isEntrypoint } from "./entrypoint.ts";
 
@@ -20,6 +21,10 @@ if (
   if (command === "acp-mcp-bridge" || command === "acp-mcp-call") {
     const { runAcpMcpCliFastPath } = await import("./mcp/AcpMcpStdioBridge.ts");
     await runAcpMcpCliFastPath(command, process.argv.slice(3));
+  } else if (command === "__jones-preparation-worker") {
+    // Off-process update preparation owns its own signals and exit, so it bypasses the CLI.
+    const { runPreparationWorkerCommand } = await import("./jones/updates/preparation/worker.ts");
+    await runPreparationWorkerCommand(process.argv.slice(3));
   } else if (command !== "__jones-native-authority-transition") {
     // Before anything reads stdin: the desktop app's Windows launcher starts
     // the CLI without one. Never for the fast paths, whose stdin is a pipe.

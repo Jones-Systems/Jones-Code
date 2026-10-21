@@ -9,6 +9,7 @@ import * as JonesHttp from "./jones/http/registration.ts";
 import * as JonesUpdates from "./jones/updates/service.ts";
 import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
 import * as JonesSourceRelation from "./jones/updates/sourceRelation.ts";
+import * as UpdateAdmissionFence from "./jones/updates/UpdateAdmissionFence.ts";
 import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
 import { queueCompatibilityHttpApiLayer } from "./orchestration-v2/queueCompatibilityHttp.ts";
 import { providerQueueHttpApiLayer } from "./provider/providerQueueHttp.ts";
@@ -730,6 +731,8 @@ const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
+  // Jones: one fence shared by the event sink and the update installer.
+  Layer.provideMerge(UpdateAdmissionFence.layer),
   Layer.provide(NetService.layer),
 );
 
@@ -812,7 +815,8 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(layerServerSelfUpdate),
-  Layer.provide(FleetUpdates.layer),
+  // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+  Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
   Layer.provide(layerJonesUpdates),
   Layer.provide(layerCommandReadiness),
   Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),

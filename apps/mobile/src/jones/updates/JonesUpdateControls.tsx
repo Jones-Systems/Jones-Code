@@ -2,6 +2,8 @@ import { jonesBuildLabels, type JonesBuildRef } from "@t3tools/shared/jones/buil
 import { JonesBuildVersion } from "./JonesBuildVersion";
 import {
   jonesCandidatePresentation,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdateActionError,
   jonesUpdatePresentation,
 } from "@t3tools/client-runtime/jones/updates";
@@ -41,6 +43,9 @@ export function JonesUpdateControls({
   const presentation = jonesUpdatePresentation(state);
   const busy = pending || presentation.busy || observation.freshness !== "fresh";
   const provenance = state.provenance;
+  // A host that follows its laptop takes only the laptop's build; the host refuses others too.
+  const followerHold = jonesFollowerHold(state);
+  const followerSummary = jonesFollowerSummary(state);
   const candidate = jonesCandidatePresentation(state);
   const builds: Array<{ title: string; build: JonesBuildRef }> = [];
   if (state.currentVersion !== undefined)
@@ -69,6 +74,11 @@ export function JonesUpdateControls({
           <JonesBuildVersion key={title} title={title} build={build} label={labels[index]!} />
         ))}
         <Text className="text-sm text-foreground-muted">{presentation.message}</Text>
+        {followerSummary !== undefined ? (
+          <Text className="text-sm text-foreground-muted">
+            {followerHold === undefined ? followerSummary : followerHold}
+          </Text>
+        ) : null}
         {observation.freshness !== "fresh" ? (
           <Text className="text-sm text-foreground-muted">{observation.message}</Text>
         ) : null}
@@ -111,7 +121,11 @@ export function JonesUpdateControls({
           icon="arrow.up.circle"
           label="Install downloaded build"
           disabled={
-            !allowed || busy || !state.capability.install || state.currentVersion === undefined
+            !allowed ||
+            busy ||
+            !state.capability.install ||
+            state.currentVersion === undefined ||
+            followerHold !== undefined
           }
           onPress={() => {
             if (state.stagedHandle === undefined || state.currentVersion === undefined) return;
@@ -129,7 +143,13 @@ export function JonesUpdateControls({
         <SettingsActionRow
           icon="arrow.down.circle"
           label="Download"
-          disabled={!allowed || busy || !state.capability.download || state.phase !== "available"}
+          disabled={
+            !allowed ||
+            busy ||
+            !state.capability.download ||
+            state.phase !== "available" ||
+            followerHold !== undefined
+          }
           onPress={() =>
             void run({
               action: "download",

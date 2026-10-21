@@ -35,9 +35,8 @@ describe("qualified server update capability", () => {
         },
         platform: "linux",
         architecture: "x64",
-        cacheRoot: "unused-capability-fixture",
         installedSource: async () => "a".repeat(40),
-        stage: async () => {
+        prepare: async () => {
           nativeEffects += 1;
           throw new Error("unavailable staging must never run");
         },
@@ -48,9 +47,6 @@ describe("qualified server update capability", () => {
       {
         check: async () => {
           throw new Error("no network in this test");
-        },
-        stage: async () => {
-          throw new Error("download must never run");
         },
       },
     );

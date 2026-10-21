@@ -303,6 +303,31 @@ export function shortJonesSource(sha: string) {
   return sha.slice(0, 7);
 }
 
+/**
+ * Why a host that follows its laptop will not take `source` (by default its offered or staged
+ * build), or undefined when it will. The host enforces the same rule; this only explains it.
+ */
+export function jonesFollowerHold(
+  state: JonesUpdateState,
+  source: string | undefined = state.provenance?.sourceSha,
+): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  if (policy.leaderSource === null)
+    return "This host follows its laptop and waits for the laptop to report its installed build.";
+  if (source === undefined || source === policy.leaderSource) return undefined;
+  return `This host follows its laptop and installs only the laptop's installed source ${shortJonesSource(policy.leaderSource)}.`;
+}
+
+/** One line naming whose build a following host takes. */
+export function jonesFollowerSummary(state: JonesUpdateState): string | undefined {
+  const policy = state.policy;
+  if (policy === undefined) return undefined;
+  return policy.leaderSource === null
+    ? "Follows its laptop · waiting for the laptop's installed build"
+    : `Follows its laptop · takes only source ${shortJonesSource(policy.leaderSource)}`;
+}
+
 /** The host's offered or staged build. Hosts that predate offered versions omit `version`. */
 export function jonesCandidatePresentation(state: JonesUpdateState) {
   const provenance = state.provenance;
@@ -367,6 +392,7 @@ export type JonesExactSourceUnavailable =
   | "reconciling"
   | "staged-other"
   | "offered-other"
+  | "follows-laptop"
   | "unavailable";
 
 export type JonesExactSourceDecision =
@@ -430,6 +456,8 @@ export function resolveJonesExactSourceAction(
     return unavailable("already-installed", `This host already runs source ${short}.`);
   if (jonesUpdatePresentation(state).busy)
     return unavailable("busy", jonesUpdatePresentation(state).message);
+  const hold = jonesFollowerHold(state, targetSource);
+  if (hold !== undefined) return unavailable("follows-laptop", hold);
   const pending = input.unresolvedInstall;
   if (
     pending !== undefined &&

@@ -30,7 +30,32 @@
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
     "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
-    "apps/desktop/src/app/DesktopConnectionCustody.testFixtures.ts"
+    "apps/desktop/src/app/DesktopConnectionCustody.testFixtures.ts",
+    "apps/server/src/jones/fleetUpdates/quietSignals.ts",
+    "apps/server/src/jones/updates/followerPolicy.ts",
+    "apps/server/src/jones/updates/followerPolicy.test.ts",
+    "apps/server/src/jones/updates/hostWork.ts",
+    "apps/server/src/jones/updates/hostWork.test.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
+    "apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts",
+    "apps/server/src/jones/updates/handoffOutcome.ts",
+    "apps/server/src/jones/updates/handoffOutcome.test.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.ts",
+    "apps/web/src/jones/fleetUpdates/followerStatus.test.ts",
+    "apps/server/src/jones/updates/preparation/protocol.ts",
+    "apps/server/src/jones/updates/preparation/protocol.test.ts",
+    "apps/server/src/jones/updates/preparation/stageArtifact.ts",
+    "apps/server/src/jones/updates/preparation/sweep.ts",
+    "apps/server/src/jones/updates/preparation/sweep.test.ts",
+    "apps/server/src/jones/updates/preparation/worker.ts",
+    "apps/server/src/jones/updates/preparation/supervisor.ts",
+    "apps/server/src/jones/updates/preparation/supervisor.test.ts",
+    "apps/server/src/jones/updates/preparation/rebind.ts",
+    "apps/server/src/jones/updates/preparation/stage.test.ts",
+    "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+    "apps/server/src/jones/updates/preparation/Preparation.testkit.ts",
+    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],
@@ -80,6 +105,22 @@
       "to": "apps/server/src/jones/fleetUpdates/http.ts"
     },
     {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
       "from": "apps/web/src/AppRoot.tsx",
       "to": "apps/web/src/jones/fleetUpdates/FleetController.tsx"
     },
@@ -98,6 +139,10 @@
     {
       "from": "apps/web/src/components/settings/ConnectionsSettings.tsx",
       "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/worker.ts"
     }
   ]
 }

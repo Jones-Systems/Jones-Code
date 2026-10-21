@@ -157,6 +157,20 @@ jobs:
       - name: Smoke-test CLI archive
         run: node scripts/smoke-cli-archive.ts --archive release-cli/*.tar.gz --expect-version "$ARTIFACT_VERSION"
 
+      - name: Smoke-test packaged update preparation worker
+        run: |
+          set -euo pipefail
+          archives=(release-cli/*.tar.gz)
+          test "${#archives[@]}" -eq 1
+          scratch="$TMPDIR/preparation-smoke"
+          rm -rf -- "$scratch"
+          mkdir -p "$scratch"
+          tar -xzf "${archives[0]}" -C "$scratch"
+          roots=("$scratch"/*)
+          test "${#roots[@]}" -eq 1
+          node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts --worker "${roots[0]}/t3"
+          rm -rf -- "$scratch"
+
       - name: Record checksums and source
         run: |
           (cd release-cli && sha256sum *.tar.gz > SHA256SUMS)

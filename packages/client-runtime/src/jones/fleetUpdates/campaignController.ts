@@ -17,6 +17,18 @@ export interface FleetCampaignDriver {
     request: FleetHostRequest,
   ) => Promise<FleetHostStatus>;
   readonly cancelled: () => boolean;
+  /**
+   * The laptop's committed source, read from its native active install. A host that follows the
+   * laptop is told this source and its tree, checks the tree against the repository and updates
+   * itself; without it, campaigns drive every host.
+   */
+  readonly committedSource?: () => Promise<FleetCommittedSource | undefined>;
+}
+
+export interface FleetCommittedSource {
+  readonly repository: string;
+  readonly sha: string;
+  readonly tree: string;
 }
 const finished = new Set<FleetMemberPhase>([
   "current",
@@ -33,6 +45,8 @@ const inflight = new Set<FleetMemberPhase>([
 ]);
 const occupied = new Set<FleetMemberPhase>([...inflight, "retiring"]);
 const activationOccupied = new Set<FleetMemberPhase>(["dispatching", "reconciling", "pending"]);
+/** Phases a following host's campaign member keeps until its accepted work settles. */
+const handOffHeld = new Set<FleetMemberPhase>([...activationOccupied, "retiring"]);
 
 function matches(
   campaign: FleetDesktopCampaign,
@@ -268,10 +282,65 @@ async function advanceMember(
   }
 }
 
+/**
+ * Tells each enrolled host that follows this laptop the laptop's committed source, and returns
+ * those hosts. They prepare and install that source themselves, in their own quiet windows, so
+ * campaigns stop driving them. A host that does not answer keeps the campaign path this pass.
+ */
+async function publishCommittedSource(
+  driver: FleetCampaignDriver,
+  state: FleetDesktopState,
+): Promise<ReadonlySet<EnvironmentId>> {
+  const followers = new Set<EnvironmentId>();
+  const committed = await driver.committedSource?.().catch(() => undefined);
+  if (
+    committed === undefined ||
+    committed.repository !== "Jones-Systems/Jones-Code" ||
+    !/^[a-f0-9]{40}$/.test(committed.sha) ||
+    !/^[a-f0-9]{40}$/.test(committed.tree)
+  )
+    return followers;
+  const source = committed.sha;
+  await Promise.all(
+    state.enrollments
+      .filter((enrollment) => enrollment.enabled)
+      .map(async (enrollment) => {
+        try {
+          const status = await driver.host(enrollment.environmentId, { action: "status" });
+          if (
+            driver.cancelled() ||
+            status.follower?.protocol !== 1 ||
+            status.enrollment?.enrollmentId !== enrollment.enrollmentId ||
+            !status.enrollment.enabled
+          )
+            return;
+          if (status.follower.leaderSource !== source)
+            await driver.host(enrollment.environmentId, {
+              action: "leader",
+              input: {
+                enrollmentId: enrollment.enrollmentId,
+                environmentId: enrollment.environmentId,
+                repository: "Jones-Systems/Jones-Code",
+                committedSource: source,
+                committedTree: committed.tree,
+              },
+            });
+          followers.add(enrollment.environmentId);
+        } catch {
+          // An unreachable host is reconciled by the campaign pass after it reconnects.
+        }
+      }),
+  );
+  return followers;
+}
+
 /** One bounded pass; the caller owns polling, cancellation, and native persistence. */
 export async function advanceFleetCampaigns(driver: FleetCampaignDriver): Promise<void> {
   const state = await driver.desktop({ action: "read" });
   if (driver.cancelled()) return;
+  const followers = await publishCommittedSource(driver, state);
+  if (driver.cancelled()) return;
+  const handOff: Array<{ campaign: FleetDesktopCampaign; member: FleetCampaignMember }> = [];
   const byEnvironment = new Map<
     EnvironmentId,
     { campaign: FleetDesktopCampaign; member: FleetCampaignMember }
@@ -279,6 +348,10 @@ export async function advanceFleetCampaigns(driver: FleetCampaignDriver): Promis
   for (const campaign of state.campaigns) {
     for (const member of campaign.members) {
       if (finished.has(member.phase)) continue;
+      if (followers.has(member.enrollment.environmentId) && !handOffHeld.has(member.phase)) {
+        handOff.push({ campaign, member });
+        continue;
+      }
       if (
         (campaign.phase === "rolled-back" || campaign.phase === "blocked") &&
         !occupied.has(member.phase)
@@ -299,6 +372,21 @@ export async function advanceFleetCampaigns(driver: FleetCampaignDriver): Promis
         byEnvironment.set(member.enrollment.environmentId, { campaign, member });
       }
     }
+  }
+  for (const { campaign, member } of handOff) {
+    if (driver.cancelled()) return;
+    await driver
+      .desktop({
+        action: "updateMember",
+        input: {
+          campaignId: campaign.campaignId,
+          operationId: member.operationId,
+          expectedPhase: member.phase,
+          phase: "superseded",
+          reason: "This host now installs the laptop's committed build by itself.",
+        },
+      })
+      .catch(() => undefined);
   }
   const selected = [...byEnvironment.values()];
   // A host with a proven preacceptance refusal retries after other ready hosts

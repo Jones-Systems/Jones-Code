@@ -25,6 +25,9 @@ export function FleetController() {
           },
           host: fleetHost,
           cancelled: () => cancelled,
+          // The native active install's provenance; the renderer only relays it.
+          committedSource: async () =>
+            (await window.desktopBridge?.getUpdateState())?.jones?.installedSource,
         });
         if (!cancelled) await refreshFleetDesktopState();
       } catch {

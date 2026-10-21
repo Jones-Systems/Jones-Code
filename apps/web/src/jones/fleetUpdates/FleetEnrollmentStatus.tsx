@@ -27,6 +27,7 @@ export function FleetEnrollmentStatus({
   enrolled,
   readiness,
   campaign,
+  follower,
   notice,
   continueThreads,
   busy,
@@ -41,6 +42,8 @@ export function FleetEnrollmentStatus({
   readonly campaign?:
     | { readonly laptopPhase: string; readonly hostPhase: string; readonly reason?: string }
     | undefined;
+  /** The host's own progress toward this laptop's build, when it updates itself. */
+  readonly follower?: string | undefined;
   readonly notice?: string | null | undefined;
   readonly continueThreads: boolean;
   readonly busy: boolean;
@@ -108,7 +111,11 @@ export function FleetEnrollmentStatus({
         </div>
       </div>
       <div className="mt-1 space-y-1 empty:hidden">
-        {campaign !== undefined ? (
+        {follower !== undefined ? (
+          <p role="status" className="text-muted-foreground">
+            Host: {follower}
+          </p>
+        ) : campaign !== undefined ? (
           <p role="status" className="text-muted-foreground">
             Laptop update: {campaign.laptopPhase} · Host: {campaign.hostPhase}
             {campaign.reason ? ` · ${campaign.reason}` : ""}
@@ -120,6 +127,11 @@ export function FleetEnrollmentStatus({
             <p>
               Turning this on enrolls only {label}’s qualified service. It installs a build after
               this laptop commits the same source; an offline host updates when it reconnects.
+            </p>
+            <p>
+              A host that updates itself prepares this laptop’s installed build as soon as it learns
+              of it, and installs it only after no client has had input for 30 minutes and nothing a
+              restart would cut is running. Automatic installs are at least 15 minutes apart.
             </p>
             <p>
               Turning it off stops dispatch from this laptop first. Host transactions already

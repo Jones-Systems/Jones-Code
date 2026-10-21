@@ -63,6 +63,8 @@ export interface ServiceLauncherContext {
   readonly qualifiedUpdatesProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
   readonly updateRetirementProtocol?: 1;
+  /** The launcher answers `reconcile-update` from its durable operation outcomes. */
+  readonly updateOutcomeProtocol?: 1;
   readonly startupGateProtocol?: 1;
   readonly update?: ServiceUpdateRecord | LegacyPendingServiceUpdate;
 }
@@ -79,6 +81,12 @@ export interface ServiceUpdateRetirement {
 export type ServiceLauncherChildMessage =
   | ({ readonly type: "request-retire-update" } & ServiceUpdateRetirement)
   | {
+      /** Asks how a handoff ended; `queryId` pairs the answer with this question. */
+      readonly type: "reconcile-update";
+      readonly operationId: string;
+      readonly queryId: number;
+    }
+  | {
       readonly type: "request-update";
       readonly targetVersion: string;
       readonly dbPath: string;
@@ -93,6 +101,13 @@ export type ServiceLauncherChildMessage =
     };
 
 export type ServiceLauncherParentMessage =
+  | {
+      readonly type: "update-outcome";
+      readonly operationId: string;
+      readonly queryId: number;
+      readonly outcome: "accepted" | "rejected" | "unknown";
+      readonly reason?: string;
+    }
   | {
       readonly type: "update-retired";
       readonly operationId: string;
@@ -341,6 +356,7 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
+    ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
     ...(parsed.startupGateProtocol === 1 ? { startupGateProtocol: 1 as const } : {}),
     ...(update === undefined ? {} : { update }),
   };
@@ -366,10 +382,20 @@ function decodeLegacyServiceUpdate(
     : undefined;
 }
 
+const OPERATION_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const isQueryId = (value: unknown): value is number =>
+  typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
 export function decodeServiceLauncherChildMessage(
   value: unknown,
 ): ServiceLauncherChildMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "reconcile-update")
+    return typeof value.operationId === "string" &&
+      OPERATION_ID.test(value.operationId) &&
+      isQueryId(value.queryId)
+      ? { type: value.type, operationId: value.operationId, queryId: value.queryId }
+      : undefined;
   if (value.type === "request-retire-update") {
     const keys = [
       "operationId",
@@ -433,6 +459,24 @@ export function decodeServiceLauncherParentMessage(
   value: unknown,
 ): ServiceLauncherParentMessage | undefined {
   if (!isRecord(value)) return undefined;
+  if (value.type === "update-outcome") {
+    if (
+      typeof value.operationId !== "string" ||
+      !isQueryId(value.queryId) ||
+      (value.outcome !== "accepted" &&
+        value.outcome !== "rejected" &&
+        value.outcome !== "unknown") ||
+      (value.reason !== undefined && typeof value.reason !== "string")
+    )
+      return undefined;
+    return {
+      type: value.type,
+      operationId: value.operationId,
+      queryId: value.queryId,
+      outcome: value.outcome,
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    };
+  }
   if (value.type === "update-retired") {
     if (
       typeof value.operationId !== "string" ||
