@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-apple-silicon-platforms",
+      "tests": [
+        "scripts/jones/platforms/supportedTargets.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/lib/build-target-arch.test.ts",
+        "scripts/jones/preview-companion/packageVariant.test.ts"
+      ],
+      "commands": [
+        "vp test run scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.test.ts scripts/lib/build-target-arch.test.ts scripts/jones/preview-companion/packageVariant.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/platforms/supportedTargets.ts scripts/jones/platforms/supportedTargets.test.ts scripts/build-desktop-artifact.ts scripts/build-cli-archive.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
