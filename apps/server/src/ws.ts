@@ -27,6 +27,8 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import type * as Rpc from "effect/rpc/Rpc";
+import type * as RpcGroup from "effect/rpc/RpcGroup";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
@@ -579,6 +581,49 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+type ServerWsRpcHandlerServices = {
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: SettlementOrigins.SettlementOrigins;
+  [ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]: ProjectEnrichmentService.ProjectEnrichmentService;
+  [ORCHESTRATION_V2_WS_METHODS.subscribeArchivedShell]: ProjectEnrichmentService.ProjectEnrichmentService;
+  [ORCHESTRATION_V2_WS_METHODS.subscribeShell]:
+    | OrchestrationEventStore.OrchestrationEventStore
+    | ProjectEnrichmentService.ProjectEnrichmentService
+    | ProjectService.ProjectService
+    | ProjectStore.ProjectStoreV2
+    | SqlClient.SqlClient
+    | ThreadManagementService.ThreadManagementService;
+  [ORCHESTRATION_V2_WS_METHODS.subscribeThread]:
+    | OrchestrationEventStore.OrchestrationEventStore
+    | ThreadManagementService.ThreadManagementService;
+  [WS_METHODS.chatGptHandoffSubscribe]: Crypto.Crypto;
+  [WS_METHODS.providerInstallRemove]: FileSystem.FileSystem | Path.Path;
+  [WS_METHODS.serverGetTraceDiagnostics]: TraceDiagnostics.TraceDiagnostics;
+  [WS_METHODS.attachmentsCreateUploadUrl]:
+    | ServerConfig.ServerConfig
+    | ServerSecretStore.ServerSecretStore;
+  [WS_METHODS.attachmentsDelete]: FileSystem.FileSystem | ServerConfig.ServerConfig;
+  [WS_METHODS.assetsCreateUrl]:
+    | Crypto.Crypto
+    | FileSystem.FileSystem
+    | Orchestrator.OrchestratorV2
+    | Path.Path
+    | ProjectFaviconResolver.ProjectFaviconResolver
+    | ServerConfig.ServerConfig
+    | ServerSecretStore.ServerSecretStore
+    | WorkspacePaths.WorkspacePaths;
+  [WS_METHODS.assetsPersistChatAttachments]:
+    | FileSystem.FileSystem
+    | Path.Path
+    | ServerConfig.ServerConfig;
+};
+type ServerWsRpcHandlers = {
+  readonly [Current in RpcGroup.Rpcs<typeof ServerWsRpcGroup> as Current["_tag"]]: Rpc.ToHandlerFn<
+    Current,
+    Current["_tag"] extends keyof ServerWsRpcHandlerServices
+      ? ServerWsRpcHandlerServices[Current["_tag"]]
+      : never
+  >;
+};
 // Replaying each intervening event costs a shell refetch; past this gap a
 // single O(active-threads) snapshot is cheaper and bounded.
 const SHELL_RESUME_MAX_GAP = 1_000;
@@ -1862,7 +1907,7 @@ const layerWsRpc = (
         return result;
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers: ServerWsRpcHandlers = {
         [ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt]: (input) =>
           threadReferenceExcerpts.capture(input),
         [ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection]: (input) =>
@@ -3292,7 +3337,7 @@ const layerWsRpc = (
               Stream.concat(Stream.make(latest), changes),
             ),
           ),
-      });
+      };
       return handlers;
     }),
   );
