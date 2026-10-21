@@ -10,6 +10,7 @@ import {
   type ServerLifecycleStreamEvent,
 } from "@t3tools/contracts";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
@@ -21,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Ref from "effect/Ref";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
@@ -31,6 +33,9 @@ import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as EffectWorker from "./orchestration-v2/EffectWorker.ts";
+import * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
+import * as EventSink from "./orchestration-v2/EventSink.ts";
+import * as ProjectionStore from "./orchestration-v2/ProjectionStore.ts";
 import * as LegacyV1ThreadImporter from "./orchestration-v2/legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
@@ -68,9 +73,14 @@ it.effect.each([
         requeuedEffects: 0,
       };
       const imports = { importedThreadCount: 0, importedMessageCount: 0 };
+      const sql = yield* SqlClient.SqlClient;
       const dependencies = Layer.mergeAll(
         NodeCrypto.layer,
         Path.layer,
+        Layer.succeed(SqlClient.SqlClient, sql),
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+        Layer.mock(EventSink.EventSinkV2)({}),
+        Layer.mock(EffectOutbox.EffectOutboxV2)({}),
         Layer.mock(ServerConfig.ServerConfig)({
           ...(yield* ServerConfig.deriveServerPaths("/bootstrap-project", undefined).pipe(
             Effect.provide(Path.layer),
@@ -242,7 +252,7 @@ it.effect.each([
         Effect.provideService(ServerActivation, Effect.never),
       );
     }),
-  ),
+  ).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 
 it.effect("interrupts the effect worker when awareness relay startup fails", () =>
