@@ -27,7 +27,10 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   useNavigate: () => testState.navigate,
   useCanGoBack: () => testState.canGoBack,
 }));
-vi.mock("../../state/usage", () => ({ useUsage: testState.useUsage }));
+vi.mock("../../state/usage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/usage")>()),
+  useUsage: testState.useUsage,
+}));
 vi.mock("../ui/scroll-area", () => ({ ScrollArea: "div" }));
 vi.mock("../ui/select", () => ({
   Select: "div",
