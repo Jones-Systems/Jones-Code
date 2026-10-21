@@ -571,28 +571,15 @@ export function HomeScreen(props: HomeScreenProps) {
     shelfPreferencesLoading: !shelfPreferencesLoaded,
   });
 
-  const threadListV2Items = useMemo(
-    () =>
-      projectMobileWorkstreamList(nativeThreadListV2Items, {
-        enabled: workstreams.enabled,
-        groups: workstreams.groups,
-        collapsedKeys: workstreams.collapsedKeys,
-        secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
-        confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
-        selectedThreadKey,
-        searching: props.searchQuery.trim().length > 0,
-      }),
-    [
-      nativeThreadListV2Items,
-      workstreams.enabled,
-      workstreams.groups,
-      workstreams.collapsedKeys,
-      workstreams.secondaryLabelsByKey,
-      workstreams.confirmedUnassignedKeys,
-      selectedThreadKey,
-      props.searchQuery,
-    ],
-  );
+  const threadListV2Items = projectMobileWorkstreamList(nativeThreadListV2Items, {
+    enabled: workstreams.enabled,
+    groups: workstreams.groups,
+    collapsedKeys: workstreams.collapsedKeys,
+    secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+    confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+    selectedThreadKey,
+    searching: props.searchQuery.trim().length > 0,
+  });
   const moveWithinWorkstream = useCallback(
     (thread: EnvironmentThreadShell, direction: ThreadMoveDestination) => {
       const target = workstreams.enabled

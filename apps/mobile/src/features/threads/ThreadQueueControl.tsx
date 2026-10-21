@@ -14,7 +14,7 @@ import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/co
 import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react";
 import { Animated, Platform, Pressable, ScrollView, View } from "react-native";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -128,7 +128,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const queueBusy = busyRunId !== null || batch.pending;
   const queuedRuns = workflow?.queuedRuns ?? [];
   const importedQueueRef = useRef({ target, queuedRuns });
-  importedQueueRef.current = { target, queuedRuns };
+  useLayoutEffect(() => {
+    importedQueueRef.current = { target, queuedRuns };
+  }, [target, queuedRuns]);
   const reviewImportedQueued = async (runId: RunId) => {
     if (busyRef.current) return;
     const entry = queuedRuns.find((candidate) => candidate.run.id === runId);

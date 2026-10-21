@@ -620,11 +620,9 @@ export function useThreadListActions(): {
     if (section === "settled") {
       if (!environmentSupportsSettlement(thread.environmentId)) return false;
       appAtomRegistry.set(threadDropBusyAtom, true);
-      try {
-        return await settleThread(thread);
-      } finally {
+      return await settleThread(thread).finally(() => {
         appAtomRegistry.set(threadDropBusyAtom, false);
-      }
+      });
     }
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const supportsReorder = (environmentId: EnvironmentThreadShell["environmentId"]) => {
@@ -699,7 +697,7 @@ export function useThreadListActions(): {
         );
     const reorder = section === "pinned" ? reorderPinnedMutation : reorderActiveMutation;
     let succeeded = false;
-    try {
+    return await (async () => {
       if (crossSection) {
         if (section === "pinned") {
           const orderKey = assignments.find(
@@ -754,10 +752,10 @@ export function useThreadListActions(): {
       succeeded = true;
       pending?.complete();
       return true;
-    } finally {
+    })().finally(() => {
       if (!succeeded) pending?.cancel();
       appAtomRegistry.set(threadDropBusyAtom, false);
-    }
+    });
   };
 
   const confirmDeleteThread = (thread: EnvironmentThreadShell) =>

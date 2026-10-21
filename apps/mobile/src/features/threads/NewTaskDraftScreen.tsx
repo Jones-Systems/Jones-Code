@@ -1178,11 +1178,9 @@ export function NewTaskDraftScreen(props: {
   async function handleStart(): Promise<void> {
     if (flow.submitting) return;
     await startLatchRef.current.run(async () => {
-      try {
-        await submitTask();
-      } finally {
+      await submitTask().finally(() => {
         flow.setSubmitting(false);
-      }
+      });
     });
   }
 

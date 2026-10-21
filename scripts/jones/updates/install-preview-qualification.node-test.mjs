@@ -876,6 +876,21 @@ NodeTest.test(
   },
 );
 
+NodeTest.test("saved Off seeding accepts the normalized root URL emitted by pairing", async () => {
+  const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+  const store = fixture.data.get(fixture.runtimeName).stores;
+  const catalog = JSON.parse(store.get("catalog"));
+  catalog.profiles[0].httpBaseUrl = "http://127.0.0.1:4100/";
+  store.set("catalog", JSON.stringify(catalog));
+  await fixture.run("hold");
+  NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+  NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+    ...catalog,
+    disabledEnvironmentIds: ["synthetic-remote"],
+  });
+  await fixture.run("close");
+});
+
 NodeTest.test(
   "saved Off seeding refuses nonmatching or ambiguous synthetic catalogs without writes",
   async () => {
@@ -895,6 +910,14 @@ NodeTest.test(
       (catalog) => {
         catalog.disabledEnvironmentIds = ["other"];
       },
+      ...[
+        "http://127.0.0.1:4100/path",
+        "http://127.0.0.1:4100/?query=1",
+        "http://127.0.0.1:4100/#fragment",
+        "http://user:password@127.0.0.1:4100/",
+      ].map((httpBaseUrl) => (catalog) => {
+        catalog.profiles[0].httpBaseUrl = httpBaseUrl;
+      }),
     ]) {
       const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
       const store = fixture.data.get(fixture.runtimeName).stores;

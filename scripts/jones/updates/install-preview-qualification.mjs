@@ -946,7 +946,7 @@ export async function indexedDbBrowserProof(phase, syntheticOrigin) {
               profile?._tag === "BearerConnectionProfile" &&
               profile.environmentId === target.environmentId &&
               profile.connectionId === target.connectionId &&
-              profile.httpBaseUrl === syntheticOrigin &&
+              (profile.httpBaseUrl === syntheticOrigin || profile.httpBaseUrl === origin.href) &&
               Array.isArray(catalog.disabledEnvironmentIds) &&
               catalog.disabledEnvironmentIds.length ===
                 0, "Saved Off seeding requires exactly one newly paired synthetic target");
