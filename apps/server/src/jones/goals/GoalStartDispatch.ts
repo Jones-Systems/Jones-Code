@@ -41,8 +41,7 @@ export class GoalStartDispatch extends Context.Service<
 const make = Effect.gen(function* () {
   const query = yield* makeCommandObservationQuery();
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const observe = (threadId: ThreadId, requestId: string) =>
-    Effect.gen(function* () {
+  const observe = Effect.fn("GoalStartDispatch.observe")(function*(threadId: ThreadId, requestId: string) {
       const readback = yield* query
         .observe({
           threadId,
@@ -91,8 +90,7 @@ const make = Effect.gen(function* () {
         ),
         Effect.mapError(unavailable),
       ),
-    start: (input) =>
-      Effect.gen(function* () {
+    start: Effect.fn("GoalStartDispatch.start")(function*(input) {
         const commandId = CommandId.make(`goal:${input.requestId}`);
         const messageId = MessageId.make(`goal:${input.requestId}`);
         yield* threads

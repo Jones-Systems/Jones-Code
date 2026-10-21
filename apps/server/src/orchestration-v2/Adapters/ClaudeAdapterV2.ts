@@ -4334,8 +4334,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const runtimeContext = yield* Effect.context<never>();
         const runPromise = Effect.runPromiseWith(runtimeContext);
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Effect.gen(function* () {
+        const emitProviderEvent = Effect.fn("ClaudeAdapterV2.emitProviderEvent")(function*(event: ProviderAdapter.ProviderAdapterV2Event) {
             const producer = yield* ClaudeProducerContext;
             if (producer !== undefined && !producer.acceptingEvidence) return;
             const eventProducer =
@@ -4402,7 +4401,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   }),
             });
             yield* Queue.offer(events, queuedEvent);
-          }).pipe(Effect.asVoid);
+          },Effect.asVoid);
 
         // Reports one root request's usage as the current context. Usage
         // without input is a placeholder, never a measurement.
@@ -8748,10 +8747,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
         });
 
-        const handleSdkMessageFrame = (
-          frame: Parameters<typeof handleSdkMessageFrameWithSource>[0],
-        ) =>
-          Effect.gen(function* () {
+        const handleSdkMessageFrame = Effect.fn("ClaudeAdapterV2.handleSdkMessageFrame")(function*(frame: Parameters<typeof handleSdkMessageFrameWithSource>[0]) {
             const acceptedProducer =
               frame.acceptedWakeReplay === true
                 ? acceptedWakeProducers.get(frame.message)
@@ -9625,8 +9621,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const registration: SourceQueryRegistration = {
               binding,
               retired: false,
-              verify: (source) =>
-                Effect.gen(function* () {
+              verify: Effect.fn("ClaudeAdapterV2.verify")(function*(source) {
                   if (queryBindingUnknown)
                     return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                       driver: CLAUDE_PROVIDER,
@@ -9664,8 +9659,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       detail: `Cannot fork an active source Claude turn ${sourceTurn.providerTurnId}.`,
                     });
                 }),
-              retire: (source) =>
-                Effect.gen(function* () {
+              retire: Effect.fn("ClaudeAdapterV2.retire")(function*(source) {
                   yield* registration.verify(source);
                   yield* closeCapturedQuery(context, registration.verify(source));
                   yield* registration.verify(source);
@@ -10494,8 +10488,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ).size > 0
             );
           }),
-          captureRuntimeStop: (providerThread) =>
-            Effect.gen(function* () {
+          captureRuntimeStop: Effect.fn("ClaudeAdapterV2.captureRuntimeStop")(function*(providerThread) {
               const captured = yield* Ref.get(queryContext);
               const revision = providerThread.runtimeIdentity?.evidenceRevision;
               if (

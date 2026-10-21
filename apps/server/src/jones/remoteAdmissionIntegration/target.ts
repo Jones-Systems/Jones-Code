@@ -12,8 +12,7 @@ class RemoteAdmissionTargetUnavailable extends Schema.TaggedError<RemoteAdmissio
   {},
 ) {}
 
-export const resolveTarget = (params: Record<string, unknown>, invocation: McpInvocationScope) =>
-  Effect.gen(function* () {
+export const resolveTarget = Effect.fn("RemoteAdmissionTarget.resolveTarget")(function*(params: Record<string, unknown>, invocation: McpInvocationScope) {
     const projectService = yield* Effect.serviceOption(ProjectService.ProjectService);
     const projectionService = yield* Effect.serviceOption(ProjectionStore.ProjectionStoreV2);
     const scheduledId = params.scheduledTaskId ?? params.taskId;

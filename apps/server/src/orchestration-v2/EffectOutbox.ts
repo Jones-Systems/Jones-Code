@@ -176,8 +176,7 @@ const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffect
   onExcessProperty: "error",
 });
 // An invalid native envelope must never fall back to ordinary provider execution.
-export const decodeOrchestrationEffectPayloadV2 = (payload: string) =>
-  Effect.gen(function* () {
+export const decodeOrchestrationEffectPayloadV2 = Effect.fn("EffectOutbox.decodeOrchestrationEffectPayloadV2")(function*(payload: string) {
     const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
     if (
       typeof raw === "object" &&

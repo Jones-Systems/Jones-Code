@@ -46,8 +46,7 @@ const scopeOf = (intent: IntentStore.Intent): McpThreadInvocationScope => ({
   issuedAt: 0,
 });
 
-export const make = (onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effect.Effect<void>) =>
-  Effect.gen(function* () {
+export const make = Effect.fn("RemoteDelegationLifecycle.make")(function*(onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effect.Effect<void>) {
     const store = yield* IntentStore.make;
     const forwarding = yield* PeerForwarding.PeerForwarding;
     const links = yield* PeerLinks.PeerLinks;
@@ -69,8 +68,7 @@ export const make = (onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effe
         Effect.map(({ subagents }) => subagents.find((task) => task.id === intent.taskId)),
         Effect.mapError(unavailable),
       );
-    const reserve = (intent: IntentStore.Intent) =>
-      Effect.gen(function* () {
+    const reserve = Effect.fn("RemoteDelegationLifecycle.reserve")(function*(intent: IntentStore.Intent) {
         if (intent.taskId !== null) return intent;
         const recorded = yield* threads
           .dispatch(intent.envelope.request)
@@ -85,8 +83,7 @@ export const make = (onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effe
         yield* store.reserved(intent.commandId, taskId);
         return { ...intent, taskId };
       });
-    const finishDenied = (intent: IntentStore.Intent, error: OrchestratorMcpFailure) =>
-      Effect.gen(function* () {
+    const finishDenied = Effect.fn("RemoteDelegationLifecycle.finishDenied")(function*(intent: IntentStore.Intent, error: OrchestratorMcpFailure) {
         if (intent.taskId === null) return yield* unavailable();
         yield* threads
           .dispatch({
@@ -235,15 +232,13 @@ export const make = (onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effe
           Effect.asVoid,
         );
       });
-    const submit = (commandId: CommandId, request: unknown, envelope: IntentStore.IntentEnvelope) =>
-      Effect.gen(function* () {
+    const submit = Effect.fn("RemoteDelegationLifecycle.submit")(function*(commandId: CommandId, request: unknown, envelope: IntentStore.IntentEnvelope) {
         const intent = yield* store.prepare(commandId, request, envelope);
         const reserved = yield* locked(commandId, reserve(intent));
         yield* attempt(commandId).pipe(Effect.catch(() => recover(commandId)));
         return { taskId: reserved.taskId! };
       });
-    const replay = (commandId: CommandId, request: unknown) =>
-      Effect.gen(function* () {
+    const replay = Effect.fn("RemoteDelegationLifecycle.replay")(function*(commandId: CommandId, request: unknown) {
         const intent = yield* store.find(commandId, request);
         if (intent === undefined) return undefined;
         const reserved = yield* locked(commandId, reserve(intent));
@@ -252,8 +247,7 @@ export const make = (onBound: (parentThreadId: ThreadId, taskId: NodeId) => Effe
           yield* onBound(intent.envelope.request.parentThreadId, reserved.taskId!);
         return { taskId: reserved.taskId! };
       });
-    const cancelPending = (task: OrchestrationV2Subagent, reason?: string) =>
-      Effect.gen(function* () {
+    const cancelPending = Effect.fn("RemoteDelegationLifecycle.cancelPending")(function*(task: OrchestrationV2Subagent, reason?: string) {
         const intent = yield* store.byTask(task.id);
         if (intent === undefined)
           return yield* new OrchestratorMcpFailure({

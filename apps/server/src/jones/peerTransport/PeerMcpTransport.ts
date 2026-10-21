@@ -69,11 +69,7 @@ const fromLinkError = (error: PeerLinkError) =>
     message: error.message,
   });
 
-const readEnvelope = (
-  response: { readonly headers: Readonly<Record<string, string>>; readonly text: string },
-  id: number,
-) =>
-  Effect.gen(function* () {
+const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function*(response: { readonly headers: Readonly<Record<string, string>>; readonly text: string }, id: number) {
     const text = response.text;
     const raw = yield* Effect.try({
       try: () => {
@@ -179,8 +175,7 @@ export const make = Effect.gen(function* () {
         }),
       );
 
-  const openSession = (url: string, token: string, limitHeader: Record<string, string>) =>
-    Effect.gen(function* () {
+  const openSession = Effect.fn("PeerMcpTransport.openSession")(function*(url: string, token: string, limitHeader: Record<string, string>) {
       const id = yield* nextId;
       const initialized = yield* post(
         url,
@@ -223,8 +218,7 @@ export const make = Effect.gen(function* () {
       return { id: sessionId };
     });
 
-  const call: PeerMcpClient["Service"]["call"] = (input) =>
-    Effect.gen(function* () {
+  const call: PeerMcpClient["Service"]["call"] = Effect.fn("PeerMcpTransport.call")(function*(input) {
       const resolved = yield* links
         .resolve(input.environmentId)
         .pipe(Effect.mapError(fromLinkError));
@@ -307,7 +301,7 @@ export const make = Effect.gen(function* () {
             }),
         ),
       );
-    }).pipe(
+    }, (effect, input) => effect.pipe(
       Effect.tapError((error) =>
         links.recordOutcome(input.environmentId, { error: error.message }),
       ),
@@ -321,7 +315,6 @@ export const make = Effect.gen(function* () {
               message: "The linked environment stopped answering.",
             }),
           ),
-      }),
-    );
+      })));
   return { call };
 });

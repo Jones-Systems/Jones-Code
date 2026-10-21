@@ -119,13 +119,7 @@ const make = Effect.gen(function* () {
   );
 
   /** The peer's project with this thread's repository, or the one the caller named. */
-  const resolveRemoteProject = (
-    scope: ThreadScope,
-    environmentId: EnvironmentId,
-    parentProjectId: ProjectId,
-    requested: ProjectId | undefined,
-  ) =>
-    Effect.gen(function* () {
+  const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function*(scope: ThreadScope, environmentId: EnvironmentId, parentProjectId: ProjectId, requested: ProjectId | undefined) {
       if (requested !== undefined) return requested;
       const here = yield* projects.getById(parentProjectId).pipe(
         Effect.map(Option.getOrUndefined),
@@ -166,8 +160,7 @@ const make = Effect.gen(function* () {
       });
     });
 
-  const delegate: RemoteDelegation["Service"]["delegate"] = (scope, input) =>
-    Effect.gen(function* () {
+  const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(function*(scope, input) {
       const key = input.clientRequestId ?? (yield* crypto.randomUUIDv4().pipe(Effect.orDie));
       const commandId = CommandId.make(
         `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
@@ -305,15 +298,7 @@ const make = Effect.gen(function* () {
    * or an earlier report) is done. `stoppedThere` records that nothing is
    * left to stop there, also on a task that already has its result.
    */
-  const complete = (
-    parentThreadId: ThreadId,
-    taskId: NodeId,
-    status: "completed" | "failed" | "cancelled" | "interrupted",
-    result: string,
-    stoppedThere: "ran-out" | "stopped" | undefined,
-    stopCount?: number,
-  ) =>
-    Effect.gen(function* () {
+  const complete = Effect.fn("RemoteDelegation.complete")(function*(parentThreadId: ThreadId, taskId: NodeId, status: "completed" | "failed" | "cancelled" | "interrupted", result: string, stoppedThere: "ran-out" | "stopped" | undefined, stopCount?: number) {
       const attempt = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
       yield* threads
         .dispatch({
@@ -395,7 +380,7 @@ const make = Effect.gen(function* () {
     runId: RunId,
     failed = false,
   ) =>
-    Effect.gen(function* () {
+    Effect.fn("RemoteDelegation.lastReply")(function*() {
       let reply: OrchestratorMcpThreadTimelineItem | undefined;
       let error: OrchestratorMcpThreadTimelineItem | undefined;
       let afterPosition: number | undefined;
@@ -434,15 +419,14 @@ const make = Effect.gen(function* () {
         textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
       }
       return text;
-    });
+    })();
 
   /**
    * Why following a task can never succeed, if that is what `error` means.
    * The far side's message already says what was refused and what to do; a
    * link forgotten here only reads as a bad request, so it is named.
    */
-  const finalReason = (parentThreadId: ThreadId, taskId: NodeId, error: OrchestratorMcpFailure) =>
-    Effect.gen(function* () {
+  const finalReason = Effect.fn("RemoteDelegation.finalReason")(function*(parentThreadId: ThreadId, taskId: NodeId, error: OrchestratorMcpFailure) {
       if (isFinal(error)) return error.message;
       if (error.code !== "invalid_request") return undefined;
       const { subagents } = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
@@ -451,7 +435,7 @@ const make = Effect.gen(function* () {
       if (environmentId === undefined) return error.message;
       const link = yield* links.get(environmentId);
       return Option.isSome(link) ? undefined : error.message;
-    }).pipe(Effect.orElseSucceed(() => undefined));
+    },Effect.orElseSucceed(() => undefined));
 
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
@@ -502,8 +486,7 @@ const make = Effect.gen(function* () {
    * A task completed here first (cancelled, or its parent stopped) is
    * stopped there, and done once that stop is recorded here.
    */
-  const followOnce = (parentThreadId: ThreadId, taskId: NodeId) =>
-    Effect.gen(function* () {
+  const followOnce = Effect.fn("RemoteDelegation.followOnce")(function*(parentThreadId: ThreadId, taskId: NodeId) {
       const sequence = yield* threads.getThreadEventSequence(parentThreadId);
       const records = yield* threads.getThreadRecords(parentThreadId, ["subagents"]);
       const task = records.subagents.find((candidate) => candidate.id === taskId);
@@ -653,8 +636,7 @@ const make = Effect.gen(function* () {
       );
     });
 
-  const cancel: RemoteDelegation["Service"]["cancel"] = (scope, task, input) =>
-    Effect.gen(function* () {
+  const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(function*(scope, task, input) {
       const remote = task.remoteChild;
       if (remote === undefined) return yield* lifecycle.cancelPending(task, input.reason);
       const { reason } = input;

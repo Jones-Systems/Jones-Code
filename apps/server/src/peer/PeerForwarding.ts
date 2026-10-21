@@ -117,15 +117,7 @@ const make = Effect.gen(function* () {
     );
 
   /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = <A>(
-    scope: Scope,
-    toolName: string,
-    parameters: Schema.Top,
-    success: Schema.Top,
-    environmentId: EnvironmentId,
-    params: unknown,
-  ) =>
-    Effect.gen(function* () {
+  const forward = Effect.fn("PeerForwarding.forward")(function*<A>(scope: Scope, toolName: string, parameters: Schema.Top, success: Schema.Top, environmentId: EnvironmentId, params: unknown) {
       const limits = yield* callerLimits(scope);
       const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
         params,
@@ -174,8 +166,7 @@ const make = Effect.gen(function* () {
       input,
     );
 
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
-    Effect.gen(function* () {
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn("PeerForwarding.waitForThread")(function*(scope, environmentId, input) {
       let remaining = Math.min(
         MAX_WAIT_TIMEOUT_MS,
         Math.max(1, input.timeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS),
@@ -214,8 +205,7 @@ const make = Effect.gen(function* () {
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
       : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
 
-  const listLinks: PeerForwarding["Service"]["links"] = (scope) =>
-    Effect.gen(function* () {
+  const listLinks: PeerForwarding["Service"]["links"] = Effect.fn("PeerForwarding.listLinks")(function*(scope) {
       yield* callerLimits(scope);
       const listed = yield* links.list.pipe(
         Effect.mapError(

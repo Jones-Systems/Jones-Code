@@ -1256,7 +1256,7 @@ export const layer: Layer.Layer<
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
       ) =>
-        Effect.gen(function* () {
+        Effect.fn("ProviderTurnStartService.startWithConfiguredEffort")(function*() {
           let dispatchInput = turnInput;
           if (
             session.driver === "codex" &&
@@ -1354,7 +1354,7 @@ export const layer: Layer.Layer<
                 : { runtimeGeneration: stopRuntimeGeneration }),
             });
           yield* start(dispatchInput);
-        }).pipe(
+        },
           Effect.mapError((cause) =>
             cause._tag === "ProviderAdapterTurnStartError"
               ? cause
@@ -1365,8 +1365,7 @@ export const layer: Layer.Layer<
                   runId: run.id,
                   cause,
                 }),
-          ),
-        );
+          ))();
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const retryHandoff =
@@ -1551,8 +1550,7 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
-      startNative: (input) =>
-        Effect.gen(function* () {
+      startNative: Effect.fn("ProviderTurnStartService.startNative")(function*(input) {
           yield* start({
             threadId: input.threadId,
             runId: input.runId,
@@ -1565,13 +1563,12 @@ export const layer: Layer.Layer<
               cause: "Native start did not receive its direct whole-operation acknowledgement.",
             });
           return evidence;
-        }).pipe(
+        }, (effect, input) => effect.pipe(
           Effect.mapError((cause) =>
             isProviderTurnStartError(cause)
               ? cause
               : new ProviderTurnStartError({ runId: input.runId, cause }),
-          ),
-        ),
+          ))),
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // Storage cleanup removes worktrees under the same lease. Only startup

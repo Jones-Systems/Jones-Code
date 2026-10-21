@@ -20,8 +20,7 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSinkV2;
-  const readTarget = (threadId: ThreadId) =>
-    Effect.gen(function* () {
+  const readTarget = Effect.fn("CommandObservation.readTarget")(function*(threadId: ThreadId) {
       const [row] = yield* sql<{ snapshotSequence: number; lastEventSequence: number }>`SELECT
       COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS snapshotSequence,
       COALESCE((SELECT MAX(sequence) FROM orchestration_events WHERE aggregate_kind = 'thread'

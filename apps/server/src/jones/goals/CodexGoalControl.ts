@@ -8,16 +8,12 @@ import type {
   ProviderGoalControlResult,
 } from "@t3tools/provider-core/server/jones/runtimeTypes";
 
-export const controlCodexGoal = (
-  input: ProviderGoalControlInput,
-  native: {
+export const controlCodexGoal = Effect.fn("CodexGoalControl.controlCodexGoal")(function*(input: ProviderGoalControlInput, native: {
     readonly client: Pick<CodexClient.CodexAppServerClient["Service"], "request">;
     readonly current: Effect.Effect<boolean>;
     readonly beforeMutation: (action: ProviderGoalControlInput["action"]) => Effect.Effect<void>;
     readonly observe: (goal: OrchestrationV2ProviderGoal | null) => Effect.Effect<void>;
-  },
-): Effect.Effect<ProviderGoalControlResult> =>
-  Effect.gen(function* () {
+  }): Effect.fn.Return<ProviderGoalControlResult> {
     const threadId = input.providerThread.nativeThreadRef?.nativeId;
     const result = (
       outcome: ProviderGoalControlResult["outcome"],

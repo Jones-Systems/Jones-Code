@@ -27,11 +27,10 @@ interface Claim {
 }
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const fenceReason = "jones-client-launch:v1:fenced";
-const readClaim = (commandId: CommandId) =>
-  Effect.gen(function* () {
+const readClaim = Effect.fn("ClientLaunchService.readClaim")(function*(commandId: CommandId) {
     const sql = yield* SqlClient.SqlClient;
     return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
-  }).pipe(Effect.mapError(unavailable));
+  },Effect.mapError(unavailable));
 const readReceipt = (commandId: CommandId) =>
   Receipts.CommandReceiptStoreV2.pipe(
     Effect.flatMap((receipts) => receipts.getByCommandId(commandId)),
@@ -243,8 +242,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
   let replayed = receipt?.status === "accepted";
-  const continueAccepted = () =>
-    Effect.gen(function* () {
+  const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function*() {
       const claim = yield* readClaim(ids.commandId);
       if (claim?.request_digest !== digest)
         return yield* new OrchestratorMcpFailure({

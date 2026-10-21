@@ -249,8 +249,7 @@ export const startsThreads = <P, A, E, R>(
   handle: (params: P, modes: StartedModes) => Effect.Effect<A, E, R>,
   linked: "stamped" | { readonly refused: string },
 ) => {
-  const started = (caller: Caller, params: P) =>
-    Effect.gen(function* () {
+  const started = Effect.fn("McpToolAccess.startsThreads.started")(function*(caller: Caller, params: P) {
       const requested = modes(params);
       return {
         runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
@@ -292,8 +291,7 @@ export const startsOrContinuesThreads = <P, A, E, R>(
   handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
   linked: "stamped" | { readonly refused: string },
 ) => {
-  const started = (caller: Caller, params: P) =>
-    Effect.gen(function* () {
+  const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function*(caller: Caller, params: P) {
       const requested = modes(params);
       return {
         runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
@@ -312,8 +310,7 @@ export const startsOrContinuesThreads = <P, A, E, R>(
         if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
         const gate: ThreadStartGate = {
           start: started(caller, params),
-          continueWithin: (target, effect) =>
-            Effect.gen(function* () {
+          continueWithin: Effect.fn("McpToolAccess.continueWithin")(function*(target, effect) {
               yield* assertTargetWithinLimits(limits, target);
               const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
               return yield* effect.pipe(
@@ -429,12 +426,7 @@ const linksUnavailable = new OrchestratorMcpFailure({
  * environment, which checks the rest. The handler here never sees
  * `environmentId`, so it cannot leak into what it writes.
  */
-const routed = <Tools extends Record<string, Tool.Any>>(
-  toolkit: Toolkit.Toolkit<Tools>,
-  declarations: Handlers<Tools>,
-  checked: Toolkit.HandlersFrom<Tools>,
-) =>
-  Effect.gen(function* () {
+const routed = Effect.fn("McpToolAccess.routed")(function*<Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>, declarations: Handlers<Tools>, checked: Toolkit.HandlersFrom<Tools>) {
     // Optional so toolkits that never leave this environment build without it.
     const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
     const handlers: Record<string, unknown> = { ...checked };

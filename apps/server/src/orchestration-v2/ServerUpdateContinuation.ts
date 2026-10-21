@@ -13,8 +13,7 @@ import {
   serverUpdateContinuationRun,
 } from "./ServerUpdateContinuationPolicy.ts";
 
-const mark = (optedInOnly: boolean) =>
-  Effect.gen(function* () {
+const mark = Effect.fn("ServerUpdateContinuation.mark")(function*(optedInOnly: boolean) {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const sink = yield* EventSink.EventSinkV2;
     const sql = yield* SqlClient.SqlClient;
@@ -61,8 +60,7 @@ const mark = (optedInOnly: boolean) =>
 export const markRunningProviderSessionsForContinuation = mark(false);
 export const markOptedInProviderSessionsForContinuation = mark(true);
 
-export const clearProviderSessionContinuationMarkers = (threadIds: ReadonlyArray<ThreadId>) =>
-  Effect.gen(function* () {
+export const clearProviderSessionContinuationMarkers = Effect.fn("ServerUpdateContinuation.clearProviderSessionContinuationMarkers")(function*(threadIds: ReadonlyArray<ThreadId>) {
     if (threadIds.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
     const outbox = yield* EffectOutbox.EffectOutboxV2;

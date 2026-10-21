@@ -85,8 +85,7 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const server = yield* HttpServer.HttpServer;
   return OrganizationMetadataMcpService.of({
-    getInvocationContext: (caller) =>
-      Effect.gen(function* () {
+    getInvocationContext: Effect.fn("OrganizationMetadataMcpService.getInvocationContext")(function*(caller) {
         const { address } = server;
         let loopbackOrigin: string | null = null;
         if (
@@ -112,8 +111,7 @@ const make = Effect.gen(function* () {
           serverGeneration: null,
         };
       }),
-    listThreadMetadata: (environmentId, input) =>
-      Effect.gen(function* () {
+    listThreadMetadata: Effect.fn("OrganizationMetadataMcpService.listThreadMetadata")(function*(environmentId, input) {
         // One unfiltered read covers active and archived threads in a single
         // projection transaction, so both halves share one snapshotSequence.
         const snapshot = yield* snapshots

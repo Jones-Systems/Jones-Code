@@ -9,8 +9,7 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmissionIntake from "./RemoteAdmissionIntake.ts";
 import { screensRemoteOperation } from "./operations.ts";
 
-export const wrap = <E>(tool: Tool.Any, handler: (params: object) => Effect.Effect<unknown, E>) =>
-  Effect.gen(function* () {
+export const wrap = Effect.fn("RemoteAdmissionMcp.wrap")(function*<E>(tool: Tool.Any, handler: (params: object) => Effect.Effect<unknown, E>) {
     const intake = yield* Effect.serviceOption(RemoteAdmissionIntake.RemoteAdmissionIntake);
     if (Option.isNone(intake)) return handler;
     const services = yield* Effect.context<never>();

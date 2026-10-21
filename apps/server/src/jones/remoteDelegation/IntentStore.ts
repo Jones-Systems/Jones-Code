@@ -83,8 +83,7 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const read = (commandId: CommandId) =>
     sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE command_id = ${commandId}`;
-  const find = (commandId: CommandId, request: unknown) =>
-    Effect.gen(function* () {
+  const find = Effect.fn("RemoteDelegationIntentStore.find")(function*(commandId: CommandId, request: unknown) {
       const row = (yield* read(commandId).pipe(Effect.mapError(storageFailure)))[0];
       if (row === undefined) return undefined;
       if (row.request_json !== canonicalRequest(request))

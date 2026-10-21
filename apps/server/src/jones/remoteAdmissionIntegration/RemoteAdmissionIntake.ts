@@ -129,8 +129,7 @@ const make = Effect.gen(function* () {
   const handlers = new Map<string, Handler>();
   const targets = new Map<string, Target>();
   const eligible = Effect.succeed(true);
-  const policy = () =>
-    Effect.gen(function* () {
+  const policy = Effect.fn("RemoteAdmissionIntake.policy")(function*() {
       const rows = yield* sql<{
         policy_json: string;
       }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton = 1`;
@@ -141,8 +140,7 @@ const make = Effect.gen(function* () {
         : defaultPolicy;
       return saved;
     });
-  const result = (id: string) =>
-    Effect.gen(function* () {
+  const result = Effect.fn("RemoteAdmissionIntake.result")(function*(id: string) {
       const rows = yield* sql<{
         result_json: string;
       }>`SELECT result_json FROM jones_remote_admission_results WHERE admission_id = ${id}`;
@@ -154,8 +152,7 @@ const make = Effect.gen(function* () {
       : Schema.decodeUnknownEffect(OrchestratorMcpFailure)(saved.value).pipe(
           Effect.flatMap((error) => Effect.fail(error)),
         );
-  const validateTarget = (record: RemoteAdmissionRecord) =>
-    Effect.gen(function* () {
+  const validateTarget = Effect.fn("RemoteAdmissionIntake.validateTarget")(function*(record: RemoteAdmissionRecord) {
       const { params, invocation, target } = unpack(record);
       const resolveTarget = targets.get(record.envelope.operation);
       if (!resolveTarget || stable(yield* resolveTarget(params, invocation)) !== stable(target)) {
@@ -165,8 +162,7 @@ const make = Effect.gen(function* () {
         });
       }
     });
-  const dispatch = (record: RemoteAdmissionRecord) =>
-    Effect.gen(function* () {
+  const dispatch = Effect.fn("RemoteAdmissionIntake.dispatch")(function*(record: RemoteAdmissionRecord) {
       const prior = yield* result(record.id);
       if (prior) return yield* deliver(prior);
       const handler = handlers.get(record.envelope.operation);
@@ -208,21 +204,19 @@ const make = Effect.gen(function* () {
       });
       return yield* deliver(outcome);
     });
-  const snapshot = () =>
-    Effect.gen(function* () {
+  const snapshot = Effect.fn("RemoteAdmissionIntake.snapshot")(function*() {
       return {
         eligible: yield* eligible,
         policy: yield* policy(),
         pending: yield* admissions.listPending(),
       };
-    }).pipe(Effect.mapError(intakeError));
+    },Effect.mapError(intakeError));
   return RemoteAdmissionIntake.of({
     register: (operation, handler, target) => {
       handlers.set(operation, handler);
       targets.set(operation, target);
     },
-    invoke: (operation, params, invocation) =>
-      Effect.gen(function* () {
+    invoke: Effect.fn("RemoteAdmissionIntake.invoke")(function*(operation, params, invocation) {
         const handler = handlers.get(operation);
         if (!handler)
           return yield* Effect.fail(
@@ -282,7 +276,7 @@ const make = Effect.gen(function* () {
         if (["passed", "approved", "dispatching", "dispatched"].includes(record.status))
           return yield* dispatch(record);
         return yield* Effect.fail(pending(record));
-      }).pipe(
+      },
         Effect.catch((error) =>
           Effect.fail(
             Schema.is(OrchestratorMcpFailure)(error)
@@ -292,8 +286,7 @@ const make = Effect.gen(function* () {
                   message: "Remote request admission could not be completed.",
                 }),
           ),
-        ),
-      ),
+        )),
     snapshot,
     attention: () =>
       sql<{
@@ -306,8 +299,7 @@ const make = Effect.gen(function* () {
       admissions
         .withdraw({ ...input, clientId })
         .pipe(Effect.map(publicRemoteAdmission), Effect.mapError(intakeError)),
-    updatePolicy: (input) =>
-      Effect.gen(function* () {
+    updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function*(input) {
         yield* sql.withTransaction(
           Effect.gen(function* () {
             const current = yield* policy();
@@ -324,9 +316,8 @@ const make = Effect.gen(function* () {
           }),
         );
         return yield* snapshot();
-      }).pipe(Effect.mapError(intakeError)),
-    decide: (input, owner) =>
-      Effect.gen(function* () {
+      },Effect.mapError(intakeError)),
+    decide: Effect.fn("RemoteAdmissionIntake.decide")(function*(input, owner) {
         if (!isRemoteAdmissionOwner(owner))
           return yield* new RemoteAdmission.RemoteAdmissionForbidden({});
         const existing = yield* admissions.get(input.id);
@@ -353,9 +344,8 @@ const make = Effect.gen(function* () {
           if (record.status === "approved") yield* dispatch(record).pipe(Effect.ignore);
         }
         return (yield* admissions.get(input.id))!;
-      }).pipe(Effect.mapError(intakeError)),
-    resumeApproved: () =>
-      Effect.gen(function* () {
+      },Effect.mapError(intakeError)),
+    resumeApproved: Effect.fn("RemoteAdmissionIntake.resumeApproved")(function*() {
         const rows = yield* sql<{
           id: string;
         }>`SELECT id FROM jones_remote_admissions WHERE status = 'approved' ORDER BY created_at LIMIT 200`;
@@ -363,7 +353,7 @@ const make = Effect.gen(function* () {
           const record = yield* admissions.get(row.id);
           if (record) yield* dispatch(record).pipe(Effect.ignore);
         }
-      }).pipe(Effect.mapError(intakeError)),
+      },Effect.mapError(intakeError)),
   });
 });
 export const layer = Layer.effect(RemoteAdmissionIntake, make);

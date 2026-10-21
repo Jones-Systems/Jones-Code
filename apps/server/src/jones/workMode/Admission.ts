@@ -15,9 +15,7 @@ import {
 } from "./Policy.ts";
 
 // The orchestrator owns the thread lock and supplies its unlocked receipt dispatcher.
-export function admitWorkMode<E>(
-  candidate: WorkModeCandidate,
-  dependencies: {
+export const admitWorkMode = Effect.fn("WorkModeAdmission.admitWorkMode")(function*<E>(candidate: WorkModeCandidate, dependencies: {
     readonly hasReceipt: Effect.Effect<boolean, E>;
     readonly getProviderContext: Effect.Effect<ProjectionThreadProviderContext, E>;
     readonly getProjection: Effect.Effect<OrchestrationV2ThreadProjection, E>;
@@ -32,13 +30,11 @@ export function admitWorkMode<E>(
     ) => Effect.Effect<boolean, E>;
     readonly finishPlannedContext?: Effect.Effect<void, E>;
     readonly dispatch: (command: ReturnType<typeof workModeCommand>) => Effect.Effect<unknown, E>;
-  },
-): Effect.Effect<
+  }): Effect.fn.Return<
   WorkModeAdmissionResult,
   E | import("@t3tools/contracts").ServerSettingsError,
   ServerSettings.ServerSettingsService
 > {
-  return Effect.gen(function* () {
     if (yield* dependencies.hasReceipt) {
       yield* dependencies.dispatch(workModeCommand(candidate));
       return "acknowledged" as const;
@@ -78,4 +74,3 @@ export function admitWorkMode<E>(
       }),
     );
   });
-}

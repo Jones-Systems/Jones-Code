@@ -144,8 +144,7 @@ interface Row {
   readonly created_at: string;
   readonly updated_at: string;
 }
-const decodeRow = (row: Row) =>
-  Effect.gen(function* () {
+const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(function*(row: Row) {
     const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionEnvelope))(
       row.envelope_json,
     );
@@ -168,10 +167,9 @@ const decodeRow = (row: Row) =>
       return yield* Effect.fail(new RemoteAdmissionBindingMismatch({}));
     }
     return record;
-  }).pipe(Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })));
+  },Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })));
 
-const make = <E>(evaluate: RemoteAdmissionEvaluator<E>, timeoutMs: number) =>
-  Effect.gen(function* () {
+const make = Effect.fn("RemoteAdmission.make")(function*<E>(evaluate: RemoteAdmissionEvaluator<E>, timeoutMs: number) {
     const sql = yield* SqlClient.SqlClient;
     const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
       effect.pipe(
@@ -186,16 +184,14 @@ const make = <E>(evaluate: RemoteAdmissionEvaluator<E>, timeoutMs: number) =>
           return rows[0] ? yield* decodeRow(rows[0]) : null;
         }),
       );
-    const bound = (input: BoundRequest) =>
-      Effect.gen(function* () {
+    const bound = Effect.fn("RemoteAdmission.bound")(function*(input: BoundRequest) {
         const record = yield* get(input.id);
         if (!record) return yield* new RemoteAdmissionNotFound({});
         if (record.bindingDigest !== input.bindingDigest)
           return yield* new RemoteAdmissionBindingMismatch({});
         return record;
       });
-    const required = (id: string) =>
-      Effect.gen(function* () {
+    const required = Effect.fn("RemoteAdmission.required")(function*(id: string) {
         const record = yield* get(id);
         if (!record) return yield* new RemoteAdmissionNotFound({});
         return record;
@@ -207,8 +203,7 @@ const make = <E>(evaluate: RemoteAdmissionEvaluator<E>, timeoutMs: number) =>
     reason = 'Evaluation was interrupted; owner review is required.', category = 'evaluation_interrupted',
     updated_at = ${yield* nowIso} WHERE status = 'evaluating'`);
 
-    const request: RemoteAdmission["Service"]["request"] = (input) =>
-      Effect.gen(function* () {
+    const request: RemoteAdmission["Service"]["request"] = Effect.fn("RemoteAdmission.request")(function*(input) {
         const decoded = yield* Schema.decodeEffect(RemoteAdmissionRequest)(input).pipe(
           Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
         );

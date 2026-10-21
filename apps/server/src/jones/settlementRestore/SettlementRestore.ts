@@ -73,16 +73,14 @@ const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const environment = yield* ServerEnvironment.ServerEnvironment;
 
-  const readThread = (threadId: ThreadId) =>
-    Effect.gen(function* () {
+  const readThread = Effect.fn("SettlementRestore.readThread")(function*(threadId: ThreadId) {
       const shell = yield* projections.getThreadShell(threadId);
       return shell === null || shell.deletedAt !== null
         ? null
         : yield* projections.getThread(threadId);
     });
 
-  const inspect: SettlementRestore["Service"]["inspect"] = (input) =>
-    Effect.gen(function* () {
+  const inspect: SettlementRestore["Service"]["inspect"] = Effect.fn("SettlementRestore.inspect")(function*(input) {
       const environmentId = yield* environment.getEnvironmentId;
       const now = yield* DateTime.now;
       const items = yield* Effect.forEach(input.items, (query) =>
@@ -105,10 +103,9 @@ const make = Effect.gen(function* () {
         }),
       );
       return { environmentId, items };
-    }).pipe(Effect.mapError((cause) => new SettlementRestoreReadError({ cause })));
+    },Effect.mapError((cause) => new SettlementRestoreReadError({ cause })));
 
-  const restore: SettlementRestore["Service"]["restore"] = (input) =>
-    Effect.gen(function* () {
+  const restore: SettlementRestore["Service"]["restore"] = Effect.fn("SettlementRestore.restore")(function*(input) {
       const environmentId = yield* environment.getEnvironmentId;
       const base = {
         environmentId,

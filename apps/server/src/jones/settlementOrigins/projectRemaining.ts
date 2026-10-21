@@ -22,18 +22,12 @@ const decodeItems = Schema.decodeEffect(SettlementProjectRemaining);
 const encodeItems = Schema.encodeSync(Schema.fromJsonString(SettlementProjectRemaining));
 
 // EventSink calls this inside its acceptance transaction, before publishing committed events.
-export const recordSelfSettlementProjectRemaining = (
-  sql: SqlClient.SqlClient,
-  tablePresent: JonesTablePresence,
-  input: {
+export const recordSelfSettlementProjectRemaining = Effect.fn("SettlementOriginsProjectRemaining.recordSelfSettlementProjectRemaining")(function*(sql: SqlClient.SqlClient, tablePresent: JonesTablePresence, input: {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
     readonly acceptedAt: DateTime.Utc;
-  },
-  context: SelfSettlementProjectRemaining,
-) =>
-  Effect.gen(function* () {
+  }, context: SelfSettlementProjectRemaining) {
     if (
       input.commandId !== context.commandId ||
       input.threadId !== context.threadId ||

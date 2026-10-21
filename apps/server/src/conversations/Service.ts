@@ -24,8 +24,7 @@ export class ConversationLibrary extends Context.Service<
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   return ConversationLibrary.of({
-    execute: (request, canWrite) =>
-      Effect.gen(function* () {
+    execute: Effect.fn("Conversations.execute")(function*(request, canWrite) {
         const mutates = libraryRequestMutates(request);
         if (mutates && !canWrite) {
           return yield* Effect.fail(

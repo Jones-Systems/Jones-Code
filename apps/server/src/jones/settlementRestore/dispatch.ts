@@ -18,12 +18,7 @@ interface ThreadReads<E> {
 }
 
 /** The orchestrator's decision for a restore command after a receipt miss, under the thread lock. */
-export const decideSettlementRestore = <E>(
-  store: SettlementRestoreStore,
-  threads: ThreadReads<E>,
-  command: SettlementRestoreCommand,
-) =>
-  Effect.gen(function* () {
+export const decideSettlementRestore = Effect.fn("SettlementRestoreDispatch.decideSettlementRestore")(function*<E>(store: SettlementRestoreStore, threads: ThreadReads<E>, command: SettlementRestoreCommand) {
     const shell = yield* threads.getThreadShell(command.threadId);
     const thread =
       shell === null || shell.deletedAt !== null
@@ -42,12 +37,7 @@ export const decideSettlementRestore = <E>(
  * Generic receipt replay only checks the thread. A restore receipt must also
  * belong to a restore of the same settle while its record still names it.
  */
-export const checkSettlementRestoreReplay = (
-  store: SettlementRestoreStore,
-  command: SettlementRestoreCommand,
-  receiptCommandType: string,
-) =>
-  Effect.gen(function* () {
+export const checkSettlementRestoreReplay = Effect.fn("SettlementRestoreDispatch.checkSettlementRestoreReplay")(function*(store: SettlementRestoreStore, command: SettlementRestoreCommand, receiptCommandType: string) {
     const reused: SettlementRestoreRejectionCode = "command_id_reused";
     if (receiptCommandType !== command.type) return reused;
     const same = yield* store.findRestoreCommand(command.commandId);

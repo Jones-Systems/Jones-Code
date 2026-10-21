@@ -116,16 +116,14 @@ export const makeSettlementRestoreStore = (
 ) => {
   const present = tablePresent(SETTLEMENT_RESTORE_TABLE);
 
-  const read = (threadId: ThreadId) =>
-    Effect.gen(function* () {
+  const read = Effect.fn("SettlementRestoreStore.read")(function*(threadId: ThreadId) {
       if (!(yield* present)) return null;
       const rows = yield* sql<Row>`SELECT * FROM jones_settlement_restores
         WHERE thread_id = ${threadId}`;
       return rows[0] === undefined ? null : toRecord(rows[0]);
     });
 
-  const findRestoreCommand = (commandId: CommandId) =>
-    Effect.gen(function* () {
+  const findRestoreCommand = Effect.fn("SettlementRestoreStore.findRestoreCommand")(function*(commandId: CommandId) {
       if (!(yield* present)) return null;
       const rows = yield* sql<Row>`SELECT * FROM jones_settlement_restores
         WHERE restore_command_id = ${commandId}`;
@@ -137,11 +135,7 @@ export const makeSettlementRestoreStore = (
    * the stored preimage is the target's own row. A failure aborts the settle.
    * Earlier full-thread events in the same batch stand in for the projection.
    */
-  const capture = <E>(
-    storedEvents: ReadonlyArray<StoredEvent>,
-    readThread: (threadId: ThreadId) => Effect.Effect<OrchestrationV2AppThread, E>,
-  ) =>
-    Effect.gen(function* () {
+  const capture = Effect.fn("SettlementRestoreStore.capture")(function*<E>(storedEvents: ReadonlyArray<StoredEvent>, readThread: (threadId: ThreadId) => Effect.Effect<OrchestrationV2AppThread, E>) {
       if (!storedEvents.some((stored) => stored.event.type === "thread.settled")) return;
       if (!(yield* present)) return;
       const capturedAt = DateTime.formatIso(yield* DateTime.now);
@@ -194,14 +188,13 @@ export const makeSettlementRestoreStore = (
     });
 
   /** Compare-and-set inside the restore's commit transaction; a miss aborts the restore. */
-  const recordRestore = (input: {
+  const recordRestore = Effect.fn("SettlementRestoreStore.recordRestore")(function*(input: {
     readonly threadId: ThreadId;
     readonly settleCommandId: CommandId;
     readonly restoreCommandId: CommandId;
     readonly restoredAt: DateTime.Utc;
     readonly sequence: number;
-  }) =>
-    Effect.gen(function* () {
+  }) {
       if (!(yield* present))
         return yield* new SettlementRestoreMarkerError({ reason: "storage_unavailable" });
       const updated = yield* sql<{ readonly thread_id: string }>`UPDATE jones_settlement_restores
