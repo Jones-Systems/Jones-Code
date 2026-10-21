@@ -1301,6 +1301,8 @@
     "apps/server/src/mcp/toolkits/project/handlers.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/composer/providerShortcutLabelColor.ts": "jones-owned",
+    "apps/web/src/jones/subagents/accountDisplayName.ts": "jones-owned",
+    "apps/web/src/jones/subagents/accountDisplayName.test.ts": "jones-owned",
     "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts": "jones-owned",
     "apps/server/src/vcs/VcsProcess.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ThreadPullRequestService.ts": "accepted-shared",

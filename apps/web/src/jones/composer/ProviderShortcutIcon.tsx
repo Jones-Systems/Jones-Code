@@ -9,8 +9,30 @@ export function ProviderShortcutIcon({
 }: {
   entry: Pick<ProviderInstanceEntry, "driverKind" | "displayName" | "accentColor" | "snapshot">;
 }) {
+  return (
+    <ProviderAccountGlyph
+      driverKind={entry.driverKind}
+      displayName={entry.displayName}
+      accentColor={entry.accentColor}
+      labelColor={providerShortcutLabelColor(entry.snapshot.usageLimits)}
+    />
+  );
+}
+
+export function ProviderAccountGlyph({
+  driverKind,
+  displayName,
+  accentColor,
+  acpRegistryIconUrl,
+  labelColor = "white",
+}: Pick<
+  ProviderInstanceEntry,
+  "driverKind" | "displayName" | "accentColor" | "acpRegistryIconUrl"
+> & {
+  labelColor?: string;
+}) {
   const labelId = useId();
-  const initials = Array.from(providerInstanceInitials(entry.displayName));
+  const initials = Array.from(providerInstanceInitials(displayName));
   const letters =
     initials.length === 1 ? (
       <text x={0} y={0} textAnchor="middle">
@@ -30,13 +52,12 @@ export function ProviderShortcutIcon({
   return (
     <span className="relative inline-flex size-4 shrink-0 items-center justify-center">
       <ProviderInstanceIcon
-        driverKind={entry.driverKind}
-        displayName={entry.displayName}
-        accentColor={entry.accentColor}
+        driverKind={driverKind}
+        displayName={displayName}
+        accentColor={accentColor}
+        acpRegistryIconUrl={acpRegistryIconUrl}
         className="size-4"
-        iconClassName={
-          entry.driverKind === "codex" || entry.driverKind === "claudeAgent" ? "size-5" : "size-4"
-        }
+        iconClassName={driverKind === "codex" || driverKind === "claudeAgent" ? "size-5" : "size-4"}
       />
       <svg
         data-composer-control-icon
@@ -62,7 +83,7 @@ export function ProviderShortcutIcon({
           strokeWidth={6.25}
           strokeLinejoin="round"
         />
-        <use href={`#${labelId}`} fill={providerShortcutLabelColor(entry.snapshot.usageLimits)} />
+        <use href={`#${labelId}`} fill={labelColor} />
       </svg>
     </span>
   );
