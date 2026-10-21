@@ -6,7 +6,9 @@ const reactTests = [
   "src/features/settings/SettingsServerControlsRouteScreen.test.tsx",
   "src/features/settings/components/BranchNamingSettings.test.tsx",
   "src/native/NativeHeaderToolbar.test.tsx",
+  "src/features/workstreams/useWorkstreams.authorization.test.tsx",
   "src/state/use-selected-thread-git-actions.test.tsx",
+  "src/state/use-selected-thread-git-state.test.tsx",
 ];
 
 export default defineConfig({
