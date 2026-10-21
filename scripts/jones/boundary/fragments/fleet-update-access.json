@@ -29,7 +29,8 @@
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
     "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.fixture.ts",
-    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx"
+    "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
+    "apps/desktop/src/app/DesktopConnectionCustody.testFixtures.ts"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],

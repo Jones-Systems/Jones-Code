@@ -85,7 +85,7 @@
     {
       "id": "workstream-thread-controls",
       "tests": [
-        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
         "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
         "apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts",
@@ -97,7 +97,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
-        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
         "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
         "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
       ],
@@ -155,8 +155,8 @@
       "tests": [
         "apps/server/src/hostStatus/gateway.test.ts",
         "apps/web/src/hostStatus.test.ts",
-        "apps/web/src/components/chat/HostStatusIndicators.test.tsx",
-        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.test.tsx"
+        "apps/web/src/components/chat/HostStatusIndicators.browser.test.tsx",
+        "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.browser.test.tsx"
       ],
       "scope": "Host status badges discover a registered connected gateway with configured VPS telemetry using shared HTTP authentication. Gateway selection survives thread switches and temporary disconnection; explicit removal clears selection and old samples."
     },
@@ -193,12 +193,12 @@
         "apps/web/src/components/voiceReview/voiceReviewActions.test.ts",
         "apps/server/src/voiceReview/composition.test.ts",
         "apps/server/src/voiceReview/native.test.ts",
-        "apps/web/src/components/voiceReview/RecentVoicePrompts.test.tsx"
+        "apps/web/src/components/voiceReview/RecentVoicePrompts.browser.test.tsx"
       ]
     },
     {
       "id": "work-queue-preview",
-      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.browser.test.tsx"],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
@@ -316,9 +316,9 @@
     {
       "id": "composer-shortcuts",
       "tests": [
-        "apps/web/src/components/chat/FavoriteModelShortcuts.test.tsx",
-        "apps/web/src/components/chat/ProviderModelPicker.favorites.test.tsx",
-        "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+        "apps/web/src/components/chat/FavoriteModelShortcuts.browser.test.tsx",
+        "apps/web/src/components/chat/ProviderModelPicker.favorites.browser.test.tsx",
+        "apps/web/src/jones/composer/ReasoningEffortShortcuts.browser.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts",
         "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
@@ -397,18 +397,18 @@
       "id": "work-queue-metadata",
       "tests": [
         "apps/server/src/voiceReview/bridge.test.ts",
-        "apps/web/src/jones/workQueue/PromptsSettings.test.tsx",
+        "apps/web/src/jones/workQueue/PromptsSettings.browser.test.tsx",
         "apps/web/src/components/settings/settingsSearch.test.ts",
         "packages/contracts/src/settings.test.ts",
         "apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts",
         "apps/server/src/jones/workQueueMetadata/http.test.ts",
-        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx",
+        "apps/web/src/components/workQueue/WorkQueuePage.browser.test.tsx",
         "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
         "packages/contracts/src/jones/workQueueMetadata.test.ts",
-        "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
-        "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
-        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
+        "apps/web/src/jones/workQueue/SentPrompts.browser.test.tsx",
+        "apps/web/src/jones/workQueue/UnifiedQueuePage.browser.test.tsx",
+        "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.browser.test.tsx",
         "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
         "packages/contracts/src/jones/promptViewSettings.test.ts"
       ],
@@ -829,7 +829,7 @@
         "apps/mobile/src/connection/storage.test.ts",
         "apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts",
         "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
-        "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx",
+        "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
         "packages/contracts/src/jones/ipcUpdateReports.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts"
       ]

@@ -105,7 +105,9 @@
     "apps/server/src/jones/updates/sourceRelation.test.ts",
     "apps/web/src/jones/updates/installedSourceObservation.ts",
     "apps/web/src/jones/updates/installedSourceObservation.test.ts",
-    "apps/desktop/src/jones/updates/updateChannels.test.ts"
+    "apps/desktop/src/jones/updates/updateChannels.test.ts",
+    "apps/desktop/src/jones/updates/jonesColdBackendCustody.testFixtures.ts",
+    "apps/server/src/jones/updates/trialGate.testFixtures.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",

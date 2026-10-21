@@ -5,7 +5,7 @@
     "apps/web/src/jones/composer/ComposerShortcutPlate.tsx",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts",
     "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx",
-    "apps/web/src/jones/composer/ReasoningEffortShortcuts.test.tsx",
+    "apps/web/src/jones/composer/ReasoningEffortShortcuts.browser.test.tsx",
     "apps/web/src/jones/composer/ReasoningEffortShortcuts.tsx",
     "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
     "apps/web/src/jones/composer/composerModelEffortShortcuts.ts",

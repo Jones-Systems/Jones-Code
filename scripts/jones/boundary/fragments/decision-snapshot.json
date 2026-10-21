@@ -15,7 +15,8 @@
     "apps/server/src/jones/mcp/decisionSnapshot/access.test.ts",
     "apps/server/src/jones/mcp/decisionSnapshot/release.test.ts",
     "apps/web/src/jones/settings/DecisionSnapshotAccessSettings.tsx",
-    "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
+    "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
+    "apps/server/src/jones/mcp/decisionSnapshot/collector.testFixtures.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/McpInvocationContext.ts",
