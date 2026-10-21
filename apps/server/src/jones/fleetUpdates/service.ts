@@ -66,7 +66,7 @@ export interface FleetHostUpdater {
     input: NativeBinding & { readonly operationId: string },
   ) => Effect.Effect<{ readonly retired: boolean; readonly reason?: string }>;
   readonly reconcileOperation: (operationId: string) => Effect.Effect<{
-    readonly state: "absent" | "pending" | "committed" | "rolled-back" | "blocked";
+    readonly state: "absent" | "pending" | "committed" | "rolled-back" | "rejected" | "blocked";
     readonly operationId: string;
     readonly binding?: NativeBinding;
     readonly updateId?: string;
@@ -239,6 +239,13 @@ export const makeFleetUpdates = (options: {
           });
         }
         const { reason: _reason, ...previous } = operation;
+        // The launcher proved this operation can never start; a new one may be staged.
+        if (native.state === "rejected")
+          return yield* save({
+            ...previous,
+            phase: "blocked",
+            reason: native.reason ?? "The launcher refused this operation before accepting it.",
+          });
         return yield* save({
           ...previous,
           phase: native.state,

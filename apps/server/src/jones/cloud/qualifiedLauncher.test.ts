@@ -7,6 +7,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
+import * as NodeTimersPromises from "node:timers/promises";
 import packageJson from "../../../package.json" with { type: "json" };
 import { Launcher, main, readServiceState, writeServiceState } from "../../serviceLauncher.ts";
 import {
@@ -66,8 +67,10 @@ async function runScenario(
     readonly productionMain?: boolean;
     readonly startupGateProtocol?: 1 | "missing";
     readonly operationFailure?: "archive" | "reserve";
-    readonly afterOperationReserve?: () => void;
+    readonly afterOperationReserve?: (baseDir: string) => void | Promise<void>;
     readonly retryWithDifferentOperation?: boolean;
+    /** The child asks how its Install and an unknown operation ended right after requesting. */
+    readonly outcomeQueries?: boolean;
     readonly delayedGracefulClose?: boolean;
     readonly retirementRace?: "accept-first" | "retire-first";
     readonly now?: () => number;
@@ -198,6 +201,25 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))});
   }
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
+} else if (context.update === undefined && ${JSON.stringify(options.outcomeQueries === true)}) {
+  const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
+  const operationId = "12345678-1234-4234-8234-123456789abc";
+  const outcomes = [];
+  let rejection;
+  process.on("message", m => {
+    if (m.type === "update-accepted") writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "observed-active-launcher.json"))}, JSON.stringify(m));
+    if (m.type === "update-rejected") rejection = m;
+    if (m.type !== "update-outcome") return;
+    outcomes.push(m);
+    if (outcomes.length < 2) return;
+    writeFileSync(${JSON.stringify(NodePath.join(base, "runtime", "outcomes.json"))}, JSON.stringify({ context, outcomes, rejection }));
+    if (rejection !== undefined) setImmediate(() => process.exit(0));
+  });
+  // Pipelined behind the request: IPC order puts both questions after its handler.
+  process.send({type:"request-update", targetVersion:${JSON.stringify(target)}, dbPath:${JSON.stringify(dbPath)}, stagedHandle:handle, operationId});
+  process.send({type:"reconcile-update", operationId, queryId:1});
+  process.send({type:"reconcile-update", operationId:"42345678-1234-4234-8234-123456789abc", queryId:2});
+  setInterval(() => {}, 1000);
 } else if (context.update === undefined) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
   if (${JSON.stringify(options.delayedGracefulClose === true)}) process.once("SIGTERM", () => {
@@ -292,6 +314,7 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     await NodeFSP.writeFile(NodePath.join(base, "runtime", "test-handle"), staged.stagedHandle);
     const statePath = NodePath.join(base, "runtime", "service-state.json");
     await writeServiceState(statePath, { protocol: 4, activeVersion: baseline });
+    let reservations = 0;
     const launcher = new Launcher(base, await readServiceState(statePath), {
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
@@ -307,8 +330,8 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
                   : archiveUpdateOperation,
               reserve: async (...args: Parameters<typeof reserveUpdateOperation>) => {
                 await reserveUpdateOperation(...args);
-                options.afterOperationReserve?.();
-                if (options.operationFailure === "reserve") {
+                await options.afterOperationReserve?.(args[0]);
+                if (options.operationFailure === "reserve" && ++reservations === 1) {
                   // A receipt can exist even though its final durability step failed.
                   throw Object.assign(new Error("fixture reserve fsync EIO"), { code: "EIO" });
                 }
@@ -463,8 +486,14 @@ it.each(["archive", "reserve"] as const)(
           "jones-update-operations",
           `${rejected.operationId}.json`,
         );
-        if (operationFailure === "reserve") await NodeFSP.access(reserved);
-        else await NodeAssert.rejects(NodeFSP.access(reserved), { code: "ENOENT" });
+        if (operationFailure === "reserve") {
+          await NodeFSP.access(reserved);
+          // The refusal proved the reservation can never start.
+          assert.equal(
+            (await reconcileUpdateOperation(base, rejected.operationId, undefined)).state,
+            "rejected",
+          );
+        } else await NodeAssert.rejects(NodeFSP.access(reserved), { code: "ENOENT" });
       },
       undefined,
       { operationFailure },
@@ -472,27 +501,146 @@ it.each(["archive", "reserve"] as const)(
   },
 );
 
-it("refuses a different operation ID after a preacceptance reservation became uncertain", async () => {
+it("admits a different operation once the refused reservation is recorded as rejected", async () => {
+  const first = "12345678-1234-4234-8234-123456789abc";
+  const second = "32345678-1234-4234-8234-123456789abc";
   await runScenario(
     "commit",
-    async (base) => {
-      const rejected = JSON.parse(
-        await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
-      );
-      assert.equal(rejected.operationId, "32345678-1234-4234-8234-123456789abc");
-      assert.match(rejected.reason, /^operation-reconciliation-required:/);
-      await NodeFSP.access(NodePath.join(base, "runtime", "old-child-survived.json"));
+    async (base, failure) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update?.id, second, String(failure));
+      assert.equal(state.update?.status, "committed");
+      assert.equal((await reconcileUpdateOperation(base, first, state.update)).state, "rejected");
+      assert.equal((await reconcileUpdateOperation(base, second, state.update)).state, "committed");
       assert.deepEqual(
-        await readServiceState(NodePath.join(base, "runtime", "service-state.json")),
-        { protocol: 4, activeVersion: baseline },
-      );
-      assert.deepEqual(
-        await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations")),
-        ["12345678-1234-4234-8234-123456789abc.json"],
+        (await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations"))).sort(),
+        [`${first}.json`, `${first}.outcome.json`, `${second}.json`],
       );
     },
     undefined,
     { operationFailure: "reserve", retryWithDifferentOperation: true },
+  );
+});
+
+it("a fresh launcher records only an abandoned reservation as rejected", async () => {
+  const accepted = "12345678-1234-4234-8234-123456789abc";
+  const abandoned = "52345678-1234-4234-8234-123456789abc";
+  await runScenario(
+    "commit",
+    async (base) => {
+      const statePath = NodePath.join(base, "runtime", "service-state.json");
+      const state = await readServiceState(statePath);
+      assert.equal(state.update?.id, accepted);
+      // A launcher that died between reserving and accepting left only this reservation.
+      await reserveUpdateOperation(base, abandoned, {
+        environmentId: "synthetic-jones-environment",
+        currentVersion: target,
+        expectedInstalledSource: "a".repeat(40),
+        targetSource: "e".repeat(40),
+        stagedHandle: "62345678-1234-4234-8234-123456789abc",
+        baseDir: base,
+        dbPath: NodePath.join(base, "userdata", "statev2.sqlite"),
+        targetVersion: laterTarget,
+      });
+      assert.equal(
+        (await reconcileUpdateOperation(base, abandoned, state.update)).state,
+        "blocked",
+      );
+      await NodeAssert.rejects(
+        new Launcher(base, state, { startupGateProtocol: 1 }).run(),
+        /Active child exited unexpectedly/,
+      );
+      const recovered = await readServiceState(statePath);
+      assert.equal(
+        (await reconcileUpdateOperation(base, abandoned, recovered.update)).state,
+        "rejected",
+      );
+      // The operation native state names is never rejected, even without an outcome receipt.
+      assert.equal(
+        (await reconcileUpdateOperation(base, accepted, recovered.update)).state,
+        "committed",
+      );
+      assert.deepEqual(
+        (await NodeFSP.readdir(NodePath.join(base, "runtime", "jones-update-operations"))).sort(),
+        [`${accepted}.json`, `${abandoned}.json`, `${abandoned}.outcome.json`],
+      );
+    },
+    undefined,
+    { afterOperationReserve: () => {} },
+  );
+});
+
+it("answers a pipelined outcome question only after the slow Install it follows is accepted", async () => {
+  const operationId = "12345678-1234-4234-8234-123456789abc";
+  let window: string | undefined;
+  await runScenario(
+    "commit",
+    async (base, failure) => {
+      const { outcomes, rejection } = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "outcomes.json"), "utf8"),
+      );
+      // HFR-440-F1: the receipts alone showed a reservation without an outcome.
+      assert.equal(window, "blocked");
+      assert.isUndefined(rejection);
+      assert.deepEqual(outcomes, [
+        { type: "update-outcome", operationId, queryId: 1, outcome: "accepted" },
+        {
+          type: "update-outcome",
+          operationId: "42345678-1234-4234-8234-123456789abc",
+          queryId: 2,
+          outcome: "rejected",
+          reason: "The launcher holds no reservation for this operation.",
+        },
+      ]);
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update?.id, operationId, String(failure));
+      assert.equal(state.update?.status, "committed");
+    },
+    undefined,
+    {
+      outcomeQueries: true,
+      afterOperationReserve: async (baseDir) => {
+        // Slow durability between reservation and acceptance, past the server's timeout.
+        window = (await reconcileUpdateOperation(baseDir, operationId, undefined)).state;
+        await NodeTimersPromises.setTimeout(200);
+      },
+    },
+  );
+});
+
+it("answers rejected, durably, for an Install refused after its reservation", async () => {
+  const operationId = "12345678-1234-4234-8234-123456789abc";
+  let clock = 0;
+  await runScenario(
+    "commit",
+    async (base) => {
+      const { outcomes, rejection, context } = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(base, "runtime", "outcomes.json"), "utf8"),
+      );
+      assert.equal(context.updateOutcomeProtocol, 1);
+      assert.match(rejection.reason, /^request-expired:/);
+      assert.equal(outcomes[0].outcome, "rejected");
+      assert.equal(outcomes[0].queryId, 1);
+      assert.equal(outcomes[1].outcome, "rejected");
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update, undefined);
+      assert.equal(
+        (await reconcileUpdateOperation(base, operationId, undefined)).state,
+        "rejected",
+      );
+      await NodeAssert.rejects(
+        NodeFSP.access(NodePath.join(base, "runtime", "observed-active-launcher.json")),
+      );
+      assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+    },
+    undefined,
+    {
+      outcomeQueries: true,
+      now: () => clock,
+      afterOperationReserve: () => {
+        clock += 60_000;
+      },
+    },
   );
 });
 
@@ -855,7 +1003,7 @@ it("does not accept an Install whose admission outlasted the server's exchange",
   );
 });
 
-it("preserves the active child and reservation when receipt preparation expires the exchange", async () => {
+it("preserves the active child and records the reservation rejected when receipt preparation expires the exchange", async () => {
   let clock = 0;
   await runScenario(
     "commit",
@@ -875,7 +1023,7 @@ it("preserves the active child and reservation when receipt preparation expires 
       assert.equal(reservation?.binding.expectedInstalledSource, "c".repeat(40));
       assert.equal(
         (await reconcileUpdateOperation(base, operationId, state.update)).state,
-        "blocked",
+        "rejected",
       );
       const survived = JSON.parse(
         await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"),

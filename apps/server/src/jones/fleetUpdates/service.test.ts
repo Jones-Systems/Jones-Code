@@ -397,6 +397,48 @@ describe("fleet failure and retirement reconciliation", () => {
       }),
   );
 
+  it.effect("ends a reconciling operation the launcher proved rejected without reinstalling", () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* f.service.enroll({ enrollment, expectedEnrollmentId: null });
+      yield* f.service.stage(input);
+      const selected = f.operations.get(input.operationId)!;
+      f.operations.set(input.operationId, { ...selected, phase: "dispatching" });
+      const binding = {
+        environmentId,
+        currentVersion: selected.currentVersion,
+        expectedInstalledSource: input.expectedInstalledSource,
+        targetSource: input.targetSource,
+        stagedHandle: selected.stagedHandle!,
+      };
+      f.setNative({
+        state: "blocked",
+        operationId: input.operationId,
+        binding,
+        reason: "reservation precedes native state",
+      });
+      expect((yield* f.service.status(input.operationId)).operation?.phase).toBe("reconciling");
+      // A rejection bound to another installation proves nothing about this one.
+      f.setNative({
+        state: "rejected",
+        operationId: input.operationId,
+        binding: { ...binding, targetSource: "0".repeat(40) },
+      });
+      expect((yield* f.service.status(input.operationId)).operation?.phase).toBe("reconciling");
+      f.setNative({
+        state: "rejected",
+        operationId: input.operationId,
+        binding,
+        reason: "The launcher finished this request without accepting it.",
+      });
+      const ended = (yield* f.service.status(input.operationId)).operation;
+      expect(ended?.phase).toBe("blocked");
+      expect(ended?.reason).toBe("The launcher finished this request without accepting it.");
+      expect((yield* f.service.activate(input)).operation?.phase).toBe("blocked");
+      expect(f.install).not.toHaveBeenCalled();
+    }),
+  );
+
   it.effect("retains a preacceptance refusal reason and safely retries only native absence", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
