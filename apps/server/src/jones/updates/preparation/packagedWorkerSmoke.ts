@@ -20,6 +20,7 @@ import {
 import {
   BASELINE,
   fixtureHost,
+  isLowestWorkerPriority,
   makePreparationHome,
   stageFixtureRuntime,
   VERSION,
@@ -96,10 +97,16 @@ try {
   const left = await NodeFSP.readdir(preparationJobsDirectory(home.base)).catch(() => []);
   if (left.length > 0) fail("job storage cleanup", left.join(", "));
   for (const exit of exits)
-    if (exit.pid === undefined || exit.pid === process.pid || !exit.reaped || exit.priority !== 19)
+    if (
+      exit.pid === undefined ||
+      exit.pid === process.pid ||
+      !exit.reaped ||
+      !isLowestWorkerPriority(exit.priority)
+    )
       fail("worker isolation", JSON.stringify(exit));
+  const priorities = [...new Set(exits.map((exit) => exit.priority))].join(", ");
   process.stdout.write(
-    `[preparation-smoke] ${command.file} ${command.args.join(" ")}: protocol probe, sweep, verify and tamper refusal passed across ${String(exits.length)} reaped workers at priority 19.\n`,
+    `[preparation-smoke] ${command.file} ${command.args.join(" ")}: protocol probe, sweep, verify and tamper refusal passed across ${String(exits.length)} reaped workers at lowest priority ${priorities}.\n`,
   );
 } finally {
   await home.remove();

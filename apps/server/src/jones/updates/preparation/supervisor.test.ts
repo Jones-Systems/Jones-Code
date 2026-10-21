@@ -1,7 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -27,6 +26,7 @@ import {
   BASELINE,
   fakeWorkerCommand,
   fixtureHost,
+  isLowestWorkerPriority,
   makePreparationHome,
   sourceWorkerCommand,
   stageFixtureRuntime,
@@ -125,6 +125,20 @@ describe("preparation worker command", () => {
       }),
     ).toBeUndefined();
   });
+
+  it("qualifies only a lowest priority the worker's kernel allows", () => {
+    expect(isLowestWorkerPriority(19, "linux")).toBe(true);
+    expect(isLowestWorkerPriority(19, "darwin")).toBe(true);
+    // An inherited niceness plus `nice -n 19`: Darwin clamps at its PRIO_MAX, Linux at 19.
+    expect(isLowestWorkerPriority(20, "darwin")).toBe(true);
+    expect(isLowestWorkerPriority(20, "linux")).toBe(false);
+    const refused = [undefined, null, Number.NaN, Infinity, -Infinity, 19.5, 21, 18, 0, -20];
+    for (const platform of ["linux", "darwin"] as const)
+      for (const priority of refused)
+        expect(isLowestWorkerPriority(priority, platform), `${platform} ${String(priority)}`).toBe(
+          false,
+        );
+  });
 });
 
 describe("real preparation worker", () => {
@@ -160,8 +174,8 @@ describe("real preparation worker", () => {
       signal: null,
       stopped: undefined,
       reaped: true,
-      priority: NodeOS.constants.priority.PRIORITY_LOW,
     });
+    expect(isLowestWorkerPriority(exits[0]?.priority), String(exits[0]?.priority)).toBe(true);
     expect(exits[0]?.pid).not.toBe(process.pid);
     expect(await jobsLeft(fixture)).toEqual([]);
   });

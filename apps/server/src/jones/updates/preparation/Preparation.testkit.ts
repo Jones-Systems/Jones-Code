@@ -37,6 +37,30 @@ export const sourceWorkerCommand: PreparationWorkerCommand = {
   args: [NodeURL.fileURLToPath(new URL("../../../bin.ts", import.meta.url))],
 };
 
+// oxlint-disable-next-line t3code/no-global-process-runtime -- A real worker's lowest priority is bounded by this host's kernel; tests inject each platform.
+const hostPlatform = NodeOS.platform();
+/** Darwin's `PRIO_MAX`. Linux clamps niceness at `PRIORITY_LOW` instead. */
+const DARWIN_LOWEST_PRIORITY = 20;
+
+/**
+ * Whether a worker reported a lowest priority. It requests `PRIORITY_LOW`, but `nice -n 19` adds
+ * to an inherited niceness, so Darwin can clamp it at 20, which no unprivileged process can undo.
+ * Normal, raised, missing and non-integer priorities all fail.
+ */
+export function isLowestWorkerPriority(
+  priority: number | null | undefined,
+  platform: NodeJS.Platform = hostPlatform,
+): boolean {
+  const lowest = NodeOS.constants.priority.PRIORITY_LOW;
+  const ceiling = platform === "darwin" ? DARWIN_LOWEST_PRIORITY : lowest;
+  return (
+    typeof priority === "number" &&
+    Number.isSafeInteger(priority) &&
+    priority >= lowest &&
+    priority <= ceiling
+  );
+}
+
 const sha256 = (value: Buffer | string) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
 
