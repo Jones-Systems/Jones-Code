@@ -142,6 +142,7 @@
     "AGENTS.md": "policy",
     "README.md": "policy",
     "apps/desktop/package.json": "accepted-shared",
+    "apps/mobile/vite.config.ts": "accepted-shared",
     "apps/desktop/scripts/main-process-bundle.test.mjs": "jones-tests-in-upstream",
     "apps/desktop/scripts/ui-evidence.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/doctor.mjs": "jones-owned",
