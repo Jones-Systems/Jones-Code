@@ -2,7 +2,6 @@ import {
   pendingSubagentRequestsByThread,
   subagentRequest,
 } from "@t3tools/shared/jones/threadAttention";
-export { pendingSubagentRequestsByThread } from "@t3tools/shared/jones/threadAttention";
 import type {
   EnvironmentId,
   OrchestrationV2ShellSnapshot,
