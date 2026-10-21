@@ -2546,6 +2546,24 @@ describe("AcpAdapterV2", () => {
         prefix: "t3-acp-provider-exit-command-",
       });
       const runtimeClosed = yield* Deferred.make<void>();
+      const descendantsRecorded = yield* Deferred.make<void>();
+      const controller = AcpSessionRuntime.makePosixProcessTreeController("linux");
+      const observedPids = new Set<number>();
+      let publishedPids: ReadonlyArray<number> = [];
+      let captured: AcpSessionRuntime.AcpSessionRuntime["Service"] | undefined;
+      const confirmDescendantsRecorded = () => {
+        if (publishedPids.length === 3 && publishedPids.every((pid) => observedPids.has(pid)))
+          Deferred.doneUnsafe(descendantsRecorded, Effect.void);
+      };
+      const observedController: AcpSessionRuntime.AcpPosixProcessTreeController = {
+        ...controller,
+        identity: (pid) => {
+          const identity = controller.identity(pid);
+          if (identity !== undefined) observedPids.add(pid);
+          confirmDescendantsRecorded();
+          return identity;
+        },
+      };
       const observedSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"] = {
         ...childProcessSpawner,
         spawn: (command) =>
@@ -2578,6 +2596,11 @@ describe("AcpAdapterV2", () => {
             mockAgentPath,
             ownDescendantProcessGroups: true,
             ownDetachedProcessGroup: true,
+            posixProcessTreeController: observedController,
+            wrapRuntime: (runtime) => {
+              captured = runtime;
+              return runtime;
+            },
             processGroupTerminationGrace: 0,
             environment: {
               T3_ACP_EMIT_RUNNING_COMMAND_THEN_HANG: "1",
@@ -2622,6 +2645,13 @@ describe("AcpAdapterV2", () => {
       const published = yield* waitForPublishedProcessIds(commandPidPath, 3);
       assert.isTrue(Option.isSome(published), "detached fixture must publish all process IDs");
       const pids = Option.getOrThrow(published);
+      publishedPids = pids;
+      confirmDescendantsRecorded();
+      // The fixture exits only after the synchronous ownership sampler has seen
+      // its published descendants, so teardown tests retained ownership.
+      yield* Deferred.await(descendantsRecorded);
+      assert.isDefined(captured);
+      yield* captured!.notify("_test/exit", { code: 19 });
       assert.isTrue(
         Option.isSome(yield* waitForProcessesToExit(pids)),
         "provider termination must reap the detached launcher, Bash, and sleep processes",
