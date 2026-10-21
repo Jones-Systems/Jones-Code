@@ -29,3 +29,10 @@ it("does not infer a goal owner from a sibling, unloaded binding, or another pro
     hasRetainedGoalStopTarget(run, [{ ...owner, driver: ProviderDriverKind.make("claude") }], id),
   );
 });
+
+it.each(["queued", "preparing", "starting"] as const)(
+  "does not revive a historical provider turn for a %s run",
+  (status) => {
+    assert.isFalse(hasRetainedGoalStopTarget({ ...run, status }, [owner], id));
+  },
+);

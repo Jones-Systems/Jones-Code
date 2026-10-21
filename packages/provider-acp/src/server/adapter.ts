@@ -2017,11 +2017,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
-        const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Effect.gen(function* () {
-            const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
-            yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
-          }).pipe(Effect.asVoid);
+        const emitProviderEvent = Effect.fn("AcpAdapterV2.emitProviderEvent")(
+          (event: ProviderAdapter.ProviderAdapterV2Event) =>
+            Effect.gen(function* () {
+              const producer = (yield* AcpEventProducerContext) ?? sessionEventProducer.origin;
+              yield* Queue.offer(
+                events,
+                ProviderEventOrigin.stampProviderEvent(event, { producer }),
+              );
+            }).pipe(Effect.asVoid),
+        );
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
 

@@ -886,7 +886,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
         probeBinding,
         attemptedAt: checkedAt,
         probeCompletedAt: DateTime.formatIso(yield* DateTime.now),
-        models: snapshot.models,
+        ...(snapshot.models === undefined ? {} : { models: snapshot.models }),
         ...(managedAuth || snapshot.account.account?.type !== "chatgpt"
           ? { failureCode: "unsupported_account" as const }
           : snapshot.rateLimits === undefined || "failure" in snapshot.rateLimits

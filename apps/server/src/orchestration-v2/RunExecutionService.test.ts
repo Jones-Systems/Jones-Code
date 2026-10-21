@@ -1959,6 +1959,7 @@ it.effect(
       const layerTest = RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
@@ -2173,6 +2174,7 @@ it.effect("drops late root provider-thread writes from a superseded attempt", ()
     const layerTest = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
+          layerTurnItemPositionsTest,
           McpAppModelContext.layerEmpty,
           Layer.mock(CheckpointService.CheckpointServiceV2)({ captureBaseline: () => Effect.void }),
           executionEventSinkLayer({
@@ -2371,6 +2373,7 @@ it.effect(
       const layerTest = RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
@@ -2539,6 +2542,7 @@ it.effect(
       const layerTest = RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
@@ -3140,6 +3144,7 @@ it.effect(
       const layerTest = RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
+            layerTurnItemPositionsTest,
             McpAppModelContext.layerEmpty,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () => Effect.void,
@@ -4578,7 +4583,7 @@ it("leaves runtime identity observation ownership and route state to the session
   const [accepted, next] = RunExecutionService.routeProviderEvent(event, identity, state);
   assert.isFalse(accepted);
   assert.strictEqual(next, state);
-  assert.deepEqual([...next.ownedProviderTurnIds], []);
+  assert.deepEqual([...next.ownedProviderTurns.keys()], []);
 });
 
 const runtimeTerminalStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
@@ -4587,6 +4592,7 @@ const runtimeTerminalStores = Layer.merge(EventStore.layer, ProjectionStore.laye
 const runtimeTerminalTestLayer = Layer.mergeAll(
   McpAppModelContext.layerEmpty,
   runtimeTerminalStores,
+  TurnItemPositionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
   SqlitePersistence.layerMemory,
   EventSink.layer.pipe(
     Layer.provide(Layer.merge(runtimeTerminalStores, SqlitePersistence.layerMemory)),
@@ -5045,7 +5051,7 @@ it.effect("accepts a validated logical root terminal after a same-attempt succes
       state,
     );
     assert.isTrue(auxiliaryAccepted);
-    assert.isTrue(withAuxiliary.ownedProviderTurnIds.has(auxiliaryTurnId));
+    assert.isTrue(withAuxiliary.ownedProviderTurns.has(auxiliaryTurnId));
     const invalid: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> = [
       { ...terminal, providerTurn: undefined },
       { ...terminal, runOrdinal: 1 },
@@ -5402,6 +5408,7 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
   const sinkLayer = EventSink.layer.pipe(Layer.provide(stores));
   const ingestorDependencies = Layer.mergeAll(
     stores,
+    TurnItemPositionStore.layer.pipe(Layer.provide(database)),
     sinkLayer,
     IdAllocator.layer,
     ThreadCommandExecutor.layer,

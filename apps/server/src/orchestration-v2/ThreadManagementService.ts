@@ -606,55 +606,57 @@ const make = Effect.gen(function* () {
   const observationSessions = yield* Effect.serviceOption(
     ProviderSessionManager.ProviderSessionManagerV2,
   );
-  const observeThreadActivity = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const shell = yield* orchestrator.getThreadShell(threadId);
-      if (shell === null)
+  const observeThreadActivity = Effect.fn("ThreadManagementService.observeThreadActivity")(
+    (threadId: ThreadId) =>
+      Effect.gen(function* () {
+        const shell = yield* orchestrator.getThreadShell(threadId);
+        if (shell === null)
+          return {
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "thread_unavailable",
+          };
+        if (shell.archivedAt !== null || shell.deletedAt !== null)
+          return { foreground: null, background: null, backgroundStatus: "known" as const };
+        const sampledAt = yield* Clock.currentTimeMillis;
+        const native =
+          Option.isSome(observationSessions) &&
+          Object.hasOwn(observationSessions.value, "observeThreadActivity") &&
+          observationSessions.value.observeThreadActivity !== undefined
+            ? yield* observationSessions.value.observeThreadActivity(threadId)
+            : null;
+        const current = yield* orchestrator.getThreadShell(threadId);
+        if (current === null)
+          return {
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "thread_unavailable",
+          };
+        const activity = RuntimeObservation.providerThreadActivityObservation(
+          current,
+          native,
+          sampledAt,
+        );
         return {
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "thread_unavailable",
+          ...activity,
+          foreground:
+            native === null || native.status === "unknown"
+              ? RuntimeObservation.providerThreadForegroundActivity(current)
+              : activity.foreground,
         };
-      if (shell.archivedAt !== null || shell.deletedAt !== null)
-        return { foreground: null, background: null, backgroundStatus: "known" as const };
-      const sampledAt = yield* Clock.currentTimeMillis;
-      const native =
-        Option.isSome(observationSessions) &&
-        Object.hasOwn(observationSessions.value, "observeThreadActivity") &&
-        observationSessions.value.observeThreadActivity !== undefined
-          ? yield* observationSessions.value.observeThreadActivity(threadId)
-          : null;
-      const current = yield* orchestrator.getThreadShell(threadId);
-      if (current === null)
-        return {
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "thread_unavailable",
-        };
-      const activity = RuntimeObservation.providerThreadActivityObservation(
-        current,
-        native,
-        sampledAt,
-      );
-      return {
-        ...activity,
-        foreground:
-          native === null || native.status === "unknown"
-            ? RuntimeObservation.providerThreadForegroundActivity(current)
-            : activity.foreground,
-      };
-    }).pipe(
-      Effect.catchCause(() =>
-        Effect.succeed({
-          foreground: null,
-          background: null,
-          backgroundStatus: "unknown" as const,
-          reason: "native_activity_unavailable",
-        }),
+      }).pipe(
+        Effect.catchCause(() =>
+          Effect.succeed({
+            foreground: null,
+            background: null,
+            backgroundStatus: "unknown" as const,
+            reason: "native_activity_unavailable",
+          }),
+        ),
       ),
-    );
+  );
 
   const ensureLegacyTranscript = Effect.fn(
     "orchestrationV2.threadManagement.ensureLegacyTranscript",
@@ -836,10 +838,8 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const promoteQueuedBatch: NonNullable<ThreadManagementServiceShape["promoteQueuedBatch"]> = (
-    input,
-  ) =>
-    Effect.gen(function* () {
+  const promoteQueuedBatch: NonNullable<ThreadManagementServiceShape["promoteQueuedBatch"]> =
+    Effect.fn("ThreadManagementService.promoteQueuedBatch")(function* (input) {
       const projection = yield* orchestrator.getThreadRecords(
         input.threadId,
         [
@@ -1071,19 +1071,20 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(loadError));
       return pending ? undefined : progress.resultRun;
     });
-    const evaluate = (runs: ReadonlyArray<OrchestrationV2Run>) =>
-      Effect.gen(function* () {
-        const current = yield* outcome(runs);
-        if (!current.settled || !untilDelegatedWorkSettled) {
-          return { ...current, resultRun: undefined };
-        }
+    const evaluate = Effect.fn("ThreadManagementService.evaluate")(function* (
+      runs: ReadonlyArray<OrchestrationV2Run>,
+    ) {
+      const current = yield* outcome(runs);
+      if (!current.settled || !untilDelegatedWorkSettled) {
+        return { ...current, resultRun: undefined };
+      }
 
-        // A declined continuation records no event, so its effect settling wakes
-        // the wait too.
+      // A declined continuation records no event, so its effect settling wakes
+      // the wait too.
 
-        const resultRun = yield* delegatedWorkResult;
-        return { ...current, settled: resultRun !== undefined, resultRun };
-      });
+      const resultRun = yield* delegatedWorkResult;
+      return { ...current, settled: resultRun !== undefined, resultRun };
+    });
     const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
       threadId: input.threadId,
       run: current.run,

@@ -823,11 +823,13 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         if (sessionId == null) return effect;
         return sessionGates.withLock(sessionId, effect);
       };
-    const emit = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-      Effect.gen(function* () {
-        const producer = (yield* OpenCode2EventProducerContext) ?? eventProducer.origin;
-        yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
-      }).pipe(Effect.asVoid);
+    const emit = Effect.fn("OpenCode2AdapterV2.emit")(
+      (event: ProviderAdapter.ProviderAdapterV2Event) =>
+        Effect.gen(function* () {
+          const producer = (yield* OpenCode2EventProducerContext) ?? eventProducer.origin;
+          yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
+        }).pipe(Effect.asVoid),
+    );
     const ownerOf = (sessionId: string) => childOwners.get(sessionId) ?? threads.get(sessionId);
     const markUnsettled = (state: ThreadState) => {
       state.unsettled = true;

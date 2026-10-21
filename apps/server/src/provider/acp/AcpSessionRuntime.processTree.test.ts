@@ -65,6 +65,34 @@ function processExists(pid: number): boolean {
   }
 }
 
+// Notifications only: no timer or repeated scheduler turns. Initial read after
+// subscription covers publication before the test begins awaiting the file.
+const waitForPublishedPid = (path: string) =>
+  Effect.callback<number>((resume) => {
+    const read = () => {
+      try {
+        const pid = Number(NodeFS.readFileSync(path, "utf8"));
+        if (Number.isSafeInteger(pid) && pid > 1) finish(Effect.succeed(pid));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") finish(Effect.die(error));
+      }
+    };
+    const watcher = NodeFS.watch(NodePath.dirname(path), (_event, filename) => {
+      if (filename === null || filename.toString() === NodePath.basename(path)) read();
+    });
+    const close = () => {
+      watcher.removeAllListeners();
+      watcher.close();
+    };
+    const finish: typeof resume = (result) => {
+      close();
+      resume(result);
+    };
+    watcher.on("error", (error) => finish(Effect.die(error)));
+    read();
+    return Effect.sync(close);
+  }).pipe(Effect.timeout("2 seconds"));
+
 // Exercise the real shell wrapper against an owned regular file. Membership is
 // read only to satisfy its verification; this fixture never creates, joins or
 // sweeps a kernel cgroup. Termination callbacks model only explicitly owned PIDs.
@@ -372,7 +400,20 @@ describe("terminatePosixOwnedProcessTree", () => {
       expect(lease.contains(process.pid)).toBe(false);
       const readyPath = NodePath.join(scratch, "ready");
       const childPath = NodePath.join(scratch, "child");
-      const childProgram = "setInterval(() => {}, 1000);";
+      const sentinelProgram = "setInterval(() => {}, 1000);";
+      // The child can start after cancellation but before it publishes its PID.
+      // Tie its lifetime to the fixture directory, which is removed on every
+      // scope exit. Subscribe before checking, including the already-removed case.
+      const childProgram = [
+        'const fs = require("node:fs");',
+        `const scratch = ${JSON.stringify(scratch)};`,
+        "let watcher;",
+        "const stop = () => { watcher?.close(); process.exit(0); };",
+        "try { watcher = fs.watch(scratch, () => { if (!fs.existsSync(scratch)) stop(); }); } catch { stop(); }",
+        "watcher.on('error', stop);",
+        "if (!fs.existsSync(scratch)) stop();",
+        "setInterval(() => {}, 1000);",
+      ].join("\n");
       const launcherProgram = [
         'const fs = require("node:fs");',
         'const cp = require("node:child_process");',
@@ -383,12 +424,12 @@ describe("terminatePosixOwnedProcessTree", () => {
       const providerProgram = [
         'const fs = require("node:fs");',
         'const cp = require("node:child_process");',
-        "fs.writeFileSync(process.argv[1], String(process.pid));",
         "process.on('SIGTERM', () => {",
         "  const launcher = cp.spawn(process.execPath, ['-e', process.argv[3], process.argv[2], process.argv[4]], { detached: true, stdio: 'ignore' });",
         "  launcher.unref();",
         "  process.exit(0);",
         "});",
+        "fs.writeFileSync(process.argv[1], String(process.pid));",
         "setInterval(() => {}, 1000);",
       ].join("\n");
       const wrapped = AcpSessionRuntime.wrapCommandForLinuxCgroup(lease, process.execPath, [
@@ -405,33 +446,23 @@ describe("terminatePosixOwnedProcessTree", () => {
         stdio: "ignore",
       });
       provider.unref();
-      const sentinel = NodeChildProcess.spawn(process.execPath, ["-e", childProgram], {
+      const sentinel = NodeChildProcess.spawn(process.execPath, ["-e", sentinelProgram], {
         detached: true,
         stdio: "ignore",
       });
       sentinel.unref();
       try {
-        yield* Effect.gen(function* () {
-          while (!NodeFS.existsSync(readyPath)) yield* Effect.sleep("10 millis");
-        }).pipe(Effect.timeout("2 seconds"));
+        yield* waitForPublishedPid(readyPath);
         process.kill(provider.pid!, "SIGTERM");
-        detachedChildPid = yield* Effect.gen(function* () {
-          while (true) {
-            try {
-              const pid = Number(NodeFS.readFileSync(childPath, "utf8"));
-              if (Number.isSafeInteger(pid) && pid > 1) return pid;
-            } catch {}
-            yield* Effect.sleep("10 millis");
-          }
-        }).pipe(Effect.timeout("2 seconds"));
+        detachedChildPid = yield* waitForPublishedPid(childPath);
         expect(processExists(detachedChildPid)).toBe(true);
         expect(lease.contains(detachedChildPid)).toBe(true);
         expect(lease.contains(sentinel.pid!)).toBe(false);
         yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease);
         expect(processExists(sentinel.pid!)).toBe(true);
-        yield* Effect.gen(function* () {
-          while (processExists(detachedChildPid!)) yield* Effect.sleep("10 millis");
-        }).pipe(Effect.timeout("2 seconds"));
+        // The real terminator has already observed this lease empty before
+        // removing it. Keep the PID absence postcondition explicit at return.
+        expect(processExists(detachedChildPid)).toBe(false);
         expect(NodeFS.existsSync(lease.path)).toBe(false);
 
         const replacement = controller.create();

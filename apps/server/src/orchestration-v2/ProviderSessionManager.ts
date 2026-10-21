@@ -413,7 +413,7 @@ export const layerWithOptions = (
               Effect.map((records) => records.providerThreads.find((thread) => thread.id === id)),
             );
         return {
-          reserve: (threadId) =>
+          reserve: Effect.fn("ProviderSessionManager.reserve")((threadId) =>
             Effect.gen(function* () {
               yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
                 threadId,
@@ -439,7 +439,8 @@ export const layerWithOptions = (
               });
               return generation;
             }).pipe(Effect.mapError(protocolError)),
-          admit: ({ runtimeGeneration, threadId }) =>
+          ),
+          admit: Effect.fn("ProviderSessionManager.admit")(({ runtimeGeneration, threadId }) =>
             Effect.gen(function* () {
               yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
                 threadId,
@@ -461,7 +462,8 @@ export const layerWithOptions = (
                 }
               }
             }).pipe(Effect.mapError(protocolError)),
-          bind: (binding) =>
+          ),
+          bind: Effect.fn("ProviderSessionManager.bind")((binding) =>
             Effect.gen(function* () {
               const reservation = reservations.get(binding.runtimeGeneration);
               const thread = binding.providerThread;
@@ -575,7 +577,8 @@ export const layerWithOptions = (
                 yield* physicalEvidence.bind(physicalBinding, binding.physicalProcess);
               return committedThread ?? boundaryThread;
             }).pipe(Effect.mapError(protocolError)),
-          abandon: (generation) =>
+          ),
+          abandon: Effect.fn("ProviderSessionManager.abandon")((generation) =>
             Effect.gen(function* () {
               const reservation = reservations.get(generation);
               reservations.delete(generation);
@@ -607,7 +610,8 @@ export const layerWithOptions = (
                 });
               }
             }).pipe(Effect.mapError(protocolError)),
-          invalidate: (binding) =>
+          ),
+          invalidate: Effect.fn("ProviderSessionManager.invalidate")((binding) =>
             Effect.gen(function* () {
               yield* physicalEvidence.invalidate(binding);
               const current = yield* readThread(binding.threadId, binding.providerThreadId);
@@ -645,6 +649,7 @@ export const layerWithOptions = (
                 ],
               });
             }).pipe(Effect.mapError(protocolError)),
+          ),
         };
       };
 
@@ -1477,33 +1482,35 @@ export const layerWithOptions = (
           ),
         );
 
-      const retainThreadForWorkMode = (
-        threadId: ThreadId,
-        providerSessionId: ProviderSessionId,
-        providerInstanceId: ProviderInstanceId,
-      ) =>
-        Effect.gen(function* () {
-          if (Option.isNone(serverSettings)) return false;
-          const settings = yield* serverSettings.value.getSettings;
-          if (!settings.workModeEnabled) return false;
-          const thread = yield* projectionStore.getThread(threadId);
-          if (
-            thread.archivedAt !== null ||
-            thread.deletedAt !== null ||
-            thread.settledAt !== null ||
-            thread.settledOverride === "settled" ||
-            thread.lineage.parentThreadId !== null ||
-            thread.lineage.relationshipToParent !== null ||
-            thread.activeProviderThreadId === null
-          )
-            return false;
-          return WorkModeRetention.workModeRetainsSession({
-            projection: yield* projectionStore.getThreadProjection(threadId),
-            providerSessionId,
-            providerInstanceId,
-            nowMs: yield* Clock.currentTimeMillis,
-          });
-        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+      const retainThreadForWorkMode = Effect.fn("ProviderSessionManager.retainThreadForWorkMode")(
+        (
+          threadId: ThreadId,
+          providerSessionId: ProviderSessionId,
+          providerInstanceId: ProviderInstanceId,
+        ) =>
+          Effect.gen(function* () {
+            if (Option.isNone(serverSettings)) return false;
+            const settings = yield* serverSettings.value.getSettings;
+            if (!settings.workModeEnabled) return false;
+            const thread = yield* projectionStore.getThread(threadId);
+            if (
+              thread.archivedAt !== null ||
+              thread.deletedAt !== null ||
+              thread.settledAt !== null ||
+              thread.settledOverride === "settled" ||
+              thread.lineage.parentThreadId !== null ||
+              thread.lineage.relationshipToParent !== null ||
+              thread.activeProviderThreadId === null
+            )
+              return false;
+            return WorkModeRetention.workModeRetainsSession({
+              projection: yield* projectionStore.getThreadProjection(threadId),
+              providerSessionId,
+              providerInstanceId,
+              nowMs: yield* Clock.currentTimeMillis,
+            });
+          }).pipe(Effect.catchCause(() => Effect.succeed(false))),
+      );
 
       const releaseIfStillIdle = Effect.fn("ProviderSessionManager.releaseIfStillIdle")(
         function* (input: {
@@ -2117,17 +2124,16 @@ export const layerWithOptions = (
           ),
         );
 
-      const validateProviderEvent = (
-        runtime: ProviderAdapterV2SessionRuntime,
-        event: ProviderAdapterV2Event,
-      ) =>
-        Effect.gen(function* () {
-          const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
-          if (current !== undefined && current.runtime !== runtime) return false;
-          yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime);
-          const latest = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
-          return latest === undefined || latest.runtime === runtime;
-        }).pipe(Effect.catchCause(() => Effect.succeed(false)));
+      const validateProviderEvent = Effect.fn("ProviderSessionManager.validateProviderEvent")(
+        (runtime: ProviderAdapterV2SessionRuntime, event: ProviderAdapterV2Event) =>
+          Effect.gen(function* () {
+            const current = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+            if (current !== undefined && current.runtime !== runtime) return false;
+            yield* ProviderEventOrigin.revalidateProviderEventOrigin(event, runtime);
+            const latest = (yield* Ref.get(sessions)).get(sessionKey(runtime.providerSessionId));
+            return latest === undefined || latest.runtime === runtime;
+          }).pipe(Effect.catchCause(() => Effect.succeed(false))),
+      );
 
       const makeEventSubscription = Effect.fn("ProviderSessionManager.makeEventSubscription")(
         (
@@ -2822,21 +2828,22 @@ export const layerWithOptions = (
           ),
       );
       return ProviderSessionManagerV2.of({
-        requestRuntimeOperationPermit: (identity) =>
-          Effect.gen(function* () {
-            const { binding } = identity;
-            const entry = (yield* Ref.get(sessions)).get(sessionKey(binding.providerSessionId));
-            const resident =
-              entry !== undefined &&
-              entry.attachedThreadIds.has(binding.threadId) &&
-              entry.loadedProviderThreadKeyByThread.has(binding.threadId) &&
-              entry.runtime.instanceId === binding.providerInstanceId &&
-              entry.runtime.driver === binding.driver;
-            // A denial needs no native probe and makes no currentness or retirement assertion.
-            return RuntimeOperation.unavailableResidentOperationPermit(
-              resident ? entry.runtime.driver : undefined,
-            );
-          }),
+        requestRuntimeOperationPermit: Effect.fn(
+          "ProviderSessionManager.requestRuntimeOperationPermit",
+        )(function* (identity) {
+          const { binding } = identity;
+          const entry = (yield* Ref.get(sessions)).get(sessionKey(binding.providerSessionId));
+          const resident =
+            entry !== undefined &&
+            entry.attachedThreadIds.has(binding.threadId) &&
+            entry.loadedProviderThreadKeyByThread.has(binding.threadId) &&
+            entry.runtime.instanceId === binding.providerInstanceId &&
+            entry.runtime.driver === binding.driver;
+          // A denial needs no native probe and makes no currentness or retirement assertion.
+          return RuntimeOperation.unavailableResidentOperationPermit(
+            resident ? entry.runtime.driver : undefined,
+          );
+        }),
         captureCurrentThreadRuntimeStop,
         readCurrentThreadRuntimeAttachment,
         observeThreadActivity,

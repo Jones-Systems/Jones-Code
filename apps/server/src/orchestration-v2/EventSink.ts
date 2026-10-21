@@ -603,7 +603,7 @@ const layerBase: Layer.Layer<
         });
       });
 
-    const guardRuntimeIdentity = (
+    const guardRuntimeIdentity = Effect.fn("EventSink.guardRuntimeIdentity")(function* (
       input: Pick<
         Parameters<EventSinkV2Shape["write"]>[0],
         | "events"
@@ -613,105 +613,104 @@ const layerBase: Layer.Layer<
         | "runtimeIdentityRequest"
         | "runtimeIdentityPreviousRequest"
       >,
-    ) =>
-      Effect.gen(function* () {
-        const capture = input.runtimeEvidence;
-        const update = input.events.find((event) => event.type === "provider-thread.updated");
-        if (input.runtimeIdentityBoundary !== undefined) {
-          if (update?.type !== "provider-thread.updated") return null;
-          const records = yield* projectionStore.getThreadRecords(update.threadId, [
-            "providerThreads",
-          ]);
-          const current =
-            records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
-          if (
-            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
-              (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
-                records.thread.activeProviderThreadId !==
-                  input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
-            (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
-            (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
-              input.runtimeIdentityBoundary.expectedGeneration ||
-            (current !== null &&
-              (current.appThreadId !== update.payload.appThreadId ||
-                current.providerInstanceId !== update.payload.providerInstanceId ||
-                current.driver !== update.payload.driver))
-          )
-            return null;
-          return input.events.map((event) =>
-            event.type === "provider-thread.updated" && event.payload.id === update.payload.id
-              ? {
-                  ...event,
-                  payload: {
-                    ...event.payload,
-                    runtimeIdentity:
-                      event.payload.runtimeIdentity === undefined
-                        ? undefined
-                        : {
-                            ...event.payload.runtimeIdentity,
-                            evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
-                          },
-                  },
-                }
-              : event,
-          );
-        }
-        if (capture === undefined) return input.events;
+    ) {
+      const capture = input.runtimeEvidence;
+      const update = input.events.find((event) => event.type === "provider-thread.updated");
+      if (input.runtimeIdentityBoundary !== undefined) {
+        if (update?.type !== "provider-thread.updated") return null;
+        const records = yield* projectionStore.getThreadRecords(update.threadId, [
+          "providerThreads",
+        ]);
         const current =
-          (yield* projectionStore.getThreadRecords(capture.threadId, [
-            "providerThreads",
-          ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
-        if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
-        const identity = current.runtimeIdentity!;
+          records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
         if (
-          input.runtimeIdentityRequest !== undefined &&
-          capture.evidenceRevision !== identity.evidenceRevision
-        ) {
-          const previous = input.runtimeIdentityPreviousRequest;
-          if (
-            previous === undefined ||
-            identity.requested.providerInstanceId !== previous.providerInstanceId ||
-            identity.requested.providerDriver !== previous.providerDriver ||
-            identity.requested.model !== previous.model ||
-            identity.requested.serviceTier !== previous.serviceTier
-          )
-            return null;
-        }
-        if (input.runtimeIdentityObservation !== undefined) {
-          const requested = input.runtimeIdentityObservation;
-          if (
-            identity.requested.providerInstanceId !== requested.providerInstanceId ||
-            identity.requested.providerDriver !== requested.providerDriver ||
-            identity.requested.model !== requested.model ||
-            identity.requested.serviceTier !== requested.serviceTier ||
-            identity.evidenceRevision !== capture.evidenceRevision
-          )
-            return null;
-        }
+          (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
+            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
+              records.thread.activeProviderThreadId !==
+                input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
+          (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
+          (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
+            input.runtimeIdentityBoundary.expectedGeneration ||
+          (current !== null &&
+            (current.appThreadId !== update.payload.appThreadId ||
+              current.providerInstanceId !== update.payload.providerInstanceId ||
+              current.driver !== update.payload.driver))
+        )
+          return null;
         return input.events.map((event) =>
-          event.type === "provider-thread.updated" && event.payload.id === current.id
+          event.type === "provider-thread.updated" && event.payload.id === update.payload.id
             ? {
                 ...event,
                 payload: {
                   ...event.payload,
                   runtimeIdentity:
-                    input.runtimeIdentityObservation === undefined
-                      ? input.runtimeIdentityRequest === undefined
-                        ? identity
-                        : {
-                            ...identityForRequest(input.runtimeIdentityRequest, identity),
-                            evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
-                          }
+                    event.payload.runtimeIdentity === undefined
+                      ? undefined
                       : {
-                          ...identity,
-                          observed: event.payload.runtimeIdentity!.observed,
-                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                          ...event.payload.runtimeIdentity,
+                          evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
                         },
                 },
               }
             : event,
         );
-      });
+      }
+      if (capture === undefined) return input.events;
+      const current =
+        (yield* projectionStore.getThreadRecords(capture.threadId, [
+          "providerThreads",
+        ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
+      if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
+      const identity = current.runtimeIdentity!;
+      if (
+        input.runtimeIdentityRequest !== undefined &&
+        capture.evidenceRevision !== identity.evidenceRevision
+      ) {
+        const previous = input.runtimeIdentityPreviousRequest;
+        if (
+          previous === undefined ||
+          identity.requested.providerInstanceId !== previous.providerInstanceId ||
+          identity.requested.providerDriver !== previous.providerDriver ||
+          identity.requested.model !== previous.model ||
+          identity.requested.serviceTier !== previous.serviceTier
+        )
+          return null;
+      }
+      if (input.runtimeIdentityObservation !== undefined) {
+        const requested = input.runtimeIdentityObservation;
+        if (
+          identity.requested.providerInstanceId !== requested.providerInstanceId ||
+          identity.requested.providerDriver !== requested.providerDriver ||
+          identity.requested.model !== requested.model ||
+          identity.requested.serviceTier !== requested.serviceTier ||
+          identity.evidenceRevision !== capture.evidenceRevision
+        )
+          return null;
+      }
+      return input.events.map((event) =>
+        event.type === "provider-thread.updated" && event.payload.id === current.id
+          ? {
+              ...event,
+              payload: {
+                ...event.payload,
+                runtimeIdentity:
+                  input.runtimeIdentityObservation === undefined
+                    ? input.runtimeIdentityRequest === undefined
+                      ? identity
+                      : {
+                          ...identityForRequest(input.runtimeIdentityRequest, identity),
+                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                        }
+                    : {
+                        ...identity,
+                        observed: event.payload.runtimeIdentity!.observed,
+                        evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                      },
+              },
+            }
+          : event,
+      );
+    });
 
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
       const runOrdinals = new Map(
@@ -2132,71 +2131,75 @@ const layerBase: Layer.Layer<
               }),
           ),
         ),
-      canPromoteQueuedAtToolBoundary: (input) =>
-        Effect.gen(function* () {
-          if (input.boundary.event.type !== "node.updated") return false;
-          const node = input.boundary.event.payload;
-          const births = input.births ?? new Map();
-          for (const runId of [input.activeRunId, input.queuedRunId]) {
-            if (births.has(runId)) continue;
-            const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
+      canPromoteQueuedAtToolBoundary: Effect.fn("EventSink.canPromoteQueuedAtToolBoundary")(
+        (input) =>
+          Effect.gen(function* () {
+            if (input.boundary.event.type !== "node.updated") return false;
+            const node = input.boundary.event.payload;
+            const births = input.births ?? new Map();
+            for (const runId of [input.activeRunId, input.queuedRunId]) {
+              if (births.has(runId)) continue;
+              const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
               CASE WHEN json_type(payload_json, '$.queuedToolBoundaryEligible') = 'true' THEN 1 ELSE 0 END AS eligible FROM orchestration_events
             WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
               AND event_type = 'run.created' AND json_extract(payload_json, '$.id') = ${runId}
             ORDER BY sequence DESC LIMIT 1`;
-            if (rows[0] === undefined) {
-              births.set(runId, null);
-              continue;
-            }
-            const settings = yield* sql<{ runtime_mode: string; interaction_mode: string }>`SELECT
+              if (rows[0] === undefined) {
+                births.set(runId, null);
+                continue;
+              }
+              const settings = yield* sql<{ runtime_mode: string; interaction_mode: string }>`SELECT
             json_extract(payload_json, '$.runtimeMode') AS runtime_mode, json_extract(payload_json, '$.interactionMode') AS interaction_mode
             FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
               AND event_type LIKE 'thread.%' AND sequence < ${rows[0].sequence} AND json_type(payload_json, '$.runtimeMode') = 'text'
             ORDER BY sequence DESC LIMIT 1`;
-            births.set(
-              runId,
-              settings[0] === undefined
-                ? null
-                : {
-                    sequence: rows[0].sequence,
-                    queuedToolBoundaryEligible: rows[0].eligible === 1,
-                    runtimeMode: settings[0].runtime_mode,
-                    interactionMode: settings[0].interaction_mode,
-                  },
-            );
-          }
-          const queued = births.get(input.queuedRunId);
-          const active = births.get(input.activeRunId);
-          if (
-            queued == null ||
-            queued.queuedToolBoundaryEligible !== true ||
-            active == null ||
-            queued.sequence >= input.boundary.sequence ||
-            queued.runtimeMode !== input.runtimeMode ||
-            queued.interactionMode !== input.interactionMode ||
-            active.runtimeMode !== input.runtimeMode ||
-            active.interactionMode !== input.interactionMode
-          )
-            return false;
-          const updates = yield* sql<{ sequence: number }>`SELECT sequence FROM orchestration_events
+              births.set(
+                runId,
+                settings[0] === undefined
+                  ? null
+                  : {
+                      sequence: rows[0].sequence,
+                      queuedToolBoundaryEligible: rows[0].eligible === 1,
+                      runtimeMode: settings[0].runtime_mode,
+                      interactionMode: settings[0].interaction_mode,
+                    },
+              );
+            }
+            const queued = births.get(input.queuedRunId);
+            const active = births.get(input.activeRunId);
+            if (
+              queued == null ||
+              queued.queuedToolBoundaryEligible !== true ||
+              active == null ||
+              queued.sequence >= input.boundary.sequence ||
+              queued.runtimeMode !== input.runtimeMode ||
+              queued.interactionMode !== input.interactionMode ||
+              active.runtimeMode !== input.runtimeMode ||
+              active.interactionMode !== input.interactionMode
+            )
+              return false;
+            const updates = yield* sql<{
+              sequence: number;
+            }>`SELECT sequence FROM orchestration_events
           WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
             AND sequence > ${active.sequence} AND event_type IN ('message.created', 'message.updated') AND json_extract(payload_json, '$.id') = ${input.messageId}
           ORDER BY sequence DESC LIMIT 1`;
-          if (updates[0] === undefined || updates[0].sequence >= input.boundary.sequence)
-            return false;
-          const completions = yield* sql<{
-            sequence: number;
-          }>`SELECT sequence FROM orchestration_events
+            if (updates[0] === undefined || updates[0].sequence >= input.boundary.sequence)
+              return false;
+            const completions = yield* sql<{
+              sequence: number;
+            }>`SELECT sequence FROM orchestration_events
           WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
             AND sequence > ${active.sequence} AND event_type = 'node.updated' AND json_extract(payload_json, '$.id') = ${node.id}
             AND json_extract(payload_json, '$.providerTurnId') = ${node.providerTurnId}
             AND json_extract(payload_json, '$.status') = 'completed' ORDER BY sequence ASC LIMIT 1`;
-          if (completions[0]?.sequence !== input.boundary.sequence) return false;
-          const fences = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+            if (completions[0]?.sequence !== input.boundary.sequence) return false;
+            const fences = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
           WHERE thread_id = ${input.threadId} AND run_id = ${input.queuedRunId}
             AND json_extract(payload_json, '$.queueHeld') = 1 LIMIT 1`;
-          return fences.length === 0;
-        }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+            return fences.length === 0;
+          }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
           Stream.filter(isPublicStoredOrchestrationEvent),

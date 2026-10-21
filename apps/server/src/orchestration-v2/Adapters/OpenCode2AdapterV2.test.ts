@@ -4596,5 +4596,8 @@ it.effect.each(["text", "reasoning"] as const)(
           false,
         );
       }
-    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.merge(TestClock.layer(), McpProviderSessions.layer)),
+    ),
 );

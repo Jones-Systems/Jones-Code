@@ -7310,89 +7310,96 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
     const censusPermit = yield* Semaphore.make(1);
 
     const service: ProjectionStoreV2Shape = {
-      getOperatingCountsCandidates: (input) =>
-        Effect.gen(function* () {
-          const projections = (yield* Ref.get(replayState)).projections;
-          const threads = [...projections.values()]
-            .filter(
-              ({ thread }) =>
-                thread.archivedAt === null &&
-                thread.deletedAt === null &&
-                (input?.projectId === undefined || thread.projectId === input.projectId),
-            )
-            .map((projection): ProjectionOperatingCountsCandidate => {
-              const pending = projection.runtimeRequests
-                .filter((request) => request.status === "pending")
-                .toSorted(
-                  (left, right) =>
-                    DateTime.toEpochMillis(right.createdAt) -
-                      DateTime.toEpochMillis(left.createdAt) ||
-                    String(right.id).localeCompare(String(left.id)),
-                )[0];
-              const active = projection.runs
-                .filter(isActivityRunForShell)
-                .toSorted(
-                  (left, right) =>
-                    right.ordinal - left.ordinal || String(right.id).localeCompare(String(left.id)),
-                )[0];
-              return {
-                id: projection.thread.id,
-                projectId: projection.thread.projectId,
-                activeProviderThreadId: projection.thread.activeProviderThreadId,
-                archivedAt: null,
-                deletedAt: null,
-                interactionMode: projection.thread.interactionMode,
-                activityRunStatus: active?.status ?? null,
-                pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
-                hasActionableProposedPlan: projection.plans.some(
-                  (plan) => plan.kind === "proposed_plan" && plan.status === "active",
-                ),
-                latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null,
-              };
-            })
-            .toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
-          return { threads, snapshotSequence: yield* Ref.get(sequence) };
-        }).pipe(censusPermit.withPermits(1)),
+      getOperatingCountsCandidates: Effect.fn("ProjectionStore.getOperatingCountsCandidates")(
+        (input) =>
+          Effect.gen(function* () {
+            const projections = (yield* Ref.get(replayState)).projections;
+            const threads = [...projections.values()]
+              .filter(
+                ({ thread }) =>
+                  thread.archivedAt === null &&
+                  thread.deletedAt === null &&
+                  (input?.projectId === undefined || thread.projectId === input.projectId),
+              )
+              .map((projection): ProjectionOperatingCountsCandidate => {
+                const pending = projection.runtimeRequests
+                  .filter((request) => request.status === "pending")
+                  .toSorted(
+                    (left, right) =>
+                      DateTime.toEpochMillis(right.createdAt) -
+                        DateTime.toEpochMillis(left.createdAt) ||
+                      String(right.id).localeCompare(String(left.id)),
+                  )[0];
+                const active = projection.runs
+                  .filter(isActivityRunForShell)
+                  .toSorted(
+                    (left, right) =>
+                      right.ordinal - left.ordinal ||
+                      String(right.id).localeCompare(String(left.id)),
+                  )[0];
+                return {
+                  id: projection.thread.id,
+                  projectId: projection.thread.projectId,
+                  activeProviderThreadId: projection.thread.activeProviderThreadId,
+                  archivedAt: null,
+                  deletedAt: null,
+                  interactionMode: projection.thread.interactionMode,
+                  activityRunStatus: active?.status ?? null,
+                  pendingRuntimeRequest: pending === undefined ? null : { kind: pending.kind },
+                  hasActionableProposedPlan: projection.plans.some(
+                    (plan) => plan.kind === "proposed_plan" && plan.status === "active",
+                  ),
+                  latestRunCompletedAt: latestUnheldRun(projection.runs)?.completedAt ?? null,
+                };
+              })
+              .toSorted((left, right) => String(left.id).localeCompare(String(right.id)));
+            return { threads, snapshotSequence: yield* Ref.get(sequence) };
+          }).pipe(censusPermit.withPermits(1)),
+      ),
 
       apply:
         /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-        Effect.fnUntraced(function* (event) {
-          const result = yield* Ref.modify(
-            replayState,
-            (
-              existing,
-            ): readonly [
-              ProjectionStoreApplyEventError | ProjectionStoreThreadNotFoundError | undefined,
-              ProjectionReplayState,
-            ] => {
-              const next: ProjectionReplayState = {
-                projections: new Map(existing.projections),
-                providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
-                providerThreadInstanceIds: new Map(existing.providerThreadInstanceIds),
-              };
+        Effect.fnUntraced(
+          function* (event) {
+            const result = yield* Ref.modify(
+              replayState,
+              (
+                existing,
+              ): readonly [
+                ProjectionStoreApplyEventError | ProjectionStoreThreadNotFoundError | undefined,
+                ProjectionReplayState,
+              ] => {
+                const next: ProjectionReplayState = {
+                  projections: new Map(existing.projections),
+                  providerSessionThreadIds: new Map(existing.providerSessionThreadIds),
+                  providerThreadInstanceIds: new Map(existing.providerThreadInstanceIds),
+                };
 
-              try {
-                if (!applyToProjectionReplayState(next, event)) {
+                try {
+                  if (!applyToProjectionReplayState(next, event)) {
+                    return [
+                      new ProjectionStoreThreadNotFoundError({ threadId: event.threadId }),
+                      existing,
+                    ] as const;
+                  }
+                } catch (cause) {
                   return [
-                    new ProjectionStoreThreadNotFoundError({ threadId: event.threadId }),
+                    new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
                     existing,
                   ] as const;
                 }
-              } catch (cause) {
-                return [
-                  new ProjectionStoreApplyEventError({ eventType: event.type, cause }),
-                  existing,
-                ] as const;
-              }
-              return [undefined, next] as const;
-            },
-          );
+                return [undefined, next] as const;
+              },
+            );
 
-          if (result) {
-            return yield* result;
-          }
-          yield* Ref.update(sequence, (current) => current + 1);
-        }).pipe(Effect.uninterruptible, censusPermit.withPermits(1)),
+            if (result) {
+              return yield* result;
+            }
+            yield* Ref.update(sequence, (current) => current + 1);
+          },
+          Effect.uninterruptible,
+          censusPermit.withPermits(1),
+        ),
       getShellSnapshot: Effect.fn("ProjectionStore.getShellSnapshot")(function* (options) {
         const existing = (yield* Ref.get(replayState)).projections;
         const selectedThreadIds = [...existing.entries()]
@@ -7952,8 +7959,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         const run = projection.runs.find((candidate) => candidate.id === runId);
         return projection.messages.find((message) => message.id === run?.userMessageId);
       }),
-      hasQueuedToolBoundaryWork: (threadId, runId) =>
-        Effect.gen(function* () {
+      hasQueuedToolBoundaryWork: Effect.fn("ProjectionStore.hasQueuedToolBoundaryWork")(
+        function* (threadId, runId) {
           const projection = (yield* Ref.get(replayState)).projections.get(threadId);
           return (
             projection !== undefined &&
@@ -7963,9 +7970,10 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             projection.runs.some((run) => run.status === "queued" && run.queueHeld !== true) &&
             !projection.runtimeRequests.some((request) => request.status === "pending")
           );
-        }),
-      getQueuedToolBoundaryContext: (threadId, node) =>
-        Effect.gen(function* () {
+        },
+      ),
+      getQueuedToolBoundaryContext: Effect.fn("ProjectionStore.getQueuedToolBoundaryContext")(
+        function* (threadId, node) {
           const projection = (yield* Ref.get(replayState)).projections.get(threadId);
           if (projection === undefined)
             return yield* new ProjectionStoreThreadNotFoundError({ threadId });
@@ -8019,7 +8027,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
             subagents: [],
             turnItems: [],
           };
-        }),
+        },
+      ),
       canStartQueuedRun: Effect.fn("ProjectionStore.canStartQueuedRun")(function* (threadId) {
         const projection = (yield* Ref.get(replayState)).projections.get(threadId);
         if (projection === undefined)

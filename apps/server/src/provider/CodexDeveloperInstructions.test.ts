@@ -65,6 +65,7 @@ describe("buildCodexAdditionalContext", () => {
       sections.map((entry) => entry.value).join("\n\n"),
       T3_CODE_ORCHESTRATION_INSTRUCTIONS.trim(),
     );
+    const instructions = context.t3_code_runtime!.value;
     NodeAssert.match(instructions, /running in Jones Code/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);

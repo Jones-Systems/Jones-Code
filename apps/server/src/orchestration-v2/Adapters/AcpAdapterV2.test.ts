@@ -1,4 +1,3 @@
-import * as NodeFS from "node:fs";
 import { MessageId, NodeId, ProjectId, RunAttemptId, RunId } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 
@@ -14,6 +13,7 @@ import { AcpRegistrySettings } from "@t3tools/provider-acp-registry/settings";
 import { AcpRegistryCatalog } from "@t3tools/provider-acp-registry/server/AcpRegistrySupport";
 import { decodeAcpReplayTranscript, makeAcpReplayRuntime } from "./AcpAdapterV2.testkit.ts";
 // @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -72,7 +72,6 @@ import {
 } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
   AcpProviderCapabilitiesV2,
@@ -158,23 +157,38 @@ function makeTurnInput(input: {
   };
 }
 
-const waitForPublishedProcessIds = (
-  fileSystem: FileSystem.FileSystem,
-  path: string,
-  count: number,
-) =>
-  Effect.gen(function* () {
-    while (true) {
-      const ids = (yield* fileSystem.readFileString(path))
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean)
-        .map(Number);
-      if (ids.length === count && ids.every((pid) => Number.isSafeInteger(pid) && pid > 1)) {
-        return ids;
+const waitForPublishedProcessIds = (path: string, count: number) =>
+  Effect.callback<ReadonlyArray<number>>((resume) => {
+    // Subscribe before reading so publication between startup and subscription
+    // cannot be missed. Watch the directory to cover both writes and renames.
+    const read = () => {
+      try {
+        const ids = NodeFS.readFileSync(path, "utf8")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map(Number);
+        if (ids.length === count && ids.every((pid) => Number.isSafeInteger(pid) && pid > 1)) {
+          finish(Effect.succeed(ids));
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") finish(Effect.die(error));
       }
-      yield* Effect.sleep("10 millis");
-    }
+    };
+    const watcher = NodeFS.watch(NodePath.dirname(path), (_event, filename) => {
+      if (filename === null || filename.toString() === NodePath.basename(path)) read();
+    });
+    const close = () => {
+      watcher.removeAllListeners();
+      watcher.close();
+    };
+    const finish: typeof resume = (result) => {
+      close();
+      resume(result);
+    };
+    watcher.on("error", (error) => finish(Effect.die(error)));
+    read();
+    return Effect.sync(close);
   }).pipe(Effect.timeoutOption("2 seconds"));
 
 function linuxProcessStart(pid: number): string | undefined {
@@ -244,13 +258,6 @@ function processExists(pid: number): boolean {
     return false;
   }
 }
-
-const waitForProcessesToExit = (pids: ReadonlyArray<number>) =>
-  Effect.gen(function* () {
-    while (pids.some(processExists)) {
-      yield* Effect.sleep("10 millis");
-    }
-  }).pipe(Effect.timeoutOption("2 seconds"));
 
 const DEFAULT_GROK_SETTINGS = Schema.decodeSync(GrokSettings)({});
 const DROID_SETTINGS = Schema.decodeSync(AcpRegistrySettings)({ agentId: "factory-droid" });
@@ -2532,9 +2539,30 @@ describe("AcpAdapterV2", () => {
       const mockAgentPath = yield* path.fromFileUrl(
         new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
       );
+      const scratchRoot = path.join(process.cwd(), "tmp");
+      yield* fileSystem.makeDirectory(scratchRoot, { recursive: true });
       const commandPidPath = yield* fileSystem.makeTempFileScoped({
+        directory: scratchRoot,
         prefix: "t3-acp-provider-exit-command-",
       });
+      const runtimeClosed = yield* Deferred.make<void>();
+      const observedSpawner: ChildProcessSpawner.ChildProcessSpawner["Service"] = {
+        ...childProcessSpawner,
+        spawn: (command) =>
+          Effect.gen(function* () {
+            // Registered first in the runtime's scope, hence run after its
+            // process-tree and child-handle finalizers, including automatic exit.
+            yield* Effect.addFinalizer(() => Deferred.succeed(runtimeClosed, undefined));
+            return yield* childProcessSpawner.spawn(command);
+          }),
+      };
+      const waitForProcessesToExit = (pids: ReadonlyArray<number>) =>
+        Deferred.await(runtimeClosed).pipe(
+          Effect.timeoutOption("2 seconds"),
+          Effect.map((closed) =>
+            Option.isSome(closed) && !pids.some(processExists) ? closed : Option.none(),
+          ),
+        );
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => cleanupPublishedDetachedFixture(commandPidPath)),
       );
@@ -2546,7 +2574,7 @@ describe("AcpAdapterV2", () => {
           capabilities: AcpProviderCapabilitiesV2,
           terminateRuntimeProcessGroupOnInterrupt: true,
           makeRuntime: makeMockRuntime({
-            childProcessSpawner,
+            childProcessSpawner: observedSpawner,
             mockAgentPath,
             ownDescendantProcessGroups: true,
             ownDetachedProcessGroup: true,
@@ -2591,7 +2619,7 @@ describe("AcpAdapterV2", () => {
         )
         .pipe(Effect.exit, Effect.forkScoped);
 
-      const published = yield* waitForPublishedProcessIds(fileSystem, commandPidPath, 3);
+      const published = yield* waitForPublishedProcessIds(commandPidPath, 3);
       assert.isTrue(Option.isSome(published), "detached fixture must publish all process IDs");
       const pids = Option.getOrThrow(published);
       assert.isTrue(

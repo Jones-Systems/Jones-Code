@@ -603,21 +603,95 @@ it.live(
     ),
 );
 
-it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] as const)(
-  "preserves native history only for compatible account switches (%s)",
-  (mode) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const name = `shared-home-${mode}`;
-        const cwd = yield* checkpointWorkspace(name);
-        const threadId = ThreadId.make(`thread:${name}`);
-        const targetId = ProviderInstanceId.make("codex-shadow-account");
-        const state = yield* Ref.make<RestartAdapterState>({
-          activeTurn: null,
-          opened: [],
-          started: [],
-          closedSessionCount: 0,
-          failedReplacementOpen: true,
+it.live.each([
+  "active",
+  "idle",
+  "selection-command",
+  "pooled",
+  "separate-home",
+  "missing-active",
+  "missing-idle",
+  "missing-binding",
+  "missing-picker",
+] as const)("preserves native history only for compatible account switches (%s)", (mode) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const name = `shared-home-${mode}`;
+      const active = mode === "active" || mode === "missing-active";
+      const cwd = yield* checkpointWorkspace(name);
+      const threadId = ThreadId.make(`thread:${name}`);
+      const targetId = ProviderInstanceId.make("codex-shadow-account");
+      const state = yield* Ref.make<RestartAdapterState>({
+        activeTurn: null,
+        opened: [],
+        started: [],
+        closedSessionCount: 0,
+        failedReplacementOpen: true,
+      });
+      const resumes: Array<{
+        instanceId: ProviderInstanceId;
+        nativeId: string | null | undefined;
+      }> = [];
+      const messages: string[] = [];
+      const capabilities = mode === "pooled" ? pooledCapabilities : exclusiveCapabilities;
+      const adapters = [providerInstanceId, targetId].map((instanceId) => {
+        const base = makeRestartAdapter(state, capabilities, instanceId);
+        return {
+          ...base,
+          openSession: (input) =>
+            base.openSession(input).pipe(
+              Effect.map((session) => ({
+                ...session,
+                resumeThread: (input) =>
+                  Effect.gen(function* () {
+                    resumes.push({
+                      instanceId,
+                      nativeId: input.providerThread.nativeThreadRef?.nativeId,
+                    });
+                    return yield* session.resumeThread(input);
+                  }),
+                startTurn: (input) =>
+                  Effect.gen(function* () {
+                    messages.push(input.message.text);
+                    yield* session.startTurn(input);
+                  }),
+              })),
+            ),
+        } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
+      });
+      const layerRegistry = Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+        get: (instanceId) =>
+          Effect.succeed(adapters.find((adapter) => adapter.instanceId === instanceId)!),
+        list: () => Effect.succeed([providerInstanceId, targetId]),
+        getMetadata: (instanceId) =>
+          Effect.succeed({
+            driver,
+            continuationKey:
+              mode === "separate-home" ? `codex:home:/${instanceId}` : "codex:home:/shared",
+            enabled: true,
+            capabilities,
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const selection = {
+          ...initialSelection,
+          model: active ? initialSelection.model : "complete",
+        };
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${name}:create`),
+          threadId,
+          projectId: ProjectId.make(`project:${name}`),
+          title: name,
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
         });
         const dispatch = (step: string, modelSelection: ModelSelection, targetRunId?: RunId) =>
           Effect.gen(function* () {
@@ -782,6 +856,7 @@ it.live.each(["active", "idle", "selection-command", "pooled", "separate-home"] 
         assert.equal(returnedThread.providerInstanceId, providerInstanceId);
         assert.isEmpty(third.contextHandoffs);
         assert.deepEqual(messages, ["first", "second", "third"]);
-      }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, registry))),
-    ),
+      }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
+    }),
+  ),
 );

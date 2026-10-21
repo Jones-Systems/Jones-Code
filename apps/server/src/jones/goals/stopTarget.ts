@@ -7,6 +7,11 @@ export const hasRetainedGoalStopTarget = (
   activeProviderThreadId: OrchestrationV2ProviderThread["id"] | null,
 ): boolean =>
   run !== undefined &&
+  // A retained binding is not evidence that a queued or pre-start run owns a
+  // native turn. Let upstream cancel that start and reach later background work.
+  run.status !== "queued" &&
+  run.status !== "preparing" &&
+  run.status !== "starting" &&
   run.providerThreadId === activeProviderThreadId &&
   providerThreads.some(
     (thread) =>

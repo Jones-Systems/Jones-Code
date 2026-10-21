@@ -932,15 +932,20 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const activeTurn = yield* Ref.make<ActiveCursorTurn | null>(null);
         const planIds = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact["id"]>());
 
-        const emitProviderEvent = (
-          event: ProviderAdapter.ProviderAdapterV2Event,
-          captured?: ProviderEventOrigin.ProviderEventProducerOrigin,
-        ) =>
-          Effect.gen(function* () {
-            const producer =
-              captured ?? (yield* CursorEventProducerContext) ?? sessionEventProducer.origin;
-            yield* Queue.offer(events, ProviderEventOrigin.stampProviderEvent(event, { producer }));
-          }).pipe(Effect.asVoid);
+        const emitProviderEvent = Effect.fn("CursorAdapterV2.emitProviderEvent")(
+          (
+            event: ProviderAdapter.ProviderAdapterV2Event,
+            captured?: ProviderEventOrigin.ProviderEventProducerOrigin,
+          ) =>
+            Effect.gen(function* () {
+              const producer =
+                captured ?? (yield* CursorEventProducerContext) ?? sessionEventProducer.origin;
+              yield* Queue.offer(
+                events,
+                ProviderEventOrigin.stampProviderEvent(event, { producer }),
+              );
+            }).pipe(Effect.asVoid),
+        );
 
         const resolveItemOrdinal = (context: ActiveCursorTurn, nativeItemId: string) =>
           Effect.sync(() => {

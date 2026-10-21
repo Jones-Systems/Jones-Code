@@ -8686,107 +8686,111 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
   );
 });
 
-it.effect("a restarted watch reactor reports news from the outage once and keeps stops", () =>
-  Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const projectId = ProjectId.make("pr-watch-restart-project");
-    yield* seedProject({
-      projectId,
-      title: "Watch restart",
-      workspaceRoot: "/workspace/watch-restart",
-      defaultModelSelection: null,
-      createdAt: "2026-10-01T00:00:00.000Z",
-    });
-    const [watched, stopped] = ["watched", "stopped"].map((name) =>
-      ThreadId.make(`runtime-pull-request-watch-restart-${name}`),
-    );
-    for (const threadId of [watched!, stopped!]) {
-      yield* orchestrator.dispatch({
-        type: "thread.create",
-        createdBy: "user",
-        creationSource: "web",
-        commandId: CommandId.make(`create:${threadId}`),
-        threadId,
+it.layer(layerTest)("restored watch restart", (it) => {
+  it.effect("a restarted watch reactor reports news from the outage once and keeps stops", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("pr-watch-restart-project");
+      yield* seedProject({
         projectId,
         title: "Watch restart",
-        modelSelection,
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
+        workspaceRoot: "/workspace/watch-restart",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
       });
+      const [watched, stopped] = ["watched", "stopped"].map((name) =>
+        ThreadId.make(`runtime-pull-request-watch-restart-${name}`),
+      );
+      for (const threadId of [watched!, stopped!]) {
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make(`create:${threadId}`),
+          threadId,
+          projectId,
+          title: "Watch restart",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`watch:${threadId}`),
+          threadId,
+          host: "github.com",
+          repository: "pingdotgg/t3code",
+          number: 11,
+          watching: true,
+          link: { url: "https://github.com/pingdotgg/t3code/pull/11", source: "agent" },
+        });
+      }
+      let lint: "pending" | "success" = "pending";
+      // Each reactor starts with nothing in memory, as after a restart.
+      const restart = PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () =>
+                Effect.sync(() => ({
+                  ...watchedPullRequestDetail({
+                    projectId,
+                    number: 11,
+                    at: "2026-10-02T12:00:00.000Z",
+                  }),
+                  checks: [{ name: "lint", status: lint, description: null, url: null }],
+                })),
+              activity: () =>
+                Effect.succeed({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      const summaries = (threadId: ThreadId) =>
+        Effect.map(orchestrator.getThreadRecords(threadId, ["messages"]), ({ messages }) =>
+          messages.flatMap((message) => message.notification?.summary ?? []),
+        );
+
+      yield* (yield* restart).sweep;
       yield* orchestrator.dispatch({
         type: "thread.pull-request.watch",
-        commandId: CommandId.make(`watch:${threadId}`),
-        threadId,
+        commandId: CommandId.make(`unwatch:${stopped}`),
+        threadId: stopped!,
         host: "github.com",
         repository: "pingdotgg/t3code",
         number: 11,
-        watching: true,
-        link: { url: "https://github.com/pingdotgg/t3code/pull/11", source: "agent" },
+        watching: false,
       });
-    }
-    let lint: "pending" | "success" = "pending";
-    // Each reactor starts with nothing in memory, as after a restart.
-    const restart = PullRequestWatchReactor.make.pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          NodeServices.layer,
-          Layer.mock(PullRequestService.PullRequestService)({
-            detail: () =>
-              Effect.sync(() => ({
-                ...watchedPullRequestDetail({
-                  projectId,
-                  number: 11,
-                  at: "2026-10-02T12:00:00.000Z",
-                }),
-                checks: [{ name: "lint", status: lint, description: null, url: null }],
-              })),
-            activity: () =>
-              Effect.succeed({
-                comments: [],
-                commentCount: 0,
-                commentsTruncated: false,
-                reviewThreads: [],
-                commits: [],
-              }),
-          }),
-        ),
-      ),
-    );
-    const summaries = (threadId: ThreadId) =>
-      Effect.map(orchestrator.getThreadRecords(threadId, ["messages"]), ({ messages }) =>
-        messages.flatMap((message) => message.notification?.summary ?? []),
+      // The checks finish while the server is down.
+      lint = "success";
+      yield* (yield* restart).sweep;
+      yield* (yield* restart).sweep;
+
+      assert.deepEqual(yield* summaries(watched!), ["#11: checks passed"]);
+      assert.isTrue(
+        (yield* orchestrator.getThreadShell(watched!))?.pullRequests?.[0]?.watch?.passed,
       );
-
-    yield* (yield* restart).sweep;
-    yield* orchestrator.dispatch({
-      type: "thread.pull-request.watch",
-      commandId: CommandId.make(`unwatch:${stopped}`),
-      threadId: stopped!,
-      host: "github.com",
-      repository: "pingdotgg/t3code",
-      number: 11,
-      watching: false,
-    });
-    // The checks finish while the server is down.
-    lint = "success";
-    yield* (yield* restart).sweep;
-    yield* (yield* restart).sweep;
-
-    assert.deepEqual(yield* summaries(watched!), ["#11: checks passed"]);
-    assert.isTrue((yield* orchestrator.getThreadShell(watched!))?.pullRequests?.[0]?.watch?.passed);
-    assert.deepEqual(yield* summaries(stopped!), []);
-    assert.isUndefined((yield* orchestrator.getThreadShell(stopped!))?.pullRequests?.[0]?.watch);
-    // Later cases share this layer and count reads of every watch.
-    yield* orchestrator.dispatch({
-      type: "thread.pull-request.watch",
-      commandId: CommandId.make(`unwatch:${watched}`),
-      threadId: watched!,
-      host: "github.com",
-      repository: "pingdotgg/t3code",
-      number: 11,
-      watching: false,
-    });
-  }),
-);
+      assert.deepEqual(yield* summaries(stopped!), []);
+      assert.isUndefined((yield* orchestrator.getThreadShell(stopped!))?.pullRequests?.[0]?.watch);
+      // Later cases share this layer and count reads of every watch.
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make(`unwatch:${watched}`),
+        threadId: watched!,
+        host: "github.com",
+        repository: "pingdotgg/t3code",
+        number: 11,
+        watching: false,
+      });
+    }),
+  );
+});

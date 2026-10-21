@@ -2060,7 +2060,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   // the first check means a change that lands in between is not lost.
   const makeChangeSignal = Effect.gen(function* () {
     const changes = yield* PubSub.unbounded<void>();
-    const until = (predicate: () => boolean): Effect.Effect<void> =>
+    const until = (predicate: () => boolean, _milestone?: string): Effect.Effect<void> =>
       Effect.scoped(
         Effect.gen(function* () {
           const subscription = yield* PubSub.subscribe(changes);
@@ -10774,6 +10774,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             },
           });
 
+          const changes = yield* makeChangeSignal;
           const fileSystem = yield* FileSystem.FileSystem;
           const idAllocator = yield* IdAllocator.IdAllocatorV2;
           const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -10796,7 +10797,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               offer: (request) =>
                 Effect.sync(() => {
                   continuationRequests.push(request);
-                }),
+                }).pipe(Effect.andThen(changes.notify)),
             },
             queryRunner: {
               allocateSessionId: Effect.succeed(WAKE_NATIVE_SESSION),
@@ -10863,7 +10864,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Stream.runForEach((event) =>
               Effect.sync(() => {
                 events.push(event);
-              }),
+              }).pipe(Effect.andThen(changes.notify)),
             ),
             Effect.forkScoped,
           );
@@ -10897,7 +10898,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(processQueues.length, 1);
           const firstProcess = processQueues[0]!;
           yield* Queue.offer(firstProcess, subagentTaskStarted);
-          yield* awaitUntil(() => subagentEvents().length >= 1, "subagent node created");
+          yield* changes.until(() => subagentEvents().length >= 1, "subagent node created");
           assert.equal(subagentEvents()[0]?.subagent.status, "running");
           yield* Queue.offer(firstProcess, subagentAsyncAck);
           yield* Queue.offer(
@@ -10907,14 +10908,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               result: "Spawned the subagent in the background.",
             }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.some((event) => event.type === "turn.terminal"),
             "first turn terminal",
           );
           assert.isTrue(yield* hasPendingBackgroundWork);
 
           yield* Queue.offer(firstProcess, subagentNotification);
-          yield* awaitUntil(() => continuationRequests.length === 1, "continuation after notify");
+          yield* changes.until(
+            () => continuationRequests.length === 1,
+            "continuation after notify",
+          );
           assert.equal(continuationRequests[0]?.detail, SUBAGENT_SUMMARY);
 
           const alternateModel = CLAUDE_TEST_RESTART_MODEL_SELECTION;
@@ -10941,7 +10945,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               result: "User turn finished after model switch.",
             }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.filter((event) => event.type === "turn.terminal").length === 2,
             "user turn terminal after replace",
           );
@@ -10970,7 +10974,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               messageCreationSource: "provider",
             }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.filter((event) => event.type === "turn.terminal").length === 3,
             "continuation terminal after buffered subagent drain",
           );
@@ -11459,6 +11463,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const changes = yield* makeChangeSignal;
           const fileSystem = yield* FileSystem.FileSystem;
           const idAllocator = yield* IdAllocator.IdAllocatorV2;
           const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -11482,7 +11487,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               offer: (request) =>
                 Effect.sync(() => {
                   continuationRequests.push(request);
-                }),
+                }).pipe(Effect.andThen(changes.notify)),
             },
             queryRunner: {
               allocateSessionId: Effect.succeed(WAKE_NATIVE_SESSION),
@@ -11535,7 +11540,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             Stream.runForEach((event) =>
               Effect.sync(() => {
                 events.push(event);
-              }),
+              }).pipe(Effect.andThen(changes.notify)),
             ),
             Effect.forkScoped,
           );
@@ -11559,13 +11564,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           );
           yield* Queue.offer(processQueues[0]!, wakeTaskStarted);
           yield* Queue.offer(processQueues[0]!, turnOneResult);
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.filter((event) => event.type === "turn.terminal").length === 1,
             "first turn terminal",
           );
           yield* Queue.offer(processQueues[0]!, wakeNotification);
           yield* Queue.offer(processQueues[0]!, wakeAssistant);
-          yield* awaitUntil(() => continuationRequests.length === 1, "first continuation request");
+          yield* changes.until(
+            () => continuationRequests.length === 1,
+            "first continuation request",
+          );
           assert.isTrue(yield* hasPendingBackgroundWork);
 
           const alternateModel = CLAUDE_TEST_RESTART_MODEL_SELECTION;
@@ -11621,7 +11629,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               result: "Kicked off the retry build in the background.",
             }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.filter((event) => event.type === "turn.terminal").length === 2,
             "retry turn terminal",
           );
@@ -11646,7 +11654,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               text: "The retry build has finished.",
             }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => continuationRequests.length === 2,
             "continuation request after retry",
           );
@@ -12871,6 +12879,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   ])("$title", ({ reset }) =>
     Effect.scoped(
       Effect.gen(function* () {
+        const changes = yield* makeChangeSignal;
         const fileSystem = yield* FileSystem.FileSystem;
         const idAllocator = yield* IdAllocator.IdAllocatorV2;
         const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
@@ -12969,7 +12978,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Stream.runForEach((event) =>
             Effect.sync(() => {
               events.push(event);
-            }),
+            }).pipe(Effect.andThen(changes.notify)),
           ),
           Effect.forkScoped,
         );
@@ -13009,7 +13018,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             queues[0]!,
             makeResultFrame({ uuid: `result-rewind-${ordinal}`, result: `Answer ${ordinal}` }),
           );
-          yield* awaitUntil(
+          yield* changes.until(
             () => events.filter((event) => event.type === "turn.terminal").length === ordinal,
             `rewind turn ${ordinal}`,
           );
@@ -13107,7 +13116,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: row.nativeThreadRef!.nativeId,
           }),
         );
-        yield* awaitUntil(
+        yield* changes.until(
           () =>
             events.filter((event) => event.type === "runtime_identity.observed").length >
             observedCount,
@@ -13996,7 +14005,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           harness.sdkMessages,
           workflowSnapshot({ uuid: "00000000-0000-4000-8000-000000001121", state: "start" }),
         );
-        yield* awaitUntil(() => coordinatorCount() > inTurnCount, "in-turn workflow snapshot");
+        yield* harness.until(() => coordinatorCount() > inTurnCount, "in-turn workflow snapshot");
         assert.equal(coordinatorCount(), inTurnCount + 1);
 
         yield* Queue.offer(
@@ -14014,7 +14023,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           harness.sdkMessages,
           workflowSnapshot({ uuid: "00000000-0000-4000-8000-000000001123", state: "done" }),
         );
-        yield* awaitUntil(
+        yield* harness.until(
           () => coordinatorCount() > betweenTurnCount,
           "between-turn workflow snapshot",
         );
@@ -14069,7 +14078,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           })) {
             yield* harness.offerAndWait(frame);
           }
-          yield* awaitUntil(() => toolUpdates(oldBash).length === 1, "old workflow tool running");
+          yield* harness.until(
+            () => toolUpdates(oldBash).length === 1,
+            "old workflow tool running",
+          );
           readsUntilPause = 2;
           const stop = yield* harness.runtime
             .interruptTurn({
@@ -14113,7 +14125,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           })) {
             yield* Queue.offer(resumedQueue, frame);
           }
-          yield* awaitUntil(
+          yield* harness.until(
             () => toolUpdates(newBash).length === 1,
             "resumed workflow tool running",
           );
@@ -14133,7 +14145,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               toolUseId: newBash,
             }),
           );
-          yield* awaitUntil(
+          yield* harness.until(
             () => toolUpdates(newBash).at(-1)?.status === "completed",
             "resumed workflow tool completed",
           );

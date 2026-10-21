@@ -100,7 +100,9 @@ describe("orchestration V2 thread fork", () => {
     "creates an idle app fork and resolves it with Codex native thread/fork on first dispatch",
     () =>
       Effect.gen(function* () {
-        const rawTranscript = yield* readTranscript();
+        const rawTranscript = yield* readTranscript(
+          `${import.meta.dirname}/fixtures/thread_fork_native/codex_transcript.ndjson`,
+        );
         const cwd = yield* Effect.acquireRelease(makeCheckpointWorkspace, (directory) =>
           Effect.service(FileSystem.FileSystem).pipe(
             Effect.flatMap((fs) => fs.remove(directory, { recursive: true, force: true })),

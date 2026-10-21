@@ -1,4 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ServerConfig from "../config.ts";
@@ -230,6 +231,9 @@ it.effect(
         Layer.provideMerge(
           Layer.mergeAll(
             terminals,
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+              deleteForThread: () => Effect.die("unexpected scheduled task cleanup"),
+            }),
             Layer.succeed(PreviewManager.PreviewManager, {
               open: unexpectedPreview,
               navigate: unexpectedPreview,

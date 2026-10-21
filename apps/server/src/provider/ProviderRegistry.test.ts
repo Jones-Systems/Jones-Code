@@ -2311,6 +2311,7 @@ it.layer(
           Layer.provideMerge(ProviderLatestVersions.layer),
           Layer.provideMerge(McpProviderSessions.layer),
           Layer.provideMerge(ResetCreditCoordinator.layerTest),
+          Layer.provideMerge(ProcessAttribution.layer),
           Layer.provideMerge(layerBackgroundPolicyAlwaysRun),
         ),
       );

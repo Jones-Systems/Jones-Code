@@ -136,14 +136,13 @@ const make = Effect.gen(function* () {
   const optionalOwner = yield* Effect.serviceOption(NativeWorkspacePhysicalOwner);
   const owner = () =>
     Option.isSome(optionalOwner) ? Effect.succeed(optionalOwner.value) : Effect.fail(unavailable());
-  const directory = (path: string) =>
-    Effect.gen(function* () {
-      if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path) return yield* conflict();
-      const value = yield* fs.inspect(path);
-      if (value === null || value.kind !== "directory" || value.realPath !== path)
-        return yield* conflict();
-      return value;
-    });
+  const directory = Effect.fn("NativeWorkspacePhysicalPorts.directory")(function* (path: string) {
+    if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path) return yield* conflict();
+    const value = yield* fs.inspect(path);
+    if (value === null || value.kind !== "directory" || value.realPath !== path)
+      return yield* conflict();
+    return value;
+  });
   const readGit = (cwd: string, args: readonly string[]) =>
     git
       .execute({
@@ -161,458 +160,439 @@ const make = Effect.gen(function* () {
         ),
         Effect.mapError(conflict),
       );
-  const common = (cwd: string) =>
-    Effect.gen(function* () {
-      const path = (yield* readGit(cwd, [
-        "rev-parse",
-        "--path-format=absolute",
-        "--git-common-dir",
-      ])).trim();
-      const physical = yield* directory(path);
-      return { path, identity: physical.birth };
+  const common = Effect.fn("NativeWorkspacePhysicalPorts.common")(function* (cwd: string) {
+    const path = (yield* readGit(cwd, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ])).trim();
+    const physical = yield* directory(path);
+    return { path, identity: physical.birth };
+  });
+  const claimFor = Effect.fn("NativeWorkspacePhysicalPorts.claimFor")(function* (
+    basis: NativeWorkspaceBasis,
+  ) {
+    if (!repository.readWorkspaceClaim || !repository.readWorkspaceAdmission)
+      return yield* unavailable();
+    const decoded = yield* Schema.decodeEffect(
+      Schema.fromJsonString(
+        Schema.Struct({ claimId: Schema.NonEmptyString, ownerId: Schema.NonEmptyString }),
+      ),
+    )(basis.producerId).pipe(Effect.mapError(conflict));
+    const history = yield* repository
+      .readWorkspaceClaim(decoded.claimId)
+      .pipe(Effect.mapError(conflict));
+    const admission = yield* repository
+      .readWorkspaceAdmission(decoded.claimId)
+      .pipe(Effect.mapError(conflict));
+    if (canonical(admission) !== canonical(basis)) return yield* conflict();
+    const current = yield* (yield* owner()).readCurrent(history.intent);
+    if (current.bootId !== basis.bootId || current.producerId !== decoded.ownerId)
+      return yield* conflict();
+    return history.intent;
+  });
+  const definitions = Effect.fn("NativeWorkspacePhysicalPorts.definitions")(function* (
+    claim: Repository.NativeCreationStoredIntent,
+  ) {
+    const project = yield* projects
+      .get(ProjectId.make(claim.binding.projectId))
+      .pipe(Effect.mapError(conflict));
+    if (Option.isNone(project) || project.value.workspaceRoot !== claim.resources.projectCwd)
+      return yield* conflict();
+    const currentSettings = yield* settings.getSettings.pipe(Effect.mapError(conflict));
+    const script = setupProjectScript(
+      resolveProjectScripts(currentSettings, {
+        id: project.value.projectId,
+        scripts: project.value.scripts,
+      }),
+    );
+    const revision = claim.binding.startFromOrigin
+      ? `refs/remotes/origin/${claim.binding.baseBranch.replace(/^origin\//u, "")}`
+      : claim.binding.baseBranch;
+    const oid = (yield* git
+      .resolveCommit({ cwd: claim.resources.projectCwd, revision })
+      .pipe(Effect.mapError(conflict))).commitSha;
+    const readTreeFile = Effect.fn("NativeWorkspacePhysicalPorts.readTreeFile")(function* (
+      name: string,
+    ) {
+      const entry = yield* readGit(claim.resources.projectCwd, ["ls-tree", "-z", oid, "--", name]);
+      if (entry === "") return null;
+      if (!entry.startsWith("100644 ") && !entry.startsWith("100755 ")) return yield* conflict();
+      return yield* readGit(claim.resources.projectCwd, ["show", `${oid}:${name}`]);
     });
-  const claimFor = (basis: NativeWorkspaceBasis) =>
-    Effect.gen(function* () {
-      if (!repository.readWorkspaceClaim || !repository.readWorkspaceAdmission)
-        return yield* unavailable();
-      const decoded = yield* Schema.decodeEffect(
-        Schema.fromJsonString(
-          Schema.Struct({ claimId: Schema.NonEmptyString, ownerId: Schema.NonEmptyString }),
-        ),
-      )(basis.producerId).pipe(Effect.mapError(conflict));
-      const history = yield* repository
-        .readWorkspaceClaim(decoded.claimId)
-        .pipe(Effect.mapError(conflict));
-      const admission = yield* repository
-        .readWorkspaceAdmission(decoded.claimId)
-        .pipe(Effect.mapError(conflict));
-      if (canonical(admission) !== canonical(basis)) return yield* conflict();
-      const current = yield* (yield* owner()).readCurrent(history.intent);
-      if (current.bootId !== basis.bootId || current.producerId !== decoded.ownerId)
-        return yield* conflict();
-      return history.intent;
+    const modules = yield* readTreeFile(".gitmodules");
+    const projectFile = yield* readTreeFile("t3.json");
+    const parsed = projectFile === null ? null : parseT3ProjectFile(projectFile);
+    if (projectFile !== null && parsed === null) return yield* conflict();
+    const override = resolveProjectSettings(currentSettings, project.value.projectId).settings
+      .worktreeSubmodules;
+    const mode =
+      modules === null
+        ? "none"
+        : resolveProjectFileBackedSetting("worktreeSubmodules", override, parsed).value;
+    const remotes = (yield* readGit(claim.resources.projectCwd, ["remote"]))
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length);
+    const selectedBase = claim.binding.baseBranch.replace(/^refs\/remotes\//, "");
+    const prefix = remotes.find((remote) => selectedBase.startsWith(`${remote}/`));
+    const baseBranch =
+      prefix === undefined
+        ? claim.binding.baseBranch.replace(/^refs\/heads\//, "")
+        : selectedBase.slice(prefix.length + 1);
+    const baseConfiguration = {
+      key: `branch.${claim.resources.branch}.gh-merge-base`,
+      value: baseBranch,
+    };
+    const baseConfigurations = [
+      baseConfiguration,
+      ...(prefix === undefined
+        ? []
+        : [
+            {
+              key: `branch.${claim.resources.branch}.t3-merge-base-ref`,
+              value: `refs/remotes/${selectedBase}`,
+            },
+          ]),
+    ];
+    return {
+      script,
+      revision,
+      oid,
+      mode,
+      submodules: canonical({ mode, modules, projectFile }),
+      baseConfigurations,
+      base: canonical(baseConfigurations),
+    };
+  });
+  const materialBirth = Effect.fn("NativeWorkspacePhysicalPorts.materialBirth")(function* (
+    worktreePath: string,
+  ) {
+    const target = yield* directory(worktreePath);
+    const dotGit = yield* fs.inspect(NodePath.join(worktreePath, ".git"));
+    if (dotGit === null || dotGit.kind !== "file") return yield* conflict();
+    const gitDirectory = (yield* readGit(worktreePath, ["rev-parse", "--absolute-git-dir"])).trim();
+    const physicalDirectory = yield* directory(gitDirectory);
+    return canonical({
+      target: target.birth,
+      dotGit: dotGit.birth,
+      gitDirectory: physicalDirectory.birth,
     });
-  const definitions = (claim: Repository.NativeCreationStoredIntent) =>
-    Effect.gen(function* () {
-      const project = yield* projects
-        .get(ProjectId.make(claim.binding.projectId))
-        .pipe(Effect.mapError(conflict));
-      if (Option.isNone(project) || project.value.workspaceRoot !== claim.resources.projectCwd)
-        return yield* conflict();
-      const currentSettings = yield* settings.getSettings.pipe(Effect.mapError(conflict));
-      const script = setupProjectScript(
-        resolveProjectScripts(currentSettings, {
-          id: project.value.projectId,
-          scripts: project.value.scripts,
-        }),
-      );
-      const revision = claim.binding.startFromOrigin
-        ? `refs/remotes/origin/${claim.binding.baseBranch.replace(/^origin\//u, "")}`
-        : claim.binding.baseBranch;
-      const oid = (yield* git
-        .resolveCommit({ cwd: claim.resources.projectCwd, revision })
-        .pipe(Effect.mapError(conflict))).commitSha;
-      const readTreeFile = (name: string) =>
-        Effect.gen(function* () {
-          const entry = yield* readGit(claim.resources.projectCwd, [
-            "ls-tree",
-            "-z",
-            oid,
-            "--",
-            name,
-          ]);
-          if (entry === "") return null;
-          if (!entry.startsWith("100644 ") && !entry.startsWith("100755 "))
-            return yield* conflict();
-          return yield* readGit(claim.resources.projectCwd, ["show", `${oid}:${name}`]);
-        });
-      const modules = yield* readTreeFile(".gitmodules");
-      const projectFile = yield* readTreeFile("t3.json");
-      const parsed = projectFile === null ? null : parseT3ProjectFile(projectFile);
-      if (projectFile !== null && parsed === null) return yield* conflict();
-      const override = resolveProjectSettings(currentSettings, project.value.projectId).settings
-        .worktreeSubmodules;
-      const mode =
-        modules === null
-          ? "none"
-          : resolveProjectFileBackedSetting("worktreeSubmodules", override, parsed).value;
-      const remotes = (yield* readGit(claim.resources.projectCwd, ["remote"]))
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .sort((a, b) => b.length - a.length);
-      const selectedBase = claim.binding.baseBranch.replace(/^refs\/remotes\//, "");
-      const prefix = remotes.find((remote) => selectedBase.startsWith(`${remote}/`));
-      const baseBranch =
-        prefix === undefined
-          ? claim.binding.baseBranch.replace(/^refs\/heads\//, "")
-          : selectedBase.slice(prefix.length + 1);
-      const baseConfiguration = {
-        key: `branch.${claim.resources.branch}.gh-merge-base`,
-        value: baseBranch,
-      };
-      const baseConfigurations = [
-        baseConfiguration,
-        ...(prefix === undefined
-          ? []
-          : [
-              {
-                key: `branch.${claim.resources.branch}.t3-merge-base-ref`,
-                value: `refs/remotes/${selectedBase}`,
-              },
-            ]),
-      ];
-      return {
-        script,
-        revision,
-        oid,
-        mode,
-        submodules: canonical({ mode, modules, projectFile }),
-        baseConfigurations,
-        base: canonical(baseConfigurations),
-      };
-    });
-  const materialBirth = (worktreePath: string) =>
-    Effect.gen(function* () {
-      const target = yield* directory(worktreePath);
-      const dotGit = yield* fs.inspect(NodePath.join(worktreePath, ".git"));
-      if (dotGit === null || dotGit.kind !== "file") return yield* conflict();
-      const gitDirectory = (yield* readGit(worktreePath, [
-        "rev-parse",
-        "--absolute-git-dir",
-      ])).trim();
-      const physicalDirectory = yield* directory(gitDirectory);
-      return canonical({
-        target: target.birth,
-        dotGit: dotGit.birth,
-        gitDirectory: physicalDirectory.birth,
-      });
-    });
+  });
   // Transient evidence is usable only within the current create call, never for retry or recovery.
   const inFlight = new Map<string, NativeWorkspaceProof>();
-  const verify = (basis: NativeWorkspaceBasis, proof: NativeWorkspaceProof) =>
-    Effect.gen(function* () {
-      const targetBirth = yield* materialBirth(proof.worktreePath);
-      const parent = yield* directory(NodePath.dirname(proof.worktreePath));
-      const gitIdentity = yield* common(proof.worktreePath);
-      const dotGit = yield* fs.inspect(NodePath.join(proof.worktreePath, ".git"));
-      if (dotGit === null || dotGit.kind !== "file") return yield* conflict();
-      const link = (yield* fs.readFile(NodePath.join(proof.worktreePath, ".git"))).trim();
-      if (!link.startsWith("gitdir: ")) return yield* conflict();
-      const gitDirectory = (yield* readGit(proof.worktreePath, [
-        "rev-parse",
-        "--absolute-git-dir",
-      ])).trim();
-      yield* directory(gitDirectory);
-      const relative = NodePath.relative(
-        NodePath.join(basis.gitCommonDirectory, "worktrees"),
-        gitDirectory,
+  const verify = Effect.fn("NativeWorkspacePhysicalPorts.verify")(function* (
+    basis: NativeWorkspaceBasis,
+    proof: NativeWorkspaceProof,
+  ) {
+    const targetBirth = yield* materialBirth(proof.worktreePath);
+    const parent = yield* directory(NodePath.dirname(proof.worktreePath));
+    const gitIdentity = yield* common(proof.worktreePath);
+    const dotGit = yield* fs.inspect(NodePath.join(proof.worktreePath, ".git"));
+    if (dotGit === null || dotGit.kind !== "file") return yield* conflict();
+    const link = (yield* fs.readFile(NodePath.join(proof.worktreePath, ".git"))).trim();
+    if (!link.startsWith("gitdir: ")) return yield* conflict();
+    const gitDirectory = (yield* readGit(proof.worktreePath, [
+      "rev-parse",
+      "--absolute-git-dir",
+    ])).trim();
+    yield* directory(gitDirectory);
+    const relative = NodePath.relative(
+      NodePath.join(basis.gitCommonDirectory, "worktrees"),
+      gitDirectory,
+    );
+    if (
+      !relative ||
+      relative.startsWith("..") ||
+      NodePath.isAbsolute(relative) ||
+      NodePath.resolve(proof.worktreePath, link.slice(8)) !== gitDirectory
+    )
+      return yield* conflict();
+    const branch = (yield* readGit(proof.worktreePath, ["symbolic-ref", "HEAD"])).trim();
+    const oid = (yield* readGit(proof.worktreePath, [
+      "rev-parse",
+      "--verify",
+      "HEAD^{commit}",
+    ])).trim();
+    const records = (yield* readGit(basis.projectCwd, ["worktree", "list", "--porcelain", "-z"]))
+      .split("\0\0")
+      .map((record) => record.split("\0"))
+      .filter((record) => record.includes(`worktree ${proof.worktreePath}`));
+    if (
+      targetBirth !== proof.pathBirth ||
+      parent.birth !== basis.parentBirth ||
+      proof.worktreePath !== basis.worktreePath ||
+      gitIdentity.path !== basis.gitCommonDirectory ||
+      gitIdentity.identity !== basis.physicalGitIdentity ||
+      proof.gitCommonDirectory !== basis.gitCommonDirectory ||
+      proof.physicalGitIdentity !== basis.physicalGitIdentity ||
+      branch !== `refs/heads/${proof.branch}` ||
+      records.length !== 1 ||
+      !records[0]!.includes(`branch ${branch}`) ||
+      !records[0]!.includes(`HEAD ${oid}`) ||
+      records[0]!.some((field) => field.startsWith("locked") || field.startsWith("prunable"))
+    )
+      return yield* conflict();
+    const claim = yield* claimFor(basis);
+    const definition = yield* definitions(claim);
+    if (
+      proof.branch !== claim.resources.branch ||
+      definition.submodules !== basis.configuredSubmodulesDefinition ||
+      definition.base !== basis.baseConfigurationDefinition
+    )
+      return yield* conflict();
+    if (
+      proof.baseRef !== basis.baseRef ||
+      proof.configuredSubmodulesDigest !== digest(basis.configuredSubmodulesDefinition) ||
+      proof.baseConfigurationDigest !== digest(basis.baseConfigurationDefinition)
+    )
+      return yield* conflict();
+    for (const configuration of definition.baseConfigurations) {
+      const config = yield* git
+        .readConfigValue(basis.projectCwd, configuration.key)
+        .pipe(Effect.mapError(conflict));
+      if (config !== configuration.value) return yield* conflict();
+    }
+  });
+  const inspect: Workspace.NativeWorkspacePorts["Service"]["inspect"] = Effect.fn(
+    "NativeWorkspacePhysicalPorts.inspect",
+  )(function* (claim, expected) {
+    const currentOwner = yield* owner();
+    const identity = yield* currentOwner.readCurrent(claim);
+    if (
+      identity.bootId !== claim.claimedBootId ||
+      !identity.producerId ||
+      claim.binding.projectCwd !== claim.resources.projectCwd ||
+      claim.binding.requestedBranch !== claim.resources.branch
+    )
+      return yield* conflict();
+    if (claim.binding.runSetupScript) {
+      if (!currentOwner.setup || !currentOwner.assertSetupAvailable) return yield* unavailable();
+      yield* currentOwner.assertSetupAvailable;
+    }
+    const project = yield* directory(claim.resources.projectCwd);
+    const parent = yield* directory(NodePath.dirname(claim.resources.worktreePath));
+    const gitIdentity = yield* common(claim.resources.projectCwd);
+    const definition = yield* definitions(claim);
+    if (claim.binding.runSetupScript && definition.script === null) return yield* unavailable();
+    const basis: NativeWorkspaceBasis = {
+      bootId: identity.bootId,
+      projectId: claim.binding.projectId,
+      projectCwd: claim.resources.projectCwd,
+      projectBirth: project.birth,
+      gitCommonDirectory: gitIdentity.path,
+      physicalGitIdentity: gitIdentity.identity,
+      worktreePath: claim.resources.worktreePath,
+      parentBirth: parent.birth,
+      producerId: canonical({ claimId: claim.claimId, ownerId: identity.producerId }),
+      baseRef: claim.binding.baseBranch,
+      setupDefinition: definition.script === null ? null : canonical(definition.script),
+      configuredSubmodulesDefinition: definition.submodules,
+      baseConfigurationDefinition: definition.base,
+    };
+    const proof = expected ?? inFlight.get(claim.claimId);
+    if (proof !== undefined) {
+      // Intermediate callbacks prove material; base configuration is checked only after its owner completes.
+      const currentBirth = yield* materialBirth(proof.worktreePath);
+      if (
+        currentBirth !== proof.pathBirth ||
+        proof.gitCommonDirectory !== basis.gitCommonDirectory ||
+        proof.physicalGitIdentity !== basis.physicalGitIdentity
+      )
+        return yield* conflict();
+    } else {
+      if ((yield* fs.inspect(claim.resources.worktreePath)) !== null) return yield* conflict();
+      const registration = yield* readGit(basis.projectCwd, [
+        "worktree",
+        "list",
+        "--porcelain",
+        "-z",
+      ]);
+      const refs = yield* readGit(basis.projectCwd, [
+        "for-each-ref",
+        "--format=%(refname)",
+        `refs/heads/${claim.resources.branch}`,
+      ]);
+      const configurations = yield* Effect.forEach(["gh-merge-base", "t3-merge-base-ref"], (key) =>
+        git
+          .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.${key}`)
+          .pipe(Effect.mapError(conflict)),
       );
       if (
-        !relative ||
-        relative.startsWith("..") ||
-        NodePath.isAbsolute(relative) ||
-        NodePath.resolve(proof.worktreePath, link.slice(8)) !== gitDirectory
+        registration.split("\0").includes(`worktree ${basis.worktreePath}`) ||
+        refs.trim() !== "" ||
+        configurations.some((value) => value !== null)
       )
         return yield* conflict();
-      const branch = (yield* readGit(proof.worktreePath, ["symbolic-ref", "HEAD"])).trim();
-      const oid = (yield* readGit(proof.worktreePath, [
-        "rev-parse",
-        "--verify",
-        "HEAD^{commit}",
-      ])).trim();
-      const records = (yield* readGit(basis.projectCwd, ["worktree", "list", "--porcelain", "-z"]))
-        .split("\0\0")
-        .map((record) => record.split("\0"))
-        .filter((record) => record.includes(`worktree ${proof.worktreePath}`));
-      if (
-        targetBirth !== proof.pathBirth ||
-        parent.birth !== basis.parentBirth ||
-        proof.worktreePath !== basis.worktreePath ||
-        gitIdentity.path !== basis.gitCommonDirectory ||
-        gitIdentity.identity !== basis.physicalGitIdentity ||
-        proof.gitCommonDirectory !== basis.gitCommonDirectory ||
-        proof.physicalGitIdentity !== basis.physicalGitIdentity ||
-        branch !== `refs/heads/${proof.branch}` ||
-        records.length !== 1 ||
-        !records[0]!.includes(`branch ${branch}`) ||
-        !records[0]!.includes(`HEAD ${oid}`) ||
-        records[0]!.some((field) => field.startsWith("locked") || field.startsWith("prunable"))
-      )
-        return yield* conflict();
-      const claim = yield* claimFor(basis);
-      const definition = yield* definitions(claim);
-      if (
-        proof.branch !== claim.resources.branch ||
-        definition.submodules !== basis.configuredSubmodulesDefinition ||
-        definition.base !== basis.baseConfigurationDefinition
-      )
-        return yield* conflict();
-      if (
-        proof.baseRef !== basis.baseRef ||
-        proof.configuredSubmodulesDigest !== digest(basis.configuredSubmodulesDefinition) ||
-        proof.baseConfigurationDigest !== digest(basis.baseConfigurationDefinition)
-      )
-        return yield* conflict();
-      for (const configuration of definition.baseConfigurations) {
-        const config = yield* git
-          .readConfigValue(basis.projectCwd, configuration.key)
-          .pipe(Effect.mapError(conflict));
-        if (config !== configuration.value) return yield* conflict();
-      }
-    });
-  const inspect: Workspace.NativeWorkspacePorts["Service"]["inspect"] = (claim, expected) =>
-    Effect.gen(function* () {
-      const currentOwner = yield* owner();
-      const identity = yield* currentOwner.readCurrent(claim);
-      if (
-        identity.bootId !== claim.claimedBootId ||
-        !identity.producerId ||
-        claim.binding.projectCwd !== claim.resources.projectCwd ||
-        claim.binding.requestedBranch !== claim.resources.branch
-      )
-        return yield* conflict();
-      if (claim.binding.runSetupScript) {
-        if (!currentOwner.setup || !currentOwner.assertSetupAvailable) return yield* unavailable();
-        yield* currentOwner.assertSetupAvailable;
-      }
-      const project = yield* directory(claim.resources.projectCwd);
-      const parent = yield* directory(NodePath.dirname(claim.resources.worktreePath));
-      const gitIdentity = yield* common(claim.resources.projectCwd);
-      const definition = yield* definitions(claim);
-      if (claim.binding.runSetupScript && definition.script === null) return yield* unavailable();
-      const basis: NativeWorkspaceBasis = {
-        bootId: identity.bootId,
-        projectId: claim.binding.projectId,
-        projectCwd: claim.resources.projectCwd,
-        projectBirth: project.birth,
-        gitCommonDirectory: gitIdentity.path,
-        physicalGitIdentity: gitIdentity.identity,
-        worktreePath: claim.resources.worktreePath,
-        parentBirth: parent.birth,
-        producerId: canonical({ claimId: claim.claimId, ownerId: identity.producerId }),
-        baseRef: claim.binding.baseBranch,
-        setupDefinition: definition.script === null ? null : canonical(definition.script),
-        configuredSubmodulesDefinition: definition.submodules,
-        baseConfigurationDefinition: definition.base,
-      };
-      const proof = expected ?? inFlight.get(claim.claimId);
-      if (proof !== undefined) {
-        // Intermediate callbacks prove material; base configuration is checked only after its owner completes.
-        const currentBirth = yield* materialBirth(proof.worktreePath);
-        if (
-          currentBirth !== proof.pathBirth ||
-          proof.gitCommonDirectory !== basis.gitCommonDirectory ||
-          proof.physicalGitIdentity !== basis.physicalGitIdentity
-        )
-          return yield* conflict();
-      } else {
-        if ((yield* fs.inspect(claim.resources.worktreePath)) !== null) return yield* conflict();
-        const registration = yield* readGit(basis.projectCwd, [
-          "worktree",
-          "list",
-          "--porcelain",
-          "-z",
-        ]);
-        const refs = yield* readGit(basis.projectCwd, [
-          "for-each-ref",
-          "--format=%(refname)",
-          `refs/heads/${claim.resources.branch}`,
-        ]);
-        const configurations = yield* Effect.forEach(
-          ["gh-merge-base", "t3-merge-base-ref"],
-          (key) =>
-            git
-              .readConfigValue(basis.projectCwd, `branch.${claim.resources.branch}.${key}`)
-              .pipe(Effect.mapError(conflict)),
-        );
-        if (
-          registration.split("\0").includes(`worktree ${basis.worktreePath}`) ||
-          refs.trim() !== "" ||
-          configurations.some((value) => value !== null)
-        )
-          return yield* conflict();
-      }
-      return basis;
-    });
-  const createWorktree: Workspace.NativeWorkspacePorts["Service"]["createWorktree"] = (
-    basis,
-    branch,
-    revalidate,
-  ) =>
-    Effect.gen(function* () {
-      const claim = yield* claimFor(basis);
-      if (branch !== claim.resources.branch) return yield* conflict();
-      const definition = yield* definitions(claim);
-      let proof: NativeWorkspaceProof | undefined;
-      let pending: string | undefined;
-      const completed = new Set<string>();
-      const stepIdentity = (step: Git.LegacyWorktreePreparationStep) =>
-        step.kind === "worktree.base-config" ? `${step.kind}:${step.args[1]}` : step.kind;
-      const checkoutWorkers =
-        (yield* git
-          .readConfigValue(basis.projectCwd, "checkout.workers")
-          .pipe(Effect.mapError(conflict))) ?? "0";
-      yield* git
-        .createWorktree(
-          {
-            cwd: basis.projectCwd,
-            refName: definition.oid,
-            newRefName: branch,
-            baseRefName: basis.baseRef,
-            path: basis.worktreePath,
+    }
+    return basis;
+  });
+  const createWorktree: Workspace.NativeWorkspacePorts["Service"]["createWorktree"] = Effect.fn(
+    "NativeWorkspacePhysicalPorts.createWorktree",
+  )(function* (basis, branch, revalidate) {
+    const claim = yield* claimFor(basis);
+    if (branch !== claim.resources.branch) return yield* conflict();
+    const definition = yield* definitions(claim);
+    let proof: NativeWorkspaceProof | undefined;
+    let pending: string | undefined;
+    const completed = new Set<string>();
+    const stepIdentity = (step: Git.LegacyWorktreePreparationStep) =>
+      step.kind === "worktree.base-config" ? `${step.kind}:${step.args[1]}` : step.kind;
+    const checkoutWorkers =
+      (yield* git
+        .readConfigValue(basis.projectCwd, "checkout.workers")
+        .pipe(Effect.mapError(conflict))) ?? "0";
+    yield* git
+      .createWorktree(
+        {
+          cwd: basis.projectCwd,
+          refName: definition.oid,
+          newRefName: branch,
+          baseRefName: basis.baseRef,
+          path: basis.worktreePath,
+        },
+        {
+          submodules: definition.mode,
+          legacyPreparation: {
+            beforeEffect: Effect.fn("NativeWorkspacePhysicalPorts.beforeEffect")(function* (step) {
+              yield* revalidate;
+              if (
+                pending !== undefined ||
+                completed.has(stepIdentity(step)) ||
+                step.worktreePath !== basis.worktreePath ||
+                step.commonDirectory !== basis.gitCommonDirectory ||
+                step.targetRef !== `refs/heads/${branch}` ||
+                step.baseCommitOid !== definition.oid
+              )
+                return yield* conflict();
+              const expectedArgs =
+                step.kind === "worktree.add"
+                  ? [
+                      "-c",
+                      `checkout.workers=${checkoutWorkers}`,
+                      "worktree",
+                      "add",
+                      "-b",
+                      branch,
+                      "--",
+                      basis.worktreePath,
+                      definition.oid,
+                    ]
+                  : step.kind === "worktree.submodules"
+                    ? [
+                        "submodule",
+                        "update",
+                        "--init",
+                        ...(definition.mode === "recursive" ? ["--recursive"] : []),
+                      ]
+                    : (() => {
+                        const configuration = definition.baseConfigurations.find(
+                          (entry) => entry.key === step.args[1],
+                        );
+                        return configuration === undefined
+                          ? undefined
+                          : ["config", configuration.key, configuration.value];
+                      })();
+              const actualArgs = step.args;
+              if (
+                expectedArgs === undefined ||
+                canonical(actualArgs) !== canonical(expectedArgs) ||
+                step.cwd !==
+                  (step.kind === "worktree.submodules" ? basis.worktreePath : basis.projectCwd) ||
+                (step.kind !== "worktree.add" && !completed.has("worktree.add"))
+              )
+                return yield* conflict();
+              pending = canonical(step);
+            }),
+            afterEffect: Effect.fn("NativeWorkspacePhysicalPorts.afterEffect")(
+              function* (step, result, material) {
+                if (
+                  pending !== canonical(step) ||
+                  result !== "settled_success" ||
+                  material === undefined ||
+                  material.path !== basis.worktreePath ||
+                  material.commonDirectory !== basis.gitCommonDirectory
+                )
+                  return yield* deny("unknown", "Physical worktree owner did not prove completion");
+                const path = yield* directory(material.path);
+                const birth = yield* Schema.decodeEffect(
+                  Schema.fromJsonString(
+                    Schema.Struct({
+                      device: Schema.NonEmptyString,
+                      inode: Schema.NonEmptyString,
+                      birthtime: Schema.Number,
+                    }),
+                  ),
+                )(path.birth).pipe(Effect.mapError(conflict));
+                if (birth.device !== material.device || birth.inode !== material.inode)
+                  return yield* conflict();
+                proof = {
+                  worktreePath: material.path,
+                  pathBirth: yield* materialBirth(material.path),
+                  gitCommonDirectory: basis.gitCommonDirectory,
+                  physicalGitIdentity: basis.physicalGitIdentity,
+                  branch,
+                  baseRef: basis.baseRef,
+                  configuredSubmodulesDigest: digest(basis.configuredSubmodulesDefinition),
+                  baseConfigurationDigest: digest(basis.baseConfigurationDefinition),
+                };
+                inFlight.set(claim.claimId, proof);
+                completed.add(stepIdentity(step));
+                pending = undefined;
+              },
+            ),
           },
-          {
-            submodules: definition.mode,
-            legacyPreparation: {
-              beforeEffect: (step) =>
-                Effect.gen(function* () {
-                  yield* revalidate;
-                  if (
-                    pending !== undefined ||
-                    completed.has(stepIdentity(step)) ||
-                    step.worktreePath !== basis.worktreePath ||
-                    step.commonDirectory !== basis.gitCommonDirectory ||
-                    step.targetRef !== `refs/heads/${branch}` ||
-                    step.baseCommitOid !== definition.oid
-                  )
-                    return yield* conflict();
-                  const expectedArgs =
-                    step.kind === "worktree.add"
-                      ? [
-                          "-c",
-                          `checkout.workers=${checkoutWorkers}`,
-                          "worktree",
-                          "add",
-                          "-b",
-                          branch,
-                          "--",
-                          basis.worktreePath,
-                          definition.oid,
-                        ]
-                      : step.kind === "worktree.submodules"
-                        ? [
-                            "submodule",
-                            "update",
-                            "--init",
-                            ...(definition.mode === "recursive" ? ["--recursive"] : []),
-                          ]
-                        : (() => {
-                            const configuration = definition.baseConfigurations.find(
-                              (entry) => entry.key === step.args[1],
-                            );
-                            return configuration === undefined
-                              ? undefined
-                              : ["config", configuration.key, configuration.value];
-                          })();
-                  const actualArgs = step.args;
-                  if (
-                    expectedArgs === undefined ||
-                    canonical(actualArgs) !== canonical(expectedArgs) ||
-                    step.cwd !==
-                      (step.kind === "worktree.submodules"
-                        ? basis.worktreePath
-                        : basis.projectCwd) ||
-                    (step.kind !== "worktree.add" && !completed.has("worktree.add"))
-                  )
-                    return yield* conflict();
-                  pending = canonical(step);
-                }),
-              afterEffect: (step, result, material) =>
-                Effect.gen(function* () {
-                  if (
-                    pending !== canonical(step) ||
-                    result !== "settled_success" ||
-                    material === undefined ||
-                    material.path !== basis.worktreePath ||
-                    material.commonDirectory !== basis.gitCommonDirectory
-                  )
-                    return yield* deny(
-                      "unknown",
-                      "Physical worktree owner did not prove completion",
-                    );
-                  const path = yield* directory(material.path);
-                  const birth = yield* Schema.decodeEffect(
-                    Schema.fromJsonString(
-                      Schema.Struct({
-                        device: Schema.NonEmptyString,
-                        inode: Schema.NonEmptyString,
-                        birthtime: Schema.Number,
-                      }),
-                    ),
-                  )(path.birth).pipe(Effect.mapError(conflict));
-                  if (birth.device !== material.device || birth.inode !== material.inode)
-                    return yield* conflict();
-                  proof = {
-                    worktreePath: material.path,
-                    pathBirth: yield* materialBirth(material.path),
-                    gitCommonDirectory: basis.gitCommonDirectory,
-                    physicalGitIdentity: basis.physicalGitIdentity,
-                    branch,
-                    baseRef: basis.baseRef,
-                    configuredSubmodulesDigest: digest(basis.configuredSubmodulesDefinition),
-                    baseConfigurationDigest: digest(basis.baseConfigurationDefinition),
-                  };
-                  inFlight.set(claim.claimId, proof);
-                  completed.add(stepIdentity(step));
-                  pending = undefined;
-                }),
-            },
-          },
-        )
-        .pipe(
-          Effect.mapError(() =>
-            deny("unknown", "Physical worktree creation requires original-owner observation"),
-          ),
-          Effect.ensuring(Effect.sync(() => inFlight.delete(claim.claimId))),
-        );
-      if (
-        proof === undefined ||
-        pending !== undefined ||
-        !completed.has("worktree.add") ||
-        definition.baseConfigurations.some(
-          (entry) => !completed.has(`worktree.base-config:${entry.key}`),
-        ) ||
-        (definition.mode !== "none" && !completed.has("worktree.submodules"))
+        },
       )
-        return yield* deny(
-          "unknown",
-          "Physical worktree owner did not prove every configured step",
-        );
-      yield* verify(basis, proof);
-      return proof;
-    });
+      .pipe(
+        Effect.mapError(() =>
+          deny("unknown", "Physical worktree creation requires original-owner observation"),
+        ),
+        Effect.ensuring(Effect.sync(() => inFlight.delete(claim.claimId))),
+      );
+    if (
+      proof === undefined ||
+      pending !== undefined ||
+      !completed.has("worktree.add") ||
+      definition.baseConfigurations.some(
+        (entry) => !completed.has(`worktree.base-config:${entry.key}`),
+      ) ||
+      (definition.mode !== "none" && !completed.has("worktree.submodules"))
+    )
+      return yield* deny("unknown", "Physical worktree owner did not prove every configured step");
+    yield* verify(basis, proof);
+    return proof;
+  });
   const ports: Workspace.NativeWorkspacePorts["Service"] & {
     readonly assertAvailable: NativeWorkspacePhysicalOwner["Service"]["assertAvailable"];
   } = {
-    assertAvailable: (input) =>
-      Effect.gen(function* () {
-        const physicalOwner = yield* owner();
-        if (input.preparation.binding.run_setup_script) {
-          if (!physicalOwner.setup || !physicalOwner.assertSetupAvailable)
-            return yield* unavailable();
-          yield* physicalOwner.assertSetupAvailable;
-        }
-        yield* physicalOwner.assertAvailable(input);
-      }),
+    assertAvailable: Effect.fn("NativeWorkspacePhysicalPorts.assertAvailable")(function* (input) {
+      const physicalOwner = yield* owner();
+      if (input.preparation.binding.run_setup_script) {
+        if (!physicalOwner.setup || !physicalOwner.assertSetupAvailable)
+          return yield* unavailable();
+        yield* physicalOwner.assertSetupAvailable;
+      }
+      yield* physicalOwner.assertAvailable(input);
+    }),
     inspect,
     verify,
     createWorktree,
-    fetch: (basis, revalidate) =>
-      Effect.gen(function* () {
-        const claim = yield* claimFor(basis);
-        if (!claim.binding.startFromOrigin) return yield* conflict();
-        yield* revalidate;
-        yield* git
-          .fetchRemote({ cwd: basis.projectCwd, remoteName: "origin", refName: basis.baseRef })
-          .pipe(
-            Effect.mapError(() =>
-              deny("unknown", "Physical fetch completion requires original-owner observation"),
-            ),
-          );
-      }),
-    setup: (basis, proof, revalidate, custody) =>
-      Effect.gen(function* () {
+    fetch: Effect.fn("NativeWorkspacePhysicalPorts.fetch")(function* (basis, revalidate) {
+      const claim = yield* claimFor(basis);
+      if (!claim.binding.startFromOrigin) return yield* conflict();
+      yield* revalidate;
+      yield* git
+        .fetchRemote({ cwd: basis.projectCwd, remoteName: "origin", refName: basis.baseRef })
+        .pipe(
+          Effect.mapError(() =>
+            deny("unknown", "Physical fetch completion requires original-owner observation"),
+          ),
+        );
+    }),
+    setup: Effect.fn("NativeWorkspacePhysicalPorts.setup")(
+      function* (basis, proof, revalidate, custody) {
         const claim = yield* claimFor(basis);
         const physicalOwner = yield* owner();
         const definition = yield* definitions(claim);
@@ -639,16 +619,18 @@ const make = Effect.gen(function* () {
         if (!result.terminalId)
           return yield* deny("unknown", "Setup original owner did not retain its terminal");
         return result;
-      }),
-    cleanup: (basis, proof, revalidate) =>
-      Effect.gen(function* () {
+      },
+    ),
+    cleanup: Effect.fn("NativeWorkspacePhysicalPorts.cleanup")(
+      function* (basis, proof, revalidate) {
         const claim = yield* claimFor(basis);
         const physicalOwner = yield* owner();
         if (!physicalOwner.rollback) return yield* unavailable();
         yield* revalidate;
         yield* verify(basis, proof);
         yield* physicalOwner.rollback({ claim, basis, proof, revalidate });
-      }),
+      },
+    ),
   };
   return Workspace.NativeWorkspacePorts.of(ports);
 });

@@ -90,18 +90,16 @@ import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
-function waitUntil<E, R>(predicate: () => Effect.Effect<boolean, E, R>): Effect.Effect<void, E, R> {
+function waitUntil<E, R>(threadId: ThreadId, predicate: () => Effect.Effect<boolean, E, R>) {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (yield* predicate()) return;
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          }),
-      );
-    }
-    assert.fail("Condition was not reached before timeout.");
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    // Stored events replay from the beginning and then subscribe, so changes
+    // committed before this await are not lost. Dispatch publishes after commit,
+    // which also makes release outbox rows visible to the original predicate.
+    const reached = yield* threads
+      .streamStoredEventsFrom({ threadId })
+      .pipe(Stream.mapEffect(predicate), Stream.filter(Boolean), Stream.runHead);
+    if (Option.isNone(reached)) assert.fail("Condition was not reached before timeout.");
   });
 }
 
@@ -165,7 +163,7 @@ interface HarnessOptions {
   readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
   readonly remoteExists?: GitWorkflow.GitWorkflowService["Service"]["remoteExists"];
   readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
-  readonly remoteExists?: GitWorkflow.GitWorkflowService["Service"]["remoteExists"];
+  readonly isRepository?: GitWorkflow.GitWorkflowService["Service"]["isRepository"];
   readonly remoteBranchExists?: GitWorkflow.GitWorkflowService["Service"]["remoteBranchExists"];
   readonly resolveRemoteTrackingCommit?: GitWorkflow.GitWorkflowService["Service"]["resolveRemoteTrackingCommit"];
   readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
@@ -2124,7 +2122,7 @@ it.effect("retries a failed workspace preparation on the same run", () => {
         workspace: { type: "worktree", baseRef: "main", startFromOrigin: true },
       }),
     );
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
@@ -2142,7 +2140,7 @@ it.effect("retries a failed workspace preparation on the same run", () => {
       runId,
     };
     yield* launches.retryPreparation(retry);
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       layerOutbox
         .listByCommandId(CommandId.make("command:launch:retry:1:release"))
         .pipe(Effect.map((effects) => effects.length === 1)),
@@ -2366,7 +2364,7 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
         workspace: { type: "worktree", baseRef: "main" },
       }),
     );
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(
@@ -2385,7 +2383,7 @@ it.effect("a retry reuses a recorded worktree without undoing its branch rename"
       threadId: launched.threadId,
       runId: failed.runs[0]!.id,
     });
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       layerOutbox
         .listByCommandId(CommandId.make("command:launch:reuse:retry:release"))
         .pipe(Effect.map((effects) => effects.length === 1)),
@@ -2423,7 +2421,7 @@ it.effect("removes a worktree that failed before the thread recorded it", () => 
         workspace: { type: "worktree", baseRef: "main" },
       }),
     );
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
@@ -2457,7 +2455,7 @@ it.effect.each(["worktree", "setup"] as const)(
           workspace: { type: "worktree", baseRef: "main" },
         });
         const launched = yield* launches.launch(input);
-        yield* waitUntil(() =>
+        yield* waitUntil(launched.threadId, () =>
           threads
             .getThreadProjection(launched.threadId)
             .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
@@ -4293,7 +4291,7 @@ it.effect("retains the explicit setup opt-out when a failed bootstrap is retried
       }),
       runSetupScript: false,
     });
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((p) => p.runs[0]?.status === "failed")),
@@ -4306,7 +4304,7 @@ it.effect("retains the explicit setup opt-out when a failed bootstrap is retried
       threadId: launched.threadId,
       runId: failed.runs[0]!.id,
     });
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       layerOutbox
         .listByCommandId(CommandId.make(`${commandId}:release`))
         .pipe(Effect.map((effects) => effects.length === 1)),
@@ -4335,7 +4333,7 @@ it.effect("preserves an explicit bootstrap setup opt-out while releasing provide
         runSetupScript: false,
       };
       yield* launches.launch(input);
-      yield* waitUntil(() =>
+      yield* waitUntil(input.threadId, () =>
         layerOutbox
           .listByCommandId(CommandId.make("command:launch:no-setup:release"))
           .pipe(Effect.map((effects) => effects.length === 1)),
@@ -4380,7 +4378,7 @@ it.effect("enqueues provider work only after setup has been initiated", () =>
         yield* layerOutbox.listByCommandId(CommandId.make("command:launch:release:release")),
       );
       yield* Deferred.succeed(allowSetup, undefined);
-      yield* waitUntil(() =>
+      yield* waitUntil(launched.threadId, () =>
         layerOutbox
           .listByCommandId(CommandId.make("command:launch:release:release"))
           .pipe(Effect.map((effects) => effects.length === 1)),

@@ -438,21 +438,23 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
   );
 });
 
-it.effect("holds remote evaluation as unsupported without running the CLI", () =>
-  withFakeCodexEnv({ output: "", exitCode: 99 }, (generation) =>
-    Effect.gen(function* () {
-      const result = yield* generation
-        .evaluateRemoteRequest({
-          cwd: process.cwd(),
-          message: "Fix the parser",
-          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
-        })
-        .pipe(Effect.result);
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isFailure(result)) {
-        expect(result.failure.operation).toBe("evaluateRemoteRequest");
-        expect(result.failure.detail).toContain("does not support tool-less");
-      }
-    }),
-  ),
-);
+it.layer(layerCodexTextGenerationTest)("remote evaluation support", (it) => {
+  it.effect("holds remote evaluation as unsupported without running the CLI", () =>
+    withFakeCodexEnv({ output: "", exitCode: 99 }, (generation) =>
+      Effect.gen(function* () {
+        const result = yield* generation
+          .evaluateRemoteRequest({
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.operation).toBe("evaluateRemoteRequest");
+          expect(result.failure.detail).toContain("does not support tool-less");
+        }
+      }),
+    ),
+  );
+});
