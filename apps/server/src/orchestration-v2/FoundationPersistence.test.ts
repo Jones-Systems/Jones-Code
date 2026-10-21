@@ -1287,6 +1287,35 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const commandId = CommandId.make("command:legacy-cleanup-fence");
         const terminalId = `effect:${commandId}:terminal.cleanup`;
         const attachmentId = `effect:${commandId}:attachment.cleanup`;
+        // Observe the completed initial SQL read before changing durable status, so the
+        // fence must wake from a notification rather than pass on a late first read.
+        const forkAfterPendingRead = (effect: Effect.Effect<void, EffectOutbox.EffectOutboxError>) =>
+          Effect.gen(function* () {
+            const readCompleted = yield* Deferred.make<void>();
+            const tracer = Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options);
+                const end = span.end.bind(span);
+                span.end = (endTime, exit) => {
+                  end(endTime, exit);
+                  const query = span.attributes.get("db.query.text");
+                  if (
+                    typeof query === "string" &&
+                    /SELECT \* FROM orchestration_v2_effect_outbox WHERE effect_id IN/.test(query)
+                  )
+                    Deferred.doneUnsafe(readCompleted, Effect.void);
+                };
+                return span;
+              },
+            });
+            const fiber = yield* effect.pipe(
+              Effect.provideService(Tracer.Tracer, tracer),
+              Effect.withTracerEnabled(true),
+              Effect.forkChild,
+            );
+            yield* Deferred.await(readCompleted);
+            return fiber;
+          });
         yield* outbox.enqueue([
           { id: terminalId, commandId, threadId, request: { type: "terminal.cleanup" } },
           {
@@ -1296,9 +1325,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             request: { type: "attachment.cleanup", attachmentIds: ["owned-copy"] },
           },
         ]);
-        const fence = yield* outbox
-          .awaitCompletion([terminalId, attachmentId])
-          .pipe(Effect.forkChild);
+        const fence = yield* forkAfterPendingRead(
+          outbox.awaitCompletion([terminalId, attachmentId]),
+        );
         const first = yield* outbox.claimNext({
           workerId: "cleanup-test",
           leaseDurationMs: 60_000,
@@ -1326,7 +1355,8 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* outbox.enqueue([
           { id: failedId, commandId, threadId, request: { type: "terminal.cleanup" } },
         ]);
-        const failedFence = yield* outbox.awaitCompletion([failedId]).pipe(Effect.forkChild);
+        const failedFence = yield* forkAfterPendingRead(outbox.awaitCompletion([failedId]));
+        assert.isUndefined(failedFence.pollUnsafe());
         const failed = yield* outbox.claimNext({
           workerId: "cleanup-test",
           leaseDurationMs: 60_000,

@@ -1080,9 +1080,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const eventSink = yield* EventSinkV2;
   const commandReceipts = yield* CommandReceiptStoreV2;
   const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
-  const settlementRestores = yield* SqlClient.SqlClient.pipe(
-    Effect.map((sql) => makeSettlementRestoreStore(sql, makeJonesTablePresence(sql))),
-  );
+  const sql = yield* SqlClient.SqlClient;
+  const settlementRestores = makeSettlementRestoreStore(sql, makeJonesTablePresence(sql));
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
@@ -2689,7 +2688,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .pipe(mapDispatchError(command));
       if (Object.values(projection).some((value) => Array.isArray(value) && value.length > 0))
         return yield* existingError;
-      const sql = yield* SqlClient.SqlClient;
       const deletionRows = yield* sql<{ command_id: string | null; sequence: number }>`
         SELECT command_id, sequence FROM orchestration_events
         WHERE stream_id = ${command.threadId} AND event_type = 'thread.deleted'
