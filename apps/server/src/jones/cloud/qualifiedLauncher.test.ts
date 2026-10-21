@@ -2,6 +2,7 @@
 import { assert, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as NodeAssert from "node:assert/strict";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -37,6 +38,7 @@ import { assertStageNotRevoked } from "../updates/stageRevocation.ts";
 
 const baseline = "0.0.0-preview.20261002.100";
 const target = "0.0.0-preview.20261002.101.1";
+const previousId = "abcd1234-1234-4234-8234-123456789abc";
 const laterTarget = "0.0.0-preview.20261002.102.1";
 // oxlint-disable-next-line t3code/no-global-process-runtime -- These controlled launcher executables must bind the actual native fixture host.
 const fixturePlatform = NodeOS.platform() === "darwin" ? "darwin" : "linux";
@@ -74,6 +76,9 @@ async function runScenario(
     readonly pointerWriteFailure?: boolean;
     readonly reserveAfterCleanup?: boolean;
     readonly cleanupFailure?: boolean;
+    readonly previous?: "committed" | "rolled-back" | "failed" | "accepted";
+    readonly previousFault?: "directory" | "binding" | "restore-intent";
+    readonly recoveryOnly?: boolean;
     readonly preparedTimeoutMs?: number;
   } = {},
 ) {
@@ -198,7 +203,7 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     mkdirSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))});
   }
   process.send({type:"prepared", updateId:context.update.id, startupGateProtocol:1, qualified:receipt});
-} else if (context.update === undefined) {
+} else if (context.update === undefined || (${JSON.stringify(options.previous !== undefined && options.recoveryOnly !== true)} && context.update.id === ${JSON.stringify(previousId)})) {
   const handle = readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "test-handle"))}, "utf8");
   if (${JSON.stringify(options.delayedGracefulClose === true)}) process.once("SIGTERM", () => {
     setTimeout(() => {
@@ -291,7 +296,71 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
     await retainStagedSelection(staged);
     await NodeFSP.writeFile(NodePath.join(base, "runtime", "test-handle"), staged.stagedHandle);
     const statePath = NodePath.join(base, "runtime", "service-state.json");
-    await writeServiceState(statePath, { protocol: 4, activeVersion: baseline });
+    let previousUpdate;
+    if (options.previous !== undefined) {
+      const previousQualified =
+        options.previous === "committed"
+          ? {
+              ...staged,
+              receipt: {
+                ...staged.receipt,
+                version: baseline,
+                sourceSha: metadata.sourceSha,
+                installedSourceSha: metadata.installedSourceSha,
+              },
+              binding: {
+                ...staged.binding,
+                activeVersion: "0.0.0-preview.20261002.99",
+                activeSourceSha: metadata.installedSourceSha,
+              },
+            }
+          : staged;
+      const generation = NodePath.join(base, "runtime", "db-backup", previousId);
+      await NodeFSP.mkdir(generation, { recursive: true, mode: 0o700 });
+      await NodeFSP.copyFile(dbPath, NodePath.join(generation, "database"));
+      await NodeFSP.writeFile(
+        NodePath.join(generation, "paired-binding.json"),
+        JSON.stringify(
+          options.previousFault === "binding"
+            ? {}
+            : { transactionId: previousId, qualified: previousQualified },
+        ),
+      );
+      await NodeFSP.writeFile(NodePath.join(generation, "paired-settings.json"), "[]");
+      await NodeFSP.writeFile(NodePath.join(generation, "resume-dispatched.json"), "keep");
+      await NodeFSP.writeFile(NodePath.join(generation, "unknown-extra"), "keep");
+      if (options.previousFault === "directory")
+        await NodeFSP.mkdir(NodePath.join(generation, "database-shm"));
+      if (options.previousFault === "restore-intent")
+        await NodeFSP.writeFile(NodePath.join(generation, ".database-restore.json"), "{}");
+      if (options.previous === "rolled-back") {
+        const source = NodePath.join(generation, "database");
+        const temporary = `${dbPath}.restore-${NodeCrypto.createHash("sha256").update(source).digest("hex").slice(0, 16)}`;
+        await NodeFSP.writeFile(
+          NodePath.join(generation, ".database-restore.json"),
+          JSON.stringify({ source, target: dbPath, temporary }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(generation, ".database-restore.json.complete"),
+          JSON.stringify({ device: "0", inode: "0" }),
+        );
+        await NodeFSP.writeFile(NodePath.join(generation, ".restore-pending"), "");
+      }
+      previousUpdate = {
+        id: previousId,
+        fromVersion: previousQualified.binding.activeVersion,
+        targetVersion: previousQualified.receipt.version,
+        qualified: previousQualified,
+        ...(options.previous === "accepted"
+          ? { status: "pending" as const, phase: "accepted" as const, dbPath }
+          : { status: options.previous }),
+      };
+    }
+    await writeServiceState(statePath, {
+      protocol: 4,
+      activeVersion: baseline,
+      ...(previousUpdate === undefined ? {} : { update: previousUpdate }),
+    });
     const launcher = new Launcher(base, await readServiceState(statePath), {
       ...(options.startupGateProtocol === "missing" ? {} : { startupGateProtocol: 1 as const }),
       ...(options.backupAdapter === undefined ? {} : { backupAdapter: options.backupAdapter }),
@@ -321,6 +390,21 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
         : { preparedTimeoutMs: options.preparedTimeoutMs }),
     });
     onLauncher?.(launcher);
+    const unchangedLive =
+      options.recoveryOnly ||
+      (options.previous === "committed" && options.previousFault !== undefined)
+        ? await Promise.all(
+            [
+              dbPath,
+              NodePath.join(userdata, "settings.json"),
+              NodePath.join(userdata, "environment-id"),
+            ].map(async (path) => ({
+              path,
+              bytes: await NodeFSP.readFile(path),
+              stat: await NodeFSP.stat(path, { bigint: true }),
+            })),
+          )
+        : [];
     // Captured children exit or are reaped before the launcher settles; cleanup never polls by process name.
     const previousHome = process.env.T3CODE_HOME;
     let launcherFailure: unknown;
@@ -340,6 +424,12 @@ if (${JSON.stringify(options.retirementRace !== undefined)} && context.update ==
         else process.env.T3CODE_HOME = previousHome;
       }
     }
+    for (const file of unchangedLive) {
+      const stat = await NodeFSP.stat(file.path, { bigint: true });
+      assert.equal(stat.dev, file.stat.dev);
+      assert.equal(stat.ino, file.stat.ino);
+      assert.deepEqual(await NodeFSP.readFile(file.path), file.bytes);
+    }
     await body(base, launcherFailure);
   } finally {
     await NodeFSP.rm(allocated, { recursive: true, force: true });
@@ -354,9 +444,23 @@ async function assertRecoveryPayloadRemoved(base: string, updateId: string) {
     "database-wal",
     "database-shm",
     ...QUALIFIED_STARTUP_STATE_FILES,
-    "advanced-state",
   ]) {
     await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(backup, name)), { code: "ENOENT" });
+  }
+  if (NodeFS.existsSync(NodePath.join(backup, ".restore-pending"))) {
+    const advanced = NodePath.join(backup, "advanced-state");
+    assert.isTrue((await NodeFSP.lstat(advanced)).isDirectory());
+    for (const name of ["rename-journal.json", "paired-settings.json"])
+      assert.isTrue((await NodeFSP.lstat(NodePath.join(advanced, name))).isFile());
+    for (const name of [
+      "database",
+      "database-wal",
+      "database-shm",
+      ...QUALIFIED_STARTUP_STATE_FILES,
+    ])
+      await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(advanced, name)), { code: "ENOENT" });
+    for (const name of [".database-restore.json", ".database-restore.json.complete"])
+      assert.isTrue((await NodeFSP.lstat(NodePath.join(backup, name))).isFile());
   }
   const directory = await NodeFSP.lstat(backup);
   assert.isTrue(directory.isDirectory());
@@ -1111,4 +1215,159 @@ it("rolls back a later failed trial in the launcher that committed its predecess
     assert.equal(restarted.childVersion, target);
     assert.equal(restarted.update.status, "rolled-back");
   });
+});
+
+it.each(["committed", "rolled-back"] as const)(
+  "retries the previous %s payload before new Install capacity checks",
+  async (previous) => {
+    let capacityObserved = false;
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.match(String(failure), /Active child exited unexpectedly/);
+        assert.isTrue(capacityObserved);
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.update?.status, "committed");
+        assert.notEqual(state.update?.id, previousId);
+        const generation = NodePath.join(base, "runtime", "db-backup", previousId);
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(generation, "database")), {
+          code: "ENOENT",
+        });
+        for (const name of [
+          "paired-binding.json",
+          "paired-settings.json",
+          "resume-dispatched.json",
+          "unknown-extra",
+        ])
+          assert.isTrue((await NodeFSP.lstat(NodePath.join(generation, name))).isFile());
+        if (previous === "rolled-back") {
+          assert.isTrue(
+            (
+              await NodeFSP.lstat(NodePath.join(generation, ".database-restore.json.complete"))
+            ).isFile(),
+          );
+          assert.isTrue(
+            (await NodeFSP.lstat(NodePath.join(generation, ".restore-pending"))).isFile(),
+          );
+        }
+      },
+      undefined,
+      {
+        previous,
+        backupAdapter: {
+          copyFile: async (source, target) =>
+            NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL),
+          availableBytes: async (directory) => {
+            const generation = NodePath.join(directory, previousId);
+            assert.isTrue((await NodeFSP.lstat(generation)).isDirectory());
+            await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(generation, "database")), {
+              code: "ENOENT",
+            });
+            capacityObserved = true;
+            return Number.MAX_SAFE_INTEGER;
+          },
+        },
+      },
+    );
+  },
+);
+
+it.each(["directory", "binding", "restore-intent"] as const)(
+  "refuses a new Install and preserves the active child on prior cleanup %s",
+  async (previousFault) => {
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.match(String(failure), /Active child exited unexpectedly/);
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.update?.id, previousId);
+        assert.equal(state.activeVersion, baseline);
+        const rejection = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "rejected.json"), "utf8"),
+        );
+        assert.match(
+          rejection.reason,
+          /^recovery-cleanup-required: .*the current server remains active/,
+        );
+        const survivor = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"),
+        );
+        assert.equal(survivor.context.childVersion, baseline);
+        assert.equal(survivor.context.update.id, previousId);
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        assert.equal(
+          readMarker(NodePath.join(base, "runtime", "db-backup", previousId, "database")),
+          "before",
+        );
+      },
+      undefined,
+      { previous: "committed", previousFault },
+    );
+  },
+);
+
+it("leaves a previous failed generation held while permitting a later Install", async () => {
+  await runScenario(
+    "commit",
+    async (base) => {
+      const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+      assert.equal(state.update?.status, "committed");
+      assert.notEqual(state.update?.id, previousId);
+      assert.equal(
+        readMarker(NodePath.join(base, "runtime", "db-backup", previousId, "database")),
+        "before",
+      );
+    },
+    undefined,
+    { previous: "failed", previousFault: "restore-intent" },
+  );
+});
+
+it.each([false, true])(
+  "reconciles accepted pre-trial restart without changing live state (restore intent: %s)",
+  async (hold) => {
+    await runScenario(
+      "commit",
+      async (base, failure) => {
+        assert.match(String(failure), /Active child exited unexpectedly/);
+        const state = await readServiceState(NodePath.join(base, "runtime", "service-state.json"));
+        assert.equal(state.update?.id, previousId);
+        assert.equal(state.update?.status, "failed");
+        assert.equal(
+          state.update?.status === "pending" ? undefined : state.update?.reason,
+          "launcher-restarted",
+        );
+        assert.equal(readMarker(NodePath.join(base, "userdata", "statev2.sqlite")), "before");
+        const generation = NodePath.join(base, "runtime", "db-backup", previousId);
+        if (hold) assert.equal(readMarker(NodePath.join(generation, "database")), "before");
+        else
+          await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(generation, "database")), {
+            code: "ENOENT",
+          });
+        assert.isTrue(
+          (await NodeFSP.lstat(NodePath.join(generation, "paired-binding.json"))).isFile(),
+        );
+      },
+      undefined,
+      {
+        previous: "accepted",
+        recoveryOnly: true,
+        ...(hold ? { previousFault: "restore-intent" } : {}),
+      },
+    );
+  },
+);
+
+it("does not clean a terminal generation during launcher startup", async () => {
+  await runScenario(
+    "commit",
+    async (base) => {
+      assert.equal(
+        readMarker(NodePath.join(base, "runtime", "db-backup", previousId, "database")),
+        "before",
+      );
+    },
+    undefined,
+    { previous: "committed", recoveryOnly: true },
+  );
 });
