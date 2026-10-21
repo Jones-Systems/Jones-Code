@@ -435,5 +435,4 @@ it.live.skipIf(!executable || !scratch)(
       });
       expect(fallback).not.toHaveBeenCalled();
     }).pipe(Effect.scoped),
-  60_000,
 );

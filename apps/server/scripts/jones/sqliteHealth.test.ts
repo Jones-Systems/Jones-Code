@@ -603,7 +603,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     }
     if (failure) throw failure;
     expect(NodeFS.existsSync(root)).toBe(false);
-  }, 30_000);
+  });
 });
 
 describe("jones-sqlite-health — d-readonly", () => {

@@ -275,18 +275,17 @@ function launchInput(input: {
   };
 }
 
-function waitUntil<E, R>(predicate: () => Effect.Effect<boolean, E, R>): Effect.Effect<void, E, R> {
+function waitUntil<E, R>(
+  threadId: ThreadId,
+  predicate: () => Effect.Effect<boolean, E, R>,
+) {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (yield* predicate()) return;
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          }),
-      );
-    }
-    assert.fail("Condition was not reached before timeout.");
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const reached = yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+      Stream.filterEffect(() => predicate()),
+      Stream.runHead,
+    );
+    if (Option.isNone(reached)) assert.fail("Thread events ended before the condition was reached.");
   });
 }
 
@@ -679,7 +678,7 @@ it.effect(
             workspace: { type: "worktree" },
           }),
         );
-        yield* waitUntil(() =>
+        yield* waitUntil(launched.threadId, () =>
           threads
             .getThreadProjection(launched.threadId)
             .pipe(
@@ -698,7 +697,7 @@ it.effect(
           threadId: launched.threadId,
           runId: failed.runs[0]!.id,
         });
-        yield* waitUntil(() =>
+        yield* waitUntil(launched.threadId, () =>
           outbox
             .listByCommandId(CommandId.make("command:launch:reuse:retry:release"))
             .pipe(Effect.map((effects) => effects.length === 1)),
@@ -751,7 +750,7 @@ it.effect.each([
         },
       }),
     );
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),
@@ -798,7 +797,7 @@ it.effect(
           },
         }),
       );
-      yield* waitUntil(() =>
+      yield* waitUntil(launched.threadId, () =>
         threads
           .getThreadProjection(launched.threadId)
           .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),

@@ -6,6 +6,7 @@ import * as NodeOS from "node:os";
 import * as NodeEvents from "node:events";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import * as NetAddress from "effect/net/NetAddress";
+import { watchFile } from "./trialGate.testFixtures.ts";
 import { awaitJonesTrialCommit } from "./trialGate.ts";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -43,36 +44,6 @@ async function fixture<A>(body: (root: string) => Promise<A>): Promise<A> {
   } finally {
     await NodeFSP.rm(root, { recursive: true, force: true });
     await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
-  }
-}
-async function watchFile(file: string, signal: AbortSignal) {
-  const watcher = NodeFS.watch(NodePath.dirname(file));
-  let rejectWait: ((cause: Error) => void) | undefined;
-  const aborted = () => rejectWait?.(new Error("Synthetic receipt observation cancelled."));
-  let recheck: ReturnType<typeof setInterval> | undefined;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      rejectWait = reject;
-      const inspect = () => {
-        void NodeFSP.stat(file).then(
-          () => resolve(),
-          (error: NodeJS.ErrnoException) => {
-            if (error.code !== "ENOENT") reject(error);
-          },
-        );
-      };
-      watcher.on("change", inspect);
-      watcher.on("error", reject);
-      // @effect-diagnostics-next-line globalTimers:off -- Native fs.watch test observer uses a timer to cover coalesced events and is always cleared in finally.
-      recheck = setInterval(inspect, 250);
-      signal.addEventListener("abort", aborted, { once: true });
-      if (signal.aborted) aborted();
-      else inspect();
-    });
-  } finally {
-    clearInterval(recheck);
-    signal.removeEventListener("abort", aborted);
-    watcher.close();
   }
 }
 

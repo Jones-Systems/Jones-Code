@@ -4,7 +4,7 @@ import {
   ThreadId,
   type ApplicationStoredEvent,
 } from "@t3tools/contracts";
-import * as Clock from "effect/Clock";
+import { withNativeWatchdog } from "./shellCost.testFixtures.ts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -48,30 +48,11 @@ for (const clients of [1, 2, 8, 32]) {
         let activeLive = 0;
         let liveStarts = 0;
         const boundedPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
-          effect.pipe(
-            Effect.raceFirst(
-              Effect.sleep("5 seconds").pipe(
-                Effect.andThen(() =>
-                  Effect.die(
-                    new Error(
-                      `Shell fanout ${phase} timed out: ${JSON.stringify({
-                        clients,
-                        ending,
-                        snapshots,
-                        shellReads,
-                        projectReads,
-                        liveStarts,
-                        activeLive,
-                        activeEnrichment,
-                      })}`,
-                    ),
-                  ),
-                ),
-                // Only the watchdog uses wall time; leave stream coalescing on its test clock.
-                Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-              ),
-            ),
-          );
+          withNativeWatchdog(effect, "5 seconds", () => new Error(
+            `Shell fanout ${phase} timed out: ${JSON.stringify({
+              clients, ending, snapshots, shellReads, projectReads, liveStarts, activeLive, activeEnrichment,
+            })}`,
+          ));
         const threadId = ThreadId.make("fanout-deleted-thread");
         // A full 512-event batch flushes coalescing without sleeps. Every client
         // subscribes to the same publisher before a single shared publication.

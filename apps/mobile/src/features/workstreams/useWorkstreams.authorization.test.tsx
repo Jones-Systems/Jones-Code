@@ -1,5 +1,3 @@
-// @vitest-environment jsdom
-
 import { RegistryContext } from "@effect/atom-react";
 import {
   EnvironmentHttpForbiddenError,
@@ -204,8 +202,7 @@ afterEach(async () => {
 });
 
 async function flush() {
-  for (let turn = 0; turn < 10; turn += 1)
-    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+  await act(async () => {});
 }
 
 async function reloadWith(endpoint: string, cause: unknown) {

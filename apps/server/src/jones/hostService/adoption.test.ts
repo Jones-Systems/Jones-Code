@@ -896,7 +896,6 @@ it(
       },
       { privateSetup: true },
     ),
-  35_000,
 );
 it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
   "refuses private setup %s before pending intent or service stop",

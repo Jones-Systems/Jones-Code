@@ -447,5 +447,4 @@ it.effect.each(["manual", "automatic", "completed"] as const)(
         );
       }),
     ),
-  30_000,
 );

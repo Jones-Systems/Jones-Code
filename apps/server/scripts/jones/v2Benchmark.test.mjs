@@ -72,4 +72,5 @@ test("benchmark disposal requires evidence, captured child closure and database 
   NodeAssert.equal(v2BenchmarkClosureKnown(undefined, undefined, false), false);
 });
 
+// quarantine: #489 Benchmark execution requires an explicit synthetic candidate/runtime binding.
 test.skip("explicit candidate/runtime binding required", () => {});

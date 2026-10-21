@@ -886,7 +886,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         assert.deepEqual(effect.request.messageIds, expectedMessageIds);
         assert.isTrue(yield* outbox.succeed({ effectId: effect.id, workerId }));
       }),
-    { timeout: 6000 },
   );
 
   it.effect.each(["owner", "peer", "scheduled"] as const)(
@@ -1172,7 +1171,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           [],
         );
       }),
-    { timeout: 6000 },
   );
 
   it.effect(
@@ -1213,7 +1211,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const after = yield* f.orchestrator.getThreadProjection(f.threadId);
         assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
       }),
-    { timeout: 6000 },
   );
 
   it.effect(
@@ -1252,7 +1249,6 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           f.run.id,
         );
       }),
-    { timeout: 6000 },
   );
 
   it.effect("rolls back failed project-item acceptance and preserves empty original retries", () =>

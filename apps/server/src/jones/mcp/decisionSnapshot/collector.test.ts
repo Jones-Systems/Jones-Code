@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Fixtures inspect exact process cleanup and filesystem change receipts.
 import * as NodeURL from "node:url";
-import * as NodeTimersPromises from "node:timers/promises";
+import { closeOwnedFixtureGroups, startDelayedCollector, observePublishedOperation, ownProbeReceipt } from "./collector.testFixtures.ts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -46,62 +46,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
 });
 
-async function closeOwnedFixtureGroups(owner: string, directory: string) {
-  const trace = await NodeFSP.readFile(NodePath.join(owner, "trace.fixture"), "utf8").catch(
-    (cause: unknown) => {
-      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return "";
-      throw cause;
-    },
-  );
-  const groups = new Map<number, string>();
-  for (const line of trace.trim().split("\n").filter(Boolean)) {
-    const entry = JSON.parse(line);
-    if (entry.event === "probe" || entry.event === "usage_start")
-      groups.set(entry.pgid, entry.start_ticks);
-  }
-  const exists = (pgid: number) => {
-    try {
-      process.kill(-pgid, 0);
-      return true;
-    } catch (cause) {
-      if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false;
-      throw cause;
-    }
-  };
-  for (const [pgid, startTicks] of groups) {
-    if (!exists(pgid)) continue;
-    const verify = async () => {
-      const processDirectory = `/proc/${pgid}`;
-      const evidence = await Promise.all([
-        NodeFSP.readFile(`${processDirectory}/stat`, "utf8"),
-        NodeFSP.readFile(`${processDirectory}/cmdline`, "utf8"),
-        NodeFSP.stat(processDirectory),
-      ]).catch((cause: unknown) => {
-        if (cause instanceof Error && "code" in cause && cause.code === "ENOENT" && !exists(pgid))
-          return null;
-        throw cause;
-      });
-      if (evidence === null) return false;
-      const [stat, command, metadata] = evidence;
-      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      expect(Number(fields[2])).toBe(pgid);
-      expect(fields[19]).toBe(startTicks);
-      expect(metadata.uid).toBe(process.getuid!());
-      expect(command.split("\0").some((argument) => argument.startsWith(`${directory}/`))).toBe(
-        true,
-      );
-      return true;
-    };
-    if (!(await verify())) continue;
-    process.kill(-pgid, "SIGTERM");
-    const grace = monotonicSeconds() + 1.5;
-    while (exists(pgid) && monotonicSeconds() < grace) await NodeTimersPromises.setTimeout(25);
-    if (exists(pgid) && (await verify())) process.kill(-pgid, "SIGKILL");
-    const reap = monotonicSeconds() + 1;
-    while (exists(pgid) && monotonicSeconds() < reap) await NodeTimersPromises.setTimeout(25);
-    expect(exists(pgid), "owned fixture group must close before scratch removal").toBe(false);
-  }
-}
 
 async function release(
   script: string,
@@ -170,7 +114,19 @@ async function release(
       allowFixtureProvenance: true,
     });
   } finally {
-    await closeOwnedFixtureGroups(owner, directory);
+    await closeOwnedFixtureGroups(owner, directory, {
+      verify: (fields, startTicks, metadata, command, directory, pgid) => {
+      expect(Number(fields[2])).toBe(pgid);
+      expect(fields[19]).toBe(startTicks);
+      expect(metadata.uid).toBe(process.getuid!());
+      expect(command.split("\0").some((argument) => argument.startsWith(`${directory}/`))).toBe(
+        true,
+      );
+      },
+      closed: (exists, pgid) => {
+        expect(exists(pgid), "owned fixture group must close before scratch removal").toBe(false);
+      },
+    });
     await NodeFSP.rm(owner, { recursive: true, force: true });
     await expect(NodeFSP.stat(owner)).rejects.toMatchObject({ code: "ENOENT" });
   }
@@ -712,8 +668,7 @@ if __name__ == '__main__':
       try {
         const started = monotonicSeconds();
         const nativeDeadline = started + 13;
-        await NodeTimersPromises.setTimeout(100);
-        first = runBoundCollector(
+        first = startDelayedCollector(
           binding,
           "admission",
           native,
@@ -729,44 +684,8 @@ if __name__ == '__main__':
         const childPid = Number(
           await NodeFSP.readFile(NodePath.join(scratch, "probe-ready.fixture"), "utf8"),
         );
-        const publicationWait = new AbortController();
-        let publication: Promise<unknown> | undefined;
-        try {
-          publication = (async () => {
-            while (!publicationWait.signal.aborted) {
-              const operation = JSON.parse(
-                await NodeFSP.readFile(NodePath.join(scratch, "state/malcolm.json"), "utf8"),
-              ).operation;
-              if (
-                operation?.pid === childPid &&
-                operation.pgid === childPid &&
-                operation.account === "malcolm"
-              )
-                return operation;
-              await NodeTimersPromises.setTimeout(20, undefined, {
-                signal: publicationWait.signal,
-              });
-            }
-            throw new Error("fixture operation publication wait cancelled");
-          })();
-          const operation = await Promise.race([
-            publication,
-            first.then(() => {
-              throw new Error("collector finished before child operation was published");
-            }),
-            NodeTimersPromises.setTimeout(
-              Math.max(0, (nativeDeadline - monotonicSeconds()) * 1000),
-              undefined,
-              { signal: publicationWait.signal },
-            ).then(() => {
-              throw new Error("child operation was not published before the collector deadline");
-            }),
-          ]);
-          expect(operation).toMatchObject({ pid: childPid, pgid: childPid, account: "malcolm" });
-        } finally {
-          publicationWait.abort();
-          await publication?.catch(() => {});
-        }
+        const operation = await observePublishedOperation(scratch, childPid, first, nativeDeadline);
+        expect(operation).toMatchObject({ pid: childPid, pgid: childPid, account: "malcolm" });
         const concurrent = JSON.parse(
           await runBoundCollector(
             binding,
@@ -837,7 +756,7 @@ if __name__ == '__main__':
         filesystemDelay.path = null;
       }
     });
-  }, 30_000);
+  });
   effectIt.effect(
     "starts an actual native account child before a held registry count packet is released",
     () =>
@@ -918,26 +837,12 @@ if __name__ == '__main__':
                 issuedAt: 1,
               }),
             );
-            const receiptWait = new AbortController();
-            let watcher: ReturnType<typeof NodeFS.watch> | undefined;
-            const receipt = new Promise<boolean>((resolve) => {
-              watcher = NodeFS.watch(scratch, (_event, file) => {
-                if (file === "probe-ready.fixture") {
-                  watcher!.close();
-                  resolve(true);
-                }
-              });
-            });
+            const receiptOwner = ownProbeReceipt(scratch);
             filesystemDelay.path = binding.releaseDirectory;
             const started = monotonicSeconds();
             const running = yield* Effect.forkChild(program);
             try {
-              const beforeRelease = yield* Effect.promise(() =>
-                Promise.race([
-                  receipt,
-                  NodeTimersPromises.setTimeout(2_000, false, { signal: receiptWait.signal }),
-                ]),
-              );
+              const beforeRelease = yield* Effect.promise(() => receiptOwner.observe());
               releaseRegistry();
               expect(beforeRelease).toBe(true);
               const result = yield* Fiber.join(running);
@@ -967,15 +872,13 @@ if __name__ == '__main__':
               expect(() => process.kill(-probe.parent_pid, 0)).toThrow();
             } finally {
               releaseRegistry();
-              receiptWait.abort();
-              watcher?.close();
+              receiptOwner.close();
               yield* Fiber.interrupt(running);
               filesystemDelay.path = null;
             }
           }),
         true,
       ),
-    { timeout: 15_000 },
   );
   it.each(["eof", "timeout"] as const)(
     "retains local facts when deferred native input ends in %s",
@@ -1020,7 +923,6 @@ if __name__ == '__main__':
         expect(() => process.kill(-probe.parent_pid, 0)).toThrow();
       }, true);
     },
-    15_000,
   );
   effectIt.effect(
     "cancels its deferred producer and actual nested account groups before returning",
@@ -1081,7 +983,6 @@ if __name__ == '__main__':
           }
         }),
       ),
-    { timeout: 15_000 },
   );
   it("does not spawn a cancelled call", async () => {
     await release("raise Exception('must not run')\n", async (binding) => {
