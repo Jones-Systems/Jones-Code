@@ -12,6 +12,42 @@ export class BrowserControlInterrupted extends Error {
   }
 }
 
+export class BrowserActionNotStarted extends Error {
+  constructor() {
+    super("The preview request deadline elapsed before its action started.");
+  }
+}
+
+export const assertBrowserActionDeadline = (deadlineMs?: number) => {
+  if (deadlineMs !== undefined && Date.now() >= deadlineMs) throw new BrowserActionNotStarted();
+};
+
+export class BrowserRequestDeadline {
+  readonly deadlineMs: number;
+  private started = false;
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  constructor(timeoutMs: number) {
+    this.deadlineMs = Date.now() + timeoutMs;
+  }
+  start = () => {
+    assertBrowserActionDeadline(this.deadlineMs);
+    this.started = true;
+    if (this.timer !== undefined) clearTimeout(this.timer);
+  };
+  response<A>(work: Promise<A>): Promise<A> {
+    const waiting = new Promise<never>((_, reject) => {
+      this.timer = setTimeout(
+        () => {
+          if (!this.started) reject(new BrowserActionNotStarted());
+        },
+        Math.max(0, this.deadlineMs - Date.now()),
+      );
+    });
+    return Promise.race([work, waiting]).finally(() => {
+      if (this.timer !== undefined) clearTimeout(this.timer);
+    });
+  }
+}
 const settle = (work: Promise<unknown>) =>
   work.then(
     () => undefined,
@@ -75,6 +111,8 @@ export class SessionControl {
   }
 
   private async action<A>(allowed: () => boolean, run: () => Promise<A>, deadlineMs?: number) {
+    // The receive budget and queue deadline share Date.now(); do not compare to performance.now().
+    assertBrowserActionDeadline(deadlineMs);
     this.assertOpen();
     if (!allowed()) throw new BrowserControlInterrupted("You do not control this browser tab.");
     const epoch = this.epoch;
@@ -84,12 +122,6 @@ export class SessionControl {
       assertBrowserActionDeadline(deadlineMs);
       this.assertOpen();
       if (epoch !== this.epoch || !allowed()) throw new BrowserControlInterrupted();
-      if (deadlineMs !== undefined && performance.now() >= deadlineMs) {
-        throw new DOMException(
-          "This browser request expired before it could start.",
-          "TimeoutError",
-        );
-      }
       return run();
     });
     if (deadlineMs === undefined) return queued;
@@ -109,6 +141,10 @@ export class SessionControl {
     return this.agentId === null || this.agentId === agentId;
   }
 
+  /**
+   * An agent action. It may act on its own tab or on one a human opened, but
+   * never while a human controls the tab; taking control interrupts it.
+   */
   agent<A>(agentId: string, run: () => Promise<A>, deadlineMs?: number) {
     if (!this.agentMayAct(agentId))
       return Promise.reject(

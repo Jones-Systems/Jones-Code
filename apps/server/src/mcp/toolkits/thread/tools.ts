@@ -298,7 +298,7 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
   ...commandTool,
   description:
     "Run a scheduled task now through the existing scheduler. Requires a full-access/default caller. Returns the thread this run dispatched to, or null if dispatch failed. Each call is a new manual run; completion means dispatch/bookkeeping completed, not that the provider turn finished.",
-  parameters: Schema.Struct({ taskId: ScheduledTaskId }),
+  parameters: Schema.Struct({ environmentId: OrchestratorMcpEnvironmentTarget, taskId: ScheduledTaskId }),
   success: Schema.Struct({
     taskId: ScheduledTaskId,
     threadId: ScheduledTask.fields.threadId,

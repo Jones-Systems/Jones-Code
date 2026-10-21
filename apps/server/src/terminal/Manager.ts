@@ -3850,6 +3850,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* evictInactiveSessionsIfNeeded();
     } else {
       session = existingSession.value;
+      if (session.nativeSetupControl !== undefined)
+        return yield* new TerminalSessionLookupError({ threadId: input.threadId, terminalId });
       yield* stopProcess(session);
       session.cwd = input.cwd;
       session.worktreePath = input.worktreePath ?? null;

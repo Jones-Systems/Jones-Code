@@ -222,12 +222,37 @@ export const make = Effect.gen(function* () {
     const populated = parseCgroupCounter(cgroupEvents, "populated");
     return {
       loadState: values.get("LoadState") ?? "",
+      controlGroup,
       activeState: values.get("ActiveState") ?? "",
       result: values.get("Result") ?? "",
       oomKills: parseCgroupCounter(memoryEvents, "oom_kill") ?? 0,
       populated: populated === undefined ? undefined : populated === 1,
     } satisfies ScopeState;
   });
+
+  // The returned effect captures one unit, not the thread's replaceable map entry.
+  const stopScope = Effect.fn("agentScope.stopScope")(function* (systemctl: string, unit: string) {
+      const empty = (state: ScopeState | undefined) =>
+        state !== undefined &&
+        (state.loadState === "not-found" ||
+          ((state.activeState === "inactive" || state.activeState === "failed") &&
+            (state.controlGroup === "" || state.populated === false)));
+      const before = yield* readScope(systemctl, unit);
+      if (empty(before)) return;
+      if (before === undefined || before.loadState !== "loaded")
+        return yield* new AgentScopeStopError({
+          unit,
+          detail: "Agent scope retirement unavailable",
+        });
+      // Existing scope TimeoutStopSec sends SIGKILL after the graceful stop period.
+      // Reconcile the observed postcondition even when the command response is lost.
+      yield* run(systemctl, ["--user", "stop", unit], "30 seconds");
+      if (!empty(yield* readScope(systemctl, unit)))
+        return yield* new AgentScopeStopError({
+          unit,
+          detail: "Agent scope retirement remains unknown",
+        });
+    });
 
   const clearFailed = Effect.fn("agentScope.clearFailed")(function* (
     systemctl: string,

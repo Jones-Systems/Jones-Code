@@ -61,18 +61,12 @@ const pendingAgentRequestMethods = new Map<string, string>();
 // The test reads status while this agent may still be running; rename makes each
 // write atomic so a reader never sees a truncated file.
 function writeStatus(failure?: unknown): void {
-  const temporaryStatusPath = `${replayStatusPath}.${process.pid}.tmp`;
-  NodeFS.writeFileSync(
-    temporaryStatusPath,
-    JSON.stringify({
-      scenario: transcript.scenario,
-      cursor,
-      total: transcript.entries.length,
-      ...(failure === undefined ? {} : { failure }),
-    }),
-    "utf8",
-  );
-  NodeFS.renameSync(temporaryStatusPath, replayStatusPath);
+  publishAcpReplayStatus(replayStatusPath, {
+    scenario: transcript.scenario,
+    cursor,
+    total: transcript.entries.length,
+    ...(failure === undefined ? {} : { failure }),
+  });
 }
 
 function stableStringify(value: unknown): string {
@@ -247,9 +241,11 @@ function flushInbound(): void {
       break;
     }
     const message = inboundMessage(frame);
-    if (message === undefined) break;
-    messages.push(message);
-    cursor += 1;
+    if (stopped || message === undefined) return;
+    // The cursor records validated replay entries, not consumer completion.
+    // Publish it before the answer can let the client close this process.
+    advance();
+    send(message);
   }
   if (!stopped) writeStatus();
   messages.forEach(send);

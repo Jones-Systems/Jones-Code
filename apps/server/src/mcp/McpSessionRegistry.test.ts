@@ -238,3 +238,80 @@ it.effect.each(["provider-session", "thread", "all"] as const)(
       expect(yield* registry.resolve(token)).toBeUndefined();
     }),
 );
+
+it.effect(
+  "denies default snapshot credentials before reads and collects only after explicit issuance",
+  () =>
+    Effect.gen(function* () {
+      const registry = yield* makeRegistry(() => 1_000);
+      const request = {
+        threadId: ThreadId.make("thread-focused-snapshot"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      };
+      const ordinary = yield* registry.issue(request);
+      const explicit = yield* registry.issue({
+        ...request,
+        capabilities: new Set(["decision-snapshot"]),
+      });
+      const scopeOf = (credential: typeof ordinary) =>
+        registry.resolve(credential.config.authorizationHeader.replace(/^Bearer\s+/, ""));
+      const ordinaryScope = yield* scopeOf(ordinary);
+      const explicitScope = yield* scopeOf(explicit);
+      expect(ordinaryScope).toBeDefined();
+      expect(explicitScope).toBeDefined();
+      expect(ordinaryScope!.capabilities).toEqual(
+        new Set(["orchestration", "worktree", "pull-requests", "preview"]),
+      );
+      expect(explicitScope!.capabilities).toEqual(
+        new Set(["orchestration", "worktree", "pull-requests", "decision-snapshot"]),
+      );
+      let reads = 0;
+      let launches = 0;
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(DecisionSnapshotNativeCounts, {
+          readOperatingCounts: () => {
+            reads++;
+            return Effect.fail(new NativeCountReadError({ source: "threads" }));
+          },
+          readRegistryCounts: () => {
+            reads++;
+            return Effect.fail(new NativeCountReadError({ source: "workstreams" }));
+          },
+        }),
+        Layer.succeed(DecisionSnapshotCollector, {
+          collect: () => {
+            launches++;
+            return Effect.fail(new CollectorFailure("runtime_unavailable"));
+          },
+        }),
+      );
+      const toolkit = yield* DecisionSnapshotToolkit.pipe(
+        Effect.provide(DecisionSnapshotToolkitHandlersLive.pipe(Layer.provide(dependencies))),
+      );
+      const call = (scope: McpInvocationContext.McpInvocationScope) =>
+        toolkit.handle("decision_snapshot", {}).pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((results) => results.at(-1)!.result),
+          Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+          Effect.provide(dependencies),
+        );
+      const denied = yield* call(ordinaryScope!).pipe(Effect.flip);
+      expect(denied).toBeInstanceOf(McpCapabilityUnavailableError);
+      expect(denied).toMatchObject({ capability: "decision-snapshot", threadId: request.threadId });
+      expect(reads).toBe(0);
+      expect(launches).toBe(0);
+      expect(yield* call(explicitScope!)).toMatchObject({
+        schema: "codex.decision-snapshot/v1",
+        coverage: "unavailable",
+        authority_effect: "none",
+        sources: {
+          threads: { status: "unavailable" },
+          workstreams: { status: "unavailable" },
+          host: { status: "unavailable", reason: "runtime_unavailable" },
+        },
+      });
+      expect(reads).toBe(2);
+      expect(launches).toBe(1);
+    }),
+);

@@ -28,3 +28,35 @@ it("resolves wildcard hosts to a concrete external interface when one is availab
 
   expect(connectionString).toBe("http://192.168.1.42:3773");
 });
+
+it("prefers the actual bound port when an http server address is available", () => {
+  expect(resolveListeningPort({ port: 4123 }, 3773)).toBe(4123);
+  expect(resolveListeningPort("pipe", 3773)).toBe(3773);
+  expect(resolveListeningPort(null, 3773)).toBe(3773);
+});
+
+it("builds a pairing URL that embeds the token in the hash", () => {
+  expect(buildPairingUrl("http://192.168.1.42:3773", "PAIRCODE")).toBe(
+    "http://192.168.1.42:3773/pair#token=PAIRCODE",
+  );
+});
+
+it("renders terminal QR codes as a multi-line unicode block grid", () => {
+  const qrCode = renderTerminalQrCode("http://192.168.1.42:3773/pair#token=PAIRCODE");
+
+  assert.isTrue(qrCode.includes("█"));
+  assert.isTrue(qrCode.split("\n").length > 10);
+});
+
+it("formats headless serve output with the connection string and a nonsecret issuance marker", () => {
+  const output = formatHeadlessServeOutput({
+    connectionString: "http://192.168.1.42:3773",
+    token: "PAIRCODE",
+    pairingUrl: "http://192.168.1.42:3773/pair#token=PAIRCODE",
+  });
+
+  expect(output).toContain("Connection string: http://192.168.1.42:3773");
+  expect(output).toContain("Startup pairing credential issued");
+  expect(output).not.toContain("PAIRCODE");
+  expect(output).not.toMatch(/Token:|Pairing URL:|#token=|[█▀▄]/);
+});

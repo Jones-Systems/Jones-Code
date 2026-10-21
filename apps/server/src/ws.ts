@@ -25,7 +25,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Base64 from "effect/encoding/Base64";
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
+
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import type * as Rpc from "effect/rpc/Rpc";
@@ -34,7 +34,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
-import * as Schedule from "effect/Schedule";
+
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
@@ -117,6 +117,8 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -1795,6 +1797,9 @@ export const layerWsRpc = (
           yield* serverSettings.getSettings,
         );
         const environment = yield* serverEnvironment.getDescriptor;
+        const capabilities = { ...environment.capabilities };
+        delete capabilities.savedTokenAccounting;
+        if (yield* tokenAccounting.isAvailable) capabilities.savedTokenAccounting = true;
         const auth = yield* serverAuth.getDescriptor();
         const scratchWorkspaceRoot = yield* managedFolders.scratchRoot;
         const lastEventLoopStall = yield* eventLoopMonitor.latestNoticeableStall;
@@ -1804,7 +1809,7 @@ export const layerWsRpc = (
         );
 
         return {
-          environment,
+          environment: { ...environment, capabilities },
           auth,
           cwd: config.cwd,
           keybindingsConfigPath: config.keybindingsConfigPath,
@@ -1839,6 +1844,7 @@ export const layerWsRpc = (
             onSome: (root) => ({ scratchWorkspaceRoot: root }),
           }),
           newProjectsRoot: managedFolders.namedProjectsRoot,
+          ...(yield* readNativeStoreAuthorityConfig(environment.environmentId)),
           ...(lastEventLoopStall === undefined ? {} : { lastEventLoopStall }),
         };
       });

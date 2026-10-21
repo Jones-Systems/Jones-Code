@@ -512,13 +512,15 @@ export function mergeProcesses(input: MergeProcessesInput): MergeProcessesResult
         ? "server"
         : Option.contains(input.sidecarPid, process.pid)
           ? "resource-monitor"
-          : explicitElectronRootPids.has(process.pid)
-            ? "electron-main"
-            : electronMetric
-              ? electronCategory(electronMetric)
-              : isElectronDescendant(process.pid, processesByPid, electronPids, input.serverPid)
-                ? inferredElectronCategory(process)
-                : "server-child";
+          : matchesAttribution
+            ? processAttribution.category
+            : explicitElectronRootPids.has(process.pid)
+              ? "electron-main"
+              : electronMetric
+                ? electronCategory(electronMetric)
+                : isElectronDescendant(process.pid, processesByPid, electronPids, input.serverPid)
+                  ? inferredElectronCategory(process)
+                  : "server-child";
     const firstSeenAt = previous?.process.firstSeenAt ?? DateTime.makeUnsafe(sampledAtMs);
     const preservePreviousRates = !input.updatePrevious && previous !== undefined;
     const cpuPercent = preservePreviousRates

@@ -174,6 +174,50 @@ describe("UsageAggregator", () => {
     ]);
   });
 
+  it("filters exact daily windows by an inclusive start and exclusive end", () => {
+    const aggregator = new UsageAggregator({
+      timeZone: "UTC",
+      sinceDay: "2026-08-06",
+      untilDay: "2026-08-07",
+      resolution: "exactDay",
+      sinceTimeMs: Date.parse("2026-08-06T12:00:00.000Z"),
+      untilTimeMs: Date.parse("2026-08-07T12:00:00.000Z"),
+      rates,
+    });
+    const result = [
+      record({ timestampMs: Date.parse("2026-08-06T11:59:59.999Z") }),
+      record({ timestampMs: Date.parse("2026-08-06T12:00:00.000Z") }),
+      record({ timestampMs: Date.parse("2026-08-07T11:59:59.999Z") }),
+      record({ timestampMs: Date.parse("2026-08-07T12:00:00.000Z") }),
+    ].map((item) => aggregator.add(item));
+    const summary = aggregator.finish();
+
+    expect(result).toEqual([false, true, true, false]);
+    expect(summary.outOfWindow).toBe(2);
+    expect(summary.buckets.map((bucket) => [bucket.day, bucket.hourStart])).toEqual([
+      ["2026-08-06", undefined],
+      ["2026-08-07", undefined],
+    ]);
+  });
+
+  it("keeps daily payloads collapsed when hourly resolution is not requested", () => {
+    const result = aggregate([
+      record({ timestampMs: Date.parse("2026-08-07T04:05:13.944Z") }),
+      record({ timestampMs: Date.parse("2026-08-07T05:05:13.944Z") }),
+    ]);
+
+    expect(result.buckets).toHaveLength(1);
+    expect(result.buckets[0]?.hourStart).toBeUndefined();
+    expect(result.buckets[0]?.records).toBe(2);
+  });
+
+  it("prices against the rate table", () => {
+    const result = aggregate([record()]);
+
+    expect(result.buckets[0]?.costUsd).toBeCloseTo(0.004625, 9);
+    expect(result.buckets[0]?.costSource).toBe("modelPriced");
+  });
+
   it("counts tokens but not cost for a model with no rate", () => {
     const result = aggregate([record({ model: "kimi-k3" })]);
 

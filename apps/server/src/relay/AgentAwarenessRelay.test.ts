@@ -289,6 +289,46 @@ const makeTestRelay = Effect.fnUntraced(function* (
 });
 
 describe("AgentAwarenessRelay", () => {
+  it("ignores transcript and tool updates but retains activity and metadata changes", () => {
+    for (const type of [
+      "provider-session.detach-requested",
+      "message.updated",
+      "turn-item.updated",
+      "provider-turn.updated",
+      "thread.visited",
+      "thread.pinned",
+    ] as const) {
+      assert.isFalse(AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({ type }));
+    }
+    for (const type of [
+      "run.created",
+      "run.updated",
+      "runtime-request.updated",
+      "subagent.updated",
+      "provider-thread.updated",
+      "thread.metadata-updated",
+      "thread.model-selection-updated",
+      "thread.provider-switched",
+      "thread.archived",
+      "thread.unarchived",
+      "thread.deleted",
+    ] as const) {
+      assert.isTrue(AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({ type }));
+    }
+  });
+
+  it("does not publish imported thread creation as new agent activity", () => {
+    assert.isFalse(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({
+        type: "thread.created",
+        payload: { historyOrigin: "v1_import" },
+      }),
+    );
+    assert.isTrue(
+      AgentAwarenessRelay.shouldPublishAgentAwarenessEvent({ type: "thread.created", payload: {} }),
+    );
+  });
+
   it.effect("coalesces queued updates and reruns a thread dirtied during publishing", () =>
     Effect.gen(function* () {
       const started = yield* Deferred.make<void>();

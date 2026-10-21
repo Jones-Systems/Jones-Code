@@ -420,6 +420,62 @@ it("bounds long partial lines and joins surrogate pairs across chunk boundaries"
   }
 });
 
+it("preserves retained lines as older storage is compacted", () => {
+  for (const maxLines of [3, 5_000]) {
+    let expected = "";
+    const history = new TerminalManager.BoundedTerminalHistory(maxLines, expected);
+    for (let batch = 0; batch < 40; batch += 1) {
+      const chunk = Array.from({ length: 300 }, (_, line) => `${batch}:${line}\n`).join("");
+      history.append(chunk);
+      expected = retainedHistory(expected + chunk, maxLines);
+      expect(history.value()).toBe(expected);
+    }
+  }
+});
+
+const isTerminalInputValidationError = Schema.is(
+  TerminalManager.LegacyTerminalInputValidationError,
+);
+
+function ownedControl(generation = "terminal-generation:one") {
+  const threadId = ThreadId.make("thread-1");
+  const releaseCommandId = CommandId.make("legacy-terminal:C");
+  const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
+  return Schema.decodeUnknownSync(LegacyOwnedTerminalControl)({
+    version: 1,
+    threadId,
+    runId: "legacy-terminal:run",
+    terminalId: "legacy-setup",
+    generation,
+    preparationGeneration: "legacy-terminal:birth-generation",
+    claimEventId: "legacy-terminal:claim",
+    claimSequence: 1,
+    claimReceiptSequence: 1,
+    birthEventId: "legacy-terminal:birth",
+    birthSequence: 2,
+    birthReceiptSequence: 2,
+    policy: {
+      version: 1,
+      createCommandId,
+      birthCommandId: `${createCommandId}:initial-message`,
+      releaseCommandId,
+      threadId,
+      projectId: "legacy-terminal:project",
+      messageId: "legacy-terminal:message",
+      runId: "legacy-terminal:run",
+      payloadHash: "legacy-terminal:payload",
+      ownsNewThread: true,
+    },
+  });
+}
+function noControl(workspacePath: string): LegacyNoTerminalControl {
+  const { terminalId: _terminalId, generation: _generation, ...birth } = ownedControl();
+  return { ...birth, type: "no_control", workspacePath, projectWorkspaceRoot: workspacePath };
+}
+function ownedOpenHooks(binding = ownedControl()): TerminalManager.LegacyTerminalPreparationHooks {
+  return { binding, beforeSpawn: () => Effect.void, afterSpawn: () => Effect.void };
+}
+
 it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },

@@ -175,3 +175,58 @@ describe("SessionControl", () => {
     await expect(control.agent("agent-b", async () => "acted")).resolves.toBe("acted");
   });
 });
+
+
+describe("Jones preview receive deadlines", () => {
+  it("uses the receive wall clock even when the monotonic clock has another origin", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-10-21T00:00:00Z"));
+      const control = new SessionControl("agent");
+      const budget = new BrowserRequestDeadline(50);
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const first = control.agent("agent", async () => {
+        started.resolve();
+        await held.promise;
+      });
+      await started.promise;
+      let actions = 0;
+      const expired = expect(control.agent("agent", async () => { actions++; }, budget.deadlineMs))
+        .rejects.toBeInstanceOf(BrowserActionNotStarted);
+      await vi.advanceTimersByTimeAsync(50);
+      await expired;
+      held.resolve();
+      await first;
+      await control.agent("agent", async () => {});
+      expect(actions).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains a started action's permit until real settlement after the receive deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const control = new SessionControl("agent");
+      const budget = new BrowserRequestDeadline(50);
+      const held = Promise.withResolvers<void>();
+      const started = Promise.withResolvers<void>();
+      const first = budget.response(control.agent("agent", async () => {
+        budget.start();
+        started.resolve();
+        await held.promise;
+      }, budget.deadlineMs));
+      await started.promise;
+      const events: string[] = [];
+      const second = control.agent("agent", async () => { events.push("second"); });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(events).toEqual([]);
+      held.resolve();
+      await Promise.all([first, second]);
+      expect(events).toEqual(["second"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

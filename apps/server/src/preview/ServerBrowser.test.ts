@@ -686,6 +686,102 @@ it.live("reports a pending dialog without evaluating the page and resolves it ex
   ).pipe(Effect.provide(layer)),
 );
 
+it.live("the owner can close a tab while an agent action waits on its dialog", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const started = Promise.withResolvers<void>();
+      const finish = Promise.withResolvers<Record<string, unknown>>();
+      contexts[0]!.sessions[0]!.send.mockImplementationOnce(async () => {
+        started.resolve();
+        return finish.promise;
+      });
+      page.on("close", () => finish.resolve({ result: { value: "closed" } }));
+      const running = yield* broker
+        .invoke({
+          scope,
+          tabId,
+          operation: "evaluate",
+          input: { expression: 'confirm("Delete?")' },
+        })
+        .pipe(Effect.forkScoped);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => finish.resolve({ result: { value: "cleanup" } })),
+      );
+      yield* Effect.promise(() => started.promise);
+      page.emit("dialog", {
+        type: () => "confirm",
+        message: () => "Delete?",
+        defaultValue: () => "",
+        accept: vi.fn(),
+        dismiss: vi.fn(),
+      });
+      const foreign = yield* broker
+        .invoke<void>({
+          scope: asSession("agent-b"),
+          tabId,
+          operation: "close",
+          input: {},
+        })
+        .pipe(Effect.flip);
+      expect(foreign).toMatchObject({
+        _tag: "PreviewAutomationControlInterruptedError",
+        reason: "agentMismatch",
+      });
+      expect(page.close).not.toHaveBeenCalled();
+      yield* broker.invoke({ scope, tabId, operation: "close", input: {} });
+      expect(yield* Fiber.join(running)).toBe("closed");
+      expect(page.close).toHaveBeenCalled();
+      const manager = yield* Manager.PreviewManager;
+      expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toHaveLength(0);
+      const afterClose = yield* broker
+        .invoke<void>({ scope, tabId, operation: "evaluate", input: { expression: "late()" } })
+        .pipe(Effect.flip);
+      expect(afterClose._tag).toBe("PreviewAutomationTabNotFoundError");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a popup becomes the agent's own tab and keeps its opener page", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const opener = contexts[0]!.page;
+      const popup = makeContext();
+      opener.emit("popup", popup.page);
+      const manager = yield* Manager.PreviewManager;
+      let sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      while (sessions.length < 2) {
+        yield* Effect.sleep("5 millis");
+        sessions = (yield* manager.list({ threadId: scope.thread.threadId })).sessions;
+      }
+      const popupTab = sessions.find((session) => session.tabId !== tabId)!;
+      const opened = sessions.find((session) => session.tabId === tabId)!;
+      expect(popupTab).toMatchObject({ automationOwner: opened.automationOwner, reveal: false });
+      const status = yield* broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      expect(status.selectedClient?.runtimeIdentity).toBeNull();
+      expect(status.tabs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ tabId }),
+          expect.objectContaining({ tabId: popupTab.tabId, openerTabId: tabId }),
+        ]),
+      );
+      expect(opener.goto).not.toHaveBeenCalled();
+      expect(opener.close).not.toHaveBeenCalled();
+      yield* Effect.promise(() => popup.page.close());
+      while ((yield* manager.list({ threadId: scope.thread.threadId })).sessions.length > 1) {
+        yield* Effect.sleep("5 millis");
+      }
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
 it.live("a tab opened to a file the browser cannot show reports the file to download", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1000,6 +1096,217 @@ it.live("only the current controller can answer a file picker", () =>
       });
       expect(answered).toBe(false);
       expect(setFiles).not.toHaveBeenCalled();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a file picker replaces a stalled viewer backlog instead of being dropped", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* viewer.input({ type: "takeControl" });
+      const accept = Promise.withResolvers<string>();
+      page.emit("filechooser", {
+        isMultiple: () => false,
+        element: () => ({ getAttribute: () => accept.promise }),
+        setFiles: async () => {},
+      });
+      yield* Queue.clear(viewer.output);
+      stallViewer(viewer, { _tag: "viewport", width: 1, height: 1 });
+      accept.resolve(".csv");
+      yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+      expect(yield* Queue.clear(viewer.output)).toEqual([
+        expect.objectContaining({ _tag: "fileChooser", accept: ".csv" }),
+      ]);
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("control updates replace a stalled viewer backlog in the order they happen", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, tabId } = yield* ready;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, true));
+      yield* Queue.clear(viewer.output);
+      const acked = Promise.withResolvers<void>();
+      yield* Effect.addFinalizer(() => Effect.sync(() => acked.resolve()));
+      stallViewer(viewer, {
+        _tag: "frame",
+        data: Buffer.alloc(0),
+        ack: Effect.promise(() => acked.promise),
+      });
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "releaseControl" });
+      const controls = (yield* Queue.clear(viewer.output)).flatMap((item) =>
+        item._tag === "control" ? [item.controller] : [],
+      );
+      expect(controls[0]).toBe("you");
+      expect(controls.at(-1)).not.toBe("you");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent's tabs stop at the limit until an unwatched idle tab closes", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const open = broker.invoke<PreviewAutomationStatus>({
+        scope,
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      for (let count = 1; count < 8; count += 1) yield* open;
+      expect(yield* Effect.flip(open)).toMatchObject({
+        _tag: "PreviewAutomationControlInterruptedError",
+        reason: "tabLimit",
+      });
+      yield* broker.invoke({
+        scope: asSession("agent-b"),
+        operation: "open",
+        input: { reuseExistingTab: false, show: false },
+      });
+      const later = (yield* Clock.currentTimeMillis) + 31 * 60 * 1000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+      yield* Effect.addFinalizer(() => Effect.sync(() => clock.mockRestore()));
+      const browser = yield* ServerBrowser.ServerBrowser;
+      yield* browser.attachViewer(viewerInput(tabId, false));
+      const reopened = yield* open;
+      const manager = yield* Manager.PreviewManager;
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(sessions.map((session) => session.tabId).toSorted()).toEqual(
+        [tabId, reopened.tabId].toSorted(),
+      );
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("an agent answers the page's file picker or sets files on a file input", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const upload = (input: Record<string, unknown>) =>
+        broker.invoke<void>({ scope, tabId, operation: "upload", input });
+      expect(yield* Effect.flip(upload({ paths: ["/tmp/a.csv"] }))).toMatchObject({
+        _tag: "PreviewAutomationExecutionError",
+      });
+      const setFiles = vi.fn(async (_files: unknown) => {});
+      page.emit("filechooser", {
+        isMultiple: () => false,
+        element: () => ({ getAttribute: async () => ".csv" }),
+        setFiles,
+      });
+      const status = broker.invoke<PreviewAutomationStatus>({
+        scope,
+        tabId,
+        operation: "status",
+        input: {},
+      });
+      let opened = yield* status;
+      while (!opened.fileChooser) {
+        yield* Effect.sleep("5 millis");
+        opened = yield* status;
+      }
+      expect(opened.fileChooser).toEqual({ multiple: false, accept: ".csv" });
+      yield* Effect.flip(upload({ paths: ["/tmp/a.csv", "/tmp/b.csv"] }));
+      yield* upload({ paths: ["/tmp/a.csv"] });
+      expect(setFiles).toHaveBeenCalledExactlyOnceWith(["/tmp/a.csv"], expect.anything());
+      expect((yield* status).fileChooser).toBeNull();
+
+      const setInputFiles = vi.fn(async () => {});
+      page.locator.mockReturnValue({ setInputFiles } as never);
+      yield* upload({ paths: ["/tmp/b.csv"], locator: "input[type=file]" });
+      expect(page.locator).toHaveBeenLastCalledWith("input[type=file]");
+      expect(setInputFiles).toHaveBeenCalledWith(["/tmp/b.csv"], expect.anything());
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("viewers see the agent's pointer move to its target and click there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { browser, broker, tabId } = yield* ready;
+      const page = contexts[0]!.page;
+      const viewer = yield* browser.attachViewer(viewerInput(tabId, false));
+      const click = vi.fn(async () => {});
+      page.locator.mockReturnValue({
+        scrollIntoViewIfNeeded: async () => {},
+        boundingBox: async () => ({ x: 100, y: 40, width: 80, height: 20 }),
+        click,
+      } as never);
+      yield* broker.invoke({ scope, tabId, operation: "click", input: { locator: "#go" } });
+      const pointers = (yield* Queue.clear(viewer.output)).filter(
+        (item) => item._tag === "pointer",
+      );
+      expect(pointers).toEqual([
+        expect.objectContaining({ phase: "move", x: 140, y: 50 }),
+        expect.objectContaining({ phase: "click", x: 140, y: 50 }),
+      ]);
+      expect(click).toHaveBeenCalledOnce();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("drives the desktop's own page for a tab the desktop renders", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const broker = yield* Broker.PreviewAutomationBroker;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.yieldNow;
+      desktopRendersNext = true;
+      const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      const viewer = yield* browser.attachViewer(viewerInput(opened.tabId, true));
+      expect(desktopConnections.map((connection) => connection.endpoint)).toEqual([
+        `ws://desktop/${opened.tabId}`,
+      ]);
+      expect(contexts).toEqual([]);
+      const page = desktopConnections[0]!.context.page;
+      yield* viewer.input({ type: "takeControl" });
+      yield* viewer.input({ type: "resize", width: 390, height: 844 });
+      expect(page.setViewportSize).not.toHaveBeenCalled();
+      yield* viewer.input({ type: "releaseControl" });
+      const evaluated = yield* broker.invoke({
+        scope: asSession("agent-desktop"),
+        operation: "status",
+        input: {},
+        tabId: PreviewTabId.make(opened.tabId),
+      });
+      expect(evaluated).toMatchObject({
+        tabId: opened.tabId,
+        selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
+      });
+      yield* manager.close({ threadId: scope.thread.threadId, tabId: opened.tabId });
+      while (releasedDesktopTabs.length === 0) yield* Effect.yieldNow;
+      expect(releasedDesktopTabs).toEqual([opened.tabId]);
+      expect(page.close).not.toHaveBeenCalled();
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("a desktop page the desktop takes back reconnects instead of closing", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      yield* Effect.yieldNow;
+      desktopRendersNext = true;
+      const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+      const viewer = yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      // The server's listener subscribes in its own fiber; detach once it is there.
+      while (desktopDetaches.listenerCount("detach") === 0) yield* Effect.yieldNow;
+      desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId: opened.tabId });
+      let end = yield* Queue.take(viewer.output);
+      while (end._tag !== "reconnect" && end._tag !== "gone")
+        end = yield* Queue.take(viewer.output);
+      expect(end._tag).toBe("reconnect");
+      expect(releasedDesktopTabs).toEqual([opened.tabId]);
+      const { sessions } = yield* manager.list({ threadId: scope.thread.threadId });
+      expect(sessions.map((session) => session.tabId)).toContain(opened.tabId);
+      yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      expect(desktopConnections).toHaveLength(2);
     }),
   ).pipe(Effect.provide(layer)),
 );

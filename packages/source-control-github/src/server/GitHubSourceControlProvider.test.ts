@@ -297,8 +297,133 @@ describe("GitHubSourceControlProvider repository resolution", () => {
 describe("GitHubSourceControlProvider change request lookups by head", () => {
   const remotes = remotesOutput(["origin", "git@github.com:acme/web.git"]);
 
-  it.effect("matches an owner:branch selector on the head owner", () => {
-    const { layer } = harness({
+  it.effect("reads a background sweep's staggered heads in one GraphQL document", () => {
+    const { layer, graphqlCalls } = harness({
+      remotes,
+      graphql: (lookup) => ({
+        pullRequests: {
+          nodes:
+            lookup.head === "feature/a"
+              ? [{ ...node(7, "feature/a"), headRefOid: "a".repeat(40) }]
+              : [],
+        },
+      }),
+    });
+    return Effect.gen(function* () {
+      const gh = yield* GitHubSourceControlProvider.make;
+      const lookup = (headSelector: string) =>
+        gh
+          .listChangeRequests({
+            cwd: "/repo",
+            headSelector,
+            state: "all",
+            limit: 100,
+            context: githubContext("github.com"),
+          })
+          .pipe(Effect.forkChild);
+      const firstLookup = yield* lookup("feature/a");
+      yield* TestClock.adjust("200 millis");
+      const secondLookup = yield* lookup("feature/b");
+      yield* TestClock.adjust("300 millis");
+      const first = yield* Fiber.join(firstLookup);
+      const second = yield* Fiber.join(secondLookup);
+      assert.deepStrictEqual(
+        first?.map((pr) => pr.number),
+        [7],
+      );
+      assert.strictEqual(first?.[0]?.headSha, "a".repeat(40));
+      assert.deepStrictEqual(second, []);
+      assert.strictEqual(graphqlCalls.length, 1);
+      assert.include(graphqlCalls[0]!.query, "headRefOid");
+      assert.deepStrictEqual(graphqlCalls[0]!.lookups, [
+        {
+          owner: "acme",
+          name: "web",
+          head: "feature/a",
+          states: ["OPEN", "CLOSED", "MERGED"],
+          first: 100,
+        },
+        {
+          owner: "acme",
+          name: "web",
+          head: "feature/b",
+          states: ["OPEN", "CLOSED", "MERGED"],
+          first: 100,
+        },
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("skips a row that does not decode and keeps the rest of the batch", () => {
+    const { layer, graphqlCalls } = harness({
+      remotes,
+      graphql: (lookup) => ({
+        pullRequests: {
+          nodes:
+            lookup.head === "feature/a"
+              ? [{ ...node(8, "feature/a"), number: "eight" }, node(7, "feature/a")]
+              : [node(9, "feature/b")],
+        },
+      }),
+    });
+    return Effect.gen(function* () {
+      const gh = yield* GitHubSourceControlProvider.make;
+      const lookup = (headSelector: string) =>
+        gh.listChangeRequests({
+          cwd: "/repo",
+          headSelector,
+          state: "all",
+          limit: 100,
+          context: githubContext("github.com"),
+        });
+      const both = yield* Effect.all([lookup("feature/a"), lookup("feature/b")], {
+        concurrency: "unbounded",
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust("500 millis");
+      const [first, second] = yield* Fiber.join(both);
+      assert.strictEqual(graphqlCalls.length, 1);
+      assert.deepStrictEqual(
+        first.map((pr) => pr.number),
+        [7],
+      );
+      assert.deepStrictEqual(
+        second.map((pr) => pr.number),
+        [9],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("caps a background document at twenty-five heads", () => {
+    const { layer, graphqlCalls } = harness({
+      remotes,
+      graphql: () => ({ pullRequests: { nodes: [] } }),
+    });
+    return Effect.gen(function* () {
+      const gh = yield* GitHubSourceControlProvider.make;
+      const lookups = yield* Effect.all(
+        Array.from({ length: 26 }, (_, index) =>
+          gh.listChangeRequests({
+            cwd: "/repo",
+            headSelector: `feature/${index}`,
+            state: "all",
+            limit: 100,
+            context: githubContext("github.com"),
+          }),
+        ),
+        { concurrency: "unbounded" },
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("500 millis");
+      yield* Fiber.join(lookups);
+      assert.deepStrictEqual(
+        graphqlCalls.map((call) => call.lookups.length).toSorted((a, b) => a - b),
+        [1, 25],
+      );
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("routes an owner:branch selector through REST without GraphQL", () => {
+    const calls: GitHubRest.GitHubRestInput[] = [];
+    const { layer, graphqlCalls } = harness({
       remotes,
       api: {
         credential: () =>
@@ -331,12 +456,17 @@ describe("GitHubSourceControlProvider change request lookups by head", () => {
     });
     return Effect.gen(function* () {
       const gh = yield* GitHubSourceControlProvider.make;
-      const rows = yield* gh.listChangeRequests({
+      const open = yield* gh.listChangeRequests({
         cwd: "/repo",
         headSelector: "me:main",
         state: "open",
         limit: 1,
-      });
+      }).pipe(Effect.forkChild);
+      const rows = yield* Fiber.join(open);
+      assert.deepStrictEqual(
+        (yield* Fiber.join(open)).map((pr) => pr.number),
+        [8],
+      );
       assert.deepStrictEqual(
         rows.map((pr) => pr.number),
         [8],

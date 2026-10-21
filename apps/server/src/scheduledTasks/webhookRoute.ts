@@ -121,6 +121,8 @@ export const layer = HttpApiBuilder.group(
           return json(429, { error: result.outcome }, result.outcome);
         case "expired":
           return json(410, { error: "delivery_too_old" }, "expired");
+        case "unavailable":
+          return json(503, { error: "delivery_not_recorded" }, "unavailable");
         case "error":
           return json(500, { error: "internal_error" }, "error");
       }

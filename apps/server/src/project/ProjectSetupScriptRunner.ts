@@ -673,23 +673,38 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
 
-    yield* terminalManager
-      .write({
-        threadId: input.threadId,
-        terminalId,
-        data: projectScriptTerminalInput(commandLine),
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProjectSetupScriptOperationError({
-              ...errorContext,
-              operation: "writeCommand",
-              cause,
-            }),
-        ),
-        Effect.tapError(() => Effect.sync(() => observed?.unsubscribe())),
-      );
+    const writeInput = { threadId: input.threadId, terminalId, data: projectScriptTerminalInput(commandLine) };
+    const write: Effect.Effect<
+      void,
+      | TerminalError
+      | TerminalManager.LegacyTerminalControlError
+      | NativeSetup.NativeSetupControlError
+    > =
+      native !== undefined
+        ? terminalManager.writeNativeSetup!(
+            writeInput,
+            native.control,
+            native.beforeWrite({ control: native.control, data: writeInput.data }),
+          )
+        : legacy === undefined
+          ? terminalManager.write(writeInput)
+          : terminalManager.write(writeInput, {
+              legacyOwnedControl: legacy.binding,
+              beforeWrite: legacy.beforeWrite,
+              afterWrite: legacy.afterWrite,
+            });
+    yield* write.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProjectSetupScriptOperationError({
+            ...errorContext,
+            operation: "writeCommand",
+            cause,
+          }),
+      ),
+      // Nothing will ever settle the completion if the command never ran.
+      Effect.tapError(() => Effect.sync(() => observed?.unsubscribe())),
+    );
 
     const completion = observed?.completion.pipe(
       Effect.tap((result) =>

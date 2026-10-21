@@ -3870,11 +3870,219 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const onCheckoutProgress = progress?.onCheckoutProgress;
 
     const checkoutWorkers = (yield* readConfigValue(input.cwd, "checkout.workers")) ?? "0";
-    yield* executeGitWithStableDiagnostics(
-      "GitVcsDriver.createWorktree",
+    const journal = options?.legacyPreparation;
+    const identity =
+      journal === undefined
+        ? undefined
+        : {
+            commonDirectory: (yield* runGitStdoutWithOptions(
+              "GitVcsDriver.createWorktree.commonDirectory",
+              input.cwd,
+              ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+            )).trim(),
+            baseCommitOid: (yield* runGitStdoutWithOptions(
+              "GitVcsDriver.createWorktree.baseCommit",
+              input.cwd,
+              ["rev-parse", "--verify", `${input.refName}^{commit}`],
+              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+            )).trim(),
+            targetRef: input.newRefName ? `refs/heads/${input.newRefName}` : input.refName,
+            worktreePath,
+          };
+    if (
+      identity !== undefined &&
+      (!path.isAbsolute(identity.commonDirectory) ||
+        !/^[a-f0-9]{40,64}$/u.test(identity.baseCommitOid))
+    )
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.createWorktree.preparationIdentity",
+          cwd: input.cwd,
+          args: [],
+        }),
+        detail: "Cannot bind the legacy worktree preparation identity.",
+      });
+    const observationError = () =>
+      new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.createWorktree.ownership",
+          cwd: input.cwd,
+          args: [],
+        }),
+        detail: "Exact legacy worktree ownership is unavailable or changed.",
+      });
+    const fsProbe = <A>(probe: () => Promise<A>) =>
+      Effect.tryPromise({ try: probe, catch: observationError });
+    const readOwnerGit = (cwd: string, args: ReadonlyArray<string>) =>
+      runGitStdoutWithOptions("GitVcsDriver.createWorktree.ownership", cwd, args, {
+        env: { GIT_OPTIONAL_LOCKS: "0" },
+      });
+    const readRegistration = () =>
+      readOwnerGit(input.cwd, ["worktree", "list", "--porcelain", "-z"]);
+    const beforeAdd = Effect.gen(function* () {
+      if (identity === undefined) return undefined;
+      if (input.newRefName === null || input.newRefName === undefined)
+        return yield* observationError();
+      const absent = yield* fsProbe(async () => {
+        try {
+          await NodeFSP.lstat(worktreePath);
+          return false;
+        } catch (error) {
+          if (
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT"
+          )
+            return true;
+          throw error;
+        }
+      });
+      if (!absent) return yield* observationError();
+      const parent = yield* fsProbe(async () => {
+        let parentPath = path.dirname(worktreePath);
+        for (let depth = 0; depth < 64; depth++) {
+          try {
+            const stat = await NodeFSP.lstat(parentPath);
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("Unsafe parent");
+            return {
+              parentPath,
+              parentRealPath: await NodeFSP.realpath(parentPath),
+              parentDevice: String(stat.dev),
+              parentInode: String(stat.ino),
+            };
+          } catch (error) {
+            if (
+              !(
+                typeof error === "object" &&
+                error !== null &&
+                "code" in error &&
+                error.code === "ENOENT"
+              )
+            )
+              throw error;
+            const next = path.dirname(parentPath);
+            if (next === parentPath) throw error;
+            parentPath = next;
+          }
+        }
+        throw new Error("No bounded existing parent");
+      });
+      const refs = (yield* readOwnerGit(input.cwd, [
+        "for-each-ref",
+        "--format=%(refname)",
+        identity.targetRef,
+      ])).trim();
+      const registration = yield* readRegistration();
+      const config = yield* executeGit(
+        "GitVcsDriver.createWorktree.ownershipConfig",
+        input.cwd,
+        [
+          "config",
+          "--null",
+          "--get-regexp",
+          `^${`branch.${input.newRefName}.`.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(gh-merge-base|t3-merge-base-ref)$`,
+        ],
+        { allowNonZeroExit: true, env: { GIT_OPTIONAL_LOCKS: "0" } },
+      );
+      if (
+        refs !== "" ||
+        registration.split("\0").includes(`worktree ${worktreePath}`) ||
+        config.exitCode !== 1
+      )
+        return yield* observationError();
+      const common = yield* fsProbe(async () => {
+        const stat = await NodeFSP.lstat(identity.commonDirectory);
+        if (!stat.isDirectory() || stat.isSymbolicLink())
+          throw new Error("Unsafe common directory");
+        return { commonDirectoryDevice: String(stat.dev), commonDirectoryInode: String(stat.ino) };
+      });
+      return {
+        ...parent,
+        ...common,
+        targetRefAbsent: true as const,
+        registrationAbsent: true as const,
+      };
+    });
+    let before: GitVcsDriver.LegacyWorktreeBeforeObservation | undefined;
+    let ownedClaim: GitVcsDriver.LegacyWorktreeMaterialClaim | undefined;
+    const readMaterial = Effect.gen(function* () {
+      if (identity === undefined || before === undefined) return yield* observationError();
+      return yield* readLegacyMaterial({
+        worktreePath,
+        identity,
+        before,
+        ...(ownedClaim === undefined ? {} : { ownedClaim }),
+      });
+    });
+    const journalStep = <A>(
+      kind: GitVcsDriver.LegacyWorktreePreparationStep["kind"],
+      cwd: string,
+      stepArgs: ReadonlyArray<string>,
+      effect: Effect.Effect<A, GitCommandError>,
+    ): Effect.Effect<A, GitCommandError> =>
+      Effect.gen(function* () {
+        if (journal === undefined || identity === undefined) return yield* effect;
+        if (kind === "worktree.add") before = yield* beforeAdd;
+        else yield* readMaterial;
+        const step: GitVcsDriver.LegacyWorktreePreparationStep = {
+          ...identity,
+          kind,
+          cwd,
+          args: [...stepArgs],
+          ...(before === undefined ? {} : { before }),
+        };
+        const mapJournalError = () =>
+          new GitCommandError({
+            ...gitCommandContext({
+              operation: "GitVcsDriver.createWorktree.preparationJournal",
+              cwd,
+              args: stepArgs,
+            }),
+            detail: "Legacy preparation journal readback failed.",
+          });
+        // Fallible journal callbacks stay outside native best-effort catches.
+        yield* journal.beforeEffect(step).pipe(Effect.mapError(mapJournalError));
+        // These characters can never form a Git branch; refusal is an owner decision,
+        // not an inference from a subprocess error or missing material afterward.
+        if (kind === "worktree.add" && /[\x00-\x20\x7f~^:?*\[\\]/u.test(targetBranch)) {
+          if (journal.neverInvoked !== undefined)
+            yield* journal
+              .neverInvoked(step, "input_validation_failed")
+              .pipe(Effect.mapError(mapJournalError));
+          return yield* new GitCommandError({
+            ...gitCommandContext({ operation: "GitVcsDriver.createWorktree", cwd, args: stepArgs }),
+            detail: "Legacy worktree input validation refused before invocation.",
+          });
+        }
+        // Entry is conservative: every error or interruption from this point remains
+        // possibly executed, even if a later observation finds no material.
+        const result = yield* effect.pipe(Effect.result);
+        const material = yield* readMaterial.pipe(Effect.result);
+        const claim = Result.isSuccess(material) ? material.success : undefined;
+        yield* journal
+          .afterEffect(
+            step,
+            Result.isSuccess(result) && claim !== undefined
+              ? "settled_success"
+              : "failed_or_unknown",
+            claim,
+          )
+          .pipe(Effect.mapError(mapJournalError));
+        if (Result.isFailure(material)) return yield* material.failure;
+        ownedClaim = claim;
+        return yield* Result.isSuccess(result)
+          ? Effect.succeed(result.success)
+          : Effect.fail(result.failure);
+      });
+    const addArgs = ["-c", `checkout.workers=${checkoutWorkers}`, ...args];
+    if (identity !== undefined) addArgs[addArgs.length - 1] = identity.baseCommitOid;
+    yield* journalStep(
+      "worktree.add",
       input.cwd,
       addArgs,
-      executeGit("GitVcsDriver.createWorktree", input.cwd, addArgs, {
+      executeGitWithStableDiagnostics("GitVcsDriver.createWorktree", input.cwd, addArgs, {
         fallbackErrorDetail: "git worktree add failed",
         timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
         ...(onCheckoutProgress
@@ -3984,28 +4192,37 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     if (input.newRefName && input.baseRefName) {
       const base = yield* resolveBranchBase(input.cwd, input.baseRefName);
       if (base) {
-        yield* Effect.gen(function* () {
-          yield* runGit("GitVcsDriver.createWorktree.configureBaseRef", input.cwd, [
-            "config",
-            `branch.${input.newRefName}.gh-merge-base`,
+        const configure = (operation: string, key: string, value: string) => {
+          const configArgs = ["config", `branch.${input.newRefName}.${key}`, value];
+          const write = runGit(operation, input.cwd, configArgs);
+          return journal === undefined
+            ? write
+            : journalStep("worktree.base-config", input.cwd, configArgs, write);
+        };
+        const configureBase = Effect.gen(function* () {
+          yield* configure(
+            "GitVcsDriver.createWorktree.configureBaseRef",
+            "gh-merge-base",
             base.branchName,
-          ]);
+          );
           if (base.baseRef.startsWith("refs/remotes/")) {
-            // gh consumes its key as a provider branch; T3 also needs the selected remote.
-            yield* runGit("GitVcsDriver.createWorktree.configureComparisonRef", input.cwd, [
-              "config",
-              `branch.${input.newRefName}.t3-merge-base-ref`,
+            yield* configure(
+              "GitVcsDriver.createWorktree.configureComparisonRef",
+              "t3-merge-base-ref",
               base.baseRef,
-            ]);
+            );
           }
-        }).pipe(
-          Effect.catchTags({
-            GitCommandError: () =>
-              Effect.logWarning(
-                "worktree base-ref configuration failed; using base-branch fallback",
-              ),
-          }),
-        );
+        });
+        yield* journal === undefined
+          ? configureBase.pipe(
+              Effect.catchTags({
+                GitCommandError: () =>
+                  Effect.logWarning(
+                    "worktree base-ref configuration failed; using base-branch fallback",
+                  ),
+              }),
+            )
+          : configureBase;
       }
     }
 
@@ -4215,6 +4432,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ]).pipe(Effect.map((stdout) => stdout.trim()));
 
       return { commitSha, remoteRefName };
+    });
+
+  const resolveRemoteTrackingCommitIfExists: GitVcsDriver.GitVcsDriver["Service"]["resolveRemoteTrackingCommitIfExists"] =
+    Effect.fn("resolveRemoteTrackingCommitIfExists")(function* (input) {
+      const remoteRefName = `${input.remoteName}/${input.branchName}`;
+      const args = ["rev-parse", "--verify", "--quiet", `refs/remotes/${remoteRefName}^{commit}`];
+      const result = yield* executeGit(
+        "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+        input.cwd,
+        args,
+        {
+          allowNonZeroExit: true,
+        },
+      );
+      if (result.exitCode === 1 && result.stderr.trim().length === 0) {
+        return null;
+      }
+      if (result.exitCode !== 0) {
+        return yield* new GitCommandError({
+          operation: "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+          command: `git ${args.join(" ")}`,
+          cwd: input.cwd,
+          detail: result.stderr.trim() || "Could not resolve the remote worktree base.",
+        });
+      }
+      return { commitSha: result.stdout.trim(), remoteRefName };
     });
 
   const resolveWorktreeBaseRemote: GitVcsDriver.GitVcsDriver["Service"]["resolveWorktreeBaseRemote"] =
@@ -4766,6 +5009,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     remoteExists,
     remoteBranchExists,
     resolveRemoteTrackingCommit,
+    resolveRemoteTrackingCommitIfExists,
     resolveWorktreeBaseRemote,
     fetchWorktreeBaseCommit: (input) =>
       withListRefsInvalidation(input.cwd, fetchWorktreeBaseCommit(input)),

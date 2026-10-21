@@ -97,6 +97,9 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
           Effect.catchTags({
             ServerBrowserTabNotFoundError: () => Effect.succeed({ _tag: "gone" as const }),
             ServerBrowserLaunchError: (error) => {
+              const companion = companionCloseReason(error.cause);
+              if (companion !== undefined)
+                return Effect.succeed({ _tag: "companionUnavailable" as const, reason: companion });
               const setup = hostSetup(error.cause);
               return setup === undefined
                 ? Effect.fail(error)
@@ -117,6 +120,10 @@ const makeHandler = Effect.fnUntraced(function* (browser: ServerBrowser.ServerBr
       const gone = writer.write(new Socket.CloseEvent(TAB_GONE_CODE, "tab closed"));
       if (attached._tag === "gone") {
         yield* gone;
+        return HttpServerResponse.empty();
+      }
+      if (attached._tag === "companionUnavailable") {
+        yield* writer.write(new Socket.CloseEvent(PREVIEW_STREAM_RENDER_HOST_UNAVAILABLE_CLOSE_CODE, attached.reason));
         return HttpServerResponse.empty();
       }
       if (attached._tag === "hostSetup") {

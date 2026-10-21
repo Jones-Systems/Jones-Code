@@ -1416,6 +1416,13 @@ export const make = Effect.gen(function* () {
     return { ...identity, host, provider: "github" as const };
   });
 
+  const ciStatus = yield* PullRequestCiStatus.createCiStatus({
+    listWorkspaceProjects,
+    registry,
+    githubCi,
+    rateLimits,
+  });
+
   const withRoutingCredential: PullRequestService["Service"]["withRoutingCredential"] = Effect.fn(
     "PullRequestService.withRoutingCredential",
   )(function* (input, operation) {

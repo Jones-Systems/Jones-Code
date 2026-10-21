@@ -1794,7 +1794,30 @@ const make = Effect.gen(function* () {
   const runOperation = async (
     request: PreviewAutomationRequest,
     deadlineMs: number,
+    connectionId: string,
+    onStart: () => void,
+    targetAtReceipt: { readonly tab: ServerTab; readonly generation: number } | undefined,
+    onDispatch: (tab: ServerTab) => Promise<void>,
   ): Promise<unknown> => {
+    const assertCurrentRequest = () => {
+      assertBrowserActionDeadline(deadlineMs);
+      if (hostConnectionId !== connectionId)
+        throw new BrowserControlInterrupted(
+          "The preview connection changed before this action started.",
+        );
+      if (
+        targetAtReceipt &&
+        (tabs.get(tabKey(targetAtReceipt.tab.threadId, targetAtReceipt.tab.tabId)) !==
+          targetAtReceipt.tab ||
+          targetAtReceipt.tab.closing ||
+          targetAtReceipt.tab.control.generation !== targetAtReceipt.generation)
+      )
+        throw new BrowserControlInterrupted(
+          "The preview target or its control changed before this action started.",
+          "interrupted",
+        );
+    };
+    assertCurrentRequest();
     const input = request.input;
     switch (request.operation) {
       case "ping":
@@ -1892,14 +1915,22 @@ const make = Effect.gen(function* () {
         return tab.control.agent(
           request.agentSessionId,
           async () => {
+            assertCurrentRequest();
             if (tab.dialog)
               throw new BrowserControlInterrupted(
                 "A browser dialog is pending. Read preview_status and use preview_dialog first.",
                 "dialogPending",
               );
+            if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+              throw new BrowserControlInterrupted(
+                "This browser tab is closed or replaced.",
+                "closed",
+              );
+            onStart();
             if (existing) {
               if (url) await navigate(tab, url, "load", navigationTimeout);
             } else {
+              // Await the original navigation failure even though background creation keeps the tab.
               await tab.initialNavigation;
             }
             const reveal = open.open ?? open.show;
@@ -1957,9 +1988,15 @@ const make = Effect.gen(function* () {
             "No recording is active for this thread.",
           );
         }
-        // A stop cannot act twice (a retry finds no recording);
-        // dropping a late one would leave capture running.
-        return tab.control.agent(request.agentSessionId ?? "", () => stopRecording(tab));
+        return tab.control.agent(
+          request.agentSessionId ?? "",
+          () => {
+            assertCurrentRequest();
+            onStart();
+            return stopRecording(tab);
+          },
+          deadlineMs,
+        );
       }
     }
     const tab = await requireTab(request);
@@ -2011,6 +2048,10 @@ const make = Effect.gen(function* () {
     return tab.control.agent(
       agentSessionId,
       async () => {
+        assertCurrentRequest();
+        if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
+          throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+        onStart();
         if (tab.dialog)
           throw new BrowserControlInterrupted(
             "A browser dialog is pending. Read preview_status and use preview_dialog first.",
@@ -2020,7 +2061,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request);
+          return await executeTabOperation(tab, request, () => onDispatch(tab));
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -2129,13 +2170,136 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) =>
-    Effect.tryPromise({
-      try: () =>
-        runOperation(request, performance.now() + request.timeoutMs).finally(() =>
-          markUsed(request),
-        ),
-      catch: ServerBrowserPage.toOperationError,
+  const receivedActions = new Map<string, Set<Promise<unknown>>>();
+  const controlledOperations = new Set(["click", "type", "press", "scroll", "evaluate"]);
+  const handleRequest = (connectionId: string, request: PreviewAutomationRequest) => {
+    const receivedTab =
+      request.operation === "ping" || request.operation === "status"
+        ? undefined
+        : request.operation === "open" &&
+            (request.input as PreviewAutomationOpenInput).reuseExistingTab === false
+          ? undefined
+          : request.tabId === undefined
+            ? latestThreadTab(request.threadId, request.agentSessionId)
+            : tabs.get(tabKey(request.threadId, request.tabId));
+    const targetAtReceipt =
+      receivedTab === undefined
+        ? undefined
+        : { tab: receivedTab, generation: receivedTab.control.generation };
+    let companionTarget =
+      receivedTab?.desktop && receivedTab.desktop.origin !== "local"
+        ? { tab: receivedTab, attachmentGeneration: receivedTab.desktop.attachmentGeneration }
+        : undefined;
+    let dispatched = false;
+    let companionFailureOutcome: "unknown" | "not_started" | undefined;
+    const currentAttachmentGeneration = async () => {
+      if (!companionTarget || !placement) return null;
+      const tab = companionTarget.tab;
+      if (tab.closing || tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab) return null;
+      return (
+        (await Effect.runPromise(placement.channel.runtimeEvidence(tab)))?.attachmentGeneration ??
+        null
+      );
+    };
+    const outcomeFor = async (cause?: unknown, errorTag?: string) =>
+      companionOutcome(
+        companionTarget
+          ? {
+              controlled: controlledOperations.has(request.operation),
+              dispatched,
+              attachmentGeneration: companionTarget.attachmentGeneration,
+              currentAttachmentGeneration: await currentAttachmentGeneration(),
+            }
+          : undefined,
+        cause,
+        errorTag,
+      );
+    const onDispatch = async (tab: ServerTab) => {
+      if (!tab.desktop || tab.desktop.origin === "local") return;
+      companionTarget ??= { tab, attachmentGeneration: tab.desktop.attachmentGeneration };
+      const current = await currentAttachmentGeneration();
+      if (current === null || current !== companionTarget.attachmentGeneration) {
+        throw new CompanionHostUnavailable({ ...tab.desktop.origin, state: "offline" });
+      }
+      dispatched = true;
+    };
+    const budget = new BrowserRequestDeadline(request.timeoutMs);
+    const deadlineMs = budget.deadlineMs;
+    const key = `${connectionId}\u0000${request.threadId}\u0000${request.tabId ?? ""}`;
+    const predecessors =
+      request.operation === "snapshot" ? Array.from(receivedActions.get(key) ?? []) : [];
+    // Register at receive time, before asynchronous tab resolution can reorder actions.
+    const work = Promise.resolve()
+      .then(async () => {
+        await Promise.allSettled(predecessors);
+        assertBrowserActionDeadline(deadlineMs);
+        return runOperation(
+          request,
+          deadlineMs,
+          connectionId,
+          budget.start,
+          targetAtReceipt,
+          onDispatch,
+        );
+      })
+      .then(async (result) => {
+        if ((await outcomeFor()) === "unknown")
+          throw new ServerBrowserPage.ServerBrowserOperationError(
+            "PreviewAutomationExecutionError",
+            "The companion attachment changed before this action's result was confirmed.",
+          );
+        return result;
+      })
+      .catch(async (cause: unknown) => {
+        companionFailureOutcome = await outcomeFor(
+          cause,
+          ServerBrowserPage.toOperationError(cause).tag,
+        );
+        throw cause;
+      })
+      .finally(() => markUsed(request));
+    // Respond to preflight expiry while retaining the original work in the receive barrier.
+    const response = budget.response(work);
+    // The native producer starts before the forked Effect consumer. Observe rejection now,
+    // while leaving this same rejected Promise for the consumer to classify and report.
+    void response.catch(constVoid);
+    if (controlledOperations.has(request.operation)) {
+      const actions = receivedActions.get(key) ?? new Set<Promise<unknown>>();
+      actions.add(work);
+      receivedActions.set(key, actions);
+      const remove = () => {
+        actions.delete(work);
+        if (actions.size === 0) receivedActions.delete(key);
+      };
+      void work.then(remove, remove);
+    }
+    return Effect.tryPromise({
+      try: () => response,
+      catch: (cause) =>
+        Schema.is(CompanionHostUnavailable)(cause) ||
+        Schema.is(CompanionOperationUnsupported)(cause)
+          ? {
+              tag: "PreviewAutomationExecutionError" as const,
+              message: cause.message,
+              detail: undefined,
+              outcome: "not_started" as const,
+            }
+          : cause instanceof BrowserActionNotStarted
+            ? {
+                tag: "PreviewAutomationTimeoutError",
+                message: cause.message,
+                detail: undefined,
+                outcome: "not_started" as const,
+              }
+            : (() => {
+                const error = ServerBrowserPage.toOperationError(cause);
+                return {
+                  tag: error.tag,
+                  message: error.message,
+                  detail: error.detail,
+                  outcome: companionFailureOutcome,
+                };
+              })(),
     }).pipe(
       Effect.match({
         onSuccess: (result) => ({ ok: true as const, result }),
@@ -2159,6 +2323,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.ignore,
     );
+  };
 
   const mirrorManagerEvent = (event: PreviewEvent) =>
     Effect.promise(async () => {
