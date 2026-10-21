@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act, render as renderScreen, type Screen } from "../../../test/render";
 
-import { act, useState, useRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useState, useRef } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   buildWorkstreamAssignmentIndex,
@@ -53,7 +52,8 @@ const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
   ],
 };
 
-let root: Root;
+let root: Screen;
+let renderDisposables: AsyncDisposableStack;
 let container: HTMLDivElement;
 const threads = [
   { ...thread, title: "First native conversation" },
@@ -80,13 +80,24 @@ const committed = {
 const reorder = vi.fn(async () => undefined);
 let controller: WorkstreamListView;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  localStorage.clear();
+  dismissContextMenu();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+
+  });
+  try {
   vi.spyOn(Date, "now").mockReturnValue(now);
   localStorage.clear();
   container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
+  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
   const submit = vi.fn(async (command: WorkstreamCommand) => ({
     ...committed,
     command_id: command.command_id,
@@ -141,16 +152,15 @@ beforeEach(() => {
     loadReference: vi.fn(),
   };
   reorder.mockClear();
-});
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  localStorage.clear();
-  dismissContextMenu();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
+
 
 async function render(
   visibleThreads: readonly EnvironmentThreadShell[] = threads,
@@ -179,7 +189,7 @@ async function render(
       ),
     });
   await act(async () =>
-    root.render(
+    root.rerender(
       <WorkstreamNativeSidebar
         controller={controller}
         grouping={group(visibleThreads)}
@@ -244,8 +254,11 @@ async function openAssignment(index = 0) {
     row.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 2 }));
     row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
   });
-  await act(async () => {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await vi.waitFor(() => {
+    const ready = [...document.querySelectorAll<HTMLButtonElement>("button")].some(
+      (entry) => !container.contains(entry) && entry.textContent?.trim() === "Assign thread",
+    );
+    if (!ready) throw new Error("Assignment menu is not ready");
   });
   await clickMenu("Assign thread");
 }
@@ -303,6 +316,7 @@ function nativeRow(index: number) {
 
 describe("native Workstream sidebar interactions", () => {
   it("drags the native row into another Workstream with compatible target feedback", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     expect(container.querySelector('[aria-label="New Workstream name"]')).toBeNull();
     const row = nativeRow(0);
@@ -325,6 +339,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("drops a native row on Unassigned to remove its primary membership", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await pointerEvent(nativeRow(0), "pointerdown");
     const target = container.querySelector('[aria-label="Collapse Unassigned"]')!.parentElement!;
@@ -343,6 +358,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("shows the insertion edge and reorders native rows without changing membership", async () => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       placements: {
@@ -369,6 +385,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("reorders confirmed members while registration is unavailable and assignments are stale", async () => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       stale: true,
@@ -395,6 +412,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it.each(["scope", "capability"])("rejects a same-group neighbor without %s", async (denied) => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       placements: {
@@ -417,6 +435,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("does not offer manual reorder when the displayed shelf is time ordered", async () => {
+    await using _fixture = await setupFixture1();
     controller = { ...controller, registrationContext: null };
     await render(threads, threads, { canReorder: () => false });
     await pointerEvent(nativeRow(0), "pointerdown");
@@ -427,6 +446,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("refuses to reorder against a neighbor whose displayed membership has not been checked", async () => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       placementInventory: {
@@ -460,6 +480,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("starts group reordering only from the group grip and never submits membership changes", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     const header = container.querySelector('[aria-label="Collapse alpha"]')!.parentElement!;
     expect(header.closest('[draggable="true"]')).toBeNull();
@@ -479,6 +500,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("clears pointer feedback on Escape and rejects a drop after write access changes", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await pointerEvent(nativeRow(0), "pointerdown");
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
@@ -503,6 +525,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("leaves clicks below the ordinary sidebar threshold idle and cancels on pointercancel", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
     await pointerEvent(nativeRow(0), "pointerdown");
@@ -518,6 +541,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("ignores external drags and refuses row drags without an activated source", async () => {
+    await using _fixture = await setupFixture1();
     controller = { ...controller, placements: null, registrationContext: null };
     await render();
     const target = container.querySelector('[aria-label="Collapse beta"]')!.closest("li")!;
@@ -530,6 +554,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("allows choosing an assignment outside the initial placement inventory", async () => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       placementInventory: { ...controller.placementInventory, coverage: "partial", identities: [] },
@@ -550,6 +575,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("checks an unchecked row before a same-group drop instead of reordering it", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     controller = {
       ...controller,
@@ -571,6 +597,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("checks an unchecked row dropped on Other threads before removing primary membership", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     controller = {
       ...controller,
@@ -593,6 +620,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("keeps unchecked primary and removal choices enabled without asserting stale memberships", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     controller = {
       ...controller,
@@ -620,6 +648,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("admits only one assignment while the chosen action is pending", async () => {
+    await using _fixture = await setupFixture1();
     let complete!: () => void;
     const assignment = vi.fn(
       () =>
@@ -644,6 +673,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("preserves all native conversations under partial or untrusted placement coverage", async () => {
+    await using _fixture = await setupFixture1();
     controller = {
       ...controller,
       placements: null,
@@ -663,12 +693,13 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("persists collapse without removing Unassigned conversations", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await clickLabel("Collapse alpha");
     expect(container.textContent).not.toContain("First native conversation");
     expect(container.textContent).toContain("Unassigned native conversation");
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
     await render();
     expect(container.textContent).not.toContain("First native conversation");
     await clickLabel("Expand alpha");
@@ -676,6 +707,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("moves primary membership through the real menu without a native reorder or secondary change", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await openAssignment();
     await clickMenu("beta (secondary)");
@@ -698,6 +730,7 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("removes only primary membership through Unassigned and retains secondary context without a bottom strip", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     expect(
       container.querySelector(
@@ -725,16 +758,18 @@ describe("native Workstream sidebar interactions", () => {
   });
 
   it("refuses a native or fallback menu selection after the Workstream controls unmount", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await openAssignment();
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
     await clickMenu("beta (secondary)");
     expect(controller.loadDetail).not.toHaveBeenCalled();
     expect(controller.submit).not.toHaveBeenCalled();
   });
 
   it("cancels a pending membership lookup when write authority changes", async () => {
+    await using _fixture = await setupFixture1();
     let resolveDetail!: (value: WorkstreamDetailView) => void;
     const pending = new Promise<WorkstreamDetailView>((resolve) => {
       resolveDetail = resolve;
@@ -813,7 +848,7 @@ async function renderCreation() {
       removeEventListener: vi.fn(),
     })),
   );
-  await act(async () => root.render(<CreationHeader controller={controller} />));
+  await act(async () => root.rerender(<CreationHeader controller={controller} />));
 }
 
 function nameInput() {
@@ -838,6 +873,7 @@ async function submitCreation() {
 
 describe("Workstream toolbar creation", () => {
   it("opens a focused temporary form between the toolbar actions and cancels outside or with Escape", async () => {
+    await using _fixture = await setupFixture1();
     await renderCreation();
     expect(nameInput()).toBeNull();
     const actions = [...container.querySelectorAll("button[aria-label]")].map((button) =>
@@ -861,6 +897,7 @@ describe("Workstream toolbar creation", () => {
   });
 
   it("submits the trimmed typed create command through form submission and closes only on success", async () => {
+    await using _fixture = await setupFixture1();
     await renderCreation();
     await clickLabel("New Workstream");
     await enterName("  Release prep  ");
@@ -881,6 +918,7 @@ describe("Workstream toolbar creation", () => {
   });
 
   it("retains the name and reports a rejected receipt or transport error for correction", async () => {
+    await using _fixture = await setupFixture1();
     vi.mocked(controller.submit).mockResolvedValueOnce({
       state: "rejected",
       error: { code: "validation_error" },
@@ -906,6 +944,7 @@ describe("Workstream toolbar creation", () => {
   });
 
   it("blocks duplicate pending creates even after dismissal and respects loading and authority", async () => {
+    await using _fixture = await setupFixture1();
     let resolve!: (receipt: WorkstreamReceipt) => void;
     vi.mocked(controller.submit).mockImplementationOnce(
       () =>
@@ -992,7 +1031,8 @@ function primaryPlacementsFor(members: readonly EnvironmentThreadShell[]) {
 }
 
 describe("Workstream live thread summaries", () => {
-  it("matches native row precedence for running, connecting, approval, input, failed and background states", () => {
+  it("matches native row precedence for running, connecting, approval, input, failed and background states", async () => {
+    await using _fixture = await setupFixture1();
     const members = [
       statusThread("running", "running"),
       statusThread("starting", "starting"),
@@ -1024,7 +1064,8 @@ describe("Workstream live thread summaries", () => {
     ).toEqual({ total: 2, running: 0, waiting: 2, failed: 0 });
   });
 
-  it("counts distinct environment/thread pairs and never invents a running state for unknown sessions", () => {
+  it("counts distinct environment/thread pairs and never invents a running state for unknown sessions", async () => {
+    await using _fixture = await setupFixture1();
     const running = statusThread("same", "running");
     const remote = { ...running, environmentId: "env:other" } as EnvironmentThreadShell;
     expect(
@@ -1041,6 +1082,7 @@ describe("Workstream live thread summaries", () => {
   });
 
   it("keeps all known primary members in collapsed counts and replaces input/running indicators with Failed", async () => {
+    await using _fixture = await setupFixture1();
     const members = [
       statusThread("running", "running"),
       statusThread("waiting", "running", { hasPendingUserInput: true }),
@@ -1125,6 +1167,7 @@ describe("Workstream live thread summaries", () => {
   });
 
   it("uses zero counts when primary placement trust is unavailable, keeping visible threads unchecked", async () => {
+    await using _fixture = await setupFixture1();
     controller = { ...controller, placements: null, registrationContext: null };
     await render([statusThread("thread", "running")]);
     expect(
@@ -1179,6 +1222,7 @@ describe("durable Workstream assignment display", () => {
   };
 
   it("groups and counts a recorded member without current proof and confirms Unassigned", async () => {
+    await using _fixture = await setupFixture1();
     const options = useIndex(index([episode("membership", "alpha")]));
     const running = statusThread("thread", "running");
     await render([running, threads[1]!], [running, threads[1]!], options);
@@ -1193,6 +1237,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("offers recorded membership choices without claiming the row is unchecked", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     const options = useIndex(index([episode("membership", "alpha")]), {
       assignNativeThread: assignment,
@@ -1218,6 +1263,7 @@ describe("durable Workstream assignment display", () => {
   } as unknown as EnvironmentThreadShell;
 
   it("offers another environment's thread when its own server handles the assignment", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     const options = useIndex(index([episode("membership", "alpha")]), {
       assignNativeThread: assignment,
@@ -1236,6 +1282,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("keeps another environment's thread unavailable without its own assignment route", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     const options = useIndex(index([episode("membership", "alpha")]), {
       assignNativeThread: assignment,
@@ -1249,6 +1296,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("never confirms Unassigned from an incomplete index", async () => {
+    await using _fixture = await setupFixture1();
     const options = useIndex(index([episode("membership", "alpha")], false));
     await render(threads, threads, options);
     expect(container.querySelector('[aria-label="Assignment unknown"]')?.textContent).toContain(
@@ -1262,6 +1310,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("shows stale Workstreams read-only without confirming Unassigned", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     const options = useIndex(index([episode("membership", "alpha")]), {
       assignNativeThread: assignment,
@@ -1286,6 +1335,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("offers Refresh from the stale notice and disables it while loading", async () => {
+    await using _fixture = await setupFixture1();
     const retry = vi.fn(async () => undefined);
     const options = useIndex(index([episode("membership", "alpha")]), { stale: true, retry });
     await render(threads, threads, options);
@@ -1308,6 +1358,7 @@ describe("durable Workstream assignment display", () => {
   });
 
   it("warns about conflicting primaries and blocks every membership change", async () => {
+    await using _fixture = await setupFixture1();
     const assignment = vi.fn(async () => undefined);
     const options = useIndex(
       index([episode("membership", "alpha"), episode("membership-beta", "beta")]),
@@ -1367,6 +1418,7 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
   };
 
   it("assigns exactly once before unpinning and claims the drop before ordinary planning", async () => {
+    await using _fixture = await setupFixture1();
     let finish!: () => void;
     const assign = vi.fn(
       () =>
@@ -1394,6 +1446,7 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
   });
 
   it.each(["failed", "unknown"])("preserves the pin when assignment is %s", async (message) => {
+    await using _fixture = await setupFixture1();
     const assign = vi.fn(async () => {
       throw new Error(message);
     });
@@ -1408,6 +1461,7 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
   });
 
   it("keeps a same-group drop a claimed no-op and clears cancelled feedback", async () => {
+    await using _fixture = await setupFixture1();
     const assign = vi.fn(async () => undefined);
     controller = { ...controller, assignNativeThread: assign };
     await renderBridge();
@@ -1427,6 +1481,7 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
   });
 
   it("assigns to Unassigned before unpinning and reports a failed unpin without resubmission", async () => {
+    await using _fixture = await setupFixture1();
     const assign = vi.fn(async () => undefined);
     controller = { ...controller, assignNativeThread: assign };
     await renderBridge();
@@ -1445,6 +1500,7 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
   });
 
   it("rejects missing operate scope and refuses an observed unavailable source", async () => {
+    await using _fixture = await setupFixture1();
     const assign = vi.fn(async () => undefined);
     controller = { ...controller, assignNativeThread: assign };
     await renderBridge(() => false);
@@ -1462,7 +1518,8 @@ describe("pinned dnd-kit to native Workstream bridge", () => {
 });
 
 describe("native reorder persisted keys", () => {
-  it("changes visible native order without rewriting keyless unsupported or denied neighbors", () => {
+  it("changes visible native order without rewriting keyless unsupported or denied neighbors", async () => {
+    await using _fixture = await setupFixture1();
     const members = [
       { ...threads[0]!, id: "first", activeOrderKey: "g", createdAt: "2026-10-01T00:00:00Z" },
       {

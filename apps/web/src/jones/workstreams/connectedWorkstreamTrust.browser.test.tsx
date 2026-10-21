@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { act, render as renderScreen, type Screen } from "../../../test/render";
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
@@ -12,9 +12,8 @@ import type {
   NativeReference,
   TrustedT3PlacementEnvironment,
 } from "@t3tools/contracts";
-import { act, createRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { createRef } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   WorkstreamNativeSidebar,
@@ -146,26 +145,38 @@ describe("Workstream grouping with connected-environment trust", () => {
 });
 
 describe("Workstream sidebar with an environment trust conflict", () => {
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    vi.spyOn(Date, "now").mockReturnValue(now);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
+  async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
     await act(async () => root.unmount());
     container.remove();
     localStorage.clear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+
   });
+  try {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
+
 
   it("warns and blocks every membership change for the conflicting environment", async () => {
+    await using _fixture = await setupFixture1();
     const assignNativeThread = vi.fn(async () => undefined);
     const controller = {
       data,
@@ -208,7 +219,7 @@ describe("Workstream sidebar with an environment trust conflict", () => {
       ((item: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
     >();
     await act(async () =>
-      root.render(
+      root.rerender(
         <WorkstreamNativeSidebar
           controller={controller}
           grouping={grouping}

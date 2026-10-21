@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, useSyncExternalStore } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, fakeTimers, render as renderScreen, type Screen } from "../../../test/render";
+import { useSyncExternalStore } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/fixtures";
 import type { WorkQueueMetadataLoader } from "../../jones/workQueue/WorkQueueMetadataPanel";
 import { WorkQueuePanel } from "./WorkQueuePanel";
@@ -51,22 +50,33 @@ function makeSource(items: readonly WorkQueueItem[] = [first, second]) {
 }
 
 describe("submitted work preview", () => {
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
+  async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
     await act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+
   });
+  try {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
   async function render(source: WorkQueueSource) {
-    await act(() => root.render(<WorkQueuePanel source={source} />));
+    await act(() => root.rerender(<WorkQueuePanel source={source} />));
   }
   function button(text: string) {
     const found = [...container.querySelectorAll("button")].find(
@@ -98,6 +108,7 @@ describe("submitted work preview", () => {
     );
   }
   it("toggles the row pause icon to resume and back without sending", async () => {
+    await using _fixture = await setupFixture1();
     const source = createMockWorkQueueSource();
     const send = vi.spyOn(source, "sendNow");
     await render(source);
@@ -113,7 +124,8 @@ describe("submitted work preview", () => {
     expect(send).not.toHaveBeenCalled();
   });
   it("guards device navigation and unload while preserving a dirty preview draft", async () => {
-    await act(() => root.render(<WorkQueuePreview />));
+    await using _fixture = await setupFixture1();
+    await act(() => root.rerender(<WorkQueuePreview />));
     const cleanUnload = new Event("beforeunload", { cancelable: true });
     window.dispatchEvent(cleanUnload);
     expect(cleanUnload.defaultPrevented).toBe(false);
@@ -133,6 +145,7 @@ describe("submitted work preview", () => {
     expect(discardedUnload.defaultPrevented).toBe(false);
   });
   it("updates once with Enter while Shift+Enter, IME and repeated Enter do not save", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     await render(source);
     await edit();
@@ -148,7 +161,8 @@ describe("submitted work preview", () => {
     expect(source.save).toHaveBeenCalledTimes(1);
   });
   it("pauses on first edit, resets grace on updates, and expires without submitting", async () => {
-    vi.useFakeTimers();
+    await using _fixture = await setupFixture1();
+    using _timers = fakeTimers();
     vi.setSystemTime(new Date("2026-10-04T12:00:00Z"));
     const source = createMockWorkQueueSource();
     await render(source);
@@ -174,7 +188,8 @@ describe("submitted work preview", () => {
     );
   });
   it("does not lose a pending save acknowledgment when another row's grace expires", async () => {
-    vi.useFakeTimers();
+    await using _fixture = await setupFixture1();
+    using _timers = fakeTimers();
     vi.setSystemTime(new Date("2026-10-04T12:00:00Z"));
     const source = createMockWorkQueueSource();
     const other = (await source.load())[1]!;
@@ -199,6 +214,7 @@ describe("submitted work preview", () => {
     expect((await source.load()).find((item) => item.id === other.id)!.pause).toBeUndefined();
   });
   it("lets a dirty automatic edit pause become an indefinite manual pause", async () => {
+    await using _fixture = await setupFixture1();
     const source = createMockWorkQueueSource();
     await render(source);
     await edit();
@@ -215,7 +231,8 @@ describe("submitted work preview", () => {
   it.each(["conflict", "unknown"] as const)(
     "keeps %s edits protected beyond the grace interval",
     async (outcome) => {
-      vi.useFakeTimers();
+    await using _fixture = await setupFixture1();
+      using _timers = fakeTimers();
       const source = createMockWorkQueueSource();
       const original = (await source.load())[0]!;
       source.save = vi.fn(async (): Promise<WorkQueueSaveResult> =>
@@ -236,7 +253,8 @@ describe("submitted work preview", () => {
     },
   );
   it("keeps manual pause through save, discard and clock advancement", async () => {
-    vi.useFakeTimers();
+    await using _fixture = await setupFixture1();
+    using _timers = fakeTimers();
     const source = createMockWorkQueueSource();
     await render(source);
     await act(() =>
@@ -252,6 +270,7 @@ describe("submitted work preview", () => {
     expect(button("Send now (mock)").disabled).toBe(false);
   });
   it("sends the latest acknowledged text once into visible read-only history", async () => {
+    await using _fixture = await setupFixture1();
     const source = createMockWorkQueueSource();
     await render(source);
     await edit("Latest acknowledged text");
@@ -270,6 +289,7 @@ describe("submitted work preview", () => {
     ).toHaveLength(1);
   });
   it("clears dirty only after a matching save acknowledgment and freezes selection while saving", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     const pending = deferred<WorkQueueSaveResult>();
     source.save.mockImplementation(() => pending.promise);
@@ -290,6 +310,7 @@ describe("submitted work preview", () => {
     expect(button("Edited text").textContent).toContain("Edited text");
   });
   it("requires explicit discard when selecting another submission", async () => {
+    await using _fixture = await setupFixture1();
     await render(makeSource());
     await edit();
     await click("Second text");
@@ -300,6 +321,7 @@ describe("submitted work preview", () => {
     expect(draft().value).toBe("Second text");
   });
   it("keeps the draft and base token through refresh and shows current text on conflict", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     await render(source);
     await edit();
@@ -324,6 +346,7 @@ describe("submitted work preview", () => {
     expect(container.textContent).toContain("Newest text");
   });
   it("never offers saves for reserved, delivered, or UNKNOWN submissions and renders literal text safely", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource(
       ["Reserved", "UNKNOWN", "Held"].map((statusLabel, index) => ({
         ...first,
@@ -346,6 +369,7 @@ describe("submitted work preview", () => {
   it.each(["held", "none", "unknown"] as const)(
     "preserves drafts for %s outcomes without retrying",
     async (outcome) => {
+    await using _fixture = await setupFixture1();
       const source = makeSource();
       source.save.mockResolvedValue(
         outcome === "held"
@@ -368,6 +392,7 @@ describe("submitted work preview", () => {
     },
   );
   it("keeps a thrown save effect unknown until an explicit successful readback", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     source.save.mockRejectedValue(new Error("Lost response"));
     await render(source);
@@ -383,6 +408,7 @@ describe("submitted work preview", () => {
     expect(source.save).toHaveBeenCalledTimes(1);
   });
   it("ignores a read begun before a save so it cannot overwrite the acknowledged text", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     await render(source);
     await edit();
@@ -395,6 +421,7 @@ describe("submitted work preview", () => {
     expect(container.textContent).toContain("No unsaved changes");
   });
   it("ignores a save completion from a replaced source", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     const pending = deferred<WorkQueueSaveResult>();
     source.save.mockImplementation(() => pending.promise);
@@ -411,6 +438,7 @@ describe("submitted work preview", () => {
     expect(draft().value).toBe("Replacement text");
   });
   it("blocks further saves on mismatched acknowledgments", async () => {
+    await using _fixture = await setupFixture1();
     const source = makeSource();
     source.save.mockResolvedValue({ kind: "saved", item: { ...first, text: "Different text" } });
     await render(source);
@@ -498,20 +526,31 @@ describe("submitted work page integration", () => {
     "../WorkspacePageContainer",
     "../ui/sidebar",
   ];
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
+  async function setupFixture2() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
     await act(() => root.unmount());
     container.remove();
     for (const path of mockedModules) vi.doUnmock(path);
     vi.unstubAllGlobals();
+
   });
+  try {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
   it.each([
     [false, "pending"],
     [true, "pending"],
@@ -520,6 +559,7 @@ describe("submitted work page integration", () => {
   ] as const)(
     "negotiates metadata capability=%s and hydrates initial stage=%s without synthetic controls",
     async (supported, initialStage) => {
+    await using _fixture = await setupFixture2();
       vi.resetModules();
       const load = vi.fn<WorkQueueMetadataLoader>(async () => ({
         status: "unconfigured",
@@ -594,17 +634,17 @@ describe("submitted work page integration", () => {
       vi.doMock("../WorkspacePageContainer", () => ({ WorkspacePageContainer: wrapper }));
       vi.doMock("../ui/sidebar", () => ({ SidebarInset: wrapper }));
       const { WorkQueuePage } = await import("./WorkQueuePage");
-      await act(() => root.render(<WorkQueuePage />));
+      await act(() => root.rerender(<WorkQueuePage />));
       expect(container.textContent).toContain("Loading Prompts preferences");
       expect(container.querySelector('[role="tablist"]')).toBeNull();
       expect(load).not.toHaveBeenCalled();
       hydrationStatus = "failed";
-      await act(() => root.render(<WorkQueuePage />));
+      await act(() => root.rerender(<WorkQueuePage />));
       expect(container.textContent).toContain("Prompts preferences could not be loaded");
       await act(() => container.querySelector<HTMLButtonElement>("button")!.click());
       expect(retryPreferences).toHaveBeenCalledTimes(1);
       hydrationStatus = "ready";
-      await act(() => root.render(<WorkQueuePage />));
+      await act(() => root.rerender(<WorkQueuePage />));
       expect(container.querySelector('[aria-label="Mock queue preview"]')).toBeNull();
       expect(container.textContent).not.toContain("sample data only");
       const pending = container.querySelector<HTMLButtonElement>("#queue-pending-tab")!;

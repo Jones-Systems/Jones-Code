@@ -1,9 +1,9 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, fakeTimers, render as renderScreen, type Screen } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { WorkQueueMetadata, WorkQueueMetadataResult } from "@t3tools/contracts";
 import { WorkQueueMetadataPanel, type WorkQueueMetadataLoader } from "./WorkQueueMetadataPanel";
+
+const TEST_NOW = Date.parse("2026-10-21T12:00:00Z");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -14,7 +14,8 @@ function deferred<T>() {
 }
 
 describe("submitted work metadata", () => {
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   const sample = (): WorkQueueMetadata => ({
     schema: "codex.t3-work-queue-metadata/v1",
@@ -24,7 +25,7 @@ describe("submitted work metadata", () => {
       environment_ref: "environment",
       exporter_instance_id: "worker",
     },
-    observed_at_ms: Date.now(),
+    observed_at_ms: vi.getMockedSystemTime()!.getTime(),
     snapshot_token: "a".repeat(64),
     coverage: "complete",
     authority_effect: "none",
@@ -70,27 +71,39 @@ describe("submitted work metadata", () => {
       },
     ],
   });
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
+  async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
     await act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+
   });
+  try {
+    stack.use(fakeTimers({ now: TEST_NOW }));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
   async function render(load: WorkQueueMetadataLoader, key = "environment-a") {
-    await act(() => root.render(<WorkQueueMetadataPanel key={key} load={load} />));
+    await act(() => root.rerender(<WorkQueueMetadataPanel key={key} load={load} />));
   }
   const ready = (): WorkQueueMetadataResult => ({
     status: "ready",
     snapshot: sample(),
-    expires_at_ms: Date.now() + 60_000,
+    expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
   });
   it("shows raw and canonical identities, unknown outcomes and no mutation controls", async () => {
+    await using _fixture = await setupFixture1();
     await render(async () => ready());
     expect([...container.querySelectorAll("th")].map((heading) => heading.textContent)).toEqual([
       "Request / workstream",
@@ -131,10 +144,11 @@ describe("submitted work metadata", () => {
   it.each(["partial", "stale"] as const)(
     "keeps %s rows visible with their sample status",
     async (status) => {
+    await using _fixture = await setupFixture1();
       await render(async () => ({
         status,
         snapshot: { ...sample(), coverage: "partial" },
-        expires_at_ms: Date.now() + 60_000,
+        expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
       }));
       expect(container.textContent).toContain(
         status === "stale" ? "Stale sample" : "Partial sample",
@@ -150,6 +164,7 @@ describe("submitted work metadata", () => {
   ] satisfies WorkQueueMetadataResult[])(
     "does not turn $reason into an empty queue",
     async (result) => {
+    await using _fixture = await setupFixture1();
       await render(async () => result);
       expect(container.textContent).toContain(
         result.status === "unconfigured"
@@ -163,7 +178,7 @@ describe("submitted work metadata", () => {
     },
   );
   it("marks a cached sample stale when its validity expires without polling", async () => {
-    vi.useFakeTimers();
+    await using _fixture = await setupFixture1();
     const load = vi.fn(async () => ready());
     await render(load);
     expect(container.textContent).toContain("Ready sample");
@@ -172,6 +187,7 @@ describe("submitted work metadata", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
   it("clears old data, aborts the old environment read and ignores its late result", async () => {
+    await using _fixture = await setupFixture1();
     const oldRead = deferred<WorkQueueMetadataResult>();
     let oldSignal: AbortSignal | undefined;
     await render((signal) => {
@@ -188,6 +204,7 @@ describe("submitted work metadata", () => {
     expect(container.textContent).not.toContain("request-legacy");
   });
   it("refreshes explicitly and reports a failed read without displaying old rows as current", async () => {
+    await using _fixture = await setupFixture1();
     const load = vi
       .fn<WorkQueueMetadataLoader>()
       .mockResolvedValueOnce(ready())
@@ -200,6 +217,7 @@ describe("submitted work metadata", () => {
     expect(container.textContent).not.toContain("No submitted work");
   });
   it("distinguishes loading from an observed empty sample", async () => {
+    await using _fixture = await setupFixture1();
     const read = deferred<WorkQueueMetadataResult>();
     await render(() => read.promise);
     expect(container.textContent).toContain("Loading queue metadata");
@@ -209,7 +227,7 @@ describe("submitted work metadata", () => {
       read.resolve({
         status: "ready",
         snapshot: { ...sample(), items: [] },
-        expires_at_ms: Date.now() + 60_000,
+        expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
       }),
     );
     expect(container.textContent).not.toContain("Loading queue metadata");
@@ -219,6 +237,7 @@ describe("submitted work metadata", () => {
   it.each(["partial", "stale"] as const)(
     "never describes an empty %s sample as an empty queue",
     async (status) => {
+    await using _fixture = await setupFixture1();
       await render(async () => ({
         status,
         snapshot: {
@@ -226,7 +245,7 @@ describe("submitted work metadata", () => {
           items: [],
           coverage: status === "partial" ? "partial" : "complete",
         },
-        expires_at_ms: Date.now() + 60_000,
+        expires_at_ms: vi.getMockedSystemTime()!.getTime() + 60_000,
       }));
       expect(container.textContent).toContain("the current queue may contain work");
       expect(container.textContent).not.toContain("No submitted work");

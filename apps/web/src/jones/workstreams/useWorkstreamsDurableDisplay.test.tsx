@@ -1,3 +1,4 @@
+import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";
 import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import { RemoteEnvironmentAuthFetchError } from "@t3tools/client-runtime/rpc";
@@ -16,7 +17,7 @@ import {
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
-import { act, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -148,7 +149,6 @@ const loaded = (version = data.binding.registryVersion) => {
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: start });
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", globalThis);
   http.run.mockReset();
   registry = AtomRegistry.make();
@@ -170,7 +170,7 @@ describe("durable Workstream assignment display", () => {
     const threads = nativeThreads(4_600);
     const assigned = threads.filter((_, index) => index % 2 === 1);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: assigned.map((thread, index) => assign(thread, index % 2 ? "beta" : "alpha")),
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -205,7 +205,7 @@ describe("durable Workstream assignment display", () => {
   it("keeps groups when the clock passes proof expiry, downgrading them to recorded", async () => {
     const threads = nativeThreads(3);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "alpha"), assign(threads[1]!, "alpha")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -232,7 +232,7 @@ describe("durable Workstream assignment display", () => {
   it("never renders an assigned thread as Unassigned during refresh or reconnect", async () => {
     const threads = nativeThreads(3);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "alpha")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -280,7 +280,7 @@ describe("durable Workstream assignment display", () => {
   ])("keeps the last good index as stale after %s", async (_label, failure) => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -314,7 +314,7 @@ describe("durable Workstream assignment display", () => {
   it("treats an opaque control-plane failure as transient after its bounded retries", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -343,7 +343,7 @@ describe("durable Workstream assignment display", () => {
   it("hides previously loaded Workstreams when authorization is rejected", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -375,7 +375,7 @@ describe("durable Workstream assignment display", () => {
     async (_label, failure) => {
       const threads = nativeThreads(2);
       const server = syntheticWorkstreams({
-        now: () => Date.now(),
+        now: () => vi.getMockedSystemTime()!.getTime(),
         assignments: [assign(threads[0]!, "beta")],
       });
       http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -398,7 +398,7 @@ describe("durable Workstream assignment display", () => {
   it("keeps other proof batches and every stored group when one batch fails", async () => {
     const threads = nativeThreads(1_500);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: threads.map((thread) => assign(thread, "alpha")),
     });
     server.state.intercept = (call) => {
@@ -442,7 +442,7 @@ describe("durable Workstream assignment display", () => {
     async (_label, failure) => {
       const threads = nativeThreads(2);
       const server = syntheticWorkstreams({
-        now: () => Date.now(),
+        now: () => vi.getMockedSystemTime()!.getTime(),
         assignments: [assign(threads[0]!, "beta")],
       });
       server.state.intercept = (call) => {
@@ -467,7 +467,7 @@ describe("durable Workstream assignment display", () => {
   it("displays a newly attested assignment immediately after the post-command reload", async () => {
     vi.setSystemTime(Date.parse("2026-09-30T12:00:45Z"));
     const threads = nativeThreads(2);
-    const server = syntheticWorkstreams({ now: () => Date.now(), assignments: [] });
+    const server = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
     await mount(threads);
     await settle(() => loaded());
@@ -502,7 +502,7 @@ describe("durable Workstream assignment display", () => {
   it("never confirms Unassigned from an incomplete index", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "alpha")],
     });
     server.state.intercept = (call) =>
@@ -524,7 +524,7 @@ describe("durable Workstream assignment display", () => {
   it("refreshes only proofs when a stored thread appears natively", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "alpha"), assign(threads[1]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -561,7 +561,7 @@ describe("durable Workstream assignment display", () => {
   it("refuses to plan a first attach when a stored primary has no current proof", async () => {
     const threads = nativeThreads(1);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [
         assign(threads[0]!, "alpha", {
           attestedAt: "2026-09-30T11:00:00Z",
@@ -651,8 +651,8 @@ describe("durable Workstream assignment display", () => {
           operation: command.action.operation,
           request_sha256: "c".repeat(64),
           server_generation: 7,
-          accepted_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
+          accepted_at: vi.getMockedSystemTime()!.toISOString(),
+          completed_at: vi.getMockedSystemTime()!.toISOString(),
           state: "committed",
           registry_version: server.state.version,
           changed: true,
@@ -680,7 +680,7 @@ describe("durable Workstream assignment display", () => {
   it("refuses every registry write while the last good snapshot is stale", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -726,7 +726,7 @@ describe("durable Workstream assignment display", () => {
   it("purges when the registration context rejects authorization after list and index load", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -750,7 +750,7 @@ describe("durable Workstream assignment display", () => {
   it("keeps the last good snapshot stale when the registration context read fails", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -778,7 +778,7 @@ describe("durable Workstream assignment display", () => {
   it("shows the error instead of a snapshot when the first registration context read fails", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     server.state.intercept = (call) => {
@@ -797,7 +797,7 @@ describe("durable Workstream assignment display", () => {
   it("publishes without a registration context when the server does not provide one", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     server.state.intercept = (call) => {
@@ -831,7 +831,7 @@ describe("durable Workstream assignment display", () => {
     async (_label, mismatch) => {
       const threads = nativeThreads(2);
       const server = syntheticWorkstreams({
-        now: () => Date.now(),
+        now: () => vi.getMockedSystemTime()!.getTime(),
         assignments: [assign(threads[0]!, "beta")],
       });
       server.state.intercept = (call) =>
@@ -858,7 +858,7 @@ describe("durable Workstream assignment display", () => {
     async (_label, mismatch) => {
       const threads = nativeThreads(2);
       const server = syntheticWorkstreams({
-        now: () => Date.now(),
+        now: () => vi.getMockedSystemTime()!.getTime(),
         assignments: [assign(threads[0]!, "beta")],
       });
       http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -891,7 +891,7 @@ describe("durable Workstream assignment display", () => {
   it("shows the list read-only without a context after registry-version recovery runs out", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     // The same authority keeps reporting a newer registry than the list just read.
@@ -946,7 +946,7 @@ describe("durable Workstream assignment display", () => {
     vi.stubGlobal("removeEventListener", () => undefined);
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     const saves: unknown[] = [];
@@ -1017,7 +1017,7 @@ describe("durable Workstream assignment display", () => {
   it("purges at once when a proof-only refresh rejects authorization", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "alpha"), assign(threads[1]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -1048,7 +1048,7 @@ describe("durable Workstream assignment display", () => {
   it("installs a retry's list, context and index together at one registry version", async () => {
     const threads = nativeThreads(2);
     const server = syntheticWorkstreams({
-      now: () => Date.now(),
+      now: () => vi.getMockedSystemTime()!.getTime(),
       assignments: [assign(threads[0]!, "beta")],
     });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
@@ -1140,7 +1140,7 @@ describe("durable Workstream assignment display", () => {
     }) => {
       const threads = nativeThreads(2);
       const server = syntheticWorkstreams({
-        now: () => Date.now(),
+        now: () => vi.getMockedSystemTime()!.getTime(),
         assignments: [
           assign(threads[0]!, "beta", {
             attestedAt: "2026-09-30T11:00:00Z",
@@ -1162,8 +1162,8 @@ describe("durable Workstream assignment display", () => {
           operation: command.action.operation,
           request_sha256: "c".repeat(64),
           server_generation: 7,
-          accepted_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
+          accepted_at: vi.getMockedSystemTime()!.toISOString(),
+          completed_at: vi.getMockedSystemTime()!.toISOString(),
           state: "committed",
           registry_version: server.state.version,
           changed: true,

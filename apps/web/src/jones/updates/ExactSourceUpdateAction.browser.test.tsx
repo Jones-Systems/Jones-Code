@@ -1,3 +1,4 @@
+import { act, render as renderScreen, type Screen } from "../../../test/render";
 import type { JonesAction } from "@t3tools/client-runtime/jones/updates";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -7,9 +8,7 @@ import type {
 } from "@t3tools/contracts/jones/jonesUpdates";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ExactSourceUpdateAction,
   performExactSourceStep,
@@ -63,7 +62,7 @@ function createHost(initial: JonesUpdateState | null) {
       Promise.reject(new Error("No handler for this request.")),
     dialog: async () => true,
   };
-  let render = () => {};
+  let render = async () => {};
   const snapshot = () => ({
     observation: { state, freshness },
     canOperate: true,
@@ -90,31 +89,42 @@ function createHost(initial: JonesUpdateState | null) {
     set: (next: JonesUpdateState | null, nextFreshness: "fresh" | "stale" = "fresh") => {
       state = next;
       freshness = nextFreshness;
-      render();
+      return render();
     },
-    onChange: (callback: () => void) => {
+    onChange: (callback: () => Promise<void>) => {
       render = callback;
     },
   };
 }
 
 let container: HTMLDivElement;
-let root: Root;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
+let root: Screen;
+let renderDisposables: AsyncDisposableStack;
+async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
   await act(async () => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
-});
+
+  });
+  try {
+  container = document.createElement("div");
+  document.body.append(container);
+  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
 
 async function mount(world: ReturnType<typeof createHost>) {
   const draw = () =>
-    root.render(
+    root.rerender(
       <ExactSourceUpdateAction
         environmentId={environmentId}
         label="Mac Mini"
@@ -122,8 +132,8 @@ async function mount(world: ReturnType<typeof createHost>) {
         host={world.host}
       />,
     );
-  world.onChange(() => act(draw));
-  await act(async () => draw());
+  world.onChange(draw);
+  await draw();
 }
 const buttons = () => [...container.querySelectorAll("button")].map((node) => node.textContent);
 const click = async (name: string) => {
@@ -137,9 +147,10 @@ const status = () => container.querySelector('[role="status"]')?.textContent ?? 
 
 describe("exact-source action", () => {
   it("downloads by source, then installs only after a confirmation bound to the staged handle", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () => {
-      world.set(stagedTarget());
+      await world.set(stagedTarget());
       return AsyncResult.success(stagedTarget());
     };
     await mount(world);
@@ -170,10 +181,11 @@ describe("exact-source action", () => {
   });
 
   it("refuses an install when the host changed while the dialog was open", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.dialog = async () => {
       // Another client staged a different build behind this dialog.
-      world.set(
+      await world.set(
         hostState({
           phase: "staged",
           revision: 3,
@@ -191,6 +203,7 @@ describe("exact-source action", () => {
   });
 
   it("does not resend an install whose response was lost, and resumes once the host moves", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.run = async () => AsyncResult.failure(Cause.fail(new Error("socket closed")));
     await mount(world);
@@ -199,10 +212,10 @@ describe("exact-source action", () => {
     expect(buttons()).toEqual([]);
     expect(status()).toContain("will not be sent again");
     // The same staged state is not evidence that the install failed.
-    world.set(stagedTarget(2));
+    await world.set(stagedTarget(2));
     expect(buttons()).toEqual([]);
     // Once the host reports movement the notice reconciles from the host's own state.
-    world.set(
+    await world.set(
       hostState({
         phase: "committed",
         revision: 5,
@@ -215,6 +228,7 @@ describe("exact-source action", () => {
   });
 
   it("stays in the notice with the host's progress while a download transitions", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     let finish: (result: AtomCommandResult<JonesUpdateState | null, unknown>) => void = () => {};
     world.handlers.run = () => new Promise((resolve) => (finish = resolve));
@@ -224,14 +238,14 @@ describe("exact-source action", () => {
     expect(buttons()).toEqual(["Downloading…"]);
     await click("Downloading…");
     expect(world.requests).toHaveLength(1);
-    world.set(hostState({ phase: "downloading", revision: 2, message: "Downloading build" }));
+    await world.set(hostState({ phase: "downloading", revision: 2, message: "Downloading build" }));
     expect(buttons()).toEqual(["Downloading…"]);
     await act(async () => {
-      world.set(stagedTarget(3));
+      await world.set(stagedTarget(3));
       finish(AsyncResult.success(stagedTarget(3)));
     });
     expect(buttons()).toEqual(["Install aaaaaaa"]);
-    world.set(
+    await world.set(
       hostState({
         phase: "checking",
         revision: 4,
@@ -244,6 +258,7 @@ describe("exact-source action", () => {
   });
 
   it("shows the refusal when a download stages another source than the target", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () => {
       const wrong = hostState({
@@ -252,7 +267,7 @@ describe("exact-source action", () => {
         stagedHandle: "handle-9",
         provenance: build(other),
       });
-      world.set(wrong);
+      await world.set(wrong);
       return AsyncResult.success(wrong);
     };
     await mount(world);
@@ -263,6 +278,7 @@ describe("exact-source action", () => {
   });
 
   it("reports a host refusal and a failed download without installing anything", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () =>
       AsyncResult.success(
@@ -278,6 +294,7 @@ describe("exact-source action", () => {
   });
 
   it("lets an older host download only an offer that already is the target", async () => {
+    await using _fixture = await setupFixture1();
     const legacy = { check: true, download: true, install: true };
     const mismatch = createHost(hostState({ capability: legacy }));
     await mount(mismatch);
@@ -285,7 +302,7 @@ describe("exact-source action", () => {
     expect(status()).toContain("bbbbbbb");
     expect(mismatch.requests).toEqual([]);
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
     const match = createHost(hostState({ capability: legacy, provenance: build(target, 42) }));
     match.handlers.run = async () => AsyncResult.success(hostState({ phase: "downloading" }));
@@ -297,12 +314,13 @@ describe("exact-source action", () => {
   });
 
   it("offers nothing while the host observation is stale or the host has no updater", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     await mount(world);
-    world.set(hostState(), "stale");
+    await world.set(hostState(), "stale");
     expect(buttons()).toEqual([]);
     expect(status()).toContain("Waiting");
-    world.set(null);
+    await world.set(null);
     expect(status()).toContain("does not support Jones updates");
     expect(world.requests).toEqual([]);
   });
@@ -310,6 +328,7 @@ describe("exact-source action", () => {
 
 describe("performExactSourceStep", () => {
   it("treats an interrupted request as cancelled, not as an unknown install", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.run = async () => AsyncResult.failure(Cause.interrupt());
     const outcome = await performExactSourceStep({
@@ -326,6 +345,7 @@ describe("performExactSourceStep", () => {
   });
 
   it("records the revision an unknown install was sent against", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget(6));
     world.handlers.run = () => Promise.reject(new Error("connection reset"));
     const outcome = await performExactSourceStep({

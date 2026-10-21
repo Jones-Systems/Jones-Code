@@ -1,7 +1,5 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderScreen, type Screen } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { SentPrompts, type ConfirmedSentPrompt, type SentPromptsState } from "./SentPrompts";
 
 const prompt: ConfirmedSentPrompt = {
@@ -20,23 +18,35 @@ const prompt: ConfirmedSentPrompt = {
 };
 
 describe("confirmed sent prompts", () => {
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
+  async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
     await act(() => root.unmount());
     container.remove();
     vi.unstubAllGlobals();
+
   });
+  try {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
   async function render(state: SentPromptsState) {
-    await act(() => root.render(<SentPrompts state={state} />));
+    await act(() => root.rerender(<SentPrompts state={state} />));
   }
   it("labels sample history and reveals the handoff receipt without mutation controls", async () => {
+    await using _fixture = await setupFixture1();
     await render({ status: "ready", provenance: "sample", entries: [prompt] });
     expect(container.textContent).toContain("SAMPLE DATA");
     expect(container.textContent).toContain("Example sent prompts · not live history");
@@ -61,6 +71,7 @@ describe("confirmed sent prompts", () => {
     expect(container.querySelector("button, input, textarea, select")).toBeNull();
   });
   it("qualifies stale partial handoffs and never claims complete empty history", async () => {
+    await using _fixture = await setupFixture1();
     const observation = { sampledAt: prompt.sentAt, coverage: "partial" as const, stale: true };
     await render({
       status: "ready",
@@ -80,6 +91,7 @@ describe("confirmed sent prompts", () => {
     expect(container.textContent).not.toContain("No sent prompts observed.");
   });
   it("keeps live observed-empty history distinct from unavailable and loading", async () => {
+    await using _fixture = await setupFixture1();
     await render({ status: "unavailable" });
     expect(container.textContent).toBe(
       "Sent history is unavailable from this connection. Unconfirmed handoffs remain under Queued.",
@@ -95,6 +107,7 @@ describe("confirmed sent prompts", () => {
     expect(container.querySelector("article")).toBeNull();
   });
   it("preserves full literal long text and reports unknown text without substituting content", async () => {
+    await using _fixture = await setupFixture1();
     const text = `<script>literal</script>\n${"long-unbroken-prompt".repeat(100)}`;
     await render({
       status: "ready",
@@ -127,6 +140,7 @@ describe("confirmed sent prompts", () => {
     { status: "confirmed", kind: "handoff-receipt", receiptId: "receipt", source: "" },
     null,
   ])("does not present invalid confirmation %j as a sent prompt", async (confirmation) => {
+    await using _fixture = await setupFixture1();
     const invalid = { ...prompt, confirmation } as unknown as ConfirmedSentPrompt;
     await render({ status: "ready", provenance: "live", entries: [invalid] });
     expect(container.querySelector("article")).toBeNull();

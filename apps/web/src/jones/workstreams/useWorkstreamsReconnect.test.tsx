@@ -1,3 +1,4 @@
+import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";
 import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import type { WorkstreamsRegistrationContextAcceptedResponse } from "@t3tools/contracts";
@@ -11,7 +12,7 @@ import {
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
-import { act, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
@@ -88,7 +89,6 @@ function MountedWorkstreams({
 }
 
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   http.run.mockReset();
   registry = AtomRegistry.make();
   registry.set(connection, AsyncResult.success(connected));

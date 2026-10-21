@@ -1,8 +1,6 @@
-// @vitest-environment jsdom
+import { act, render as renderScreen, type Screen } from "../../../test/render";
 
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   WorkstreamActionError,
   type WorkstreamReferenceController,
@@ -16,14 +14,23 @@ vi.mock("./workstreamReferenceActions", async (original) => ({
   prepareWorkstreamPr: vi.fn(),
 }));
 
-let root: Root;
+let root: Screen;
+let renderDisposables: AsyncDisposableStack;
 let container: HTMLDivElement;
 let controller: WorkstreamReferenceController;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+  vi.unstubAllGlobals();
+
+  });
+  try {
   container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
+  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
   controller = {
     data,
     registrationContext: {
@@ -57,18 +64,20 @@ beforeEach(() => {
   vi.mocked(prepareWorkstreamPr).mockReset();
   onLinked.mockReset();
   onOpenChange.mockReset();
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
 
 const onLinked = vi.fn();
 const onOpenChange = vi.fn();
 async function render(options: { readonly open?: boolean; readonly workstreamId?: string } = {}) {
   await act(async () =>
-    root.render(
+    root.rerender(
       <WorkstreamAddPrDialog
         controller={controller}
         workstreamId={options.workstreamId ?? "beta"}
@@ -94,6 +103,7 @@ const button = (text: string) =>
 
 describe("Add PR reference dialog", () => {
   it("blocks duplicate preparation synchronously and requires a separate Verify PR action", async () => {
+    await using _fixture = await setupFixture1();
     let resolve!: (value: typeof reference) => void;
     const pending = new Promise<typeof reference>((finish) => {
       resolve = finish;
@@ -124,6 +134,7 @@ describe("Add PR reference dialog", () => {
     ]);
   });
   it("keeps GitHub preparation usable without T3 and rejects incomplete input", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await enterUrl("#42");
     expect(button("Add reference").disabled).toBe(true);
@@ -132,6 +143,7 @@ describe("Add PR reference dialog", () => {
     expect(document.body.textContent).not.toContain("unavailable");
   });
   it("renders a fixed unknown-effect message and Retry only observes metadata", async () => {
+    await using _fixture = await setupFixture1();
     vi.mocked(prepareWorkstreamPr).mockRejectedValue(new WorkstreamActionError("unknown"));
     await render();
     await enterUrl("https://github.com/a/b/pull/42");
@@ -144,6 +156,7 @@ describe("Add PR reference dialog", () => {
     expect(prepareWorkstreamPr).toHaveBeenCalledOnce();
   });
   it("uses neutral text for an unclassified failure without exposing exception details", async () => {
+    await using _fixture = await setupFixture1();
     vi.mocked(prepareWorkstreamPr).mockRejectedValue(new Error("arbitrary private exception"));
     await render();
     await enterUrl("https://github.com/a/b/pull/42");
@@ -153,6 +166,7 @@ describe("Add PR reference dialog", () => {
     expect(document.body.textContent).not.toContain("no command was submitted");
   });
   it("aborts a closed session and ignores its completion after reopening", async () => {
+    await using _fixture = await setupFixture1();
     let resolve!: (value: typeof reference) => void;
     const pending = new Promise<typeof reference>((finish) => {
       resolve = finish;
@@ -178,6 +192,7 @@ describe("Add PR reference dialog", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
   it("resets and aborts on Workstream and authorization changes", async () => {
+    await using _fixture = await setupFixture1();
     let resolve!: (value: typeof reference) => void;
     const pending = new Promise<typeof reference>((finish) => {
       resolve = finish;

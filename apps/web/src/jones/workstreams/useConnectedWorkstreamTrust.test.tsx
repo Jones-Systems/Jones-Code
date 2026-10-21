@@ -1,3 +1,4 @@
+import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";
 import type { ConnectionCatalogEntry } from "@t3tools/client-runtime/connection";
 import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
@@ -8,7 +9,7 @@ import {
   type TrustedT3PlacementEnvironment,
 } from "@t3tools/contracts";
 import { Atom, AtomRegistry } from "effect/reactivity";
-import { act, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
@@ -63,7 +64,6 @@ let renderer: ReactTestRenderer | undefined;
 let latest: ConnectedEnvironmentTrust;
 
 beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   registry = AtomRegistry.make();
   registry.set(catalog, entries({ [primary]: true, [remote]: true }));
 });

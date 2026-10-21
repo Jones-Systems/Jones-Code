@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, useEffect, useState, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderScreen, type Screen } from "../../../test/render";
+import { useEffect, useState, type ReactNode } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import type { WorkQueueMetadataResult, VoiceReviewRecentList } from "@t3tools/contracts";
 
 const fixture = vi.hoisted(() => ({
@@ -109,12 +108,22 @@ import { voiceReviewRecentFixture } from "@t3tools/client-runtime/voice-review/f
 import { UnifiedQueuePage } from "./UnifiedQueuePage";
 
 describe("Prompts environment composition", () => {
-  let root: Root;
+  let root: Screen;
+let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   let originals: typeof fixture.environments;
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  async function setupFixture1() {
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    fixture.environments = originals;
+    vi.unstubAllGlobals();
+
+  });
+  try {
     originals = structuredClone(fixture.environments);
     fixture.mounts.clear();
     fixture.recent = null;
@@ -125,22 +134,23 @@ describe("Prompts environment composition", () => {
     fixture.load
       .mockReset()
       .mockResolvedValue({ status: "unconfigured", reason: "not_configured" });
-    fixture.reset.mockReset().mockImplementation(() => {
+    fixture.reset.mockReset().mockImplementation(async () => {
       fixture.blockerStatus = "idle";
-      root.render(<UnifiedQueuePage />);
+      await root.rerender(<UnifiedQueuePage />);
     });
-    fixture.proceed.mockReset().mockImplementation(() => root.render(<p>Destination</p>));
+    fixture.proceed.mockReset().mockImplementation(() => root.rerender(<p>Destination</p>));
     container = document.createElement("div");
     document.body.append(container);
-    root = createRoot(container);
-  });
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    fixture.environments = originals;
-    vi.unstubAllGlobals();
-  });
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
+
 
   function setConnection(environmentId: string, phase: string) {
     fixture.environments = fixture.environments.map((environment) =>
@@ -150,7 +160,7 @@ describe("Prompts environment composition", () => {
     );
   }
   async function render() {
-    await act(async () => root.render(<UnifiedQueuePage />));
+    await act(async () => root.rerender(<UnifiedQueuePage />));
   }
   function editor(id: string) {
     return container.querySelector<HTMLTextAreaElement>(`[aria-label="Edit ${id}"]`)!;
@@ -194,14 +204,15 @@ describe("Prompts environment composition", () => {
     await act(async () => {
       if (fixture.blockerOptions!.shouldBlockFn()) {
         fixture.blockerStatus = "blocked";
-        root.render(<UnifiedQueuePage />);
+        await root.rerender(<UnifiedQueuePage />);
       } else {
-        fixture.proceed();
+        await fixture.proceed();
       }
     });
   }
 
   it("shows one configured source across all stages without offering unconfigured servers", async () => {
+    await using _fixture = await setupFixture1();
     fixture.environments[0]!.label = "VPS";
     fixture.environments[1]!.label = "Mac Mini";
     fixture.voiceList
@@ -219,6 +230,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("defaults to All and groups environments across All → single → All without remounting the retained editor", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     expect(groups()).toEqual(["Alpha prompts", "Beta prompts"]);
     expect(container.querySelector("header")!.textContent).toContain(
@@ -239,6 +251,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("allows narrowing around a dirty retained environment and preserves its guard when All returns", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await edit("alpha", "Keep Alpha text");
     await scope("Alpha");
@@ -251,6 +264,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("cancels a scope change without losing text, then discards only the removed environment", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await edit("alpha", "Alpha draft");
     await edit("beta", "Beta draft");
@@ -272,6 +286,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("keeps the second environment dirty when the first is cleaned", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await edit("alpha", "Alpha draft");
     await edit("beta", "Beta draft");
@@ -288,6 +303,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("protects dirty navigation and preserves uncertain child state across every pane", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     await edit("beta", "Beta navigation draft");
     await click("Uncertain alpha");
@@ -310,6 +326,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("moves only a proved linked delivery from Queued to one Sent row", async () => {
+    await using _fixture = await setupFixture1();
     fixture.environments = [
       {
         ...fixture.environments[0]!,
@@ -400,6 +417,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("supports arrow, Home and End tab navigation with panel labelling and retained children", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     const alpha = editor("alpha");
     const transitions = [
@@ -426,6 +444,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("keeps a discovered source visible and its editor disabled after disconnect", async () => {
+    await using _fixture = await setupFixture1();
     await render();
     setConnection("beta", "disconnected");
     await render();
@@ -437,6 +456,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("retains read failures as unknown and allows retry to discover a configured source", async () => {
+    await using _fixture = await setupFixture1();
     fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewForbiddenError" });
     fixture.load.mockRejectedValue(new Error("Offline"));
     await render();
@@ -449,6 +469,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("shows an empty state only after every source explicitly reports absence", async () => {
+    await using _fixture = await setupFixture1();
     fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
     await render();
     expect(groups()).toEqual([]);
@@ -458,6 +479,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("keeps a configured queue visible when its sample cannot be read", async () => {
+    await using _fixture = await setupFixture1();
     fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
     fixture.load.mockResolvedValue({ status: "unavailable", reason: "source_unavailable" });
     await render();
@@ -467,6 +489,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("does not mistake an undiscovered disconnected server for an absent source", async () => {
+    await using _fixture = await setupFixture1();
     setConnection("beta", "disconnected");
     await render();
     expect(groups()).toEqual(["Alpha prompts"]);
@@ -480,6 +503,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("allows review on a connected source while its queue check waits and another server is offline", async () => {
+    await using _fixture = await setupFixture1();
     setConnection("beta", "disconnected");
     fixture.load.mockImplementation(() => new Promise(() => {}));
     await render();
@@ -499,6 +523,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("shows a connected queue before its voice check settles with another server offline", async () => {
+    await using _fixture = await setupFixture1();
     setConnection("beta", "disconnected");
     fixture.voiceList.mockImplementation(() => new Promise(() => {}));
     fixture.load.mockResolvedValue({ status: "unavailable", reason: "source_unavailable" });
@@ -511,6 +536,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("explains that connected servers have no sources without blaming the offline server", async () => {
+    await using _fixture = await setupFixture1();
     setConnection("beta", "disconnected");
     fixture.voiceList.mockRejectedValue({ _tag: "VoiceReviewNotConfiguredError" });
     await render();
@@ -524,6 +550,7 @@ describe("Prompts environment composition", () => {
   it.each(["VoiceReviewForbiddenError", "VoiceReviewNotConfiguredError"])(
     "keeps %s discovery honest without device setup or identity reads",
     async (_tag) => {
+    await using _fixture = await setupFixture1();
       setConnection("beta", "disconnected");
       fixture.voiceList.mockRejectedValue({ _tag });
       await render();
@@ -543,6 +570,7 @@ describe("Prompts environment composition", () => {
   );
 
   it("ignores a superseded source check after disconnect and retry", async () => {
+    await using _fixture = await setupFixture1();
     setConnection("beta", "disconnected");
     let rejectOld!: (error: unknown) => void;
     fixture.voiceList.mockImplementationOnce(
@@ -563,6 +591,7 @@ describe("Prompts environment composition", () => {
   });
 
   it("distinguishes an empty environment catalog from an unavailable connection", async () => {
+    await using _fixture = await setupFixture1();
     fixture.environments = [];
     await render();
     expect(container.textContent).toContain("No prompt sources configured.");
