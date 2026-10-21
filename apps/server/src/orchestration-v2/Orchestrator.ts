@@ -14656,6 +14656,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .withLock(
             threadId,
             consumeSelfSettlement(threadId, run.id).pipe(
+              Effect.andThen(releasePlannedUpdateQueue(threadId)),
               Effect.andThen(
                 startNextQueuedRun(threadId, {
                   endedRunId: run.id,
