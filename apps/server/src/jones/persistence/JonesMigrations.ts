@@ -43,6 +43,8 @@ import JonesMigration0118 from "./Migrations/118_JonesRemoteAdmissionIntegration
 
 import JonesMigration0119 from "./Migrations/119_JonesPeerEnvironmentLinks.ts";
 
+import JonesMigration0120 from "./Migrations/120_JonesSettlementRestores.ts";
+
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -69,6 +71,7 @@ export const jonesMigrationEntries = [
   [117, "RemoteDelegationIntents", JonesMigration0117],
   [118, "RemoteAdmissionIntegration", JonesMigration0118],
   [119, "PeerEnvironmentLinks", JonesMigration0119],
+  [120, "SettlementRestores", JonesMigration0120],
 ] as const;
 
 export const runMigrations = () =>

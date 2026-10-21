@@ -1326,6 +1326,28 @@
     "scripts/jones/boundary/fragments/agent-message-header.json": "jones-owned",
     "apps/web/src/jones/questionAnswer/workspaceFileDragLifecycle.ts": "jones-owned",
     "apps/server/src/jones/settlementOrigins/projectRemaining.ts": "jones-owned",
+    "packages/contracts/src/jones/settlementRestore.ts": "jones-owned",
+    "packages/contracts/src/jones/settlementRestore.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/120_JonesSettlementRestores.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/SettlementRestore.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/dispatch.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/http.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/plan.ts": "jones-owned",
+    "apps/server/src/jones/settlementRestore/store.ts": "jones-owned",
+    "apps/server/src/jones/mcp/settlementRestore/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/settlementRestore/tools.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/model.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/controller.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/controller.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/commands.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/commands.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/settlementRestore/index.ts": "jones-owned",
+    "apps/web/src/jones/settlementRestore/settlementRestore.ts": "jones-owned",
+    "apps/web/src/jones/settlementRestore/settlementRestore.test.ts": "jones-owned",
+    "apps/web/src/jones/settlementRestore/menu.ts": "jones-owned",
+    "apps/web/src/jones/settlementRestore/threadMenu.ts": "jones-owned",
+    "apps/web/src/jones/settlementRestore/threadMenu.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/114_JonesSelfSettlementProjectItems.ts": "jones-owned",
     "apps/server/src/orchestration-v2/RestartContinuation.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/features/connection/ConnectionsRouteScreen.tsx": "accepted-shared",
@@ -1421,6 +1443,8 @@
     "packages/provider-opencode/src/server/textGeneration.ts": "accepted-shared",
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts": "jones-owned",
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.ts": "jones-owned",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts": "jones-owned",
     "apps/server/src/scheduledTasks/webhookRoute.test.ts": "jones-tests-in-upstream",
@@ -1943,6 +1967,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
     }
   ]
 }

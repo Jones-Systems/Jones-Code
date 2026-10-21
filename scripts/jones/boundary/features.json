@@ -372,6 +372,20 @@
       "scope": "Native authenticated MCP invocation context and bounded organization thread metadata service, toolkit handlers, and Jones contract schemas; registration is provided by McpHttpServer."
     },
     {
+      "id": "settlement-restore",
+      "tests": [
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "packages/contracts/src/jones/settlementRestore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
+        "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
+        "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+        "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
+        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+      ],
+      "scope": "Native persistent undo of the latest state-changing settle per thread. EventSink applyStoredEvents captures the target's prior pin, order keys and wake time in a sparse Jones table inside every settle path's commit; a capture failure aborts the settle. The thread.settlement.restore command, decided under the existing dispatch lock, emits one thread.unsettled and records a compare-and-set success marker in the same commit, never reviving watches, requests, runs or sessions. Orchestrator, EventSink, SelfSettlement, McpHttpServer, ServerEnvironment and the contracts unions keep small hooks; exact-ID HTTP inspect and the t3_thread_settlement_restore MCP tool are Jones-owned. The shared client-runtime controller sends one restore bound to an observed settle command, reuses its command ID after an unknown effect and reconciles through inspect. Web settle notices and Cmd+Z use it on capable servers and keep the legacy un-settle, pin and snooze Undo otherwise; a persistent Undo settle in the chat header's and the sidebar's thread menus restores the settle the server's record names, through one Jones helper both menus call. useThreadActions, useThreadActionMenu and Sidebar keep small hooks; mobile has no restore control yet."
+    },
+    {
       "id": "mcp-pin-placement",
       "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
@@ -1130,12 +1144,13 @@
       "id": "watcher-restart-survival",
       "tests": [
         "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts",
         "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
         "apps/server/src/scheduledTasks/webhookRoute.test.ts",
         "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",
         "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
       ],
-      "scope": "A webhook delivery is acknowledged only when its relay claim, its accepted log row and a record in Jones migration 115's table keyed by delivery id commit in one transaction; the run is forked after the commit. A failed write, or a database without the table, rolls the claim back and answers 503 with outcome unavailable, so a relay retry runs it instead of being dropped as a duplicate and a direct sender sees a failure. Recorded deliveries stay until their run settles, a run the server stops stays recorded instead of being marked failed, and a scheduler source runs records this server does not own in arrival order once the server activates, retrying on later passes when the records or a task cannot be read. Replays reuse the delivery's command id, so a dispatch that landed is not repeated. Deleted, paused, replaced or retargeted tasks and deliveries past the task's maximum age are not run. Migration 115 follows released 114 because the Jones guard refuses a pending id below a recorded one. Timer schedules, pull request watches and delegated completions already restore from durable rows and projections; the runtime layer case proves a fresh pull request watch reactor reports changes from an outage once and does not restore a stopped watch. That case stays in the upstream runtime layer test because its harness owns the orchestrator and projections, and the 503 mapping is one row in the upstream route test's outcome table. The ScheduledTaskService hook (the acceptance transaction, record, settle, interrupted runs left pending, and the recovery scheduler source) shares the hook path recorded by scheduled-wake-coalescing; the route hook maps the unavailable result."
+      "scope": "A webhook delivery is acknowledged only when its relay claim, its accepted log row and a record in Jones migration 115's table keyed by delivery id commit in one transaction; the run is forked after the commit. A failed write, or a database without the table, rolls the claim back and answers 503 with outcome unavailable, so a relay retry runs it instead of being dropped as a duplicate and a direct sender sees a failure. Recorded deliveries stay until their run settles, a run the server stops stays recorded instead of being marked failed, and a scheduler source runs records this server does not own in arrival order once the server activates, retrying on later passes when the records or a task cannot be read. Replays reuse the delivery's command id, so a dispatch that landed is not repeated. Deleted, paused, replaced or retargeted tasks and deliveries past the task's maximum age are not run. Migration 115 follows released 114 because the Jones guard refuses a pending id below a recorded one. Timer schedules, pull request watches and delegated completions already restore from durable rows and projections; the runtime layer case proves a fresh pull request watch reactor reports changes from an outage once and does not restore a stopped watch. That case stays in the upstream runtime layer test because its harness owns the orchestrator and projections, and the 503 mapping is one row in the upstream route test's outcome table. The ScheduledTaskService hook (the acceptance transaction, record, settle, interrupted runs left pending, and the recovery scheduler source) shares the hook path recorded by scheduled-wake-coalescing; the route hook maps the unavailable result. The same hook swaps the upstream per-task webhook semaphore for a Jones FIFO permit: Effect's semaphore wakes waiters after a release, so a delivery arriving in between ran ahead of one already waiting, and a run that then hung starved it."
     },
     {
       "id": "native-goal-controls",

@@ -2,6 +2,11 @@ import { nextThreadStatusWakeAt } from "../jones/threadStatusFilter/model";
 import { useThreadStatusFilter } from "../jones/threadStatusFilter/useThreadStatusFilter";
 import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
 import { useSidebarEnvironmentFilter } from "../jones/environmentFilters/useSidebarEnvironmentFilter";
+import { SETTLEMENT_RESTORE_MENU_ID } from "../jones/settlementRestore/menu";
+import {
+  undoSettleFromMenu,
+  withThreadSettlementRestore,
+} from "../jones/settlementRestore/threadMenu";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "./ThreadHoverCard";
@@ -4429,42 +4434,60 @@ export default function Sidebar() {
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const canOperate = readEnvironmentScope(
+          threadRef.environmentId,
+          AuthOrchestrationOperateScope,
+        );
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              environmentAccessStatus: environmentAccess.status,
-              assignmentItems: assignmentMenu?.items,
-              canOperate: readEnvironmentScope(
-                threadRef.environmentId,
-                AuthOrchestrationOperateScope,
-              ),
-              branch: thread.branch ?? null,
-              projectFilter: threadProjectGroup
-                ? {
-                    label: threadProjectGroup.displayName,
-                    isActive: projectScopeKey === threadProjectGroup.projectKey,
-                  }
-                : null,
-              isPinned,
-              isSettled,
-              autoSettleEnabled: thread.autoSettleDisabledAt == null,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning: !threadRuntimeCanArchive(thread.runtime),
-              supports: {
-                settlement: supportsSettlement,
-                autoSettleOptOut: supportsAutoSettleOptOut,
-                snooze: supportsSnooze,
-                pinning: supportsPinning,
-                titleRegeneration: supportsTitleRegeneration,
-              },
-              snoozePresets,
-            }),
+            // Jones: persistent Undo settle, for servers that keep a restore record.
+            withThreadSettlementRestore(
+              buildThreadActionMenuItems({
+                environmentAccessStatus: environmentAccess.status,
+                assignmentItems: assignmentMenu?.items,
+                canOperate,
+                branch: thread.branch ?? null,
+                projectFilter: threadProjectGroup
+                  ? {
+                      label: threadProjectGroup.displayName,
+                      isActive: projectScopeKey === threadProjectGroup.projectKey,
+                    }
+                  : null,
+                isPinned,
+                isSettled,
+                autoSettleEnabled: thread.autoSettleDisabledAt == null,
+                isSnoozed,
+                canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+                isRegeneratingTitle,
+                isRunning: !threadRuntimeCanArchive(thread.runtime),
+                supports: {
+                  settlement: supportsSettlement,
+                  autoSettleOptOut: supportsAutoSettleOptOut,
+                  snooze: supportsSnooze,
+                  pinning: supportsPinning,
+                  titleRegeneration: supportsTitleRegeneration,
+                },
+                snoozePresets,
+              }),
+              { threadRef, isSettled, canOperate },
+            ),
             position,
           ),
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
+        if (clicked.value === SETTLEMENT_RESTORE_MENU_ID) {
+          if (!checkThreadOperations([thread])) return;
+          await undoSettleFromMenu(threadRef, (error) =>
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to undo settle",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            ),
+          );
+          return;
+        }
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
         if (clicked.value.startsWith("assign-workstream:")) {
           assignmentMenu?.onAction(clicked.value);

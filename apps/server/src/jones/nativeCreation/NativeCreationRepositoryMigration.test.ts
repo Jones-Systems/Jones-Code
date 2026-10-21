@@ -39,6 +39,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 117, name: "RemoteDelegationIntents" },
         { migration_id: 118, name: "RemoteAdmissionIntegration" },
         { migration_id: 119, name: "PeerEnvironmentLinks" },
+        { migration_id: 120, name: "SettlementRestores" },
       ],
     );
     assert.deepEqual(

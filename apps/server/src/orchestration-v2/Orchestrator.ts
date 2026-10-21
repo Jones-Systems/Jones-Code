@@ -6,6 +6,13 @@ import {
 } from "../jones/orchestration/QueuedSteerBatch.ts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import {
+  checkSettlementRestoreReplay,
+  decideSettlementRestore,
+} from "../jones/settlementRestore/dispatch.ts";
+import { settlementRestoreRejection } from "../jones/settlementRestore/plan.ts";
+import { makeSettlementRestoreStore } from "../jones/settlementRestore/store.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -593,6 +600,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.settle":
     case "thread.auto-settle":
     case "thread.unsettle":
+    case "thread.settlement.restore":
     case "thread.snooze":
     case "thread.unsnooze":
     case "thread.auto-settle.set":
@@ -977,6 +985,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const eventSink = yield* EventSinkV2;
   const commandReceipts = yield* CommandReceiptStoreV2;
   const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
+  const settlementRestores = yield* SqlClient.SqlClient.pipe(
+    Effect.map((sql) => makeSettlementRestoreStore(sql, makeJonesTablePresence(sql))),
+  );
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
@@ -12296,6 +12307,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.visit":
         yield* dispatchThreadVisit(command, events);
         break;
+      case "thread.settlement.restore": {
+        // Jones settlement restore: the target's own captured placement, one existing event.
+        const decision = yield* decideSettlementRestore(
+          settlementRestores,
+          projectionStore,
+          command,
+        ).pipe(mapDispatchError(command));
+        if (decision.type === "reject")
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: settlementRestoreRejection(decision.code),
+          });
+        if (decision.type === "restore")
+          yield* emit(
+            events,
+            command,
+          )({
+            type: "thread.unsettled",
+            threadId: command.threadId,
+            providerInstanceId: decision.thread.providerInstanceId,
+            occurredAt: decision.thread.updatedAt,
+            payload: decision.thread,
+          });
+        break;
+      }
       case "thread.auto-settle": {
         // Automatic settlement (#8600): the sweep evaluated a shell snapshot,
         // so re-check against the live thread before settling. Any change
@@ -13137,6 +13174,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           commandThreadId: dispatchThreadId,
         });
       }
+      if (command.type === "thread.settlement.restore") {
+        const reused = yield* checkSettlementRestoreReplay(
+          settlementRestores,
+          command,
+          receipt.commandType,
+        ).pipe(mapDispatchError(command));
+        if (reused !== null)
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: settlementRestoreRejection(reused),
+          });
+      }
       const storedEvents = yield* eventSink.readByCommandId({ commandId: command.commandId }).pipe(
         Stream.runCollect,
         Effect.map((events): ReadonlyArray<OrchestrationV2StoredEvent> => Array.from(events)),
@@ -13316,7 +13366,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         Effect.gen(function* () {
           if (
             command.type === "legacy-bootstrap.guard-rejection-delete" ||
-            !cancelsSelfSettlement(command)
+            !cancelsSelfSettlement(command) ||
+            // Jones: a duplicate restore success changes nothing.
+            (command.type === "thread.settlement.restore" && planned.events.length === 0)
           )
             return planned;
           const threadId = commandThreadId(command);
@@ -13348,7 +13400,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         planned.events.length > 0 ||
         command.type === "thread.background-work.settle" ||
         command.type === "thread.stop" ||
-        command.type === "subagent.stop"
+        command.type === "subagent.stop" ||
+        // A restore retried after receipt compaction finds its durable success marker.
+        command.type === "thread.settlement.restore"
           ? Effect.succeed(planned)
           : Effect.fail(
               new OrchestratorDispatchError({
@@ -13445,6 +13499,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         acceptedAt,
         ordinaryCheckoutCommand: command,
+        ...(command.type === "thread.settlement.restore"
+          ? { settlementRestore: { settleCommandId: command.settleCommandId } }
+          : {}),
         events: plan.events,
         effects:
           nativeAcceptance === undefined

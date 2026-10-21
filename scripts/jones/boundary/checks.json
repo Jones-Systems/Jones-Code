@@ -535,6 +535,35 @@
       ]
     },
     {
+      "id": "jones-settlement-restore",
+      "tests": [
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "packages/contracts/src/jones/settlementRestore.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/settlementRestore/ packages/contracts/src/jones/settlementRestore.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/orchestration-v2/SelfSettlement.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck"
+      ]
+    },
+    {
+      "id": "jones-settlement-restore-client",
+      "tests": [
+        "packages/client-runtime/src/jones/settlementRestore/controller.test.ts",
+        "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
+        "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
+        "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
+        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/jones/settlementRestore/ apps/web/src/jones/settlementRestore/ apps/web/src/hooks/useThreadActionMenu.test.ts apps/web/src/hooks/useThreadActions.undo.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-mcp-pin-placement",
       "tests": [
         "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts",
@@ -1910,6 +1939,7 @@
       "id": "jones-watcher-restart-survival",
       "tests": [
         "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts",
         "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts",
         "apps/server/src/scheduledTasks/webhookRoute.test.ts",
         "apps/server/src/jones/scheduledTasks/queuedWake.test.ts",

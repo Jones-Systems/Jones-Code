@@ -3,7 +3,9 @@
   "feature": "watcher-restart-survival",
   "jonesOwnedPaths": [
     "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts",
-    "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts"
+    "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.ts",
+    "apps/server/src/jones/scheduledTasks/fifoPermit.test.ts"
   ],
   "hookPaths": ["apps/server/src/scheduledTasks/webhookRoute.ts"],
   "tombstones": [],
@@ -11,6 +13,10 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
     }
   ]
 }
