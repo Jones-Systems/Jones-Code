@@ -111,6 +111,7 @@ const lifetime = <A, E>(
     const sources: Array<Effect.Effect<void>> = [];
     const dependencies = Layer.mergeAll(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/unused",
         isScratchProject: () => Effect.succeed(false),
       }),
       NodeCrypto.layer,

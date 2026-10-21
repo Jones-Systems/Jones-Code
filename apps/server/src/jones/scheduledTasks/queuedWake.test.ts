@@ -22,6 +22,7 @@ it.effect("coalesces timer wakes by task and thread until the queued run clears"
     const runs: Array<{ id: string; threadId: string; userMessageId: string; status: string }> = [];
     const dependencies = Layer.mergeAll(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/unused",
         isScratchProject: () => Effect.succeed(false),
       }),
       NodeCrypto.layer,

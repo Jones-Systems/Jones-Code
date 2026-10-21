@@ -1,3 +1,4 @@
+import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as CommandReceipts from "../../../../../orchestration-v2/CommandReceiptStore.ts";
 import * as EventSink from "../../../../../orchestration-v2/EventSink.ts";
@@ -45,6 +46,7 @@ import * as PeerForwarding from "../../../../../peer/PeerForwarding.ts";
 import * as WorkstreamGateway from "../../../../../workstreams/WorkstreamGateway.ts";
 
 const layerStubServices = Layer.mergeAll(
+  McpProviderSessions.layer,
   NodeSqliteClient.layer({ filename: ":memory:" }),
   Layer.mock(CommandReceipts.CommandReceiptStoreV2)({}),
   Layer.mock(EventSink.EventSinkV2)({}),

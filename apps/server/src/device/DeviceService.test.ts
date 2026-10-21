@@ -1114,6 +1114,10 @@ it.effect("a failed tool update reports npm's exit code but not its output", () 
     };
     const service = yield* DeviceService.make.pipe(
       Effect.provideService(DeviceHost.DeviceHost, host),
+      Effect.provideService(DeviceDirectGrants.DeviceDirectGrants, {
+        issue: () => Effect.die("Updating a tool does not issue a device grant"),
+        admit: () => Effect.die("Updating a tool does not admit a device grant"),
+      }),
       Effect.provideService(ProcessRunner.ProcessRunner, {
         run: () => Effect.succeed(npmFailure),
       }),

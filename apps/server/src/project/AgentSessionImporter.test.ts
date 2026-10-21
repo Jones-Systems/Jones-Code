@@ -5,7 +5,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
-  type ApplicationRecordedEvent,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
@@ -20,6 +19,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import type { ApplicationRecordedEvent } from "../orchestration-v2/RecordedTypes.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
