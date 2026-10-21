@@ -26,16 +26,24 @@ describe("projectPendingUserInputAnswer", () => {
 
   it("sends thread chips as readable links with the actual thread ID", () => {
     const answer = `Compare ${formatInlineContextReference(threadContextReference(record))}`;
-    expect(projectPendingUserInputAnswer(answer, [record])).toBe(
+    expect(projectPendingUserInputAnswer(answer, [record], record.environmentId)).toBe(
       "Compare [Reference work](t3-thread://v1/reference-thread)",
+    );
+  });
+
+  it("leaves plain answers unchanged when the draft has unreferenced thread records", () => {
+    expect(projectPendingUserInputAnswer("Plain answer", [record], record.environmentId)).toBe(
+      "Plain answer",
     );
   });
 
   // regression: #18789 answers to pending questions lost exact text and option values
   it("preserves option values and exact answer text", () => {
     const options = [" first\t", "second"];
-    expect(projectPendingUserInputAnswer(options, [record])).toBe(options);
-    expect(projectPendingUserInputAnswer("  Edited answer\n", [record])).toBe("  Edited answer\n");
+    expect(projectPendingUserInputAnswer(options, [record], record.environmentId)).toBe(options);
+    expect(projectPendingUserInputAnswer("  Edited answer\n", [record], record.environmentId)).toBe(
+      "  Edited answer\n",
+    );
   });
 });
 

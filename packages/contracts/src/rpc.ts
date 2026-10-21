@@ -1,4 +1,8 @@
 import {
+  ThreadReferenceExcerptInput,
+  ThreadReferenceExcerptResult,
+} from "./jones/threadReferenceExcerptRpc.ts";
+import {
   ProviderConversationReselectionInput,
   PreviewProviderConversationReselectionResult,
   ReselectProviderConversationInput,
@@ -1690,6 +1694,14 @@ const WsStopCurrentThreadRuntimeRpc = Rpc.make(
     error: Schema.Union([CurrentRuntimeStopRequestError, EnvironmentAuthorizationError]),
   },
 );
+const WsThreadReferenceExcerptRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getThreadReferenceExcerpt,
+  {
+    payload: ThreadReferenceExcerptInput,
+    success: ThreadReferenceExcerptResult,
+    error: EnvironmentAuthorizationError,
+  },
+);
 const WsPreviewProviderConversationReselectionRpc = Rpc.make(
   ORCHESTRATION_V2_WS_METHODS.previewProviderConversationReselection,
   {
@@ -2186,6 +2198,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2DispatchCommandRpc,
   WsStopCurrentThreadRuntimeRpc,
   WsPreviewProviderConversationReselectionRpc,
+  WsThreadReferenceExcerptRpc,
   WsReselectProviderConversationRpc,
   WsObserveCurrentThreadRuntimeStopRpc,
   WsReadCurrentRuntimeStopTargetRpc,

@@ -8,6 +8,14 @@
   "include": [
     "**/*.ts",
     "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
-    "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts"
+    "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
+    "../apps/server/src/cloud/serviceProtocol.ts",
+    "../apps/server/src/jones/cloud/qualifiedRuntime.ts",
+    "../apps/server/src/jones/cloud/qualifiedStartup.ts",
+    "../apps/server/src/jones/updates/migrationPlan.ts",
+    "../apps/server/src/jones/updates/launcherOperation.ts",
+    "../apps/server/src/jones/updates/stageRevocation.ts",
+    "../apps/server/src/jones/updates/stagedSelection.ts",
+    "../apps/server/src/jones/updates/recoverStagedSelection.ts"
   ]
 }

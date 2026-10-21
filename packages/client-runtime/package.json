@@ -522,6 +522,10 @@
     "./model-traits": {
       "types": "./src/modelTraits.ts",
       "default": "./src/modelTraits.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "default": "./src/jones/threadReferenceExcerpt.ts"
     }
   },
   "scripts": {

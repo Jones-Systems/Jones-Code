@@ -11,6 +11,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import {
   copyQualifiedBackupFile,
+  QUALIFIED_STARTUP_STATE_FILES,
+  removeQualifiedRecoveryPayload,
   preflightQualifiedBackup,
   readQualifiedBackupReceipt,
   retainQualifiedAdvancedState,
@@ -931,5 +933,382 @@ it("reads protocol-one receipts with or without optional copy and sync durations
       );
       await NodeAssert.rejects(readQualifiedBackupReceipt(base, "timed"), /receipt is invalid/);
     }
+  });
+});
+
+const cleanupId = "12345678-1234-4234-8234-123456789abc";
+const recoveryNames = [
+  "database",
+  "database-wal",
+  "database-shm",
+  ...QUALIFIED_STARTUP_STATE_FILES,
+];
+
+async function cleanupFixture(
+  body: (input: {
+    base: string;
+    database: string;
+    generation: string;
+    advanced: string;
+    binding: { transactionId: string; qualified: { fixture: string } };
+    remove: (terminal?: "committed" | "rolled-back" | "failed-before-trial") => Promise<void>;
+  }) => Promise<void>,
+) {
+  await fixture(async (allocated) => {
+    const base = await NodeFSP.realpath(allocated);
+    const database = NodePath.join(base, "userdata", "statev2.sqlite");
+    const generation = NodePath.join(base, "runtime", "db-backup", cleanupId);
+    const advanced = NodePath.join(generation, "advanced-state");
+    await NodeFSP.mkdir(advanced, { recursive: true, mode: 0o700 });
+    const binding = { transactionId: cleanupId, qualified: { fixture: "terminal-binding" } };
+    await NodeFSP.writeFile(
+      NodePath.join(generation, "paired-binding.json"),
+      JSON.stringify(binding),
+    );
+    for (const directory of [generation, advanced]) {
+      for (const name of recoveryNames)
+        await NodeFSP.writeFile(NodePath.join(directory, name), "recovery");
+      for (const name of ["paired-settings.json", "rename-journal.json", "unknown-extra"])
+        await NodeFSP.writeFile(NodePath.join(directory, name), "keep");
+    }
+    await NodeFSP.writeFile(NodePath.join(generation, "resume-dispatched.json"), "keep");
+    for (const suffix of ["-wal", "-shm"])
+      await NodeFSP.writeFile(`${database}${suffix}`, "live-sidecar");
+    for (const name of QUALIFIED_STARTUP_STATE_FILES)
+      await NodeFSP.writeFile(NodePath.join(base, "userdata", name), "live-settings");
+    const live = await Promise.all(
+      [
+        database,
+        `${database}-wal`,
+        `${database}-shm`,
+        ...QUALIFIED_STARTUP_STATE_FILES.map((name) => NodePath.join(base, "userdata", name)),
+      ].map(async (path) => ({
+        path,
+        stat: await NodeFSP.stat(path, { bigint: true }),
+        bytes: await NodeFSP.readFile(path),
+      })),
+    );
+    try {
+      await body({
+        base,
+        database,
+        generation,
+        advanced,
+        binding,
+        remove: (terminal = "committed") =>
+          removeQualifiedRecoveryPayload(base, cleanupId, database, binding, terminal),
+      });
+    } finally {
+      vi.restoreAllMocks();
+      for (const file of live) {
+        const stat = await NodeFSP.stat(file.path, { bigint: true });
+        assert.equal(stat.dev, file.stat.dev);
+        assert.equal(stat.ino, file.stat.ino);
+        assert.deepEqual(await NodeFSP.readFile(file.path), file.bytes);
+      }
+    }
+  });
+}
+
+async function completedRestore(generation: string, database: string, name = "database") {
+  const source = NodePath.join(generation, name);
+  const target = name === "database" ? database : NodePath.join(NodePath.dirname(database), name);
+  const temporary = `${target}.restore-${NodeCrypto.createHash("sha256").update(source).digest("hex").slice(0, 16)}`;
+  const intent = NodePath.join(generation, `.${name}-restore.json`);
+  await NodeFSP.writeFile(intent, JSON.stringify({ source, target, temporary }));
+  // Completed restore identities are historical; live WAL and settings may have been replaced.
+  await NodeFSP.writeFile(`${intent}.complete`, JSON.stringify({ device: "0", inode: "0" }));
+  return { source, target, temporary, intent };
+}
+
+it("removes only exact qualified payload names and is idempotent, preserving unknown entries and directories", async () => {
+  await cleanupFixture(async ({ generation, advanced, remove }) => {
+    await remove();
+    await remove();
+    for (const directory of [generation, advanced]) {
+      assert.isTrue((await NodeFSP.lstat(directory)).isDirectory());
+      for (const name of recoveryNames)
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(directory, name)), { code: "ENOENT" });
+      for (const name of ["paired-settings.json", "rename-journal.json", "unknown-extra"])
+        assert.equal(await NodeFSP.readFile(NodePath.join(directory, name), "utf8"), "keep");
+    }
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(generation, "resume-dispatched.json"), "utf8"),
+      "keep",
+    );
+  });
+});
+
+it.each([
+  "runtime",
+  "db-backup",
+  "generation",
+  "advanced-state",
+  "payload-symlink",
+  "payload-hardlink",
+  "payload-directory",
+  "writable-directory",
+  "wrong-owner",
+  "binding",
+  "live-identity",
+  "settings-hardlink",
+])("holds unsafe recovery cleanup: %s", async (attack) => {
+  await cleanupFixture(async ({ base, database, generation, advanced, remove }) => {
+    const payload = NodePath.join(generation, "database");
+    if (["runtime", "db-backup", "generation", "advanced-state"].includes(attack)) {
+      const path =
+        attack === "runtime"
+          ? NodePath.join(base, "runtime")
+          : attack === "db-backup"
+            ? NodePath.dirname(generation)
+            : attack === "generation"
+              ? generation
+              : advanced;
+      await NodeFSP.rename(path, `${path}-original`);
+      await NodeFSP.symlink(`${path}-original`, path);
+    } else if (attack === "writable-directory") await NodeFSP.chmod(generation, 0o777);
+    else if (attack === "binding")
+      await NodeFSP.writeFile(NodePath.join(generation, "paired-binding.json"), "{}");
+    else if (attack === "wrong-owner") {
+      const original = NodeFSP.lstat;
+      vi.spyOn(NodeFSP, "lstat").mockImplementation(
+        async (...args: Parameters<typeof NodeFSP.lstat>) => {
+          const stat = await original(...args);
+          return String(args[0]).endsWith(cleanupId)
+            ? Object.assign(stat, { uid: BigInt(stat.uid) + 1n })
+            : stat;
+        },
+      );
+    } else if (attack === "live-identity") {
+      const original = NodeFSP.lstat;
+      const live = await NodeFSP.lstat(database, { bigint: true });
+      vi.spyOn(NodeFSP, "lstat").mockImplementation(
+        async (...args: Parameters<typeof NodeFSP.lstat>) => {
+          const stat = await original(...args);
+          return String(args[0]).endsWith("/database")
+            ? Object.assign(stat, { dev: live.dev, ino: live.ino })
+            : stat;
+        },
+      );
+    } else {
+      const selected =
+        attack === "settings-hardlink" ? NodePath.join(generation, "settings.json") : payload;
+      await NodeFSP.unlink(selected);
+      if (attack === "payload-directory") await NodeFSP.mkdir(selected);
+      else if (attack === "payload-symlink") await NodeFSP.symlink(database, selected);
+      else
+        await NodeFSP.link(
+          attack === "settings-hardlink"
+            ? NodePath.join(base, "userdata", "settings.json")
+            : database,
+          selected,
+        );
+    }
+    await NodeAssert.rejects(remove());
+    assert.isTrue((await NodeFSP.stat(advanced)).isDirectory());
+    assert.isTrue((await NodeFSP.stat(generation)).isDirectory());
+  });
+});
+
+it.each(["..", cleanupId.toUpperCase(), "not-a-uuid"])(
+  "rejects cleanup update ID %s",
+  async (id) => {
+    await cleanupFixture(async ({ base, database, binding, generation }) => {
+      await NodeAssert.rejects(
+        removeQualifiedRecoveryPayload(
+          base,
+          id,
+          database,
+          { ...binding, transactionId: id },
+          "committed",
+        ),
+        /invalid-update-id/,
+      );
+      assert.equal(
+        await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"),
+        "recovery",
+      );
+    });
+  },
+);
+
+it("holds a directory swap after pinning without deleting live files", async () => {
+  await cleanupFixture(async ({ generation, base, remove }) => {
+    const original = NodeFSP.open;
+    let swapped = false;
+    vi.spyOn(NodeFSP, "open").mockImplementation(
+      async (...args: Parameters<typeof NodeFSP.open>) => {
+        const handle = await original(...args);
+        if (!swapped && String(args[0]).endsWith(cleanupId)) {
+          swapped = true;
+          await NodeFSP.rename(generation, `${generation}-original`);
+          await NodeFSP.symlink(NodePath.join(base, "userdata"), generation);
+        }
+        return handle;
+      },
+    );
+    await NodeAssert.rejects(remove(), /directory-changed/);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-original`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("retries a partially unlinked payload without touching receipts", async () => {
+  await cleanupFixture(async ({ generation, remove }) => {
+    const original = NodeFSP.unlink;
+    let count = 0;
+    const unlink = vi.spyOn(NodeFSP, "unlink").mockImplementation(async (path) => {
+      if (++count === 2) throw Object.assign(new Error("fixture interruption"), { code: "EIO" });
+      await original(path);
+    });
+    await NodeAssert.rejects(remove());
+    await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(generation, "database")), {
+      code: "ENOENT",
+    });
+    unlink.mockRestore();
+    await remove();
+    assert.isTrue((await NodeFSP.lstat(NodePath.join(generation, "paired-binding.json"))).isFile());
+  });
+});
+
+it("releases completed rollback journals despite rotated live WAL and settings identities", async () => {
+  await cleanupFixture(async ({ generation, database, advanced, remove }) => {
+    for (const name of ["database", "database-wal", "settings.json"])
+      await completedRestore(generation, database, name);
+    await NodeFSP.writeFile(NodePath.join(generation, ".restore-pending"), "");
+    await remove("rolled-back");
+    await remove("rolled-back");
+    for (const name of ["database", "database-wal", "settings.json"])
+      for (const suffix of ["", ".complete"])
+        assert.isTrue(
+          (
+            await NodeFSP.lstat(NodePath.join(generation, `.${name}-restore.json${suffix}`))
+          ).isFile(),
+        );
+    assert.isTrue((await NodeFSP.lstat(advanced)).isDirectory());
+    assert.isTrue((await NodeFSP.lstat(NodePath.join(generation, ".restore-pending"))).isFile());
+  });
+});
+
+it.each([
+  "missing-intent",
+  "missing-completion",
+  "missing-main-pair",
+  "temporary-present",
+  "wrong-source",
+  "wrong-temporary",
+  "invalid-completion",
+  "payload-completion",
+  "journal-symlink",
+  "journal-hardlink",
+])("holds incomplete rollback cleanup: %s", async (attack) => {
+  await cleanupFixture(async ({ generation, database, remove }) => {
+    const journal = await completedRestore(generation, database);
+    if (attack === "missing-intent" || attack === "missing-main-pair")
+      await NodeFSP.unlink(journal.intent);
+    if (attack === "missing-completion" || attack === "missing-main-pair")
+      await NodeFSP.unlink(`${journal.intent}.complete`);
+    if (attack === "temporary-present") await NodeFSP.writeFile(journal.temporary, "unfinished");
+    if (attack === "wrong-source" || attack === "wrong-temporary")
+      await NodeFSP.writeFile(
+        journal.intent,
+        JSON.stringify({
+          source: attack === "wrong-source" ? database : journal.source,
+          target: journal.target,
+          temporary: attack === "wrong-temporary" ? database : journal.temporary,
+        }),
+      );
+    if (attack === "invalid-completion")
+      await NodeFSP.writeFile(
+        `${journal.intent}.complete`,
+        JSON.stringify({ device: 0, inode: "x" }),
+      );
+    if (attack === "payload-completion") {
+      const stat = await NodeFSP.stat(journal.source, { bigint: true });
+      await NodeFSP.writeFile(
+        `${journal.intent}.complete`,
+        JSON.stringify({ device: stat.dev.toString(), inode: stat.ino.toString() }),
+      );
+    }
+    if (attack === "journal-symlink" || attack === "journal-hardlink") {
+      await NodeFSP.unlink(journal.intent);
+      if (attack === "journal-symlink") await NodeFSP.symlink(database, journal.intent);
+      else await NodeFSP.link(database, journal.intent);
+    }
+    await NodeAssert.rejects(remove("rolled-back"));
+    assert.equal(await NodeFSP.readFile(journal.source, "utf8"), "recovery");
+  });
+});
+
+it.each(["committed", "failed-before-trial"] as const)(
+  "holds unexpected restore evidence for %s",
+  async (terminal) => {
+    for (const name of [
+      ".restore-pending",
+      ".settings.json-restore.json",
+      ".database-restore.json.complete",
+    ]) {
+      await cleanupFixture(async ({ generation, remove }) => {
+        await NodeFSP.writeFile(NodePath.join(generation, name), "{}");
+        await NodeAssert.rejects(remove(terminal), /restore-intent-unexpected/);
+        assert.equal(
+          await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"),
+          "recovery",
+        );
+      });
+    }
+  },
+);
+
+it("holds a directory replacement immediately before payload unlink", async () => {
+  await cleanupFixture(async ({ generation, base, remove }) => {
+    const original = NodeFSP.lstat;
+    let observations = 0;
+    vi.spyOn(NodeFSP, "lstat").mockImplementation(
+      async (...args: Parameters<typeof NodeFSP.lstat>) => {
+        const stat = await original(...args);
+        if (String(args[0]).endsWith("/database") && ++observations === 3) {
+          // Generation and advanced payload scans precede the unlink-time identity check.
+          await NodeFSP.rename(generation, `${generation}-original`);
+          await NodeFSP.symlink(NodePath.join(base, "userdata"), generation);
+        }
+        return stat;
+      },
+    );
+    await NodeAssert.rejects(remove(), /directory-changed/);
+    assert.equal(observations, 3);
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-original`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("rejects an aliased base and treats an absent generation as already removed", async () => {
+  await cleanupFixture(async ({ base, database, binding, remove, generation }) => {
+    const alias = NodePath.join(base, "alias");
+    await NodeFSP.symlink(base, alias);
+    await NodeAssert.rejects(
+      removeQualifiedRecoveryPayload(alias, cleanupId, database, binding, "committed"),
+      /invalid-native-home/,
+    );
+    await NodeFSP.rename(generation, `${generation}-preserved`);
+    await remove();
+    assert.equal(
+      await NodeFSP.readFile(NodePath.join(`${generation}-preserved`, "database"), "utf8"),
+      "recovery",
+    );
+  });
+});
+
+it("refuses unavailable pinned-directory access instead of treating it as a missing generation", async () => {
+  await cleanupFixture(async ({ generation, remove }) => {
+    vi.spyOn(NodeFSP, "stat").mockRejectedValue(
+      Object.assign(new Error("fixture descriptor unavailable"), { code: "ENOENT" }),
+    );
+    await NodeAssert.rejects(remove(), /directory-access-unavailable/);
+    assert.equal(await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"), "recovery");
   });
 });

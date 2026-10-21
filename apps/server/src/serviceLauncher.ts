@@ -40,6 +40,7 @@ import {
   QUALIFIED_STARTUP_STATE_FILES,
   copyQualifiedBackupFile,
   preflightQualifiedBackup,
+  removeQualifiedRecoveryPayload,
   retainQualifiedAdvancedState,
   restoreQualifiedBackupFile,
   writeQualifiedBackupReceipt,
@@ -636,34 +637,28 @@ async function restoreDatabaseBackup(
   advanceNativeStoreAuthorityForBaseDir(baseDir, pending.dbPath);
 }
 
-async function discardDatabaseBackup(
-  baseDir: string,
-  updateId: string,
-  retainReceipts = false,
-): Promise<void> {
+async function discardDatabaseBackup(baseDir: string, updateId: string): Promise<void> {
   const backupDir = databaseBackupDir(baseDir, updateId);
   if (!(await pathExists(backupDir))) return;
-  if (retainReceipts) {
-    // Startup still reserves resume here, and update status reads the timing receipt.
-    // Remove only recovery payload; leave their directory and all metadata in place.
-    for (const name of ["database", "database-wal", "database-shm", ...PAIRED_SETTINGS]) {
-      await NodeFSP.rm(NodePath.join(backupDir, name), { force: true });
-    }
-    await NodeFSP.rm(NodePath.join(backupDir, "advanced-state"), { recursive: true, force: true });
-    await syncDirectory(backupDir);
-  } else {
-    await NodeFSP.rm(backupDir, { recursive: true, force: true });
-    await syncDirectory(NodePath.dirname(backupDir));
-  }
+  await NodeFSP.rm(backupDir, { recursive: true, force: true });
+  await syncDirectory(NodePath.dirname(backupDir));
 }
 
 async function cleanupTerminalDatabaseBackup(
   baseDir: string,
-  updateId: string,
-  retainReceipts: boolean,
+  pending: PendingServiceUpdate,
+  terminal?: "committed" | "rolled-back" | "failed-before-trial",
 ): Promise<void> {
   try {
-    await discardDatabaseBackup(baseDir, updateId, retainReceipts);
+    if (pending.qualified === undefined) await discardDatabaseBackup(baseDir, pending.id);
+    else if (terminal !== undefined)
+      await removeQualifiedRecoveryPayload(
+        baseDir,
+        pending.id,
+        pending.dbPath,
+        { transactionId: pending.id, qualified: pending.qualified },
+        terminal,
+      );
   } catch {
     process.stderr.write(
       "[service-launcher] Recovery payload cleanup did not finish; the durable update outcome is unchanged and remaining recovery files were retained.\n",
@@ -1048,7 +1043,13 @@ export class Launcher {
     };
     await writeServiceState(this.#statePath, next);
     this.#state = next;
-    await cleanupTerminalDatabaseBackup(this.#baseDir, pending.id, pending.qualified !== undefined);
+    await cleanupTerminalDatabaseBackup(
+      this.#baseDir,
+      pending,
+      reason === "launcher-restarted" && pending.phase === "accepted"
+        ? "failed-before-trial"
+        : undefined,
+    );
     if (startChild) await this.#startChild(next.activeVersion, "active", outcome);
   }
 
@@ -1294,6 +1295,27 @@ export class Launcher {
       await reject("bootstrap-required: The qualified startup gate is not bound on this launcher.");
       return;
     }
+    const previous = this.#state.update;
+    if (
+      message.stagedHandle !== undefined &&
+      previous?.qualified !== undefined &&
+      (previous.status === "committed" || previous.status === "rolled-back")
+    ) {
+      try {
+        await removeQualifiedRecoveryPayload(
+          this.#baseDir,
+          previous.id,
+          previous.qualified.binding.dbPath,
+          { transactionId: previous.id, qualified: previous.qualified },
+          previous.status,
+        );
+      } catch {
+        await reject(
+          "recovery-cleanup-required: Previous qualified recovery payload could not be safely removed; the current server remains active.",
+        );
+        return;
+      }
+    }
     let qualified: StagedQualifiedRuntime | undefined;
     let migrationPlan: MigrationPlan | undefined;
     if (message.stagedHandle !== undefined) {
@@ -1524,11 +1546,7 @@ export class Launcher {
               qualified: { ...startupReceipt, generation: committed.id },
             }),
       });
-      await cleanupTerminalDatabaseBackup(
-        this.#baseDir,
-        committed.id,
-        pending.qualified !== undefined,
-      );
+      await cleanupTerminalDatabaseBackup(this.#baseDir, pending, "committed");
     } catch (cause) {
       const attempt = this.#qualifiedCommitAttempt;
       if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;
@@ -1650,8 +1668,8 @@ export class Launcher {
       this.#state = next;
       await cleanupTerminalDatabaseBackup(
         this.#baseDir,
-        pending.id,
-        pending.qualified !== undefined,
+        pending,
+        status === "rolled-back" ? "rolled-back" : undefined,
       );
     };
     if (pending.qualified !== undefined) await withStoppedServerOwnership(this.#baseDir, restore);

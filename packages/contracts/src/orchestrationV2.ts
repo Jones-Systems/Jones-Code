@@ -3369,6 +3369,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   dispatchCommand: "orchestration.dispatchCommand",
   stopCurrentThreadRuntime: "orchestration.stopCurrentThreadRuntime",
   previewProviderConversationReselection: "orchestration.previewProviderConversationReselection",
+  getThreadReferenceExcerpt: "orchestration.getThreadReferenceExcerpt",
   reselectProviderConversation: "orchestration.reselectProviderConversation",
   readCurrentRuntimeStopTarget: "orchestration.readCurrentRuntimeStopTarget",
   observeCurrentThreadRuntimeStop: "orchestration.observeCurrentThreadRuntimeStop",

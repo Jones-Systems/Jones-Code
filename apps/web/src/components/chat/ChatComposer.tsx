@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
 import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
@@ -47,7 +48,6 @@ import type {
   SnapShotSource,
 } from "@t3tools/contracts";
 import {
-  EnvironmentRequestInvalidError,
   AuthOrchestrationOperateScope,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -57,8 +57,6 @@ import {
   PROVIDER_WORKSPACE_SNAPSHOT_TTL_MS,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
-import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import * as Schema from "effect/Schema";
 import {
   isPasteAsTextShortcut,
   nextPastedTextFileName,
@@ -283,8 +281,6 @@ import { resolveAssetUrl } from "~/assets/assetUrls";
 import { assetEnvironment } from "~/state/assets";
 import { readPreparedConnection } from "~/state/session";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
-import { orchestrationEnvironment } from "~/state/orchestration";
-import { threadContextAttachment } from "~/lib/threadContextAttachment";
 import {
   pullRequestEnvironment,
   usePullRequestList,
@@ -365,10 +361,6 @@ import {
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { pendingDraftWork } from "./pendingDraftWork";
-import {
-  importComposerThreadAttachment,
-  remainingComposerAttachmentSlots,
-} from "./composerThreadImport";
 import { isTimelineScrollTarget } from "./timelineScrollTarget";
 import {
   createComposerScrollGestureState,
@@ -447,7 +439,6 @@ function SnapShotAttachmentFrame({
 }
 
 const COMPOSER_PULL_REQUEST_LIST_LIMIT = 99;
-const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 const COMPOSER_PULL_REQUEST_RESULT_LIMIT = 12;
 const EMPTY_PULL_REQUEST_LIST_TARGETS: ReadonlyArray<EnvironmentQueryTarget<PullRequestListInput>> =
   [];
@@ -2520,7 +2511,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const stashPulseTimeoutRef = useRef<number | null>(null);
   const stashInFlightRef = useRef<Set<string>>(new Set());
   const pendingImageCompressionsRef = useRef<Map<string, number>>(new Map());
-  const pendingThreadImportsRef = useRef<Map<string, number>>(new Map());
   const isRevertingCheckpointRef = useRef(isRevertingCheckpoint);
   useLayoutEffect(() => {
     isRevertingCheckpointRef.current = isRevertingCheckpoint;
@@ -3038,7 +3028,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const addCapturedThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
   const setComposerDraftThreadContexts = useComposerDraftStore((store) => store.setThreadContexts);
   const buildContextClipboardFragment = (contextIds: ReadonlyArray<string>): string | null => {
     const wanted = new Set(contextIds);
@@ -3094,9 +3087,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const buildContextClipboardFragmentStable = useStableCallback(buildContextClipboardFragment);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
-  const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
-    reportFailure: false,
-  });
   const countReservedAttachments = () => {
     const questionRequest = pendingUserInputs[0];
     const otherQuestionKeys =
@@ -3117,11 +3107,15 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       (draft?.images.length ?? 0) +
       (draft?.files.length ?? 0) +
       (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) +
-      (pendingThreadImportsRef.current.get(attachmentTargetKey) ?? 0) +
       countQuestionAttachments(otherQuestionKeys)
     );
   };
   const countReservedAttachmentsStable = useStableCallback(countReservedAttachments);
+  /**
+   * Bytes for a pasted image or file come back through the source environment's asset URL
+   * (the client is the only party that can reach both) and re-enter this draft as a normal
+   * attachment under a fresh id.
+   */
   const runAttachmentImport = async (
     record: Extract<ComposerContextRecord, { kind: "image" | "file" }>,
     localId: string,
@@ -3164,25 +3158,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     // The draft these bytes belong to may have been sent or switched away from while they
     // downloaded. Dropping them here keeps them out of whatever draft is open now.
     if (attachmentTargetKeyRef.current !== importTargetKey) return;
-    const replacesFileMarker =
-      record.kind === "file" &&
-      composerFilesRef.current.some(
-        (candidate) =>
-          composerFileNeedsReattach(candidate) &&
-          composerFileMatchesReattachMarker(candidate, {
-            name: record.name,
-            mimeType: file.type,
-            sizeBytes: file.size,
-          }),
-      );
-    if (
-      !replacesFileMarker &&
-      (pendingThreadImportsRef.current.get(importTargetKey) ?? 0) > 0 &&
-      countReservedAttachments() >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS
-    ) {
-      fail("The attachment limit has been reached.");
-      return;
-    }
     if (record.kind === "image") {
       const accepted = addComposerDraftImages(
         attachmentDraftTarget,
@@ -3342,9 +3317,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           break;
         }
         case "thread": {
-          // The agent can only read threads on its own server; a pasted foreign one is dropped.
-          if (record.environmentId !== environmentId) break;
-          addComposerDraftThreadContexts(threadDraftTarget, [record], {
+          addCapturedThreadContexts([record], {
             appendReference: false,
           });
           rewritten.set(record.contextId, record.contextId);
@@ -3983,7 +3956,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd),
       });
       if (applied) {
-        addComposerDraftThreadContexts(attachmentDraftTarget, [record], {
+        addCapturedThreadContexts([record], {
           appendReference: false,
         });
         setComposerHighlightedItemId(null);
@@ -4543,9 +4516,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         }
         appendedFiles.push(restored);
       }
-      const capacity = remainingComposerAttachmentSlots(
-        composerImagesRef.current.length + composerFilesNow.length,
-        pendingThreadImportsRef.current.get(composerTargetKey(composerDraftTarget)) ?? 0,
+      const capacity = Math.max(
+        0,
+        PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
+          composerImagesRef.current.length -
+          composerFilesNow.length,
       );
       const filesToAppend = appendedFiles.slice(0, capacity);
       const skippedFiles = appendedFiles.slice(capacity);
@@ -4598,9 +4573,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           (image) => `${image.mimeType}\0${image.sizeBytes}\0${image.name}`,
         ),
       );
-      const capacity = remainingComposerAttachmentSlots(
-        composerImagesRef.current.length + composerFilesRef.current.length + restoredFileCount,
-        pendingThreadImportsRef.current.get(composerTargetKey(composerDraftTarget)) ?? 0,
+      const capacity = Math.max(
+        0,
+        PROVIDER_SEND_TURN_MAX_ATTACHMENTS -
+          composerImagesRef.current.length -
+          composerFilesRef.current.length -
+          restoredFileCount,
       );
       const pending = entry.attachments.filter(
         (attachment) =>
@@ -5995,70 +5973,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     },
   });
 
-  const attachDroppedThreadFile = useEffectEvent((file: File) => addComposerAttachments([file]));
-  const importDroppedThread = useEffectEvent(
-    async (ref: ScopedThreadRef, isActive: () => boolean) => {
-      const targetKey = attachmentTargetKey;
-      pendingDraftWork.begin(targetKey);
-      const loadingToast = toastManager.add({
-        type: "loading",
-        title: "Loading thread context…",
-        timeout: 0,
-        data: { threadRef: routeThreadRef, hideCopyButton: true },
-      });
-      const importResult = await settlePromise(() =>
-        importComposerThreadAttachment({
-          targetKey,
-          pendingImports: pendingThreadImportsRef.current,
-          countReservedAttachments: countReservedAttachmentsStable,
-          load: async () => {
-            const result = await loadThreadTranscript({
-              environmentId: ref.environmentId,
-              input: { threadId: ref.threadId },
-            });
-            if (result._tag !== "Success") {
-              throw squashAtomCommandFailure(result);
-            }
-            return threadContextAttachment(ref.environmentId, result.value);
-          },
-          isActive,
-          attach: attachDroppedThreadFile,
-          onLimitReached: () => {
-            if (activeThreadId) {
-              setThreadError(
-                activeThreadId,
-                `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} files per message.`,
-              );
-            }
-          },
-        }),
-      );
-      if (importResult._tag === "Failure" && isActive()) {
-        const error = squashAtomCommandFailure(importResult);
-        toastManager.add({
-          type: "error",
-          title: "Unable to read the dropped thread",
-          description:
-            isEnvironmentRequestInvalidError(error) &&
-            error.reason === "thread_transcript_too_large"
-              ? "This thread exceeds the attachment size limit. Try a shorter thread."
-              : "Check that its environment is connected and up to date, then try again.",
-        });
-      }
-      toastManager.close(loadingToast);
-      pendingDraftWork.end(targetKey);
-    },
-  );
-
-  useThreadContextDrop(composerFormRef, environmentId, attachmentTargetKey, (refs, isActive) => {
+  useThreadContextDrop(composerFormRef, environmentId, attachmentTargetKey, (refs) => {
     const records = refs.flatMap((ref) => {
-      if (ref.environmentId !== environmentId) {
-        void importDroppedThread(
-          ref,
-          () => isActive() && attachmentTargetKeyRef.current === attachmentTargetKey,
-        );
-        return [];
-      }
       const shell = readThreadShell(ref);
       return shell ? [threadContextRecord(ref, shell.title)] : [];
     });
@@ -6091,12 +6007,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         });
         return;
       }
-      addComposerDraftThreadContexts(questionAttachmentTarget, records, {
+      addCapturedThreadContexts(records, {
         appendReference: false,
       });
       if (isComposerCollapsedMobile) expandMobileComposerStable();
     } else {
-      addComposerDraftThreadContexts(composerDraftTarget, records);
+      addCapturedThreadContexts(records);
     }
   });
 

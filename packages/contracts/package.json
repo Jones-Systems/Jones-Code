@@ -50,6 +50,14 @@
     "./jones/threadAttention": {
       "types": "./src/jones/threadAttention.ts",
       "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/threadReferenceExcerptRpc": {
+      "types": "./src/jones/threadReferenceExcerptRpc.ts",
+      "import": "./src/jones/threadReferenceExcerptRpc.ts"
     }
   },
   "scripts": {

@@ -550,6 +550,10 @@
     "./markdownMath": {
       "types": "./src/markdownMath.ts",
       "import": "./src/markdownMath.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
     }
   },
   "scripts": {
