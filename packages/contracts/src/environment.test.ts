@@ -14,6 +14,14 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("round-trips old descriptors and accepts an optional build time", () => {
+    expect(decodeDescriptor(descriptor)).toEqual(descriptor);
+    const stamped = { ...descriptor, jonesBuildStartedAt: "2026-10-20T21:13:43Z" };
+    expect(decodeDescriptor(stamped)).toEqual(stamped);
+    expect(() =>
+      decodeDescriptor({ ...descriptor, jonesBuildStartedAt: "2026-02-30T12:00:00Z" }),
+    ).toThrow();
+  });
   it("accepts older descriptors without claiming a Jones source", () => {
     expect(decodeDescriptor(descriptor).jonesSource).toBeUndefined();
     const jonesSource = {

@@ -17,6 +17,8 @@ import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { decodeJonesDesktopBuildMetadata } from "./jones/updates/build-provenance.ts";
+
 import {
   allocateDesktopStageRoot,
   BundleNotSelfContainedError,
@@ -844,15 +846,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           tree: "b".repeat(40),
         };
         const version = "1.0.0-preview.20261011.1.1";
+        const jonesBuildStartedAt = "2026-10-20T21:13:43Z";
+        const metadata = yield* decodeJonesDesktopBuildMetadata({
+          jonesSource: source,
+          startupGateProtocol: 1,
+          jonesBuildStartedAt,
+        });
         yield* fs.makeDirectory(sourceDirectory);
         yield* fs.makeDirectory(resources);
         yield* fs.writeFileString(
           path.join(sourceDirectory, "package.json"),
-          JSON.stringify({ version, jonesSource: source, startupGateProtocol: 1 }),
+          JSON.stringify({ version, ...metadata }),
         );
         yield* Effect.tryPromise(() => createPackageWithOptions(sourceDirectory, packagedAsar, {}));
         const input = { packagedAsar, source, version };
         yield* verifyJonesPackagedMacResources(input);
+        assert.deepStrictEqual(JSON.parse(extractFile(packagedAsar, "package.json").toString()), {
+          version,
+          jonesSource: source,
+          startupGateProtocol: 1,
+          jonesBuildStartedAt,
+        });
 
         const metadataFailure = yield* verifyJonesPackagedMacResources({
           ...input,

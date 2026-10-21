@@ -15,6 +15,7 @@ interface ImportMetaEnv {
   readonly VITE_RELAY_OTLP_TRACES_TOKEN: string;
   readonly APP_VERSION: string;
   readonly APP_SOURCE_SHA: string;
+  readonly APP_BUILD_STARTED_AT: string;
 }
 
 interface ImportMeta {

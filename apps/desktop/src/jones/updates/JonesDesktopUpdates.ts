@@ -12,6 +12,7 @@ import {
   type JonesActionsCandidate,
 } from "@t3tools/shared/jones/jonesActions";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -39,6 +40,8 @@ import { jonesPreparationText } from "./jonesNativePreparation.ts";
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 const BuildMetadata = Schema.Struct({
+  version: Schema.optionalKey(Schema.Unknown),
+  jonesBuildStartedAt: Schema.optionalKey(Schema.Unknown),
   t3codeCommitHash: Schema.optionalKey(SourceHash),
   jonesSource: Schema.optionalKey(
     Schema.Struct({
@@ -164,7 +167,7 @@ function nativeFailureReason(cause: unknown): string {
   return text.length === 0 ? "unexpected error" : text.replace(/\.$/, "");
 }
 
-function provenance(candidate: JonesActionsCandidate) {
+function provenance(candidate: JonesActionsCandidate, buildStartedAt: string | undefined) {
   return {
     repository: candidate.repository,
     sourceSha: candidate.source,
@@ -177,6 +180,7 @@ function provenance(candidate: JonesActionsCandidate) {
     platform: candidate.platform,
     architecture: candidate.architecture,
     version: candidate.version,
+    ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
   } as const;
 }
 
@@ -261,6 +265,8 @@ export class JonesDesktopUpdateController {
   #source: string | undefined;
   #installedSource: JonesUpdateState["installedSource"];
   #candidate: JonesActionsCandidate | undefined;
+  #candidateBuildStartedAt: string | undefined;
+  #currentBuildStartedAt: string | undefined;
   #staged: StagedMacApp | undefined;
   #selectedAttempt: { readonly stagedHandle: string; readonly transactionId: string } | undefined;
   #busy: "check" | "download" | "install" | "discard" | null = null;
@@ -465,6 +471,7 @@ export class JonesDesktopUpdateController {
     )
       throw new Error("Native app receipt bindings changed.");
     this.#candidate = artifact.candidate;
+    this.#candidateBuildStartedAt = undefined;
     this.#staged = selection.app;
   }
 
@@ -547,13 +554,18 @@ export class JonesDesktopUpdateController {
         install: reason === undefined && phase !== "installing",
         ...(reason === undefined ? {} : { reason }),
       },
-      ...(this.#candidate === undefined ? {} : { provenance: provenance(this.#candidate) }),
+      ...(this.#candidate === undefined
+        ? {}
+        : { provenance: provenance(this.#candidate, this.#candidateBuildStartedAt) }),
       ...(this.#staged === undefined ? {} : { stagedHandle: this.#staged.handle }),
       ...(this.#bootstrap === undefined
         ? {}
         : {
             environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
             currentVersion: this.#state.currentVersion,
+            ...(this.#currentBuildStartedAt === undefined
+              ? {}
+              : { currentBuildStartedAt: this.#currentBuildStartedAt }),
           }),
       ...(message === undefined ? {} : { message }),
       ...(checkedAt === null ? {} : { checkedAt }),
@@ -698,6 +710,10 @@ export class JonesDesktopUpdateController {
       ),
     );
     this.#source = metadata.jonesSource?.sha;
+    this.#currentBuildStartedAt =
+      metadata.version === this.#state.currentVersion
+        ? readJonesBuildStartedAt(metadata)
+        : undefined;
     this.#installedSource = undefined;
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
@@ -948,7 +964,10 @@ export class JonesDesktopUpdateController {
         architecture: this.#options.architecture,
       });
       if (result.state === "available") {
-        if (this.#staged === undefined) this.#candidate = result.candidate;
+        if (this.#staged === undefined) {
+          this.#candidate = result.candidate;
+          this.#candidateBuildStartedAt = result.buildStartedAt;
+        }
         await this.#publish(
           this.#staged === undefined ? "available" : "staged",
           this.#staged === undefined ? "available" : "downloaded",
@@ -1176,6 +1195,7 @@ export class JonesDesktopUpdateController {
       }
       this.#staged = undefined;
       this.#candidate = undefined;
+      this.#candidateBuildStartedAt = undefined;
       this.#selectedAttempt = undefined;
       this.#candidateStartupGateUnavailable = false;
       await this.#publish(

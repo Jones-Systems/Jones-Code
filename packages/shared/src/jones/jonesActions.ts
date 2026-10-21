@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - Node-only launcher/desktop transport and receipt boundary; clock is injected for qualification tests.
+import { parseJonesBuildStartedAt } from "./buildTime.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -100,7 +101,11 @@ export interface JonesStagedArtifact {
 }
 
 export type JonesActionsCheckResult =
-  | { readonly state: "available"; readonly candidate: JonesActionsCandidate }
+  | {
+      readonly state: "available";
+      readonly candidate: JonesActionsCandidate;
+      readonly buildStartedAt?: string;
+    }
   | { readonly state: "no-new" }
   | { readonly state: "building"; readonly retryAfterMs: number }
   | {
@@ -377,8 +382,10 @@ export class JonesActionsClient {
             if (commit.sha !== candidateSource) throw new JonesActionsError("unqualified");
             const artifactBytes = positive(artifact.size_in_bytes);
             if (artifactBytes > MAX_ARCHIVE_BYTES) throw new JonesActionsError("integrity");
+            const buildStartedAt = parseJonesBuildStartedAt(run.run_started_at);
             return {
               state: "available",
+              ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
               candidate: {
                 schema: 1,
                 repository: JONES_ACTIONS_REPOSITORY,

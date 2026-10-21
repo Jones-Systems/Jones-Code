@@ -1,3 +1,4 @@
+import { clientServerBuildDetail, clientServerBuildLabels } from "../../jones/updates/buildPairs";
 import { RemoteAdmissionSettings } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
 import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
 import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
@@ -1523,7 +1524,6 @@ function SavedBackendListRow({
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
   const status = savedBackendStatus(environment);
-  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
   // Discovery empties its map on every refresh, so hold the last descriptor
   // seen or the glyph would blink back to the generic one each time.
   const relayDiscovery = useRelayEnvironmentDiscovery();
@@ -1558,7 +1558,7 @@ function SavedBackendListRow({
   const subtitleText = [
     environmentTransportLabel(environment, connectedTarget),
     resumingServerUpdate ? "Restarting" : status.text,
-    enabled && versionMismatch ? serverVersion : null,
+    enabled && versionMismatch ? clientServerBuildLabels(versionMismatch).serverLabel.text : null,
   ]
     .filter((value): value is string => value !== null)
     .join(" · ");
@@ -1575,11 +1575,7 @@ function SavedBackendListRow({
       : enabled
         ? connectionStatusText(environment.connection)
         : "Switched off"
-  }${
-    versionMismatch
-      ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.clientVersion}`
-      : ""
-  }`;
+  }${versionMismatch ? `\nUpdate available: ${clientServerBuildDetail(versionMismatch)}` : ""}`;
 
   return (
     <EnvironmentRow
@@ -3487,7 +3483,7 @@ export function ConnectionsSettings() {
                       label={
                         primaryServerUpdateState.status === "failed"
                           ? "Retry update"
-                          : `Update to ${primaryVersionMismatch.clientVersion}`
+                          : `Update to ${clientServerBuildLabels(primaryVersionMismatch).clientLabel.text}`
                       }
                     />
                   ) : primaryServerUpdateState.status === "idle" && primaryServerConfig ? (

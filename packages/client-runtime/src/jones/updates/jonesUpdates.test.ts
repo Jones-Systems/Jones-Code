@@ -478,12 +478,14 @@ it("presents an offered build's version before download and leaves an older host
   expect(jonesCandidatePresentation({ ...available, provenance: offered })).toEqual({
     label: "Available",
     version: offered.version,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   const { version: _version, ...older } = offered;
   expect(jonesCandidatePresentation({ ...available, provenance: older })).toEqual({
     label: "Available",
     version: undefined,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   expect(jonesCandidatePresentation({ ...staged, provenance: offered })?.label).toBe("Downloaded");
@@ -780,4 +782,36 @@ describe("exact-source action resolution", () => {
       ),
     ).toBeNull();
   });
+});
+
+it("presents same-minute outcomes with exact-version stamps without changing identity", () => {
+  const fromVersion = "0.0.45-preview.20261020.100.1";
+  const targetVersion = "0.0.45-preview.20261020.101.1";
+  const state: JonesUpdateState = {
+    ...staged,
+    currentVersion: fromVersion,
+    currentBuildStartedAt: "2026-10-20T21:13:43Z",
+    provenance: { ...offered, version: targetVersion, buildStartedAt: "2026-10-20T21:13:47Z" },
+    outcome: { status: "committed", fromVersion, targetVersion },
+  };
+  const original = JSON.stringify(state);
+  expect(jonesUpdatePresentation(state).outcomeMessage).toBe(
+    "Installed: 1020·1713:43 → 1020·1713:47",
+  );
+  expect(JSON.stringify(state)).toBe(original);
+  expect(jonesCandidatePresentation(state)).toMatchObject({
+    version: targetVersion,
+    buildStartedAt: "2026-10-20T21:13:47Z",
+    sourceSha: offered.sourceSha,
+  });
+  expect(
+    jonesUpdatePresentation({
+      ...state,
+      outcome: {
+        status: "blocked",
+        fromVersion: `${fromVersion}0`,
+        targetVersion: `${targetVersion}0`,
+      },
+    }).outcomeMessage,
+  ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });

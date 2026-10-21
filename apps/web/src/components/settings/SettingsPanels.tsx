@@ -1,3 +1,4 @@
+import { BuildVersion } from "../../jones/updates/updateDisplay";
 import { SettingsGroup } from "./SettingsGroup";
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
 import { useScopedSettingsWriteAllowed } from "./useScopedSettings";
@@ -54,7 +55,13 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Duration from "effect/Duration";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
-import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
+import {
+  APP_BUILD_STARTED_AT,
+  APP_SOURCE_SHA,
+  APP_VERSION,
+  HOSTED_APP_CHANNEL,
+  HOSTED_APP_CHANNEL_LABEL,
+} from "../../branding";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
@@ -283,7 +290,15 @@ function AboutVersionTitle() {
   return (
     <span className="inline-flex items-baseline gap-2">
       <span>Version</span>
-      <code className="text-2xs font-medium text-muted-foreground">{APP_VERSION}</code>
+      <span className="text-2xs font-medium text-muted-foreground">
+        <BuildVersion
+          label="app version"
+          version={APP_VERSION}
+          sourceSha={APP_SOURCE_SHA}
+          startedAt={APP_BUILD_STARTED_AT}
+        />
+        <code className="ml-2">{APP_VERSION}</code>
+      </span>
     </span>
   );
 }

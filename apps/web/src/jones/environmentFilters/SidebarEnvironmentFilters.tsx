@@ -1,17 +1,21 @@
 import { useAtom } from "@effect/atom-react";
-import { APP_SOURCE_SHA, APP_VERSION } from "../../branding";
+import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "../../branding";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
-import { shortJonesBuildLabel } from "../updates/buildVersion";
+import { jonesBuildLabel } from "../updates/buildVersion";
 import { SIDEBAR_ENVIRONMENT_FILTERS, toggleSidebarEnvironmentFilter } from "./model";
 import { sidebarEnvironmentFiltersAtom } from "./state";
 
 // The running client's own build, not the selected environment's: the same identity the update
-// banner labels "Client". Both inputs are fixed at build time, so the text is computed once.
-const BUILD_LABEL = shortJonesBuildLabel(APP_VERSION);
-const BUILD_DETAIL = `${isElectron ? "Desktop app" : "Web client"} ${APP_VERSION}${
-  APP_SOURCE_SHA === undefined ? "" : ` · source ${APP_SOURCE_SHA.slice(0, 12)}`
+// banner labels "Client". All inputs are fixed at build time, so the text is computed once.
+const BUILD_LABEL = jonesBuildLabel({
+  version: APP_VERSION,
+  startedAt: APP_BUILD_STARTED_AT,
+  sourceSha: APP_SOURCE_SHA,
+});
+const BUILD_DETAIL = `${BUILD_LABEL.detail} · ${isElectron ? "Desktop app" : "Web client"} ${APP_VERSION}${
+  APP_SOURCE_SHA === undefined ? "" : ` · source ${APP_SOURCE_SHA}`
 }`;
 
 export function SidebarEnvironmentFilters() {
@@ -41,23 +45,21 @@ export function SidebarEnvironmentFilters() {
           </button>
         ))}
       </div>
-      {BUILD_LABEL === undefined ? null : (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span
-                role="note"
-                tabIndex={0}
-                aria-label={BUILD_DETAIL}
-                className="ms-auto min-w-0 select-none truncate rounded-sm text-2xs tabular-nums text-muted-foreground/60 outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset @max-[20rem]/env-filters:hidden [-webkit-app-region:no-drag]"
-              >
-                {BUILD_LABEL}
-              </span>
-            }
-          />
-          <TooltipPopup side="bottom">{BUILD_DETAIL}</TooltipPopup>
-        </Tooltip>
-      )}
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role="note"
+              tabIndex={0}
+              aria-label={BUILD_DETAIL}
+              className="ms-auto min-w-0 select-none truncate rounded-sm text-2xs tabular-nums text-muted-foreground/60 outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset @max-[20rem]/env-filters:hidden [-webkit-app-region:no-drag]"
+            >
+              {BUILD_LABEL.text}
+            </span>
+          }
+        />
+        <TooltipPopup side="bottom">{BUILD_DETAIL}</TooltipPopup>
+      </Tooltip>
     </div>
   );
 }

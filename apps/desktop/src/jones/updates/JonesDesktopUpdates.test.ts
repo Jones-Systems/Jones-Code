@@ -52,6 +52,7 @@ const candidate: JonesActionsCandidate = {
   architecture: "arm64",
 };
 const handle = "e".repeat(64);
+const candidateBuildStartedAt = "2026-10-20T21:13:43Z";
 
 /** The actual helper durably writes the claim before it reports preparation-claimed. */
 function claimedPreparation(home: string, transactionId: unknown): string {
@@ -90,6 +91,7 @@ async function fixture(
   bootstrap = true,
   terminal?: "committed" | "rolled-back",
   attemptLayout = false,
+  buildMetadata: Record<string, unknown> = {},
 ) {
   const parent = NodePath.join(NodeOS.homedir(), ".cache", "jones-updater-test-fixtures");
   await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
@@ -111,6 +113,7 @@ async function fixture(
     NodePath.join(app, "package.json"),
     JSON.stringify({
       version,
+      ...buildMetadata,
       jonesSource: {
         repository: candidate.repository,
         sha: candidate.installedSource,
@@ -206,7 +209,14 @@ async function fixture(
     listener: async () => "http://127.0.0.1:3777",
     timestamp: async () => "2026-10-02T00:00:00Z",
     client: {
-      check: async () => ({ state: "available", candidate: selections[Math.min(checks++, 1)]! }),
+      check: async () => {
+        const index = Math.min(checks++, 1);
+        return {
+          state: "available",
+          candidate: selections[index]!,
+          ...(index === 0 ? { buildStartedAt: candidateBuildStartedAt } : {}),
+        };
+      },
       stage: async (selection) => {
         stages++;
         const artifact: JonesStagedArtifact = {
@@ -299,6 +309,52 @@ async function fixture(
 }
 
 describe("Jones desktop updates", () => {
+  it.each([
+    { metadata: { jonesBuildStartedAt: "2026-10-20T20:13:43Z" }, expected: "2026-10-20T20:13:43Z" },
+    { metadata: {}, expected: undefined },
+    { metadata: { jonesBuildStartedAt: "invalid" }, expected: undefined },
+    {
+      metadata: { version: "another-build", jonesBuildStartedAt: "2026-10-20T20:13:43Z" },
+      expected: undefined,
+    },
+  ])(
+    "pairs installed build time with the running version: $metadata",
+    async ({ metadata, expected }) => {
+      const f = await fixture(true, undefined, false, metadata);
+      try {
+        await f.controller.configure();
+        expect(f.controller.state.jones?.currentVersion).toBe(
+          f.options.initialState.currentVersion,
+        );
+        expect(f.controller.state.jones?.currentBuildStartedAt).toBe(expected);
+        expect(f.controller.state.jones?.capability.check).toBe(true);
+        const manifest = NodePath.join(f.app, "package.json");
+        const content = JSON.parse(await NodeFSP.readFile(manifest, "utf8"));
+        delete content.jonesBuildStartedAt;
+        await NodeFSP.writeFile(manifest, JSON.stringify(content));
+        await f.controller.configure();
+        expect(f.controller.state.jones?.currentBuildStartedAt).toBeUndefined();
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+  it("clears an offered time when a replacement candidate has no recorded time", async () => {
+    const f = await fixture();
+    try {
+      await f.controller.configure();
+      await f.controller.check();
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
+      await f.controller.check();
+      expect(f.controller.state.jones?.provenance?.artifactId).toBe(99);
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+      await f.controller.download();
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+      expect(candidate).not.toHaveProperty("buildStartedAt");
+    } finally {
+      await f.cleanup();
+    }
+  });
   it("re-adopts a mismatched stable bundle and leaves Check, Download and Install usable", async () => {
     const f = await fixture(false);
     const nativeCommand = vi.mocked(NodeChildProcess.execFile);
@@ -1404,8 +1460,10 @@ describe("Jones desktop updates", () => {
         await f.controller.configure();
         await f.controller.check();
         await f.controller.download();
+        expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
         const restored = f.restart();
         await restored.configure();
+        expect(restored.state.jones?.provenance?.buildStartedAt).toBeUndefined();
         expect(restored.state.jones?.phase).toBe("staged");
         expect(restored.state.jones?.stagedHandle).toBe(handle);
         expect(restored.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
@@ -1448,6 +1506,7 @@ describe("Jones desktop updates", () => {
       await f.controller.check();
       expect(f.controller.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
       expect(f.controller.state.jones?.provenance?.sourceSha).toBe(candidate.source);
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
       expect(f.controller.state.jones?.installedSource).toEqual({
         repository: candidate.repository,
         sha: f.active.sourceSha,

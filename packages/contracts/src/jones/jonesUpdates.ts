@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { JonesBuildStartedAt } from "./fleetUpdates/source.ts";
 import { EnvironmentId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 
 export const JonesUpdatePhase = Schema.Literals([
@@ -30,6 +31,7 @@ export const JonesUpdateProvenance = Schema.Struct({
   platform: Schema.Literals(["linux", "darwin"]),
   architecture: Schema.Literals(["x64", "arm64"]),
   version: Schema.optionalKey(TrimmedNonEmptyString),
+  buildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   payloadSha256: Schema.optionalKey(TrimmedNonEmptyString),
 });
 export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
@@ -67,6 +69,7 @@ export const JonesUpdateState = Schema.Struct({
   checkedAt: Schema.optionalKey(Schema.String),
   environmentId: Schema.optionalKey(EnvironmentId),
   currentVersion: Schema.optionalKey(Schema.String),
+  currentBuildStartedAt: Schema.optionalKey(JonesBuildStartedAt),
   installedSource: Schema.optionalKey(
     Schema.Struct({
       repository: Schema.Literal("Jones-Systems/Jones-Code"),
