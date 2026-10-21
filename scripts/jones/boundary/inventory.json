@@ -2177,6 +2177,10 @@
     {
       "from": "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
       "to": "apps/server/src/jones/updates/PlannedUpdateContinuityService.ts"
+    },
+    {
+      "from": "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+      "to": "packages/shared/src/jones/threadAttention.ts"
     }
   ]
 }
