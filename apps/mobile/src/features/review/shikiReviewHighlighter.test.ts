@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vite-plus/test";
+import type { ReviewRenderableLineRow } from "./reviewModel";
 
 import { highlightSourceFile, highlightReviewSelectedLines, highlightCodeSnippet } from "./shikiReviewHighlighter";
 

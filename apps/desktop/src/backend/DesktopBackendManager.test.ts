@@ -208,7 +208,8 @@ const coldPipeKeeper = String.raw`
 import array, json, os, socket, sys
 root = sys.argv[1]
 server = socket.socket(socket.AF_UNIX)
-server.bind(root + '/keeper.sock')
+# AF_UNIX paths are bounded independently of the task scratch path length.
+server.bind('keeper.sock')
 server.listen(1)
 print('ready', flush=True)
 connection, _ = server.accept()
@@ -233,7 +234,7 @@ import * as fs from 'node:fs';
 import {spawn} from 'node:child_process';
 const sender = spawn('python3', ['-c',
  'import array,socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(sys.argv[1]); s.sendmsg([b"x"],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array("i",[1,8]))]); assert s.recv(4)==b"held"; s.close()',
- process.env.ROOT + '/keeper.sock'], {stdio:['ignore',1,'pipe','ignore','ignore','ignore','ignore','ignore',8]});
+ 'keeper.sock'], {stdio:['ignore',1,'pipe','ignore','ignore','ignore','ignore','ignore',8]});
 sender.stderr.resume();
 await new Promise((resolve,reject) => {sender.on('error',reject); sender.on('close',code => code===0 ? resolve() : reject(new Error('Descriptor sender failed')));});
 const binding = JSON.parse(process.env.BINDING);
@@ -261,7 +262,7 @@ import * as FixtureLayer from 'effect/Layer';
 import * as FixtureDeferred from 'effect/Deferred';
 import {fixturePermit} from '../jones/updates/jonesColdBackendCustody.ts';
 const root=process.argv[3], scenario=process.argv[2];
-const keeper=FixtureProcess.spawn('python3',[root+'/keeper.py',root],{stdio:['pipe','pipe','pipe']});
+const keeper=FixtureProcess.spawn('python3',[root+'/keeper.py',root],{cwd:root,stdio:['pipe','pipe','pipe']});
 let keeperOutput='', keeperClosed=false;
 keeper.stdout.on('data',chunk=>{keeperOutput+=chunk;}); keeper.stderr.resume();
 const keeperDone=new Promise((resolve,reject)=>{keeper.once('error',reject);keeper.once('close',()=>{keeperClosed=true;resolve();});});

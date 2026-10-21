@@ -302,6 +302,7 @@ describe("scheduled-task form save and reopen", () => {
         type: "webhook",
         signature: currentSignature,
         maxDeliveryAgeMinutes: 45,
+        dedupe: {},
       });
       expect(saved.workspaceStrategy).toEqual({ type: "worktree", startFromOrigin });
       expect(saved.workspaceStrategy).not.toHaveProperty("baseRef");

@@ -856,7 +856,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
           ).pid.toString(),
         );
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -873,7 +872,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.equal(yield* readManagedPid, pid);
         assert.isTrue(isAlive(pid));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -903,7 +901,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         );
         assert.equal((yield* fs.readFileString(`${stateDir}/managed`)).trim(), "managed");
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -921,7 +918,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.isTrue(isAlive(previousPid));
         assert.isTrue(isAlive(replacementPid));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -974,7 +970,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.notEqual(replacementPid, zombie);
         assert.isTrue(isAlive(replacementPid));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -993,7 +988,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         });
         assert.isTrue(isAlive(pid));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -1008,7 +1002,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.deepEqual(yield* runLaunch, { remotePort: servicePort, serverKind: "external" });
         assert.isTrue(yield* fs.exists(`${stateDir}/pid`));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 
   it.effect.skipIf(windowsHost)(
@@ -1025,7 +1018,6 @@ server.listen(Number(flag("--port")), "127.0.0.1", () => {
         assert.notEqual(yield* readManagedPid, previousPid);
         assert.isTrue(isAlive(previousPid));
       }).pipe(Effect.provide(NodeServices.layer)),
-    60_000,
   );
 });
 

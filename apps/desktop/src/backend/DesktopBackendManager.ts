@@ -610,7 +610,7 @@ export const runBackendProcess = Effect.fn("runBackendProcess")(function* (
             try: async () => {
               const status = await coldOwner.exit();
               if (status.code === null) throw new Error("Captured cold backend exited by signal.");
-              return status.code;
+              return ChildProcessSpawner.ExitCode(status.code);
             },
             catch: coldStreamError,
           }),

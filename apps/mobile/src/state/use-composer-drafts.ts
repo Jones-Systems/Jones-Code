@@ -5,7 +5,6 @@ import {
   type ImportedHistoryCorrelationStorage,
 } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import type { ThreadId } from "@t3tools/contracts";
-import { scopedThreadKey } from "../lib/scopedEntities";
 import { useAtomValue } from "@effect/atom-react";
 import {
   EnvironmentId as EnvironmentIdSchema,
@@ -2094,7 +2093,7 @@ export function mobileImportedHistoryStorage(
   environmentId: EnvironmentId,
   threadId: ThreadId,
 ): ImportedHistoryCorrelationStorage {
-  const key = scopedThreadKey(environmentId, threadId);
+  const key = scopedThreadKey({ environmentId, threadId });
   let lock = importedHistoryLocks.get(key);
   if (lock === undefined) {
     lock = new SerializedAsyncQueue();
@@ -2146,7 +2145,10 @@ export function mobileImportedHistoryStorage(
 export async function flushMobileImportedHistoryCorrelation(
   value: ImportedHistoryCorrelation,
 ): Promise<void> {
-  const key = scopedThreadKey(value.environmentId, value.command.threadId);
+  const key = scopedThreadKey({
+    environmentId: value.environmentId,
+    threadId: value.command.threadId,
+  });
   const encoded = encodeImportedHistoryCorrelation(value);
   await flushComposerDrafts();
   const persisted = await loadPersistedComposerState();

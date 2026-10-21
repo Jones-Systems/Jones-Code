@@ -586,7 +586,11 @@ function ThreadNavigationSidebarPane(
     direction: ThreadMoveDestination,
   ) => {
     const target = workstreams.enabled
-      ? mobileWorkstreamMoveDestination(listItems, thread, direction)
+      ? mobileWorkstreamMoveDestination(
+          listItems.filter((item) => item.type !== "v2-show-more"),
+          thread,
+          direction,
+        )
       : direction;
     if (target !== null) void moveThread(thread, target);
   };
