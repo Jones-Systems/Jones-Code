@@ -144,3 +144,26 @@ Record the candidate, viewport, theme, text stress, measured widths and interact
 captures in the change's PR evidence. This local-storage fixture proves renderer
 behavior; it does not prove settlement detection, backend persistence, native
 notification delivery, or the separate React Native overlay.
+
+### Sub-agent account glyphs
+
+Individual timeline links and collapsed sub-agent groups both render
+`EnvironmentSubagentAvatar` in `V2LifecycleRow.tsx`. A matching local provider
+catalog entry supplies the same resolved account name as the composer; the
+Jones `ProviderAccountGlyph` draws its provider mark behind outlined initials.
+Remote children, mismatched drivers and missing catalog entries retain their
+existing fallback. Timeline initials are neutral and do not read usage limits.
+
+Focused browser verification on **2026-10-21** used the production avatar with
+an isolated synthetic provider atom, four Codex/Claude account instances, a
+three-avatar group and a remote child. Comparison source was
+`34716429f0a5265f3f993caa07a1f4fb850921c1`; candidate changed only the glyph and
+identity-selection hook described above. Comparable captures used 1280×800 CSS
+pixels, device scale 2, dark theme; a 375×812 light-theme capture additionally
+verified wrapping and no horizontal overflow. Grouped rendered label bounds
+were 11.41 CSS pixels wide with centers 18 pixels apart. Status dots remained
+above the label; clicking the surrounding synthetic row reached its handler.
+This verifies avatar rendering and pointer pass-through, not live child-thread
+navigation, provider execution, native mobile, or packaged desktop behavior.
+PR attachments retain the reviewed before/after evidence. The temporary browser
+fixture was removed after capture; no live application state was used.
