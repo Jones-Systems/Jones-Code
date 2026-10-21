@@ -426,7 +426,8 @@ export function makeControlPlaneWorkstreamTransport(
     idempotencyKey?: string,
     countsContract = false,
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> =>
-    Effect.fn("ControlPlaneWorkstreamTransport.request")(function* () {
+    {
+const runEffect = Effect.fn("ControlPlaneWorkstreamTransport.request")(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
       const responseBody = yield* Effect.tryPromise({
         try: (signal) =>
@@ -488,7 +489,9 @@ export function makeControlPlaneWorkstreamTransport(
             }),
         ),
       );
-    })();
+    });
+return runEffect();
+};
   return {
     activationState: "enabled",
     registrationContext: {

@@ -172,12 +172,15 @@ export const runV2Workload = Effect.fn("V2Workload.runV2Workload")(function* (op
 
     const protocol: number[] = [];
     const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.fn("V2Workload.timed")(function* () {
+      {
+const runEffect = Effect.fn("V2Workload.timed")(function* () {
         const start = NodePerfHooks.performance.now();
         const value = yield* effect;
         protocol.push(NodePerfHooks.performance.now() - start);
         return value;
-      })();
+      });
+return runEffect();
+};
     const beforeReplay = yield* capture();
     const replay = yield* timed(sink.commitCommand(commands[0]!));
     NodeAssert.equal(replay.committed, false);

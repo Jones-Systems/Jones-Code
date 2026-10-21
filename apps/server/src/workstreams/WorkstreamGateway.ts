@@ -571,7 +571,8 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       );
     });
     const readMetadata: WorkstreamGateway["Service"]["readMetadata"] = (input = {}) =>
-      Effect.fn("WorkstreamGateway.readMetadata")(function* () {
+      {
+const runEffect = Effect.fn("WorkstreamGateway.readMetadata")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const request = yield* Effect.try({
           try: () => pageInput(input),
@@ -625,13 +626,16 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         };
         remember(pageCache, cacheKey, { result, at: now() });
         return result;
-      })();
+      });
+return runEffect();
+};
 
     const boundRead = <A>(
       run: (request: PageInput & ContractInput) => Effect.Effect<A, WorkstreamTransportError>,
       input?: { readonly limit?: number; readonly cursor?: string },
     ) =>
-      Effect.fn("WorkstreamGateway.boundRead")(function* () {
+      {
+const runEffect = Effect.fn("WorkstreamGateway.boundRead")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const page = yield* Effect.try({
           try: () => pageInput(input),
@@ -641,13 +645,18 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           Effect.mapError(transportFailure),
         );
         return yield* validateContext(value, authorized.binding);
-      })();
+      });
+return runEffect();
+};
     const boundDetail = <A>(run: () => Effect.Effect<A, WorkstreamTransportError>) =>
-      Effect.fn("WorkstreamGateway.boundDetail")(function* () {
+      {
+const runEffect = Effect.fn("WorkstreamGateway.boundDetail")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const value = yield* run().pipe(Effect.mapError(transportFailure));
         return yield* validateContext(value, authorized.binding);
-      })();
+      });
+return runEffect();
+};
     const validateReceipt = (
       receipt: WorkstreamReceipt,
       commandId: string,

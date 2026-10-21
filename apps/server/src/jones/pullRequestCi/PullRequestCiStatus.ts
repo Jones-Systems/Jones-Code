@@ -33,7 +33,8 @@ export const createCiStatus = ({
   githubCi,
   rateLimits,
 }: CiStatusDependencies) =>
-  Effect.fn("PullRequestCiStatus.createCiStatus")(function* () {
+  {
+const runEffect = Effect.fn("PullRequestCiStatus.createCiStatus")(function* () {
     const ciCache = new Map<string, { at: number; value: PullRequestCiStatusResult }>();
     const ciGate = yield* Semaphore.make(1);
     const ciStatus: PullRequestService["Service"]["ciStatus"] = Effect.fn(
@@ -112,4 +113,6 @@ export const createCiStatus = ({
     });
 
     return ciStatus;
-  })();
+  });
+return runEffect();
+};

@@ -123,7 +123,8 @@ input: {
       maxPages: number,
       repository?: string,
     ) =>
-      Effect.fn("GitHubCiStatus.page")(function* () {
+      {
+const runEffect = Effect.fn("GitHubCiStatus.page")(function* () {
         const items: Array<A> = [];
         const reasons: string[] = [];
         let succeeded = false;
@@ -180,7 +181,9 @@ input: {
           }
         }
         return { items, reasons, succeeded };
-      })();
+      });
+return runEffect();
+};
     const runnerRead = yield* page(
       `orgs/${encodeURIComponent(input.organization)}/actions/runners`,
       "runners",
