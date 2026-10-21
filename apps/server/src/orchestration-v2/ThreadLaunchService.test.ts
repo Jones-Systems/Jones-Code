@@ -2097,7 +2097,7 @@ it.effect("shows the fetch diagnosis when preparing a worktree from origin fails
 it.effect("retries a failed workspace preparation on the same run", () => {
   let fetchFailures = 1;
   const harness = makeHarness({
-    fetchRemote: () =>
+    fetchWorktreeBaseCommit: () =>
       fetchFailures-- > 0
         ? Effect.fail(
             new GitCommandError({
@@ -2108,7 +2108,7 @@ it.effect("retries a failed workspace preparation on the same run", () => {
               exitCode: 1,
             }),
           )
-        : Effect.void,
+        : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -3721,13 +3721,17 @@ it.effect.each(
         assert.equal(child.runs[0]?.status, cancelAsync ? "starting" : "preparing");
         assert.equal(child.thread.modelSelection.instanceId, childInstanceId);
         assert.equal(child.thread.modelSelection.model, "child-model");
-        assert.deepEqual(resolveCommit.mock.calls, [
+        const expectedCommitChecks = [
           [{ cwd: parentWorktree ?? "/repo", revision: "HEAD" }],
-        ]);
+          ...(parentWorktree === null
+            ? []
+            : [[{ cwd: "/repo", revision: "parent-local-commit" }]]),
+        ];
+        assert.deepEqual(resolveCommit.mock.calls, expectedCommitChecks);
         assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "parent-local-commit");
         assert.equal((yield* service.delegateTask(scope, input)).taskId, delegated.taskId);
         assert.equal(harness.createWorktree.mock.calls.length, 1);
-        assert.equal(resolveCommit.mock.calls.length, 1);
+        assert.equal(resolveCommit.mock.calls.length, expectedCommitChecks.length);
         if (!cancelAsync) assert.isEmpty(child.checkpointScopes);
         const parent = yield* threads.getThreadProjection(parentThreadId);
         assert.equal(parent.thread.worktreePath, parentWorktree);
@@ -3739,6 +3743,7 @@ it.effect.each(
             yield* threads.streamStoredEventsFrom({ threadId: childThreadId }).pipe(
               Stream.filter(
                 (stored) =>
+                  stored.commandId?.endsWith(":cancel-workspace") === true &&
                   stored.event.type === "thread.metadata-updated" &&
                   stored.event.payload.worktreePath === null,
               ),
@@ -3884,6 +3889,7 @@ it.effect(
       }).pipe(Effect.orDie),
     );
     const h = makeHarness({
+      hasCommit: ({ refName }) => Effect.succeed(refName === "remote-main-sha"),
       fetchRemote: fetch,
       remoteBranchExists: () => Effect.succeed(true),
       resolveRemoteTrackingCommit: () =>
@@ -4264,7 +4270,7 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
 it.effect("retains the explicit setup opt-out when a failed bootstrap is retried", () => {
   let fetchFailures = 1;
   const harness = makeHarness({
-    fetchRemote: () =>
+    fetchWorktreeBaseCommit: () =>
       fetchFailures-- > 0
         ? Effect.fail(
             new GitCommandError({
@@ -4275,7 +4281,7 @@ it.effect("retains the explicit setup opt-out when a failed bootstrap is retried
               exitCode: 1,
             }),
           )
-        : Effect.void,
+        : Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
     runSetup: () => Effect.die("Setup must stay opted out"),
   });
   return Effect.gen(function* () {

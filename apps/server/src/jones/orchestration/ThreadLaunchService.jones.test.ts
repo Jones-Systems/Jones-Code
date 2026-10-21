@@ -77,10 +77,9 @@ const adapter = {
 interface HarnessOptions {
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
-  readonly remoteExists?: GitWorkflow.GitWorkflowService["Service"]["remoteExists"];
-  readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
+  readonly resolveWorktreeBaseRemote?: GitWorkflow.GitWorkflowService["Service"]["resolveWorktreeBaseRemote"];
+  readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
   readonly listRefs?: GitWorkflow.GitWorkflowService["Service"]["listRefs"];
-  readonly resolveRemoteTrackingCommitIfExists?: GitWorkflow.GitWorkflowService["Service"]["resolveRemoteTrackingCommitIfExists"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
@@ -155,7 +154,12 @@ function makeHarness(options: HarnessOptions = {}) {
       createWorktree,
       hasCommit: () => Effect.succeed(false),
       renameBranch,
-      fetchRemote: options.fetchRemote ?? (() => Effect.void),
+      resolveWorktreeBaseRemote:
+        options.resolveWorktreeBaseRemote ??
+        (({ refName }) => Effect.succeed({ remoteName: "origin", branchName: refName })),
+      fetchWorktreeBaseCommit:
+        options.fetchWorktreeBaseCommit ??
+        (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
       listRefs:
         options.listRefs ??
         (() =>
@@ -166,14 +170,7 @@ function makeHarness(options: HarnessOptions = {}) {
             nextCursor: null,
             totalCount: 0,
           })),
-      resolveRemoteTrackingCommitIfExists:
-        options.resolveRemoteTrackingCommitIfExists ??
-        (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
-      remoteExists: options.remoteExists ?? (() => Effect.succeed(true)),
-      remoteBranchExists: () => Effect.die("The origin base must use a single commit lookup"),
       removeWorktree,
-      resolveRemoteTrackingCommit: () =>
-        Effect.die("The origin base must use a single commit lookup"),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -187,6 +184,7 @@ function makeHarness(options: HarnessOptions = {}) {
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
         folderForThread: () => Effect.succeed(Option.none()),
       }),
   );
@@ -507,76 +505,32 @@ it.effect("preserves an explicit V2 base without looking up the default", () => 
 });
 
 it.effect.each([
-  {
-    name: "local base",
-    base: "main",
-    refs: [],
-    expectedBranch: "main",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: "main",
-  },
-  {
-    name: "origin base",
-    base: "origin/release",
-    refs: [worktreeBaseRef("origin/release", { isRemote: true, remoteName: "origin" })],
-    expectedBranch: "release",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: "origin/release",
-  },
-  {
-    name: "local origin-prefixed branch",
-    base: "origin/release",
-    refs: [worktreeBaseRef("origin/release")],
-    expectedBranch: "origin/release",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: undefined,
-  },
-  {
-    name: "other remote",
-    base: "upstream/release",
-    refs: [worktreeBaseRef("upstream/release", { isRemote: true, remoteName: "upstream" })],
-    expectedBranch: null,
-    expectedStart: "upstream/release",
-    fetchRef: undefined,
-  },
-  {
-    name: "missing origin branch",
-    base: "local-only",
-    refs: [],
-    expectedBranch: "local-only",
-    expectedStart: "local-only",
-    fetchRef: "local-only",
-  },
+  { name: "local base", base: "main", remoteName: "origin", branchName: "main", missing: false },
+  { name: "origin base", base: "origin/release", remoteName: "origin", branchName: "release", missing: false },
+  { name: "local origin-prefixed branch", base: "origin/release", remoteName: "origin", branchName: "origin/release", missing: false },
+  { name: "other remote", base: "upstream/release", remoteName: "upstream", branchName: "release", missing: false },
+  { name: "missing origin branch", base: "local-only", remoteName: "origin", branchName: "local-only", missing: true },
 ])(
   "pins the fetched V2 worktree base with one lookup for $name",
-  ({ base, refs, expectedBranch, expectedStart, fetchRef }) => {
+  ({ base, remoteName, branchName, missing }) => {
     const operations: string[] = [];
-    const fetchRemote = vi.fn((_: Parameters<NonNullable<HarnessOptions["fetchRemote"]>>[0]) =>
-      Effect.sync(() => {
-        operations.push("fetch");
-      }),
-    );
-    const resolveRemoteTrackingCommitIfExists = vi.fn(
-      (_: Parameters<NonNullable<HarnessOptions["resolveRemoteTrackingCommitIfExists"]>>[0]) =>
+    const resolveWorktreeBaseRemote = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["resolveWorktreeBaseRemote"]>>[0]) =>
         Effect.sync(() => {
           operations.push("resolve");
-          return base === "local-only"
-            ? null
-            : { commitSha: "pinned-origin-sha", remoteRefName: `origin/${expectedBranch}` };
+          return { remoteName, branchName };
         }),
     );
-    const harness = makeHarness({
-      listRefs: () =>
-        Effect.succeed({
-          refs,
-          isRepo: true,
-          hasPrimaryRemote: true,
-          nextCursor: null,
-          totalCount: refs.length,
+    const fetchWorktreeBaseCommit = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["fetchWorktreeBaseCommit"]>>[0]) =>
+        Effect.sync(() => {
+          operations.push("fetch");
+          return missing
+            ? null
+            : { commitSha: "pinned-origin-sha", remoteRefName: `${remoteName}/${branchName}` };
         }),
-      fetchRemote,
-      resolveRemoteTrackingCommitIfExists,
-    });
+    );
+    const harness = makeHarness({ resolveWorktreeBaseRemote, fetchWorktreeBaseCommit });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -595,30 +549,24 @@ it.effect.each([
         ),
         Stream.runHead,
       );
-      assert.deepEqual(operations, expectedBranch === null ? ["fetch"] : ["fetch", "resolve"]);
-      assert.equal(fetchRemote.mock.calls.length, 1);
-      assert.equal(fetchRemote.mock.calls[0]?.[0].refName, fetchRef);
+      assert.deepEqual(operations, ["resolve", "fetch"]);
+      assert.deepEqual(resolveWorktreeBaseRemote.mock.calls, [[{ cwd: "/repo", refName: base }]]);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: base }]]);
+      assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, missing ? base : "pinned-origin-sha");
       assert.equal(
-        resolveRemoteTrackingCommitIfExists.mock.calls.length,
-        expectedBranch === null ? 0 : 1,
+        harness.createWorktree.mock.calls[0]?.[0].baseRefName,
+        missing ? base : `refs/remotes/${remoteName}/${branchName}`,
       );
-      if (expectedBranch !== null)
-        assert.equal(
-          resolveRemoteTrackingCommitIfExists.mock.calls[0]?.[0].branchName,
-          expectedBranch,
-        );
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, expectedStart);
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, base);
     }).pipe(Effect.provide(harness.layer));
   },
 );
 
 it.effect("keeps lookup failures visible without creating a worktree or starting its run", () => {
   const harness = makeHarness({
-    resolveRemoteTrackingCommitIfExists: () =>
+    fetchWorktreeBaseCommit: () =>
       Effect.fail(
         new GitCommandError({
-          operation: "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+          operation: "GitVcsDriver.fetchWorktreeBaseCommit",
           cwd: "/repo",
           command: "git rev-parse",
           detail: "Remote ref lookup failed",
@@ -752,12 +700,13 @@ it.effect.each([
   { caseName: "the origin remote is missing", hasOrigin: false },
   { caseName: "the base branch exists only locally", hasOrigin: true },
 ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) => {
-  const fetchRemote = vi.fn(() => Effect.void);
-  const remoteLookup = vi.fn(() => Effect.succeed(null));
+  const fetchWorktreeBaseCommit = vi.fn(() => Effect.succeed(null));
+  const resolveWorktreeBaseRemote = vi.fn(() =>
+    Effect.succeed(hasOrigin ? { remoteName: "origin", branchName: "main" } : null),
+  );
   const harness = makeHarness({
-    remoteExists: () => Effect.succeed(hasOrigin),
-    fetchRemote,
-    resolveRemoteTrackingCommitIfExists: remoteLookup,
+    resolveWorktreeBaseRemote,
+    fetchWorktreeBaseCommit,
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -780,8 +729,8 @@ it.effect.each([
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),
     );
-    assert.equal(fetchRemote.mock.calls.length, hasOrigin ? 1 : 0);
-    assert.equal(remoteLookup.mock.calls.length, hasOrigin ? 1 : 0);
+    assert.equal(fetchWorktreeBaseCommit.mock.calls.length, hasOrigin ? 1 : 0);
+    assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
     assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "main");
     assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "main");
     assert.equal(
@@ -794,33 +743,18 @@ it.effect.each([
 it.effect(
   "prefers an exact local branch found on a later ref page over an ambiguous origin ref",
   () => {
-    const listRefs = vi.fn((input: Parameters<NonNullable<HarnessOptions["listRefs"]>>[0]) =>
-      Effect.succeed({
-        refs:
-          input.cursor === undefined
-            ? [worktreeBaseRef("origin/release", { isRemote: true, remoteName: "origin" })]
-            : [worktreeBaseRef("origin/release")],
-        isRepo: true,
-        hasPrimaryRemote: true,
-        nextCursor: input.cursor === undefined ? 1 : null,
-        totalCount: 2,
-      }),
+    const listRefs = vi.fn(() => Effect.die("Exact base resolution must not page display refs"));
+    const resolveWorktreeBaseRemote = vi.fn(() =>
+      Effect.succeed({ remoteName: "origin", branchName: "origin/release" }),
     );
-    const remoteLookup = vi.fn(
-      (input: Parameters<NonNullable<HarnessOptions["resolveRemoteTrackingCommitIfExists"]>>[0]) =>
+    const fetchWorktreeBaseCommit = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["fetchWorktreeBaseCommit"]>>[0]) =>
         Effect.succeed({
           commitSha: "local-origin-prefixed-sha",
-          remoteRefName: `origin/${input.branchName}`,
+          remoteRefName: "origin/origin/release",
         }),
     );
-    const fetchRemote = vi.fn(
-      (_: Parameters<NonNullable<HarnessOptions["fetchRemote"]>>[0]) => Effect.void,
-    );
-    const harness = makeHarness({
-      listRefs,
-      resolveRemoteTrackingCommitIfExists: remoteLookup,
-      fetchRemote,
-    });
+    const harness = makeHarness({ listRefs, resolveWorktreeBaseRemote, fetchWorktreeBaseCommit });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -842,15 +776,11 @@ it.effect(
           .getThreadProjection(launched.threadId)
           .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),
       );
-      assert.deepEqual(
-        listRefs.mock.calls.map(([input]) => input.cursor),
-        [undefined, 1],
-      );
-      assert.equal(remoteLookup.mock.calls.length, 1);
-      assert.equal(remoteLookup.mock.calls[0]?.[0].branchName, "origin/release");
-      assert.isUndefined(fetchRemote.mock.calls[0]?.[0].refName);
+      assert.equal(listRefs.mock.calls.length, 0);
+      assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: "origin/release" }]]);
       assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "local-origin-prefixed-sha");
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "origin/release");
+      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "refs/remotes/origin/origin/release");
     }).pipe(Effect.provide(harness.layer));
   },
 );

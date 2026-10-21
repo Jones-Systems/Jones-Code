@@ -101,7 +101,7 @@ describe("orchestration V2 thread fork", () => {
     () =>
       Effect.gen(function* () {
         const rawTranscript = yield* readTranscript(
-          `${import.meta.dirname}/fixtures/thread_fork_native/codex_transcript.ndjson`,
+          `${import.meta.dirname}/../../jones/orchestration/fixtures/thread_fork_native/codex_transcript.ndjson`,
         );
         const cwd = yield* Effect.acquireRelease(makeCheckpointWorkspace, (directory) =>
           Effect.service(FileSystem.FileSystem).pipe(

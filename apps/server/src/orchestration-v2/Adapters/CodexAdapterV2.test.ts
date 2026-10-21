@@ -255,11 +255,19 @@ describe("CodexAdapterV2 runtime policy", () => {
 
       assert.equal(params.collaborationMode?.mode, "default");
       assert.include(
-        params.additionalContext?.t3_code_orchestration?.value ?? "",
+        Object.entries(params.additionalContext ?? {})
+          .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([, entry]) => entry.value)
+          .join("\n"),
         "Use `delegate_task`",
       );
       assert.include(
-        params.additionalContext?.t3_code_orchestration?.value ?? "",
+        Object.entries(params.additionalContext ?? {})
+          .filter(([key]) => key.startsWith("t3_code_orchestration_"))
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([, entry]) => entry.value)
+          .join("\n"),
         "structured object, never as JSON text",
       );
     }),
@@ -412,13 +420,11 @@ describe("CodexAdapterV2 process spawning", () => {
           "tools.update_plan.enabled": true,
           // Codex waits up to 10 s, not 1 s, for MCP servers before the first request (#13437).
           mcp_optional_startup_grace_ms: 10_000,
-          mcp_servers: {
-            "t3-code": {
-              url: "http://127.0.0.1:43123/mcp",
-              tool_timeout_sec: 3_900,
-              http_headers: {
-                Authorization: "Bearer secret-codex-token",
-              },
+          "mcp_servers.t3-code": {
+            url: "http://127.0.0.1:43123/mcp",
+            tool_timeout_sec: 3_900,
+            http_headers: {
+              Authorization: "Bearer secret-codex-token",
             },
           },
         },
@@ -2613,6 +2619,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   it.effect("internal recovery interrupts without reading or pausing the native goal", () =>
     Effect.gen(function* () {
       const harness = yield* makeGoalProtocolHarness("recovery-goal-neutral");
+      yield* harness.fileSystem.writeFileString(harness.goalStatePath, '{"status":"active"}');
       const session = yield* harness.open("first", { goalStatus: "active" });
       const providerTurnId = yield* session.start("first");
       yield* session.runtime.interruptTurn({
@@ -3088,10 +3095,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         driver: CodexAdapterV2.CODEX_DRIVER_KIND,
         nativeTurnId,
       });
-      yield* harness.runtime.interruptTurn({
-        providerThread: harness.providerThread,
-        providerTurnId,
-      });
+      const interrupted = yield* harness.runtime
+        .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(interrupted));
       yield* harness.firstTerminal;
       assert.deepEqual(
         methods,
@@ -3200,7 +3207,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       yield* TestClock.adjust("399 millis");
       assert.deepEqual(methods, ["thread/goal/get", "thread/goal/set"]);
       yield* TestClock.adjust("1 milli");
-      yield* Fiber.join(stopping);
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(stopping)));
       yield* harness.firstTerminal;
       assert.deepEqual(methods, ["thread/goal/get", "thread/goal/set", "turn/interrupt"]);
       assert.isTrue(
@@ -6499,6 +6506,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       type: "emit_inbound" as const,
                       label: "turn/interrupt/failed",
                       frame: { id: 4, error: { code: -32_000, message: "Interrupt failed" } },
+                    },
+                    {
+                      type: "emit_inbound" as const,
+                      label: "turn/completed/after-rejected-stop",
+                      frame: {
+                        method: "turn/completed",
+                        params: {
+                          threadId: nativeThreadId,
+                          turn: {
+                            ...makeCodexReplayTurn({ id: nativeTurnId, status: "interrupted" }),
+                            completedAt: 1782622445,
+                          },
+                        },
+                      },
                     },
                   ]
                 : [

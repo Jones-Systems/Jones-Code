@@ -12089,6 +12089,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           {
             sessionId: WAKE_NATIVE_SESSION,
             options: { dir: "/workspace", upToMessageId: "retirement-cursor-1" },
+            environment: {},
             threadId: ThreadId.make("claude-retirement-target"),
             providerSessionId: ProviderSessionId.make("claude-retirement-session"),
           },
@@ -12338,6 +12339,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             {
               sessionId: WAKE_NATIVE_SESSION,
               options: { dir: "/workspace", upToMessageId: "retirement-cursor-1" },
+              environment: {},
               threadId: ThreadId.make("claude-source-owned-target"),
               providerSessionId: ProviderSessionId.make("claude-retirement-session-target"),
             },
@@ -12526,6 +12528,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.deepEqual(h.forks[1], {
             sessionId: WAKE_NATIVE_SESSION,
             options: { dir: "/workspace", upToMessageId: "retirement-cursor-2" },
+            environment: {},
             threadId: ThreadId.make("claude-other-source-fork"),
             providerSessionId: ProviderSessionId.make("claude-retirement-session-target"),
           });
@@ -14175,11 +14178,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     (arrival) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const crypto = yield* Crypto.Crypto;
-          const digestStarted = yield* Deferred.make<void>();
-          const releaseDigest = yield* Deferred.make<void>();
+          const transcriptReadStarted = yield* Deferred.make<void>();
+          const releaseTranscriptRead = yield* Deferred.make<void>();
           const closeStarted = yield* Deferred.make<void>();
-          let pauseDigest = false;
+          let pauseTranscriptRead = false;
           yield* Effect.gen(function* () {
             const harness = yield* makeWorkflowHarnessWithOptions({
               freshQueueOnReopen: true,
@@ -14280,11 +14282,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             );
             yield* Queue.take(harness.continuationReceipts);
             yield* harness.offerAndWait(wakeTurnInit);
-            pauseDigest = true;
+            pauseTranscriptRead = true;
             const progress = yield* harness
               .offerAndWait(liveProgress("done", "00000000-0000-4000-8000-000000003207"))
               .pipe(Effect.forkScoped);
-            yield* Deferred.await(digestStarted);
+            yield* Deferred.await(transcriptReadStarted);
             const replay = yield* start("attempt-workflow-waiting-replay", 2, true).pipe(
               Effect.forkScoped({ startImmediately: true }),
             );
@@ -14300,7 +14302,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 })
                 .pipe(Effect.forkScoped);
               yield* Deferred.await(closeStarted);
-              yield* Deferred.succeed(releaseDigest, undefined);
+              yield* Deferred.succeed(releaseTranscriptRead, undefined);
               yield* Fiber.join(progress);
               yield* Fiber.join(stop);
               assert.isTrue(Exit.isFailure(yield* Fiber.await(replay)));
@@ -14310,7 +14312,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 .offerAndWait(wakeResult, offered)
                 .pipe(Effect.forkScoped);
               yield* Deferred.await(offered);
-              yield* Deferred.succeed(releaseDigest, undefined);
+              yield* Deferred.succeed(releaseTranscriptRead, undefined);
               yield* Fiber.join(progress);
               yield* Fiber.join(replay);
               yield* Fiber.join(result);
@@ -14319,18 +14321,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }
             yield* start("attempt-workflow-waiting-next-user", 3, false);
           }).pipe(
-            Effect.provideService(Crypto.Crypto, {
-              ...crypto,
-              digest: (algorithm, data) =>
-                Effect.gen(function* () {
-                  if (pauseDigest) {
-                    pauseDigest = false;
-                    yield* Deferred.succeed(digestStarted, undefined);
-                    yield* Deferred.await(releaseDigest);
-                  }
-                  return yield* crypto.digest(algorithm, data);
-                }),
-            }),
+            Effect.provideService(WorkflowAgentTranscriptReadObserver, () =>
+              Effect.gen(function* () {
+                if (pauseTranscriptRead) {
+                  pauseTranscriptRead = false;
+                  yield* Deferred.succeed(transcriptReadStarted, undefined);
+                  yield* Deferred.await(releaseTranscriptRead);
+                }
+              }),
+            ),
           );
         }).pipe(
           Effect.provide(
@@ -14346,7 +14345,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       Effect.scoped(
         Effect.gen(function* () {
           const clock = yield* Clock.Clock;
-          const crypto = yield* Crypto.Crypto;
           const progressRead = yield* Deferred.make<void>();
           const releaseProgress = yield* Deferred.make<void>();
           let pauseNextRead = false;
@@ -14462,18 +14460,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 return yield* clock.currentTimeMillis;
               }),
             }),
-            Effect.provideService(Crypto.Crypto, {
-              ...crypto,
-              digest: (algorithm, data) =>
-                Effect.gen(function* () {
-                  if (boundary === "transcript" && pauseNextRead) {
-                    pauseNextRead = false;
-                    yield* Deferred.succeed(progressRead, undefined);
-                    yield* Deferred.await(releaseProgress);
-                  }
-                  return yield* crypto.digest(algorithm, data);
-                }),
-            }),
+            Effect.provideService(WorkflowAgentTranscriptReadObserver, () =>
+              Effect.gen(function* () {
+                if (boundary === "transcript" && pauseNextRead) {
+                  pauseNextRead = false;
+                  yield* Deferred.succeed(progressRead, undefined);
+                  yield* Deferred.await(releaseProgress);
+                }
+              }),
+            ),
           );
         }).pipe(
           Effect.provide(

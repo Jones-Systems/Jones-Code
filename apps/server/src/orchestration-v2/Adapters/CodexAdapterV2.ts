@@ -6397,6 +6397,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly context: ActiveCodexTurnContext;
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly failureMessage?: string;
+            readonly failureCode?: string | null;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly providerTurn: OrchestrationV2ProviderTurn;
@@ -6406,9 +6407,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (terminalStatus === "failed") {
               const previousFailure = input.context.latestProviderFailure ?? input.providerRetry;
               const failureCode =
-                input.failureErrorInfo === undefined
+                input.failureCode ??
+                (input.failureErrorInfo === undefined
                   ? undefined
-                  : codexErrorInfoCode(input.failureErrorInfo);
+                  : codexErrorInfoCode(input.failureErrorInfo));
               const failureClass = codexUsageLimitError(failureCode ?? null, input.failureErrorInfo)
                 ? "usage_limit"
                 : "provider_error";
@@ -6522,6 +6524,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             readonly nativeTurnId: string;
             readonly status: OrchestrationV2ProviderTurn["status"];
             readonly failureMessage?: string;
+            readonly failureCode?: string | null;
             readonly failureErrorInfo?: CodexErrorInfo;
             readonly providerRetry?: ActiveCodexProviderRetry;
             readonly completedAt: DateTime.Utc;
@@ -6570,9 +6573,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (request !== undefined) releaseCapacityRequest(request);
             // Native subagents run on their own threads, so a failed root leaves
             // them working. Holding the root until they finish would keep the
-            // run open with no turn to steer. Stop interrupts the whole lineage,
-            // so an interrupted root still waits for its descendants to settle.
-            if (event.status === "failed" && hasActiveDescendants) {
+            // run open with no turn to steer. Stop and producer termination settle
+            // the whole lineage, so their roots wait for descendants to settle.
+            if (
+              event.status === "failed" &&
+              input.evidenceKind !== "local_failure" &&
+              hasActiveDescendants
+            ) {
               yield* emitRootTerminal(input.context, { ...event, childTurnsContinue: true });
               return;
             }

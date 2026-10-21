@@ -4630,6 +4630,45 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("prefers an exact local origin-prefixed worktree base over the same-named remote ref", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        yield* initRepoWithCommit(cwd);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "origin", "HEAD:refs/heads/release"]);
+        const ambiguousRemoteHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* writeTextFile(cwd, "local-base.txt", "exact local branch\n");
+        yield* git(cwd, ["add", "local-base.txt"]);
+        yield* git(cwd, ["commit", "-m", "exact local base"]);
+        const localHead = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["branch", "origin/release"]);
+        yield* git(cwd, ["push", "origin", "HEAD:refs/heads/origin/release"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        assert.notEqual(localHead, ambiguousRemoteHead);
+        assert.equal(yield* git(cwd, ["rev-parse", "refs/remotes/origin/release"]), ambiguousRemoteHead);
+        assert.deepEqual(yield* driver.resolveWorktreeBaseRemote({ cwd, refName: "origin/release" }), {
+          remoteName: "origin",
+          branchName: "origin/release",
+        });
+        const fetched = yield* driver.fetchWorktreeBaseCommit({ cwd, refName: "origin/release" });
+        assert.deepEqual(fetched, { commitSha: localHead, remoteRefName: "origin/origin/release" });
+        const path = yield* Path.Path;
+        const worktreePath = path.join(yield* makeTmpDir("git-worktrees-"), "feature");
+        yield* driver.createWorktree({
+          cwd,
+          path: worktreePath,
+          refName: fetched!.commitSha,
+          newRefName: "feature/exact-local-base",
+          baseRefName: `refs/remotes/${fetched!.remoteRefName}`,
+        });
+        assert.equal(yield* git(worktreePath, ["rev-parse", "HEAD"]), localHead);
+        assert.equal(yield* git(cwd, ["rev-parse", "refs/heads/origin/release"]), localHead);
+      }),
+    );
+
     it.effect("does not use a deleted remote worktree base's stale tracking commit", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
