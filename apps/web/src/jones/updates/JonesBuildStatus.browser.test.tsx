@@ -1,7 +1,5 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { JonesBuildStatus } from "./JonesBuildStatus";
@@ -35,39 +33,29 @@ const available = {
   capability: { check: true, download: true, install: true },
 } as unknown as JonesUpdateState;
 
-let container: HTMLDivElement;
-let root: Root;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
-
-async function render(props: Partial<Parameters<typeof JonesBuildStatus>[0]> = {}) {
-  const onRequest = vi.fn();
-  await act(async () => {
-    root.render(
-      <JonesBuildStatus
-        environmentId={environmentId}
-        state={available}
-        freshness="fresh"
-        comparison="different"
-        onRequest={onRequest}
-        {...props}
-      />,
-    );
-  });
-  return onRequest;
+function statusUi(
+  props: Partial<Parameters<typeof JonesBuildStatus>[0]> = {},
+  onRequest = vi.fn(),
+) {
+  return (
+    <JonesBuildStatus
+      environmentId={environmentId}
+      state={available}
+      freshness="fresh"
+      comparison="different"
+      onRequest={onRequest}
+      {...props}
+    />
+  );
 }
-const buttonNamed = (name: string) =>
+async function renderStatus(props: Partial<Parameters<typeof JonesBuildStatus>[0]> = {}) {
+  const onRequest = vi.fn();
+  const screen = await render(statusUi(props, onRequest));
+  return { ...screen, onRequest };
+}
+const buttonNamed = (container: HTMLElement, name: string) =>
   [...container.querySelectorAll("button")].find((node) => node.textContent === name)!;
-const badges = () => [
+const badges = (container: HTMLElement) => [
   ...container.querySelectorAll<HTMLElement>('span[data-slot="tooltip-trigger"]:has(> .sr-only)'),
 ];
 const precedes = (first: Node, second: Node) =>
@@ -75,7 +63,8 @@ const precedes = (first: Node, second: Node) =>
 
 describe("Jones build status", () => {
   it("shows both builds compactly and keeps exact identities one disclosure away", async () => {
-    const onRequest = await render();
+    await using screen = await renderStatus();
+    const { container, onRequest } = screen;
     const text = container.textContent!;
     expect(text).toContain("Installedd994dd4");
     expect(text).toContain("Available0368cbb");
@@ -88,7 +77,7 @@ describe("Jones build status", () => {
       ),
     ).not.toBeNull();
 
-    const details = buttonNamed("Details");
+    const details = buttonNamed(container, "Details");
     expect(details.getAttribute("aria-expanded")).toBe("false");
     await act(async () => details.click());
     expect(details.getAttribute("aria-expanded")).toBe("true");
@@ -100,7 +89,7 @@ describe("Jones build status", () => {
       "Installed: 0.0.45-preview.20261011.38178738344.1 → 0.0.45-preview.20261013.38343490676.1",
     );
 
-    await act(async () => buttonNamed("Download").click());
+    await act(async () => buttonNamed(container, "Download").click());
     expect(onRequest).toHaveBeenCalledWith({
       action: "download",
       input: { artifactId: 1, sourceSha: offeredSha },
@@ -108,30 +97,34 @@ describe("Jones build status", () => {
   });
 
   it("shows colliding build times with seconds and copies the full canonical version", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    await render({
+    using writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    await using screen = await renderStatus({
       state: {
         ...available,
         currentBuildStartedAt: "2026-10-20T21:13:43Z",
         provenance: { ...available.provenance!, buildStartedAt: "2026-10-20T21:13:47Z" },
       },
     });
-    const installed = buttonNamed("1020·1713:43");
+    const { container } = screen;
+    const installed = buttonNamed(container, "1020·1713:43");
     expect(installed).toBeDefined();
-    expect(buttonNamed("1020·1713:47")).toBeDefined();
+    expect(buttonNamed(container, "1020·1713:47")).toBeDefined();
     expect(installed.getAttribute("aria-label")).toContain("Built October 20, 17:13 Eastern");
     await act(async () => installed.click());
     expect(writeText).toHaveBeenCalledWith(available.currentVersion);
-    await act(async () => buttonNamed("Details").click());
+    await act(async () => buttonNamed(container, "Details").click());
     expect(container.textContent).toContain("2026, 17:13:43 EDT");
     expect(container.textContent).toContain("2026, 17:13:47 EDT");
   });
 
   it("places the installed comparison before the arrow, apart from the candidate badge", async () => {
-    const onRequest = await render({ installedComparison: "older", comparison: "matches" });
-    const [installed, offered] = badges();
-    expect(badges()).toHaveLength(2);
+    await using screen = await renderStatus({
+      installedComparison: "older",
+      comparison: "matches",
+    });
+    const { container, onRequest } = screen;
+    const [installed, offered] = badges(container);
+    expect(badges(container)).toHaveLength(2);
     expect(installed!.textContent).toBe("Installed compared with this laptop: Older");
     expect(offered!.textContent).toBe("Available compared with this laptop: Matches laptop");
     const installedVersion = container.querySelector(
@@ -146,7 +139,7 @@ describe("Jones build status", () => {
     expect(precedes(arrow, offeredVersion)).toBe(true);
     expect(precedes(offeredVersion, offered!)).toBe(true);
 
-    await act(async () => buttonNamed("Details").click());
+    await act(async () => buttonNamed(container, "Details").click());
     const opened = container.textContent!;
     expect(opened).toContain(
       "Installed vs this laptopInstalled from an older source commit than this laptop.",
@@ -155,7 +148,7 @@ describe("Jones build status", () => {
       "Available vs this laptopBuilt from the source commit installed on this laptop.",
     );
 
-    await act(async () => buttonNamed("Download").click());
+    await act(async () => buttonNamed(container, "Download").click());
     expect(onRequest).toHaveBeenCalledWith({
       action: "download",
       input: { artifactId: 1, sourceSha: offeredSha },
@@ -171,25 +164,30 @@ describe("Jones build status", () => {
       ["diverged", "Diverged", "warning"],
     ] as const;
     for (const [installedComparison, label, tone] of expected) {
-      await render({ installedComparison, comparison: null });
-      expect(badges()).toHaveLength(1);
-      expect(badges()[0]!.textContent).toBe(`Installed compared with this laptop: ${label}`);
-      expect(badges()[0]!.className).toContain(`text-${tone}-foreground`);
+      await using screen = await renderStatus({ installedComparison, comparison: null });
+      const { container } = screen;
+      expect(badges(container)).toHaveLength(1);
+      expect(badges(container)[0]!.textContent).toBe(`Installed compared with this laptop: ${label}`);
+      expect(badges(container)[0]!.className).toContain(`text-${tone}-foreground`);
     }
   });
 
   it("explains an uncompared installed source in Details without a badge", async () => {
-    await render({ installedComparison: "unavailable", comparison: "different" });
-    expect(badges().map((badge) => badge.textContent)).toEqual([
+    await using screen = await renderStatus({
+      installedComparison: "unavailable",
+      comparison: "different",
+    });
+    const { container } = screen;
+    expect(badges(container).map((badge) => badge.textContent)).toEqual([
       "Available compared with this laptop: Different source",
     ]);
-    await act(async () => buttonNamed("Details").click());
+    await act(async () => buttonNamed(container, "Details").click());
     expect(container.textContent).toContain(
       "Installed vs this laptopNot compared. Comparing needs the full installed source commit of both this host and this laptop.",
     );
 
-    await render({ comparison: null });
-    expect(badges()).toHaveLength(0);
+    await screen.rerender(statusUi({ comparison: null }));
+    expect(badges(container)).toHaveLength(0);
     expect(container.textContent).not.toContain("vs this laptop");
   });
 
@@ -199,18 +197,19 @@ describe("Jones build status", () => {
       phase: "staged",
       stagedHandle: "staged-synthetic",
     } as unknown as JonesUpdateState;
-    const onRequest = await render({
+    await using screen = await renderStatus({
       state: staged,
       installedComparison: "newer",
       comparison: "different",
     });
-    expect(badges().map((badge) => badge.textContent)).toEqual([
+    const { container, onRequest } = screen;
+    expect(badges(container).map((badge) => badge.textContent)).toEqual([
       "Installed compared with this laptop: Newer",
       "Downloaded compared with this laptop: Different source",
     ]);
-    await act(async () => buttonNamed("Details").click());
+    await act(async () => buttonNamed(container, "Details").click());
     expect(container.textContent).toContain("Downloaded vs this laptopBuilt from a different");
-    await act(async () => buttonNamed("Install").click());
+    await act(async () => buttonNamed(container, "Install").click());
     expect(onRequest).toHaveBeenCalledWith({
       action: "install",
       input: {
@@ -220,20 +219,22 @@ describe("Jones build status", () => {
       },
     });
 
-    await render({
-      state: staged,
-      freshness: "stale",
-      freshnessMessage: "Update status is temporarily unavailable; retrying.",
-      installedComparison: "unavailable",
-      comparison: "unavailable",
-    });
-    expect(badges()).toHaveLength(0);
+    await screen.rerender(
+      statusUi({
+        state: staged,
+        freshness: "stale",
+        freshnessMessage: "Update status is temporarily unavailable; retrying.",
+        installedComparison: "unavailable",
+        comparison: "unavailable",
+      }),
+    );
+    expect(badges(container)).toHaveLength(0);
     expect(container.textContent).toContain("Update status is temporarily unavailable; retrying.");
-    expect(buttonNamed("Install").disabled).toBe(true);
+    expect(buttonNamed(container, "Install").disabled).toBe(true);
   });
 
   it("keeps a failed install outcome and stale status visible without opening details", async () => {
-    await render({
+    await using screen = await renderStatus({
       state: {
         ...available,
         outcome: { ...available.outcome!, status: "rolled-back", reason: "health check failed" },
@@ -241,23 +242,27 @@ describe("Jones build status", () => {
       freshness: "stale",
       freshnessMessage: "Update status is temporarily unavailable; retrying.",
     });
+    const { container } = screen;
     const text = container.textContent!;
     expect(text).toContain(
       "Rolled back: 0.0.45-preview.20261011.38178738344.1 → 0.0.45-preview.20261013.38343490676.1 · health check failed",
     );
     expect(text).toContain("Update status is temporarily unavailable; retrying.");
-    expect(buttonNamed("Download").disabled).toBe(true);
-    expect(buttonNamed("Check").disabled).toBe(true);
+    expect(buttonNamed(container, "Download").disabled).toBe(true);
+    expect(buttonNamed(container, "Check").disabled).toBe(true);
   });
 
   it("renders nothing for an unsupported host and only the status while a host is unreachable", async () => {
-    await render({ state: null, freshness: "unsupported" });
+    await using screen = await renderStatus({ state: null, freshness: "unsupported" });
+    const { container } = screen;
     expect(container.textContent).toBe("");
-    await render({
-      state: null,
-      freshness: "stale",
-      freshnessMessage: "Update status is waiting for a connection.",
-    });
+    await screen.rerender(
+      statusUi({
+        state: null,
+        freshness: "stale",
+        freshnessMessage: "Update status is waiting for a connection.",
+      }),
+    );
     expect(container.textContent).toBe("Update status is waiting for a connection.");
   });
 });

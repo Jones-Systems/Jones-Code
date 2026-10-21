@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
+import { act, render } from "../../../test/render";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { SidebarEnvironmentFilters } from "./SidebarEnvironmentFilters";
 import { SIDEBAR_ENVIRONMENT_FILTERS } from "./model";
 
@@ -16,22 +15,10 @@ vi.mock("@effect/atom-react", () => ({
   useAtom: () =>
     useState(Object.fromEntries(SIDEBAR_ENVIRONMENT_FILTERS.map((label) => [label, true]))),
 }));
-let container: HTMLDivElement;
-let root: Root;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
 describe("sidebar running build", () => {
   it("keeps the source fallback and exact identity available while changing a filter", async () => {
-    await act(async () => root.render(<SidebarEnvironmentFilters />));
+    await using screen = await render(<SidebarEnvironmentFilters />);
+    const { container } = screen;
     const note = container.querySelector('[role="note"]')!;
     expect(note.textContent).toBe("abcdef0");
     expect(note.getAttribute("aria-label")).toContain("Build time not recorded");
