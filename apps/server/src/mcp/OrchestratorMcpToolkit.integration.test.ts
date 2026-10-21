@@ -89,7 +89,6 @@ import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import { delegatedTaskRun, hasPendingChildRuns } from "./OrchestratorMcpService.ts";
 
-
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),
@@ -494,7 +493,8 @@ const waitForProjection = Effect.fn("test.waitForProjection")(function* (
     Stream.runHead,
   );
   return yield* Option.match(observed, {
-    onNone: () => Effect.die(new Error(`Projection stream ended before the milestone for ${threadId}.`)),
+    onNone: () =>
+      Effect.die(new Error(`Projection stream ended before the milestone for ${threadId}.`)),
     onSome: Effect.succeed,
   });
 });
@@ -1010,14 +1010,16 @@ describe("orchestrator MCP toolkit", () => {
           const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
           // Initialize the epoch before building layers or registering worker sleeps.
           yield* TestClock.setTime(acceptedAt);
-          const testClock = yield* Clock.Clock;
+          const testClock = yield* TestClock.testClockWith(Effect.succeed);
           const wallTimeOffset = yield* Ref.make(0);
-          const fixtureClock: Clock.Clock = {
+          const fixtureClock: TestClock.TestClock = {
+            ...testClock,
             currentTimeMillisUnsafe: () =>
               testClock.currentTimeMillisUnsafe() + Ref.getUnsafe(wallTimeOffset),
             currentTimeMillis: Effect.sync(() => fixtureClock.currentTimeMillisUnsafe()),
             currentTimeNanosUnsafe: () =>
-              testClock.currentTimeNanosUnsafe() + BigInt(Ref.getUnsafe(wallTimeOffset)) * 1_000_000n,
+              testClock.currentTimeNanosUnsafe() +
+              BigInt(Ref.getUnsafe(wallTimeOffset)) * 1_000_000n,
             currentTimeNanos: Effect.sync(() => fixtureClock.currentTimeNanosUnsafe()),
             monotonicTimeNanosUnsafe: () => testClock.monotonicTimeNanosUnsafe(),
             monotonicTimeNanos: testClock.monotonicTimeNanos,
@@ -4330,13 +4332,8 @@ describe("orchestrator MCP toolkit", () => {
                 thirdFanoutDelivery.messageId,
               ]),
             );
-          }).pipe(
-            Effect.provide(layerTest),
-            Effect.provideService(Clock.Clock, fixtureClock),
-          );
+          }).pipe(Effect.provide(layerTest), Effect.provideService(Clock.Clock, fixtureClock));
         }),
       ),
   );
-
-
 });
