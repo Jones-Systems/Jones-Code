@@ -4,6 +4,7 @@ import { receiveProviderAuthCallback, cancelProviderAuthCallback } from "./metho
 import * as DesktopIpc from "./DesktopIpc.ts";
 import * as CompanionIpc from "../jones/previewCompanion/ipcMethods.ts";
 import { openDeviceMediaTunnel, closeDeviceMediaTunnel } from "../jones/deviceMedia/ipcMethods.ts";
+import * as JonesUpdatesIpc from "../jones/updates/ipcMethods.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
 import {
@@ -170,6 +171,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(setUpdateChannel);
   yield* ipc.handle(downloadUpdate);
   yield* ipc.handle(discardUpdate);
+  yield* ipc.handle(JonesUpdatesIpc.setBackgroundPreparation);
   yield* ipc.handle(fleetUpdates);
   yield* ipc.handle(installUpdate);
   yield* ipc.handle(checkForUpdate);

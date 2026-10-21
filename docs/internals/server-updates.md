@@ -209,6 +209,27 @@ a job directory only when its owner lock is free, and it also removes unpublishe
 Actions attempts and abandoned `.jones-stage-*` runtime copies. It keeps only the
 two newest completed downloads, so failing candidates do not accumulate.
 
+## Desktop background preparation
+
+The desktop can prepare its own stage while the user works. The opt-in lives in a
+Jones-owned file beside the desktop settings, whose writer drops unknown keys, and
+is off by default. Preparation only stages: Install remains a renderer action, so a
+background download starts no fleet campaign, and a claimed install pins its stage
+until commit or rollback. Downloads, startup artifact validation and payload removal
+run one at a time in a forked low-priority process group. Main trusts its reply only
+after binding it to the on-disk receipts. Niceness lowers scheduling priority; it is
+not a CPU cap.
+
+A newer build replaces an unaccepted stage only through the helper's validated
+discard. Unlike a host retirement, a desktop discard writes no launcher revocation
+receipt, so the 4,096-receipt limit does not bound it; disk does. The replaced
+handle is recorded before the discard. After a proven discard, the worker removes
+that handle's payload unless any selection, attempt, transaction or retired
+preparation names it, and it removes the completion index before the tree. Two
+unremoved handles pause replacement with a visible reason while the prepared build
+stays installable. A hard kill can leave an unindexed attempt that nothing reuses or
+sweeps.
+
 ## Recovering interrupted threads
 
 Restart continuation is an environment-owned preference, on by default. A

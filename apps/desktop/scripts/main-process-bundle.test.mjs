@@ -18,10 +18,12 @@ it("keeps lazy Linux imports and worker bundles from executing desktop startup t
       "src/snapShot/GlobalShiftShortcutWorker.ts",
       "src/snapShot/RegionSnapShotWorker.ts",
       "src/snapShot/SnapShotAccessibilityWorker.ts",
+      "src/jones/updates/jonesStagingWorker.ts",
     ];
     await Promise.all([
       NodeFSP.mkdir(NodePath.join(directory, "src/electron"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/snapShot"), { recursive: true }),
+      NodeFSP.mkdir(NodePath.join(directory, "src/jones/updates"), { recursive: true }),
     ]);
     await Promise.all([
       NodeFSP.writeFile(
@@ -41,7 +43,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
       ...workerEntries.map((entry) =>
         NodeFSP.writeFile(
           NodePath.join(directory, entry),
-          'import { shared } from "../shared.ts"; process.emit("worker", shared.value);',
+          `import { shared } from "${NodePath.posix.relative(NodePath.posix.dirname(entry), "src/shared.ts")}"; process.emit("worker", shared.value);`,
         ),
       ),
     ]);
@@ -107,7 +109,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(workers, [42, 42, 42, 42]);
+    assert.deepEqual(workers, [42, 42, 42, 42, 42]);
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });

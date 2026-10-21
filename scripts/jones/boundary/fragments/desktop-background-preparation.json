@@ -1,0 +1,45 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "desktop-background-preparation",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/updates/backgroundPreparation.test.ts",
+    "apps/desktop/src/jones/updates/backgroundPreparation.ts",
+    "apps/desktop/src/jones/updates/backgroundPreparationPolicy.test.ts",
+    "apps/desktop/src/jones/updates/backgroundPreparationPolicy.ts",
+    "apps/desktop/src/jones/updates/desktopPreparationRuntime.ts",
+    "apps/desktop/src/jones/updates/ipcChannels.ts",
+    "apps/desktop/src/jones/updates/ipcMethods.ts",
+    "apps/desktop/src/jones/updates/jonesStagingWorker.ts",
+    "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+    "apps/desktop/src/jones/updates/stagingJobs.ts",
+    "apps/desktop/src/jones/updates/stagingWorkerClient.test.ts",
+    "apps/desktop/src/jones/updates/stagingWorkerClient.ts",
+    "apps/desktop/src/jones/updates/stagingWorkerProtocol.ts",
+    "apps/web/src/jones/updates/DesktopBackgroundPreparation.test.tsx",
+    "apps/web/src/jones/updates/DesktopBackgroundPreparation.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+      "to": "apps/desktop/src/jones/updates/ipcMethods.ts"
+    },
+    {
+      "from": "apps/desktop/src/preload.ts",
+      "to": "apps/desktop/src/jones/updates/ipcChannels.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/desktopPreparationRuntime.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SettingsPanels.tsx",
+      "to": "apps/web/src/jones/updates/DesktopBackgroundPreparation.tsx"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/desktopPreparation.ts"
+    }
+  ]
+}
