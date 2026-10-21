@@ -20,7 +20,14 @@ import {
   SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
+import {
+  sanitizeThreadTitle,
+  toJsonSchemaObject,
+} from "@t3tools/provider-core/server/textGenerationUtils";
+import {
+  fromRunner,
+  decodeJsonReply,
+} from "@t3tools/provider-core/server/textGenerationOperations";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -586,5 +593,81 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           expect(generated.title).toBe("New thread");
         }),
     ),
+  );
+});
+
+const decodeCapturedArgs = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
+it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) => {
+  it.effect.each([
+    { verdict: "pass", category: "none", reason: "Bounded work.", valid: true },
+    { verdict: "hold", category: "risky", reason: "Needs owner input.", valid: true },
+    { verdict: "pass", category: "risky", reason: "Mismatched result.", valid: false },
+    { verdict: "hold", category: "none", reason: "Mismatched result.", valid: false },
+    { verdict: "pass", category: "none", reason: "  ", valid: false },
+  ])("sends an object-root schema and validates the result (case %#)", ({ valid, ...reply }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluator-schema-" });
+      const argvPath = path.join(tempDir, "argv.json");
+      const binaryPath = writeFakeCli({
+        directory: tempDir,
+        name: "claude-evaluator",
+        platform,
+        source: [
+          'import { writeFileSync } from "node:fs";',
+          `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));`,
+          `process.stdout.write(${JSON.stringify(JSON.stringify({ structured_output: reply }))});`,
+        ].join("\n"),
+      });
+      const generation = yield* makeClaudeTextGeneration(
+        decodeClaudeSettings({ binaryPath, homePath: tempDir }),
+        { PATH: process.env.PATH },
+        Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
+      );
+      const input = {
+        cwd: tempDir,
+        message: "Fix the parser",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_STANDARD_MODEL,
+        ),
+      };
+      const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
+      const args = yield* decodeCapturedArgs(yield* fs.readFileString(argvPath));
+      const argument = (flag: string) => {
+        const index = args.indexOf(flag);
+        expect(index).toBeGreaterThanOrEqual(0);
+        return args[index + 1];
+      };
+      const schema = JSON.parse(argument("--json-schema")!);
+      expect(schema.type).toBe("object");
+      const { type: _type, ...constraints } = schema;
+      const baseline = fromRunner(
+        "Schema baseline",
+        (request) => {
+          expect(constraints).toEqual(toJsonSchemaObject(request.outputSchema));
+          return decodeJsonReply(request, "Synthetic", JSON.stringify(reply));
+        },
+        { remoteRequestEvaluation: "tool-less" },
+      );
+      yield* baseline.evaluateRemoteRequest(input).pipe(Effect.result);
+      expect(schema.anyOf).toHaveLength(2);
+      expect(argument("--tools")).toBe("");
+      expect(argument("--disallowedTools")).toBe("mcp__*");
+      expect(argument("--permission-mode")).toBe("dontAsk");
+      expect(JSON.parse(argument("--settings")!)).toMatchObject({ disableAllHooks: true });
+      expect(Result.isSuccess(result)).toBe(valid);
+      if (Result.isSuccess(result)) {
+        expect(result.success).toEqual(reply);
+      } else {
+        expect(result.failure.operation).toBe("evaluateRemoteRequest");
+        expect(result.failure.detail).toContain("invalid structured output");
+      }
+    }).pipe(Effect.scoped),
   );
 });
