@@ -22,6 +22,7 @@ export function SettlementNotificationCoordinator() {
   }, [navigate]);
   const toastId = useRef<string | null>(null);
   const generation = useRef(0);
+  const collapsedIds = useRef(new Set<string>());
 
   useEffect(() => {
     const currentGeneration = ++generation.current;
@@ -29,6 +30,10 @@ export function SettlementNotificationCoordinator() {
     const reconcile = () => {
       if (!active) return;
       const { visible } = controller.getSnapshot();
+      const visibleIds = new Set(visible.map((entry) => entry.id));
+      for (const id of collapsedIds.current) {
+        if (!visibleIds.has(id)) collapsedIds.current.delete(id);
+      }
       if (visible.length === 0) {
         const id = toastId.current;
         toastId.current = null;
@@ -39,6 +44,12 @@ export function SettlementNotificationCoordinator() {
       const content = (
         <SettlementNotificationToastContent
           entries={visible}
+          collapsedIds={collapsedIds.current}
+          onCollapsedChange={(ids) => {
+            // Retained toast content seeds from this same Set when its panel remounts.
+            collapsedIds.current.clear();
+            for (const id of ids) collapsedIds.current.add(id);
+          }}
           onOpen={(entry) => {
             void navigateRef.current({
               to: "/$environmentId/$threadId",
@@ -57,6 +68,7 @@ export function SettlementNotificationCoordinator() {
           onClose: () => controller.dismiss(shownIds),
           expandableContent: visible.length > 1 ? content : undefined,
           expandableDescriptionTrigger: true,
+          expandableFitWidth: visible.length > 1,
           expandableLabels: { expand: "Show settled threads", collapse: "Hide settled threads" },
         },
       };
