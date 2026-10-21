@@ -80,6 +80,7 @@ import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EffectWorker from "./EffectWorker.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadLaunch from "./ThreadLaunchService.ts";
@@ -877,6 +878,22 @@ it.layer(NodeServices.layer, { excludeTestServices: true })(
             );
             assert.isEmpty(process.kills);
             return;
+          }
+          // This harness parks its worker. Complete the empty-resource ancillary
+          // cleanup through that worker before testing the same D receipt replay.
+          const ancillary = (yield* layerOutbox.listByCommandId(dId)).filter(
+            (effect) => effect.status === "pending",
+          );
+          assert.deepEqual(
+            ancillary.map((effect) => effect.request.type).sort(),
+            ["preview.cleanup", "scheduled-tasks.cleanup"],
+          );
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          assert.equal(yield* worker.drain(ancillary.length), ancillary.length);
+          for (const effect of ancillary) {
+            const completed = yield* layerOutbox.get(effect.id);
+            assert.isTrue(Option.isSome(completed));
+            if (Option.isSome(completed)) assert.equal(completed.value.status, "succeeded");
           }
           const replay = yield* layerLaunch.launch(input).pipe(Effect.result);
           assert.equal(replay._tag, "Failure");

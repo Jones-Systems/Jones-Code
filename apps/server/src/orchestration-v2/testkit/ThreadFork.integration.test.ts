@@ -109,8 +109,12 @@ describe("orchestration V2 thread fork", () => {
             Effect.orDie,
           ),
         );
+        assert.equal(rawTranscript.entries.at(-1)?.type, "runtime_exit");
+        // Observe the live fork bindings before scope cleanup. Native process exit
+        // correctly abandons both runtime generations and is not this scenario's boundary.
+        const liveTranscript = { ...rawTranscript, entries: rawTranscript.entries.slice(0, -1) };
         const transcript = yield* CodexOrchestratorReplayHarness.decodeTranscript(
-          materializeReplayTranscriptWorkspace(rawTranscript, cwd),
+          materializeReplayTranscriptWorkspace(liveTranscript, cwd),
         );
 
         const materialized = yield* Effect.gen(function* () {
