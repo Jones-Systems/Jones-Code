@@ -5,6 +5,12 @@ import { type ChatAttachment, type ModelSelection, TextGenerationError } from "@
 import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
+import {
+  buildRemoteRequestEvaluationPrompt,
+  remoteRequestEvaluationUnsupported,
+} from "./jones/remoteRequestEvaluation.ts";
+export { remoteRequestEvaluationUnsupported } from "./jones/remoteRequestEvaluation.ts";
+
 import type { ProviderTextGeneration } from "./textGeneration.ts";
 import {
   buildBranchNamePrompt,
@@ -73,7 +79,27 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
-export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
+export function fromRunner(
+  name: string,
+  run: Runner,
+  /** Opt in only when the runner disables task tools, including MCP and browsing. */
+  capabilities?: { readonly remoteRequestEvaluation: "tool-less" },
+): ProviderTextGeneration {
+  const evaluateRemoteRequest: ProviderTextGeneration["evaluateRemoteRequest"] = Effect.fn(
+    `${name}.evaluateRemoteRequest`,
+  )(function* (input) {
+    if (capabilities?.remoteRequestEvaluation !== "tool-less") {
+      return yield* remoteRequestEvaluationUnsupported(name);
+    }
+    const prompt = yield* buildRemoteRequestEvaluationPrompt(input);
+    return yield* run({
+      operation: "evaluateRemoteRequest",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...prompt,
+    });
+  });
+
   const generateCommitMessage: ProviderTextGeneration["generateCommitMessage"] = Effect.fn(
     `${name}.generateCommitMessage`,
   )(function* (input) {
@@ -169,6 +195,7 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
   });
 
   return {
+    evaluateRemoteRequest,
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

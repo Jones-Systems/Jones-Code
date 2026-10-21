@@ -74,6 +74,7 @@ import * as ProviderReplayHarness from "../testkit/ProviderReplayHarness.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+import { CODEX_START_ACK_TIMEOUT_MS } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import {
   makeReplayServerConfig,
   makeCodexReplayClientFactory,
@@ -4059,6 +4060,276 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect(
+    "binds a 149-second start acknowledgement and admits its queued sibling without replay",
+    () =>
+      Effect.gen(function* () {
+        const nativeThreadId = "delayed-start";
+        const nativeTurnId = "delayed-original-turn";
+        const replyScheduled = yield* Deferred.make<void>();
+        const entries = capacityPreamble(nativeThreadId, nativeTurnId).map((entry) =>
+          entry.type === "emit_inbound" && entry.label === "turn/start"
+            ? { ...entry, afterMs: 149_000 }
+            : entry,
+        );
+        entries.push(
+          capacityCompletionEntry(nativeThreadId, nativeTurnId, "completed"),
+          ...capacityPreamble("queued-sibling", "sibling-turn")
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, 4)),
+          ...capacityPreamble("queued-sibling", "sibling-turn")
+            .slice(5)
+            .map((entry) => withReplayRequestId(entry, 5)),
+          capacityCompletionEntry("queued-sibling", "sibling-turn", "completed"),
+        );
+        const transcript = makeCodexReplayTranscript({ scenario: nativeThreadId, entries });
+        let sends = 0;
+        const driver = yield* CodexReplay.makeReplayDriver(transcript, {
+          beforeEmitInbound: (entry) =>
+            entry.label === "turn/start"
+              ? Deferred.succeed(replyScheduled, undefined).pipe(Effect.asVoid)
+              : Effect.void,
+        });
+        const factory = makeCodexReplayClientFactory({ transcript, driver });
+        const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
+          replayClientFactory: {
+            open: (input) =>
+              factory.open(input).pipe(
+                Effect.map((client) => ({
+                  ...client,
+                  request: (method, params) =>
+                    Effect.sync(() => {
+                      if (method === "turn/start") sends++;
+                    }).pipe(Effect.andThen(client.request(method, params))),
+                })),
+              ),
+          },
+        });
+        const attemptId = RunAttemptId.make("delayed-original-attempt");
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId,
+              text: "Work",
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(replyScheduled);
+        const sibling = yield* harness.runtime
+          .ensureThread({
+            threadId: ThreadId.make("queued-sibling"),
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* TestClock.adjust("148 seconds");
+        assert.isUndefined(
+          start.pollUnsafe(),
+          "the original attempt must still await its acknowledgement",
+        );
+        assert.isUndefined(
+          sibling.pollUnsafe(),
+          "the sibling must queue behind the original start",
+        );
+        assert.equal(sends, 1);
+        assert.lengthOf(harness.terminalEvents(), 0);
+        yield* TestClock.adjust("1 second");
+        assert.equal((yield* Fiber.join(start))._tag, "Success");
+        const siblingResult = yield* Fiber.join(sibling);
+        assert.equal(siblingResult._tag, "Success");
+        if (siblingResult._tag !== "Success") return;
+        yield* harness.firstTerminal;
+        const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          nativeTurnId,
+        });
+        assert.equal(harness.terminalEvents()[0]?.providerTurnId, providerTurnId);
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.isTrue(
+          harness.events.some(
+            (event) =>
+              event.type === "provider_turn.updated" &&
+              event.providerTurn.id === providerTurnId &&
+              event.providerTurn.runAttemptId === attemptId,
+          ),
+        );
+        assert.equal(sends, 1, "the original prompt is sent exactly once");
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: ThreadId.make("queued-sibling"),
+            providerThread: siblingResult.success,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("queued-sibling-attempt"),
+            text: "Work",
+          }),
+        );
+        yield* awaitUntil(() => harness.terminalEvents().length === 2, "queued sibling completion");
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed", "completed"],
+        );
+        assert.equal(sends, 2, "one native start per prompt");
+        assert.deepEqual(yield* Ref.get(driver.state), {
+          cursor: transcript.entries.length,
+          failure: null,
+        });
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect.each(["caller", "stop"] as const)(
+    "ends a pending start on %s cancellation and reconciles the original late reply without replay",
+    (cancellation) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `cancel-pending-${cancellation}`;
+        const nativeTurnId = "cancelled-native-turn";
+        const sent = yield* Deferred.make<void>();
+        let sends = 0;
+        let complete: ((payload: unknown) => Effect.Effect<unknown>) | undefined;
+        const entries = capacityPreamble(nativeThreadId, nativeTurnId).map((entry) =>
+          entry.type === "emit_inbound" && entry.label === "turn/start"
+            ? { ...entry, afterMs: 149_000 }
+            : entry,
+        );
+        entries.push(
+          ...capacityPreamble("after-cancel-sibling", "unused")
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, 4)),
+        );
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({ scenario: nativeThreadId, entries }),
+          undefined,
+          (method) =>
+            method === "turn/start"
+              ? Effect.sync(() => {
+                  sends++;
+                }).pipe(Effect.andThen(Deferred.succeed(sent, undefined)))
+              : Effect.void,
+          undefined,
+          {
+            onNotification: (method, handler) => {
+              if (method === "turn/completed") complete = handler;
+            },
+          },
+        );
+        const start = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`cancel-${cancellation}`),
+              text: "Work",
+            }),
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(sent);
+        yield* TestClock.adjust("148 seconds");
+        assert.isUndefined(start.pollUnsafe());
+        if (cancellation === "caller") yield* Fiber.interrupt(start);
+        else
+          yield* harness.runtime.interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: ProviderTurnId.make("not-yet-acknowledged"),
+            requestRuntimeRestart: true,
+          });
+        yield* TestClock.adjust(0);
+        assert.isDefined(
+          start.pollUnsafe(),
+          "cancellation must end the caller before the start ceiling",
+        );
+        if (cancellation === "caller") assert.equal((yield* Fiber.await(start))._tag, "Failure");
+        else assert.equal((yield* Fiber.join(start))._tag, "Failure");
+        const sibling = () =>
+          harness.runtime
+            .ensureThread({
+              threadId: ThreadId.make("after-cancel-sibling"),
+              modelSelection: CODEX_TEST_MODEL_SELECTION,
+              runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            })
+            .pipe(Effect.result);
+        assert.equal(
+          (yield* sibling())._tag,
+          "Failure",
+          "unconfirmed native work retains the hold",
+        );
+        yield* TestClock.adjust("1 second");
+        assert.equal(
+          (yield* sibling())._tag,
+          "Failure",
+          "acknowledgement alone cannot release the hold",
+        );
+        yield* complete!({
+          threadId: nativeThreadId,
+          turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+        });
+        assert.equal((yield* sibling())._tag, "Success");
+        assert.equal(sends, 1);
+        assert.lengthOf(
+          harness.terminalEvents(),
+          0,
+          "late completion must not revive the cancelled attempt",
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+  );
+
+  it.effect("fails an unacknowledged start promptly when its producer terminates", () =>
+    Effect.gen(function* () {
+      let sends = 0;
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "pending-start-producer-exit",
+          entries: [
+            ...capacityPreamble("pending-start-producer-exit", "unused").slice(0, 6),
+            { type: "runtime_exit", status: "success" },
+          ],
+        }),
+        undefined,
+        (method) =>
+          Effect.sync(() => {
+            if (method === "turn/start") sends++;
+          }),
+      );
+      const start = yield* harness.runtime
+        .startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("producer-exit-pending"),
+            text: "Work",
+          }),
+        )
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* harness.eventsEnded;
+      yield* TestClock.adjust(0);
+      assert.isDefined(
+        start.pollUnsafe(),
+        "producer exit must fail the pending RPC without waiting for the ceiling",
+      );
+      assert.equal((yield* Fiber.join(start))._tag, "Failure");
+      assert.equal(sends, 1);
+      assert.lengthOf(harness.terminalEvents(), 0, "no native turn was acknowledged");
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each(["ack-first", "completion-first"] as const)(
     "recovers sibling admission after a late start acknowledgement and completion (%s)",
     (order) =>
@@ -4070,7 +4341,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         let complete: ((payload: unknown) => Effect.Effect<unknown>) | undefined;
         const entries = capacityPreamble(nativeThreadId, nativeTurnId).map((entry) =>
           entry.type === "emit_inbound" && entry.label === "turn/start"
-            ? { ...entry, afterMs: 31_000 }
+            ? { ...entry, afterMs: CODEX_START_ACK_TIMEOUT_MS + 1_000 }
             : entry,
         );
         entries.push(
@@ -4142,7 +4413,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           )
           .pipe(Effect.result, Effect.forkScoped);
         yield* Deferred.await(sent);
-        yield* TestClock.adjust("30 seconds");
+        yield* TestClock.adjust(CODEX_START_ACK_TIMEOUT_MS);
         assert.equal((yield* Fiber.join(start))._tag, "Failure");
         assert.equal((yield* newSibling().pipe(Effect.result))._tag, "Failure");
         assert.equal((yield* resumeSibling().pipe(Effect.result))._tag, "Failure");
@@ -4282,7 +4553,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               usageBreakdown(1000, 400, 200),
             ),
             // Delivering the reply on a clock wake lets the test clock settle everything it
-            // causes before it reaches the 30-second start timeout, provided the reader is free.
+            // causes before the assertion deadline, provided the reader is free.
             ...freshTurn
               .slice(6, 7)
               .map((entry) => withReplayRequestId(entry, 4))

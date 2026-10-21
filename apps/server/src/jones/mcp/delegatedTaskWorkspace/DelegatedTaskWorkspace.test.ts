@@ -33,6 +33,7 @@ import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
@@ -432,6 +433,7 @@ function makeHarness(
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
+      listPage: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
@@ -532,6 +534,7 @@ function makeHarness(
     ),
     Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   );
   return {
     layer: Layer.merge(base, service),
@@ -718,6 +721,8 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
           clientRequestId: "hq-t1",
         };
         const delegated = yield* service.delegateTask(scope, input);
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
 
         // Separate provider session and thread, linked to the caller as its subagent.
@@ -795,6 +800,8 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
           },
           clientRequestId: "hq-t2",
         });
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
         assert.deepEqual(harness.listWorktrees.mock.calls, [["/repo"]]);
         assert.equal(harness.createWorktree.mock.calls.length, 0);
@@ -881,6 +888,8 @@ describe("cross-project delegate_task", () => {
           clientRequestId: "hq-cross-t1",
         };
         const delegated = yield* service.delegateTask(scope, input);
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
 
         // Admission and setup use the target project, not the caller's.
@@ -1130,6 +1139,8 @@ describe("delegated existing-worktree setup", () => {
           clientRequestId: "sync-setup",
           ...request,
         });
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
         yield* assertHeldInSetup(harness, delegated.childThreadId);
 
@@ -1154,6 +1165,8 @@ describe("delegated existing-worktree setup", () => {
         clientRequestId: "async-setup",
         workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/lane" },
       });
+      if (delegated.childThreadId === null)
+        return yield* Effect.die("Local delegation must return a child thread");
       // The async setup is never allowed to finish, yet the agent is released.
       yield* awaitReleased(delegated.childThreadId);
       assert.deepEqual(harness.setupObserved, [true]);

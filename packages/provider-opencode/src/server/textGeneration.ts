@@ -160,10 +160,14 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
   const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(
     input: TextGenerationOperations.Request<S>,
   ) {
+    const operation = input.operation;
+    if (operation === "evaluateRemoteRequest") {
+      return yield* TextGenerationOperations.remoteRequestEvaluationUnsupported("OpenCode");
+    }
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
-        operation: input.operation,
+        operation,
         detail: "OpenCode model selection must use the 'provider/model' format.",
       });
     }
@@ -188,26 +192,26 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         const session = yield* Effect.tryPromise({
           try: () =>
             client.session.create({
-              title: `T3 Code ${input.operation}`,
+              title: `T3 Code ${operation}`,
               permission: [{ permission: "*", pattern: "*", action: "deny" }],
             }),
           catch: (cause) =>
             new OpenCodeTextGenerationSessionRequestError({
-              operation: input.operation,
+              operation,
               cwd: input.cwd,
               cause,
             }),
         });
         if (!session.data) {
           return yield* new OpenCodeTextGenerationSessionPayloadError({
-            operation: input.operation,
+            operation,
             cwd: input.cwd,
           });
         }
         const selectedAgent = getModelSelectionStringOptionValue(input.modelSelection, "agent");
         const selectedVariant = getModelSelectionStringOptionValue(input.modelSelection, "variant");
         const promptContext = {
-          operation: input.operation,
+          operation,
           cwd: input.cwd,
           sessionId: session.data.id,
           providerId: parsedModel.providerID,
@@ -310,7 +314,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         OpenCodeRuntimeError: (cause) =>
           Effect.fail(
             new TextGenerationError({
-              operation: input.operation,
+              operation,
               detail: OpenCodeRuntime.openCodeRuntimeErrorDetail(cause),
               cause,
             }),

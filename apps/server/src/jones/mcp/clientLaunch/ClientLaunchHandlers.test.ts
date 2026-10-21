@@ -30,6 +30,7 @@ import * as ManagedFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../mcp/McpToolAccess.ts";
+import { liveThreadShell } from "../../../mcp/McpToolAccess.testkit.ts";
 import * as Handlers from "../../../mcp/toolkits/project/handlers.ts";
 import { ProjectToolkit } from "../../../mcp/toolkits/project/tools.ts";
 import migration from "../../persistence/Migrations/112_JonesClientLaunchRequests.ts";
@@ -209,6 +210,71 @@ const tool = Effect.gen(function* () {
 });
 const code = (result: ReadonlyArray<{ readonly result: unknown }>) =>
   (result.at(-1)!.result as { code?: string }).code;
+
+it.effect("local keyed launches retain Jones replay and reject a changed request", () => {
+  const h = harness({ accepted: true });
+  return execute(
+    h,
+    Effect.gen(function* () {
+      const toolkit = yield* tool;
+      const replay = yield* toolkit
+        .handle("t3_thread_launch", request)
+        .pipe(Stream.unwrap, Stream.runCollect);
+      assert.equal((replay.at(-1)!.result as { threadId: ThreadId }).threadId, ids.threadId);
+      assert.isTrue((replay.at(-1)!.result as { replayed: boolean }).replayed);
+      const conflict = yield* toolkit
+        .handle("t3_thread_launch", { ...request, message: "Different task" })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      assert.equal(code(conflict), "request_conflict");
+      assert.equal(h.state.dispatches, 0);
+    }),
+  );
+});
+
+it.effect.each(["client", "thread"] as const)(
+  "linked %s callers cannot consult or fence the unrelated Jones launch receipts",
+  (kind) => {
+    const threadId = ThreadId.make("linked-caller");
+    const h = harness({
+      scope:
+        kind === "client"
+          ? { ...baseScope, client: { ...baseScope.client!, linked: true } }
+          : {
+              ...baseScope,
+              client: undefined,
+              thread: {
+                threadId,
+                providerSessionId: "linked-session",
+                providerInstanceId: modelSelection.instanceId,
+              },
+            },
+      callerShell: {
+        ...liveThreadShell(threadId),
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        linkOrigin: { sessionId: "peer", label: "Laptop", access: "full-access" },
+      },
+    });
+    return execute(
+      h,
+      Effect.gen(function* () {
+        const toolkit = yield* tool;
+        for (const name of ["t3_thread_launch_lookup", "t3_thread_launch_fence"] as const) {
+          const result = yield* toolkit
+            .handle(name, { clientRequestId: "key" })
+            .pipe(Stream.unwrap, Stream.runCollect);
+          assert.equal(code(result), "capability_denied");
+          assert.include(
+            (result.at(-1)!.result as { message: string }).message,
+            "unavailable for linked-environment work",
+          );
+        }
+        assert.equal(h.state.reads, 0);
+        assert.equal(h.state.dispatches, 0);
+      }),
+    );
+  },
+);
 
 it.effect.each(["t3_thread_launch", "t3_thread_launch_lookup", "t3_thread_launch_fence"] as const)(
   "T14: %s checks orchestration before launch state",

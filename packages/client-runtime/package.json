@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./jones/threadReferenceExcerpt": {
-      "types": "./src/jones/threadReferenceExcerpt.ts",
-      "default": "./src/jones/threadReferenceExcerpt.ts"
+    "./jones/remote-admission": {
+      "types": "./src/jones/remoteAdmission/index.ts",
+      "default": "./src/jones/remoteAdmission/index.ts"
     },
     "./jones/queue": {
       "types": "./src/jones/queue/queuedSteerBatch.ts",
@@ -210,6 +210,10 @@
     "./state/deviceHubAccess": {
       "types": "./src/state/deviceHubAccess.ts",
       "default": "./src/state/deviceHubAccess.ts"
+    },
+    "./state/peerLinks": {
+      "types": "./src/state/peerLinks.ts",
+      "default": "./src/state/peerLinks.ts"
     },
     "./state/preview": {
       "types": "./src/state/preview.ts",
@@ -502,6 +506,10 @@
     "./jones/thread-read-dwell": {
       "types": "./src/jones/threadReadDwell.ts",
       "default": "./src/jones/threadReadDwell.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "default": "./src/jones/threadReferenceExcerpt.ts"
     }
   },
   "scripts": {

@@ -178,6 +178,7 @@ import {
 import {
   readThreadShell,
   useAllEnvironmentProjectSnapshotsReady,
+  useDelegatedUnderParent,
   useProjects,
   useServerConfigs,
   useThreadShells,
@@ -480,8 +481,14 @@ function useSidebarThreads(input: {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadKey } =
     input;
   const threads = useThreadShells();
+  /** Tasks linked environments run for a listed thread; they show under it. */
+  const delegatedUnderParent = useDelegatedUnderParent();
   const environmentThreads = filterSidebarEnvironmentThreads(threads, input.excludedEnvironmentIds);
-  const scopedThreads = filterSidebarV2VisibleThreads(environmentThreads, scopedProjectKeys);
+  const scopedThreads = filterSidebarV2VisibleThreads(
+    environmentThreads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+  );
   const settledResetKey = JSON.stringify([projectScopeKey, input.excludedEnvironmentKey]);
   const workingShelfEnabled = useClientSettings((s) => s.sidebarWorkingShelfEnabled);
   const nowMinute = useNowMinute();
