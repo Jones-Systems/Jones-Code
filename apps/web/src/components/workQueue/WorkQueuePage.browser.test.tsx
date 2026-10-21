@@ -43,11 +43,15 @@ vi.mock("../voiceReview/useVoiceReview", async (importOriginal) => ({
 }));
 vi.mock("../WorkspacePageHeader", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../WorkspacePageHeader")>()),
-  WorkspacePageHeader: ({ children }: { children: import("react").ReactNode }) => <div>{children}</div>,
+  WorkspacePageHeader: ({ children }: { children: import("react").ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 vi.mock("../WorkspacePageContainer", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../WorkspacePageContainer")>()),
-  WorkspacePageContainer: ({ children }: { children: import("react").ReactNode }) => <div>{children}</div>,
+  WorkspacePageContainer: ({ children }: { children: import("react").ReactNode }) => (
+    <div>{children}</div>
+  ),
 }));
 vi.mock("../ui/sidebar", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../ui/sidebar")>()),
