@@ -59,7 +59,7 @@
     {
       "id": "usage",
       "tests": [
-        "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+        "apps/web/src/components/usage/UsagePage.jones.browser.test.tsx",
         "packages/shared/src/jones/usageMergeCompatibility.test.ts",
         "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx",
         "apps/server/src/usage/UsageService.test.ts",
@@ -108,7 +108,7 @@
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/versionSkew.test.ts",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx",
         "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
         "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
@@ -873,7 +873,7 @@
         "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
         "apps/server/src/jones/cloud/ownedScratch.test.ts",
         "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts",
-        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
         "apps/web/src/jones/updates/installedSourceComparison.test.ts",
         "packages/contracts/src/jones/jonesSourceRelation.test.ts",
         "apps/server/src/jones/updates/sourceRelation.test.ts",
@@ -1366,12 +1366,12 @@
         "apps/mobile/src/jones/updates/buildVersion.test.ts",
         "apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "apps/web/src/jones/updates/buildVersion.test.ts",
-        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
         "apps/web/src/versionSkew.test.ts",
         "apps/web/src/jones/updates/versionSkew.test.ts",
-        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.browser.test.tsx",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
         "apps/web/src/jones/updates/installedSourceComparison.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
@@ -1394,7 +1394,7 @@
         "apps/web/src/components/Sidebar.logic.test.ts",
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
-      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings → Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     }
   ]
 }

@@ -105,20 +105,20 @@
     {
       "id": "jones-usage",
       "tests": [
-        "apps/web/src/components/usage/UsagePage.jones.test.tsx",
+        "apps/web/src/components/usage/UsagePage.jones.browser.test.tsx",
         "packages/shared/src/jones/usageMergeCompatibility.test.ts",
         "apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx",
         "apps/server/src/usage/UsageService.test.ts",
         "apps/web/src/components/usage/usageBreakdown.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/components/usage/UsagePage.jones.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "vp test run packages/shared/src/jones/usageMergeCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp test run apps/web/src/jones/usage/UsageProviderChart.interaction.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/jones/usage/UsageProviderChart.interaction.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/usage/UsageService.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.test.tsx src/components/usage/usageBreakdown.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp run --filter @t3tools/web test src/components/usage/UsagePage.jones.browser.test.tsx src/components/usage/usageBreakdown.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -176,10 +176,11 @@
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/versionSkew.test.ts",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx"
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/clientUpdateBanner.test.tsx --maxWorkers=1",
+        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts --maxWorkers=1",
+        "vp run --filter @t3tools/web test src/jones/updates/clientUpdateBanner.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -851,7 +852,7 @@
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/jones/updates/buildVersion.test.ts",
-        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
         "apps/web/src/versionSkew.test.ts",
         "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
         "packages/client-runtime/src/state/server.test.ts",
@@ -864,11 +865,12 @@
         "apps/mobile/src/jones/updates/environmentMaintenance.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/web/src/components/ServerUpdateAction.browser.test.tsx apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/state/server.test.ts packages/client-runtime/src/state/serverTokenAccounting.test.ts packages/client-runtime/src/state/serverUsage.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.browser.test.tsx src/components/ServerUpdateAction.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
-        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.test.tsx src/jones/updates/installedSourceComparison.test.ts src/jones/updates/installedSourceObservation.test.ts src/jones/fleetUpdates/sourceCurrency.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.browser.test.tsx src/jones/updates/installedSourceComparison.test.ts src/jones/updates/installedSourceObservation.test.ts src/jones/fleetUpdates/sourceCurrency.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/mobile/src/jones/updates/environmentMaintenance.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
@@ -1867,7 +1869,7 @@
         "apps/desktop/src/jones/updates/asarScratchRemoval.test.ts",
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/versionSkew.test.ts",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx",
         "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
         "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
         "packages/contracts/src/jones/environmentHttpGroups.test.ts",
@@ -1877,7 +1879,8 @@
         "apps/server/src/jones/updates/desktopInstall.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/cloud/ownedScratch.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/desktop/src/jones/updates/asarScratchRemoval.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/clientUpdateBanner.test.tsx packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/updates/desktopInstall.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/cloud/ownedScratch.test.ts apps/server/src/cloud/selfUpdate.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts apps/server/src/jones/cloud/qualifiedRuntime.test.ts apps/desktop/src/jones/updates/asarScratchRemoval.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/http.test.ts apps/server/src/jones/updates/serverCapability.test.ts apps/server/src/jones/updates/desktopInstall.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/jones/updates/clientUpdateBanner.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web test src/jones/updates/ExactSourceUpdateAction.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/client-runtime --filter t3 --filter @t3tools/web --filter @t3tools/desktop --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
@@ -2242,12 +2245,12 @@
         "apps/mobile/src/jones/updates/buildVersion.test.ts",
         "apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "apps/web/src/jones/updates/buildVersion.test.ts",
-        "apps/web/src/jones/updates/JonesBuildStatus.test.tsx",
-        "apps/web/src/jones/updates/clientUpdateBanner.test.tsx",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx",
         "apps/web/src/jones/updates/localDesktopUpdate.test.ts",
         "apps/web/src/versionSkew.test.ts",
         "apps/web/src/jones/updates/versionSkew.test.ts",
-        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx",
+        "apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.browser.test.tsx",
         "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
         "apps/web/src/jones/updates/installedSourceComparison.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
@@ -2259,7 +2262,8 @@
         "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "commands": [
-        "vp test run packages/shared/src/jones/buildTime.test.ts packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts scripts/stamp-jones-build.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts apps/mobile/src/jones/updates/buildVersion.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/jones/updates/clientUpdateBanner.test.tsx apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx apps/web/src/jones/environmentFilters/environmentFilters.test.ts apps/web/src/jones/updates/installedSourceComparison.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/build-desktop-artifact.test.ts scripts/jones/updates/build-provenance.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/shared/src/jones/buildTime.test.ts packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts scripts/stamp-jones-build.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts apps/mobile/src/jones/updates/buildVersion.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/environmentFilters/environmentFilters.test.ts apps/web/src/jones/updates/installedSourceComparison.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/build-desktop-artifact.test.ts scripts/jones/updates/build-provenance.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/jones/updates/JonesBuildStatus.browser.test.tsx src/jones/updates/clientUpdateBanner.browser.test.tsx src/jones/environmentFilters/SidebarEnvironmentFilters.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/mobile --filter @t3tools/web --filter @t3tools/desktop --filter @t3tools/scripts --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
         "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs"
