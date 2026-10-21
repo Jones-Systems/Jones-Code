@@ -1286,8 +1286,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["push", "-u", "origin", branch]);
       }
       const gitCommands: string[] = [];
+      const gitConfigReads: string[] = [];
       const { manager, ghCalls } = yield* makeManager({
         gitCommands,
+        gitConfigReads,
         ghScenario: {
           prListByHeadSelector: {
             "feature/warm-pr": encodeCliJson([
@@ -1317,6 +1319,11 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(warm).toEqual(cold);
       expect(gitCommands).toEqual([]);
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+      yield* TestClock.adjust("61 seconds");
+      gitConfigReads.length = 0;
+      expect(yield* lookupAll).toEqual(cold);
+      expect(gitConfigReads).toEqual([]);
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(3);
     }),
   );
 
@@ -2187,6 +2194,51 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       });
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
     }),
+  );
+
+  it.effect(
+    "discovery can defer the default terminal confirmation without forcing a host refresh",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        const branch = "feature/terminal-confirmation";
+        yield* runGit(repoDir, ["checkout", "-b", branch]);
+        yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+        const gitCommands: string[] = [];
+        const { manager, ghCalls } = yield* makeManager({
+          gitCommands,
+          ghScenario: {
+            prListByHeadSelector: {
+              [branch]: encodeCliJson([
+                {
+                  number: 303,
+                  title: branch,
+                  url: "https://github.com/pingdotgg/codething-mvp/pull/303",
+                  baseRefName: "main",
+                  headRefName: branch,
+                  state: "MERGED",
+                  updatedAt: "2026-04-07T15:00:00Z",
+                },
+              ]),
+            },
+          },
+        });
+        const input = { cwd: repoDir, branch };
+        expect((yield* manager.branchPullRequest(input, { confirmTerminal: false }))?.state).toBe(
+          "merged",
+        );
+        gitCommands.length = 0;
+        expect((yield* manager.branchPullRequest(input, { confirmTerminal: false }))?.state).toBe(
+          "merged",
+        );
+        expect(gitCommands).toEqual([]);
+        expect((yield* manager.branchPullRequest(input))?.state).toBe("merged");
+        expect(gitCommands.some((command) => command.startsWith("for-each-ref"))).toBe(true);
+        expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      }),
   );
 
   it.effect("branch PR lookup rechecks open PRs every minute and settled answers less often", () =>
@@ -3134,6 +3186,31 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         mergedAt: null,
         updatedAt: "2026-05-02T10:00:00.000Z",
       });
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:replacement/codething-mvp.git",
+        forkDir,
+      );
+      expect(
+        yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/fork-settle" },
+          { freshGitState: true },
+        ),
+      ).toBeNull();
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+      yield* manager.invalidateStatus(repoDir);
+      expect(
+        (yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/fork-settle" },
+          { confirmTerminal: false },
+        ))?.number,
+      ).toBe(91);
     }),
   );
 

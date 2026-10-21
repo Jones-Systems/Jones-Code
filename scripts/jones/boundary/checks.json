@@ -2241,6 +2241,20 @@
         "vp lint apps/web/src/components/CommandPalette.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/DraftHeroHeadline.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/settings/settingsSearch.ts apps/web/src/hooks/useHandleNewThread.test.ts apps/web/src/hooks/useHandleNewThread.ts apps/web/src/hooks/useLogicalProjectEnvironments.ts apps/web/src/hooks/useSidebarProjectGroups.ts apps/web/src/jones/workQueue/PromptsSettings.tsx apps/web/src/uiStateStore.test.ts apps/web/src/uiStateStore.ts apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx apps/web/src/jones/presentationOrder/SortableOrderList.tsx apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/environmentOrder.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-pr-lookup-git-state",
+      "tests": [
+        "apps/server/src/jones/git/prLookupGitState.test.ts",
+        "apps/server/src/git/GitManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/git/prLookupGitState.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.ts apps/server/src/orchestration-v2/ThreadPullRequestService.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

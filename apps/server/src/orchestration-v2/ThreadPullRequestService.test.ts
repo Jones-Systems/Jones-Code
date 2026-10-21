@@ -321,6 +321,119 @@ describe("ThreadPullRequestServiceV2 reads", () => {
     ),
   );
 
+  it.effect.each([false, true])(
+    "confirms discovery before dispatch; changed identity=%s",
+    (changedDuringConfirmation) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const thread = { ...threadShell("discovery"), branch: "feature/discovery" };
+          const project: OrchestrationProjectShell = {
+            id: thread.projectId,
+            title: "Project",
+            workspaceRoot: "/workspace/project",
+            defaultModelSelection: null,
+            scripts: [],
+            repositoryIdentity: null,
+            createdAt: "2026-08-01T00:00:00.000Z",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+          };
+          const activation = yield* Deferred.make<void>();
+          const snapshotRead = yield* Deferred.make<void>();
+          const stages: string[] = [];
+          const optionsSeen: Array<
+            Parameters<GitManager.GitManager["Service"]["branchPullRequest"]>[1]
+          > = [];
+          const identity = {
+            canonicalKey: "github.com/pingdotgg/t3code",
+            locator: {
+              source: "git-remote" as const,
+              remoteName: "origin",
+              remoteUrl: "git@github.com:pingdotgg/t3code.git",
+            },
+            provider: "github" as const,
+            displayName: "pingdotgg/t3code",
+            owner: "pingdotgg",
+            name: "t3code",
+          };
+          const dependencies = Layer.mergeAll(
+            Layer.mock(Orchestrator.OrchestratorV2)({
+              streamDomainEvents: Stream.never,
+              getShellSnapshot: () =>
+                Deferred.succeed(snapshotRead, undefined).pipe(
+                  Effect.as({
+                    schemaVersion: 2,
+                    snapshotSequence: 1,
+                    threads: [thread],
+                    archivedThreads: [],
+                  }),
+                ),
+              dispatch: () =>
+                Effect.sync(() => {
+                  stages.push("dispatch");
+                  return { sequence: 2, storedEvents: [] };
+                }),
+            }),
+            Layer.mock(ProjectStore.ProjectStoreV2)({
+              listShells: () => Effect.succeed([project]),
+              getShell: () => Effect.succeed(Option.some(project)),
+            }),
+            Layer.mock(GitManager.GitManager)({
+              branchPullRequest: (_input, options) =>
+                Effect.sync(() => {
+                  optionsSeen.push(options);
+                  stages.push(options?.freshGitState ? "confirm" : "discover");
+                  return {
+                    number: 42,
+                    title: "Discovery",
+                    url: "https://github.com/pingdotgg/t3code/pull/42",
+                    baseRef: "main",
+                    headRef: "feature/discovery",
+                    state: "merged" as const,
+                    updatedAt: "2026-08-01T00:00:00.000Z",
+                    closedAt: null,
+                    mergedAt: null,
+                    headSha: null,
+                    repositoryKey:
+                      options?.freshGitState && changedDuringConfirmation
+                        ? "github.com/replacement/t3code"
+                        : identity.canonicalKey,
+                  };
+                }),
+            }),
+            Layer.mock(PullRequestService.PullRequestService)({}),
+            Layer.mock(RepositoryIdentityResolver.RepositoryIdentityResolver)({
+              resolve: () => Effect.succeed(identity),
+            }),
+            Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+            Layer.succeed(
+              Crypto.Crypto,
+              Crypto.make({
+                randomBytes: (size) => new Uint8Array(size).fill(1),
+                digest: (_algorithm, data) => Effect.succeed(data),
+              }),
+            ),
+            FileSystem.layerNoop({}),
+          );
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadPullRequestService.make;
+            yield* service.start();
+            yield* Deferred.succeed(activation, undefined);
+            yield* Deferred.await(snapshotRead);
+            yield* service.drain;
+            expect(optionsSeen).toEqual([
+              { refresh: false, confirmTerminal: false },
+              { freshGitState: true },
+            ]);
+            expect(stages).toEqual(
+              changedDuringConfirmation
+                ? ["discover", "confirm"]
+                : ["discover", "confirm", "dispatch"],
+            );
+          }).pipe(Effect.provide(dependencies));
+        }),
+      ),
+  );
+
   it.effect("folds a thread's queued requests together but not one arriving mid-lookup", () =>
     Effect.scoped(
       Effect.gen(function* () {
