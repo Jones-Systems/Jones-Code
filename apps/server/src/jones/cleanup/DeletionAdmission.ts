@@ -122,8 +122,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
   const newlyIssuedStarts = new Set<string>();
   const receipts = yield* Receipts.CommandReceiptStoreV2;
   const failure = (reason: string) => new DeletionAdmissionError({ reason });
-  const load = (effectId: string) =>
-    Effect.gen(function* () {
+  const load = Effect.fn("DeletionAdmission.load")(function* (effectId: string) {
       const rows = yield* sql<{
         readonly binding_json: string;
         readonly start_json: string;
@@ -136,8 +135,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         state: rows[0]!.state,
       };
     });
-  const validateBinding = (binding: Binding) =>
-    Effect.gen(function* () {
+  const validateBinding = Effect.fn("DeletionAdmission.validateBinding")(function* (binding: Binding) {
       const target = binding.target;
       if (
         !binding.rules.worktreeOnDelete ||
@@ -243,12 +241,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id=${binding.threadId} AND status NOT IN ('succeeded','cancelled') LIMIT 1`;
       if (pending.length > 0) return yield* failure("original_cleanup_prerequisites_unsettled");
     });
-  const checkCurrent = (
-    binding: Binding,
-    currentRules?: DeletionPolicyRead,
-    currentLive?: DeletionLiveRead,
-  ) =>
-    Effect.gen(function* () {
+  const checkCurrent = Effect.fn("DeletionAdmission.checkCurrent")(function* (binding: Binding, currentRules?: DeletionPolicyRead, currentLive?: DeletionLiveRead) {
       if (currentRules === undefined || currentLive === undefined)
         return yield* failure("current_policy_owner_unavailable");
       const rules = yield* currentRules;
@@ -334,8 +327,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         (cause) => new DeletionAdmissionError({ reason: "original_start_read_failed", cause }),
       ),
     );
-  const readTarget = (threadId: ThreadId, target: DeletionWorktreeRemovalTargetV1) =>
-    Effect.gen(function* () {
+  const readTarget = Effect.fn("DeletionAdmission.readTarget")(function* (threadId: ThreadId, target: DeletionWorktreeRemovalTargetV1) {
       const rows = yield* sql<{
         readonly effect_id: string;
       }>`SELECT effect_id FROM jones_deletion_worktree_admissions WHERE worktree_path=${target.path}`;
@@ -348,13 +340,11 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       )
         return yield* failure("another_original_worktree_operation_retained");
       return { start: original.start, ordinal: 0 };
-    }).pipe(
-      Effect.mapError((cause) =>
+    }, Effect.mapError((cause) =>
         Schema.is(DeletionAdmissionError)(cause)
           ? cause
           : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
-      ),
-    );
+      ));
   const revalidate = (
     captured: DeletionWorktreeRemovalStartV1,
     ordinal: number,

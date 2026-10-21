@@ -51,8 +51,7 @@ const make = Effect.gen(function* () {
     )
       return yield* rejected("unavailable", "Native setup original terminal owner is unavailable");
   });
-  const run = (input: SetupInput) =>
-    Effect.gen(function* () {
+  const run = Effect.fn("NativeWorkspaceSetupExecutor.run")(function* (input: SetupInput) {
       yield* assertAvailable;
       const ownedStart = yield* SetupCustody.consume(input.custody, input.claim, input.basis);
       const effectId = digest(
@@ -181,8 +180,7 @@ const make = Effect.gen(function* () {
         nativePreparation: {
           control,
           script,
-          beforeSpawn: (plan) =>
-            Effect.gen(function* () {
+          beforeSpawn: Effect.fn("NativeWorkspaceSetupExecutor.beforeSpawn")(function* (plan) {
               yield* revalidate;
               if (
                 captured !== undefined ||
@@ -198,8 +196,7 @@ const make = Effect.gen(function* () {
                 );
               captured = plan;
             }),
-          afterSpawn: (proof) =>
-            Effect.gen(function* () {
+          afterSpawn: Effect.fn("NativeWorkspaceSetupExecutor.afterSpawn")(function* (proof) {
               if (
                 captured === undefined ||
                 spawned !== undefined ||
@@ -216,8 +213,7 @@ const make = Effect.gen(function* () {
                 );
               spawned = proof;
             }),
-          beforeWrite: (write) =>
-            Effect.gen(function* () {
+          beforeWrite: Effect.fn("NativeWorkspaceSetupExecutor.beforeWrite")(function* (write) {
               yield* revalidate;
               if (
                 captured === undefined ||
@@ -230,8 +226,7 @@ const make = Effect.gen(function* () {
                   "Native setup write differs from its captured shell command",
                 );
             }),
-          afterCompletion: (completion) =>
-            Effect.gen(function* () {
+          afterCompletion: Effect.fn("NativeWorkspaceSetupExecutor.afterCompletion")(function* (completion) {
               const observed = yield* terminal.observeNativeSetup!(control);
               if (
                 spawned === undefined ||
@@ -271,13 +266,11 @@ const make = Effect.gen(function* () {
           ),
         ),
       };
-    }).pipe(
-      Effect.mapError((cause) =>
+    }, Effect.mapError((cause) =>
         Schema.is(Workspace.NativeWorkspaceError)(cause)
           ? cause
           : rejected("unknown", "Native setup start requires original-owner observation"),
-      ),
-    );
+      ));
   return NativeWorkspaceSetupExecutor.of({ assertAvailable, run });
 });
 export const layer = Layer.effect(NativeWorkspaceSetupExecutor, make);

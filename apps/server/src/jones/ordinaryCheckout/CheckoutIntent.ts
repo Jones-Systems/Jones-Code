@@ -118,8 +118,7 @@ const make = Effect.gen(function* () {
     if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
       return yield* new CheckoutError({ reason: "unavailable" });
   });
-  const readTarget = (threadId: string) =>
-    Effect.gen(function* () {
+  const readTarget = Effect.fn("CheckoutIntent.readTarget")(function* (threadId: string) {
       const rows = yield* sql<{
         payload_json: string;
       }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${threadId}`;
@@ -143,8 +142,7 @@ const make = Effect.gen(function* () {
         threadBranch: thread.branch,
       };
     });
-  const replay = (command: IntentCommand, threadId: string) =>
-    Effect.gen(function* () {
+  const replay = Effect.fn("CheckoutIntent.replay")(function* (command: IntentCommand, threadId: string) {
       const rows =
         yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${command.commandId}`;
       const identities =
@@ -176,9 +174,8 @@ const make = Effect.gen(function* () {
         found = result.kind !== "absent";
       }
       return found;
-    }).pipe(Effect.mapError(mapError));
-  const prepare = (plan: IntentPlan) =>
-    Effect.gen(function* () {
+    }, Effect.mapError(mapError));
+  const prepare = Effect.fn("CheckoutIntent.prepare")(function* (plan: IntentPlan) {
       if (yield* replay(plan.command, plan.threadId))
         return { plan, candidates: [], preflight: [], commit: null };
       const subjects = new Set(plan.effects.filter((e) => role(e) !== null).map((e) => e.threadId));
@@ -330,9 +327,8 @@ const make = Effect.gen(function* () {
       }));
       const commit = preflight.length === 0 ? null : yield* conflicts.prepareOrdinary(preflight);
       return { plan, candidates, preflight, commit };
-    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(mapError));
-  const validate = (intent: PreparedIntent) =>
-    Effect.gen(function* () {
+    }, Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(mapError));
+  const validate = Effect.fn("CheckoutIntent.validate")(function* (intent: PreparedIntent) {
       yield* transaction;
       for (const candidate of intent.candidates) {
         if (candidate.before === null) {
@@ -344,12 +340,8 @@ const make = Effect.gen(function* () {
         )
           return yield* new CheckoutError({ reason: "stale" });
       }
-    }).pipe(Effect.mapError(mapError));
-  const accept = (
-    intent: PreparedIntent,
-    committed: CommittedEffects & { readonly receipt: CommandReceiptV2 },
-  ) =>
-    Effect.gen(function* () {
+    }, Effect.mapError(mapError));
+  const accept = Effect.fn("CheckoutIntent.accept")(function* (intent: PreparedIntent, committed: CommittedEffects & { readonly receipt: CommandReceiptV2 }) {
       yield* transaction;
       const { plan } = intent;
       if (
@@ -407,9 +399,8 @@ const make = Effect.gen(function* () {
           assertDerivedLink: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
         }),
       );
-    }).pipe(Effect.mapError(mapError));
-  const linkEffects = (committed: CommittedEffects) =>
-    Effect.gen(function* () {
+    }, Effect.mapError(mapError));
+  const linkEffects = Effect.fn("CheckoutIntent.linkEffects")(function* (committed: CommittedEffects) {
       yield* transaction;
       for (const effect of committed.effects) {
         const effectRole = role(effect);
@@ -464,7 +455,7 @@ const make = Effect.gen(function* () {
           }),
         );
       }
-    }).pipe(Effect.mapError(mapError));
+    }, Effect.mapError(mapError));
   return CheckoutIntent.of({ replay, prepare, validate, accept, linkEffects });
 });
 

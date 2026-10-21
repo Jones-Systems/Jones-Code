@@ -37,8 +37,7 @@ const make = Effect.gen(function* () {
   const desktop = yield* DesktopBrowserChannel.DesktopBrowserChannel;
   return RenderPlacement.of({
     channel,
-    place: (snapshot) =>
-      Effect.gen(function* () {
+    place: Effect.fn("RenderPlacement.place")(function* (snapshot) {
         const bound = yield* selection.bind(snapshot);
         if (bound._tag === "server") return { _tag: desktop.available ? "local" : "headless" };
         const status = yield* registry.status(bound.hostId);
@@ -55,8 +54,7 @@ const make = Effect.gen(function* () {
           capabilities: status.capabilities,
         };
       }),
-    awaitCompanion: (origin, key) =>
-      Effect.gen(function* () {
+    awaitCompanion: Effect.fn("RenderPlacement.awaitCompanion")(function* (origin, key) {
         yield* channel.mount(origin.hostId, key);
         if (yield* channel.awaitAttached(key, "20 seconds")) return;
         yield* channel.unmount(origin.hostId, key);
@@ -66,8 +64,7 @@ const make = Effect.gen(function* () {
           state: "timeout",
         });
       }),
-    release: (key) =>
-      Effect.gen(function* () {
+    release: Effect.fn("RenderPlacement.release")(function* (key) {
         const binding = yield* selection.binding(key);
         if (binding?._tag === "companion") yield* channel.unmount(binding.hostId, key);
         yield* selection.release(key);

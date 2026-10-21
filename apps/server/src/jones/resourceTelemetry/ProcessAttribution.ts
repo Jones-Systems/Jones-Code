@@ -41,8 +41,7 @@ export const make = Effect.fn("resourceTelemetry.processAttribution.make")(funct
   >();
   const registrations = yield* Ref.make(new Map<number, RegisteredProcessAttribution>());
 
-  const registerProviderRoot: ProcessAttribution["Service"]["registerProviderRoot"] = (input) =>
-    Effect.gen(function* () {
+  const registerProviderRoot: ProcessAttribution["Service"]["registerProviderRoot"] = Effect.fn("ProcessAttribution.registerProviderRoot")(function* (input) {
       const registeredAtMs = DateTime.toEpochMillis(yield* DateTime.now);
       const token = {};
       const registration: RegisteredProcessAttribution = {
@@ -73,8 +72,7 @@ export const make = Effect.fn("resourceTelemetry.processAttribution.make")(funct
 
   return ProcessAttribution.of({
     registerProviderRoot,
-    bindLauncher: (client, identity) =>
-      Effect.gen(function* () {
+    bindLauncher: Effect.fn("ProcessAttribution.bindLauncher")(function* (client, identity) {
         const token = {};
         launchers.set(client, { identity, token });
         yield* Effect.addFinalizer(() =>

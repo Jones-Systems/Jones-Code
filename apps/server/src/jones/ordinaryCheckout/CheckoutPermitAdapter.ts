@@ -22,12 +22,7 @@ const attached = new WeakSet<object>();
  * Currentness alone cannot prove freshness or ownership of a reused runtime.
  * No application layer installs this adapter or manufactures an issuer.
  */
-export const makeCheckoutPermitAdapter = <A, E>(
-  binding: Binding,
-  expected: RuntimeOperationIdentity,
-  availability: RuntimePermitAvailability<A, E>,
-) =>
-  Effect.gen(function* () {
+export const makeCheckoutPermitAdapter = Effect.fn("CheckoutPermitAdapter.makeCheckoutPermitAdapter")(function* <A, E>(binding: Binding, expected: RuntimeOperationIdentity, availability: RuntimePermitAvailability<A, E>) {
     if (availability.status === "unavailable") return availability;
     const permit = availability.permit;
     const captured: Binding = Object.freeze({
@@ -76,8 +71,7 @@ export const makeCheckoutPermitAdapter = <A, E>(
       coverage: "unknown",
       observedAt: now,
     });
-    const observe = (now: string) =>
-      Effect.gen(function* () {
+    const observe = Effect.fn("CheckoutPermitAdapter.observe")(function* (now: string) {
         if (!matchesIdentity()) return yield* new CheckoutError({ reason: "identity" });
         const observed = yield* permit.observe;
         if (canonical(observed.identity) !== identityKey)
@@ -98,8 +92,7 @@ export const makeCheckoutPermitAdapter = <A, E>(
           canonical(candidate) === bindingKey && matchesIdentity()
             ? current
             : Effect.fail(new CheckoutError({ reason: "identity" })),
-        reconcile: (candidate, evidence) =>
-          Effect.gen(function* () {
+        reconcile: Effect.fn("CheckoutPermitAdapter.reconcile")(function* (candidate, evidence) {
             if (
               canonical(candidate) !== bindingKey ||
               canonical(evidence) !== canonical(issued) ||
@@ -116,8 +109,7 @@ export const makeCheckoutPermitAdapter = <A, E>(
             }
           }),
       });
-    const reserve = (now: string) =>
-      Effect.gen(function* () {
+    const reserve = Effect.fn("CheckoutPermitAdapter.reserve")(function* (now: string) {
         if (attempted) return yield* new CheckoutError({ reason: "stale" });
         const checkout = yield* OrdinaryCheckout;
         const evidence = authorized(now);
@@ -198,8 +190,7 @@ export const makeCheckoutPermitAdapter = <A, E>(
       }) => invoke("join", input),
       observe,
       revoke: permit.revoke,
-      reconcile: (expectedRevision: number, now: string) =>
-        Effect.gen(function* () {
+      reconcile: Effect.fn("CheckoutPermitAdapter.reconcile")(function* (expectedRevision: number, now: string) {
           const checkout = yield* OrdinaryCheckout;
           const evidence = yield* observe(now);
           return yield* checkout
@@ -211,14 +202,13 @@ export const makeCheckoutPermitAdapter = <A, E>(
               ),
             );
         }),
-      renew: (input: {
+      renew: Effect.fn("CheckoutPermitAdapter.renew")(function* (input: {
         readonly target: Target;
         readonly expectedRevision: number;
         readonly expectedOwnerRevision: number;
         readonly expiresAt: string;
         readonly now: string;
-      }) =>
-        Effect.gen(function* () {
+      }) {
           const checkout = yield* OrdinaryCheckout;
           const evidence = yield* observe(input.now);
           return yield* checkout

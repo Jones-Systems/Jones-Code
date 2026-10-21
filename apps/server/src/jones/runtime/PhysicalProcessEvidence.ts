@@ -24,10 +24,7 @@ type LocalProcessRead =
   | { readonly status: "observed"; readonly identity: PhysicalProcessIdentity }
   | { readonly status: "absent" | "unknown" };
 
-export const readLocalProcess = (
-  pid: number,
-): Effect.Effect<LocalProcessRead, never, FileSystem.FileSystem> =>
-  Effect.gen(function* () {
+export const readLocalProcess: (pid: number) => Effect.Effect<LocalProcessRead, never, FileSystem.FileSystem> = Effect.fn("PhysicalProcessEvidence.readLocalProcess")(function* (pid: number) {
     if (!Number.isSafeInteger(pid) || pid <= 0) return { status: "unknown" } as const;
     const fs = yield* FileSystem.FileSystem;
     const bootId = (yield* fs.readFileString("/proc/sys/kernel/random/boot_id")).trim();
@@ -76,13 +73,9 @@ export const readLocalProcess = (
         build: "unknown",
       },
     } as const;
-  }).pipe(
-    Effect.timeoutOption("250 millis"),
-    Effect.map((result): LocalProcessRead =>
+  }, Effect.timeoutOption("250 millis"), Effect.map((result): LocalProcessRead =>
       Option.isSome(result) ? result.value : { status: "unknown" },
-    ),
-    Effect.catchCause(() => Effect.succeed({ status: "unknown" } as const)),
-  );
+    ), Effect.catchCause(() => Effect.succeed({ status: "unknown" } as const)));
 
 const samePhysicalProcess = (a: PhysicalProcessIdentity, b: PhysicalProcessIdentity) =>
   a.platform === b.platform &&

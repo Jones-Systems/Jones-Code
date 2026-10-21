@@ -18,8 +18,7 @@ export const layer = Layer.effect(
     const start = yield* TurnStart.ProviderTurnStartServiceV2;
     const adapters = yield* Adapters.ProviderAdapterRegistryV2;
     return Execution.NativeCreationProviderExecutor.of({
-      assertAvailable: (input) =>
-        Effect.gen(function* () {
+      assertAvailable: Effect.fn("NativeCreationProviderExecutor.assertAvailable")(function* (input) {
           const adapter = yield* adapters.get(
             input.preparation.binding.provider_model_selection.instanceId,
           );
@@ -33,16 +32,14 @@ export const layer = Layer.effect(
             return yield* new Execution.NativeCreationProviderExecutionError({
               message: "Whole native Codex execution owner is unavailable",
             });
-        }).pipe(
-          Effect.mapError(
+        }, Effect.mapError(
             () =>
               new Execution.NativeCreationProviderExecutionError({
                 message: "Whole native Codex execution owner is unavailable",
               }),
-          ),
-        ),
+          )),
       executeWholeOperation: ({ effect, context }) =>
-        Effect.gen(function* () {
+        Effect.fn("NativeCreationProviderExecutor.executeWholeOperation")(function* () {
           const reference = Authority.getNativeCreationExecutionReference(context);
           if (
             !reference ||
@@ -102,15 +99,13 @@ export const layer = Layer.effect(
             });
           yield* Guard.retireNativeProviderGuard(guard, acknowledgement);
           return acknowledgement;
-        }).pipe(
-          Effect.mapError(
+        }, Effect.mapError(
             () =>
               new Execution.NativeCreationProviderExecutionError({
                 message:
                   "Whole native Codex execution is unconfirmed; original start cannot replay",
               }),
-          ),
-        ),
+          ))(),
     });
   }),
 );

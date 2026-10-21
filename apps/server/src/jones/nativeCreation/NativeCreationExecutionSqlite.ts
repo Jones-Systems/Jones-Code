@@ -169,8 +169,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
   });
   const recordExecutionAcceptance: NonNullable<
     Repository.NativeCreationRepository["Service"]["recordExecutionAcceptance"]
-  > = (input) =>
-    Effect.gen(function* () {
+  > = Effect.fn("NativeCreationExecutionSqlite.recordExecutionAcceptance")(function* (input) {
       yield* eligible;
       if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
         return yield* unresolved("Native acceptance must share the event and receipt transaction");
@@ -220,7 +219,7 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
       }
       yield* sql`INSERT INTO jones_native_creation_execution_acceptances(command_id,claim_id,thread_id,command_digest,binding_digest,event_id,event_sequence)
       VALUES(${command.commandId},${input.claimId},${command.threadId},${digest},${history.intent.bindingDigest},${input.eventId},${input.sequence})`;
-    }).pipe(Effect.mapError(mapFailure));
+    }, Effect.mapError(mapFailure));
   const readExecutionReference: NonNullable<
     Repository.NativeCreationRepository["Service"]["readExecutionReference"]
   > = (reference) => sql.withTransaction(resolve(reference)).pipe(Effect.mapError(mapFailure));

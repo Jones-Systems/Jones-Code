@@ -29,8 +29,7 @@ export const formatHeadlessStartupOutput = (connectionString: string): string =>
   ].join("\n");
 };
 
-export const maybeOpenBrowser = (target: string) =>
-  Effect.gen(function* () {
+export const maybeOpenBrowser = Effect.fn("startupAccessLogging.maybeOpenBrowser")(function* (target: string) {
     const serverConfig = yield* ServerConfig.ServerConfig;
     if (serverConfig.noBrowser) {
       return;

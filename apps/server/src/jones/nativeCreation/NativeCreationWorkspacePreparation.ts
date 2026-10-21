@@ -185,8 +185,7 @@ const make = Effect.gen(function* () {
           "Workspace already has external effect history requiring qualified recovery",
         );
       let proof: NativeWorkspaceProof | undefined;
-      const revalidate = (stage: Authority.NativeCreationStage) =>
-        Effect.gen(function* () {
+      const revalidate = Effect.fn("NativeCreationWorkspacePreparation.revalidate")(function* (stage: Authority.NativeCreationStage) {
           yield* authorize(stage);
           const admitted = yield* repository.readWorkspaceAdmission!(input.claimId);
           const current = yield* ports.inspect(intent, proof);
@@ -199,11 +198,9 @@ const make = Effect.gen(function* () {
               "Workspace path admission, birth or Git registration changed",
             );
           if (proof) yield* ports.verify(basis, proof);
-        }).pipe(
-          Effect.mapError(() =>
+        }, Effect.mapError(() =>
             denied("conflict", "Current workspace authority or physical identity changed"),
-          ),
-        );
+          ));
       const effectId = (stage: string) =>
         nativeCreationSha256(nativeCreationCanonicalJson({ claimId: input.claimId, stage, basis }));
       const timestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));

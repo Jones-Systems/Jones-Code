@@ -75,8 +75,7 @@ const make = Effect.gen(function* () {
     sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE admission_id=${id}`.pipe(
       Effect.map((rows) => rows[0] ?? null),
     );
-  const use = (id: string) =>
-    Effect.gen(function* () {
+  const use = Effect.fn("OrdinaryCheckoutSqlite.use")(function* (id: string) {
       const rows =
         yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE operation_id=${id}`;
       if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
@@ -93,8 +92,7 @@ const make = Effect.gen(function* () {
     FROM orchestration_command_receipts WHERE command_id=${id}`.pipe(
       Effect.map((rows) => rows[0] ?? null),
     );
-  const accepted = (row: Admission) =>
-    Effect.gen(function* () {
+  const accepted = Effect.fn("OrdinaryCheckoutSqlite.accepted")(function* (row: Admission) {
       const current = yield* receipt(row.command_id);
       if (current === null) return false;
       if (
@@ -122,16 +120,14 @@ const make = Effect.gen(function* () {
       }
       return true;
     });
-  const currentBirth = (threadId: string, eventId: string, sequence: number) =>
-    Effect.gen(function* () {
+  const currentBirth = Effect.fn("OrdinaryCheckoutSqlite.currentBirth")(function* (threadId: string, eventId: string, sequence: number) {
       const birth = yield* readApplicationBirthRecord(ThreadId.make(threadId)).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
       if (birth === null || birth.eventId !== eventId || birth.sequence !== sequence)
         return yield* new CheckoutError({ reason: "identity" });
     });
-  const currentTarget = (target: Target) =>
-    Effect.gen(function* () {
+  const currentTarget = Effect.fn("OrdinaryCheckoutSqlite.currentTarget")(function* (target: Target) {
       yield* decode(Target, target);
       const threads = yield* sql<{
         readonly project_id: string;
@@ -174,7 +170,7 @@ const make = Effect.gen(function* () {
     row.git_common_directory === target.gitCommonDirectory &&
     row.branch === target.branch;
   const currentOwner = (row: Admission, allowUnknown = false) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.currentOwner")(function* () {
       const lease = yield* owner(row.checkout_key);
       if (
         lease === null ||
@@ -188,18 +184,18 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "stale" });
       return lease;
-    });
+    })();
   const liveAdmission = (id: string, allowUnknown = false) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.liveAdmission")(function* () {
       const row = yield* admission(id);
       if (row === null || !(yield* accepted(row)))
         return yield* new CheckoutError({ reason: "unavailable" });
       yield* currentBirth(row.subject_thread_id, row.birth_event_id, row.birth_sequence);
       yield* currentOwner(row, allowUnknown);
       return row;
-    });
+    })();
   const replay = (input: CommandIdentity, allowNewSubject = false) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.replay")(function* () {
       const rows =
         yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${input.commandId}`;
       const r = yield* receipt(input.commandId);
@@ -239,9 +235,8 @@ const make = Effect.gen(function* () {
         return yield* new CheckoutError({ reason: "replay" });
       // Deliberately no current-target, expiry, renewal or executor check on exact replay.
       return { kind: "accepted" as const, admissions: selected };
-    });
-  const conflicts = (key: string) =>
-    Effect.gen(function* () {
+    })();
+  const conflicts = Effect.fn("OrdinaryCheckoutSqlite.conflicts")(function* (key: string) {
       if (!path.isAbsolute(key) || path.normalize(key) !== key)
         return yield* new CheckoutError({ reason: "identity" });
       const result: Conflict[] = [];
@@ -286,8 +281,7 @@ const make = Effect.gen(function* () {
       if (foreign.length > 0) result.push({ kind: "legacy", checkoutKey: key, owner: null });
       return result;
     });
-  const effectRequest = (effectId: string) =>
-    Effect.gen(function* () {
+  const effectRequest = Effect.fn("OrdinaryCheckoutSqlite.effectRequest")(function* (effectId: string) {
       const rows = yield* sql<{
         readonly command_id: string;
         readonly thread_id: string;
@@ -301,8 +295,7 @@ const make = Effect.gen(function* () {
       );
       return { ...row, request };
     });
-  const link = (row: Admission, input: Link, now: string) =>
-    Effect.gen(function* () {
+  const link = Effect.fn("OrdinaryCheckoutSqlite.link")(function* (row: Admission, input: Link, now: string) {
       const actual = yield* effectRequest(input.effectId);
       if (
         actual === null ||
@@ -470,8 +463,7 @@ const make = Effect.gen(function* () {
     SELECT e.* FROM jones_ordinary_checkout_lifecycle_events e WHERE e.operation_id=${id}
       AND e.ordinal=(SELECT MAX(last.ordinal) FROM jones_ordinary_checkout_lifecycle_events last
         WHERE last.operation_id=e.operation_id AND last.association_id=e.association_id)`;
-  const assertCoveredLinks = (a: Admission, participants: readonly LifecycleEvent[]) =>
-    Effect.gen(function* () {
+  const assertCoveredLinks = Effect.fn("OrdinaryCheckoutSqlite.assertCoveredLinks")(function* (a: Admission, participants: readonly LifecycleEvent[]) {
       const coveredEffects = new Set<string>();
       for (const participant of participants) {
         const bound = yield* decode(Schema.fromJsonString(Binding), participant.binding_json);
@@ -497,7 +489,7 @@ const make = Effect.gen(function* () {
         row.claim_expires_at === source.claimExpiresAt
       : row.producer_id === source.producerId);
   const verifyBinding = (row: Use, binding: Binding, a: Admission, joining = false) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
       yield* decode(Binding, binding);
       if (
         binding.operationId !== row.operation_id ||
@@ -522,9 +514,8 @@ const make = Effect.gen(function* () {
           binding.relation.messageId !== a.message_id)
       )
         return yield* new CheckoutError({ reason: "identity" });
-    });
-  const verifyLinkedSource = (a: Admission, source: Source) =>
-    Effect.gen(function* () {
+    })();
+  const verifyLinkedSource = Effect.fn("OrdinaryCheckoutSqlite.verifyLinkedSource")(function* (a: Admission, source: Source) {
       if (source.kind !== "outbox") return;
       const actual = yield* effectRequest(source.effectId);
       const links = yield* sql<{
@@ -539,8 +530,7 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "identity" });
     });
-  const verifyClaim = (a: Admission, source: Source, now: string) =>
-    Effect.gen(function* () {
+  const verifyClaim = Effect.fn("OrdinaryCheckoutSqlite.verifyClaim")(function* (a: Admission, source: Source, now: string) {
       yield* verifyLinkedSource(a, source);
       if (source.kind !== "outbox") return;
       const claims =
@@ -555,7 +545,7 @@ const make = Effect.gen(function* () {
     kind: LifecycleEvent["event_kind"],
     state: Use["state"] = row.state,
   ) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.append")(function* () {
       yield* decode(Binding, input.binding);
       yield* decode(Evidence, input.evidence);
       if (
@@ -588,7 +578,7 @@ const make = Effect.gen(function* () {
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} AND owner_epoch=${row.owner_epoch} RETURNING *`;
       if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
       return updated[0]!;
-    });
+    })();
   // Authorization admits an invocation; it is not an observation of physical work.
   const admitsInvocation = (evidence: Evidence) =>
     evidence.outcome === "active" ||
@@ -648,7 +638,7 @@ const make = Effect.gen(function* () {
       }),
     );
   const currentEvent = (input: EventInput, allowUnknown = false, joining = false) =>
-    Effect.gen(function* () {
+    Effect.fn("OrdinaryCheckoutSqlite.currentEvent")(function* () {
       const row = yield* use(input.binding.operationId);
       if (
         row.revision !== input.expectedRevision ||
@@ -667,7 +657,7 @@ const make = Effect.gen(function* () {
       yield* verifyBinding(row, input.binding, a, joining);
       yield* decode(Evidence, input.evidence);
       return { row, admission: a };
-    });
+    })();
   const start: OrdinaryCheckout["Service"]["start"] = (input) =>
     transaction(
       Effect.gen(function* () {
@@ -880,8 +870,7 @@ const make = Effect.gen(function* () {
         return rows[0]!;
       }),
     );
-  const transitionOperation = (row: Use) =>
-    Effect.gen(function* () {
+  const transitionOperation = Effect.fn("OrdinaryCheckoutSqlite.transitionOperation")(function* (row: Use) {
       const history = yield* events(row.operation_id);
       if (history.length === 0) return yield* new CheckoutError({ reason: "identity" });
       const original = yield* decode(Schema.fromJsonString(Binding), history[0]!.binding_json);

@@ -237,8 +237,7 @@ const make = Effect.gen(function* () {
         () => Effect.succeed(Option.none<string>()),
       ),
     );
-  const readRuntime = (baseDir: string) =>
-    Effect.gen(function* () {
+  const readRuntime = Effect.fn("HostService.readRuntime")(function* (baseDir: string) {
       let stopped = false;
       for (const stateDir of ["userdata", "dev"]) {
         const text = yield* readOptional(path.join(baseDir, stateDir, "server-runtime.json"));
@@ -286,8 +285,7 @@ const make = Effect.gen(function* () {
       arch,
     });
 
-  const adoptionHost = () =>
-    Effect.gen(function* () {
+  const adoptionHost = Effect.fn("HostService.adoptionHost")(function* () {
       if (
         (platform !== "linux" && platform !== "darwin") ||
         (arch !== "x64" && arch !== "arm64") ||
@@ -388,8 +386,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const systemAdoptionHost = () =>
-    Effect.gen(function* () {
+  const systemAdoptionHost = Effect.fn("HostService.systemAdoptionHost")(function* () {
       const host = yield* adoptionHost();
       if (host.platform !== "linux")
         return yield* new HostServiceError({

@@ -171,10 +171,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
       allowNonZeroExit: true,
     });
 
-  const inspectRegistration = (
-    target: DeletionWorktreeRemovalTargetV1,
-  ): Effect.Effect<DeletionWorktreeRegistrationV1> =>
-    Effect.gen(function* () {
+  const inspectRegistration: (target: DeletionWorktreeRemovalTargetV1) => Effect.Effect<DeletionWorktreeRegistrationV1> = Effect.fn("DeletionWorktreeRemoval.inspectRegistration")(function* (target: DeletionWorktreeRemovalTargetV1) {
       if (
         !NodePath.isAbsolute(target.projectRoot) ||
         !NodePath.isAbsolute(target.path) ||
@@ -212,18 +209,14 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
             gitCommonDirectory,
             entries,
           } as const);
-    }).pipe(
-      Effect.catch(() =>
+    }, Effect.catch(() =>
         Effect.succeed({ status: "unavailable", reason: "registration_read_failed" } as const),
-      ),
-      Effect.map((registration) => Object.freeze(registration)),
-    );
+      ), Effect.map((registration) => Object.freeze(registration)));
 
   const inspectFilesystem = (path: string): Effect.Effect<DeletionWorktreeFilesystemV1> =>
     filesystem.inspect(path).pipe(Effect.map((readback) => Object.freeze(readback)));
 
-  const inspectTarget: DeletionWorktreeRemovalProducer["inspectTarget"] = (target) =>
-    Effect.gen(function* () {
+  const inspectTarget: DeletionWorktreeRemovalProducer["inspectTarget"] = Effect.fn("DeletionWorktreeRemoval.inspectTarget")(function* (target) {
       const registration = yield* inspectRegistration(target);
       const filesystem = yield* inspectFilesystem(target.path);
       return Object.freeze({ registration, filesystem });
@@ -249,12 +242,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
       ),
     );
 
-  const executeStarted: DeletionWorktreeRemovalProducer["executeStarted"] = (
-    original,
-    startOrdinal,
-    revalidateStart,
-  ) =>
-    Effect.gen(function* () {
+  const executeStarted: DeletionWorktreeRemovalProducer["executeStarted"] = Effect.fn("DeletionWorktreeRemoval.executeStarted")(function* (original, startOrdinal, revalidateStart) {
       yield* assertOrdinal(startOrdinal);
       const start = frozenStart(
         yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
@@ -355,11 +343,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
         yield* inspectTarget(target),
       );
     });
-  const observeStarted: DeletionWorktreeRemovalProducer["observeStarted"] = (
-    original,
-    startOrdinal,
-  ) =>
-    Effect.gen(function* () {
+  const observeStarted: DeletionWorktreeRemovalProducer["observeStarted"] = Effect.fn("DeletionWorktreeRemoval.observeStarted")(function* (original, startOrdinal) {
       yield* assertOrdinal(startOrdinal);
       const start = frozenStart(
         yield* Schema.decodeUnknownEffect(DeletionWorktreeRemovalStartV1)(original, {
@@ -473,13 +457,7 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const producer = yield* DeletionWorktreeRemoval;
-    const run = (
-      effectId: string,
-      execute: boolean,
-      currentRules?: DeletionPolicyRead,
-      currentLive?: DeletionLiveRead,
-    ) =>
-      Effect.gen(function* () {
+    const run = Effect.fn("DeletionWorktreeRemoval.run")(function* (effectId: string, execute: boolean, currentRules?: DeletionPolicyRead, currentLive?: DeletionLiveRead) {
         const read = sink.readDeletionWorktreeRemovalStart;
         const revalidate = sink.revalidateDeletionWorktreeRemovalStart;
         const qualify = sink.qualifyDeletionWorktreeRemovalObservation;
@@ -501,16 +479,14 @@ export const layer = Layer.effect(
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);
         return observed;
-      }).pipe(
-        Effect.mapError((cause) =>
+      }, Effect.mapError((cause) =>
           Schema.is(DeletionWorktreeRemovalPreconditionError)(cause)
             ? cause
             : new DeletionWorktreeRemovalPreconditionError({
                 reason: "native_deletion_owner_refused",
                 cause,
               }),
-        ),
-      );
+        ));
     return QualifiedDeletionWorktreeRemoval.of({
       execute: (id, rules, live) => run(id, true, rules, live),
       observe: (id) => run(id, false),

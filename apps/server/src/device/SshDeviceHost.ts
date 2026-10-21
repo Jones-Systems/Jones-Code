@@ -226,8 +226,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       })),
     );
 
-  const retire = (scope: Scope.Closeable) =>
-    Effect.gen(function* () {
+  const retire = Effect.fn("SshDeviceHost.retire")(function* (scope: Scope.Closeable) {
       if (connectionScope === scope) {
         connectionScope = null;
         ready = null;

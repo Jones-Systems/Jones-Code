@@ -109,8 +109,7 @@ const make = Effect.gen(function* () {
       label: statuses.get(hostId)?.label ?? hostId,
       state: statuses.has(hostId) ? "offline" : "unknown",
     });
-  const disconnect = (hostId: string, connectionGeneration: number) =>
-    Effect.gen(function* () {
+  const disconnect = Effect.fn("CompanionHostRegistry.disconnect")(function* (hostId: string, connectionGeneration: number) {
       if (connections.get(hostId)?.generation !== connectionGeneration) return;
       connections.delete(hostId);
       const previous = statuses.get(hostId);
@@ -135,20 +134,17 @@ const make = Effect.gen(function* () {
     status: (hostId) => Effect.sync(() => statuses.get(hostId)),
     events: Stream.fromPubSub(events),
     send,
-    assign: (hostId, key) =>
-      Effect.gen(function* () {
+    assign: Effect.fn("CompanionHostRegistry.assign")(function* (hostId, key) {
         const tabs = assignments.get(hostId) ?? new Map<string, DesktopTabKey>();
         tabs.set(keyOf(key), key);
         assignments.set(hostId, tabs);
         yield* send(hostId, { type: "mount", ...wireKey(key) });
       }),
-    unassign: (hostId, key) =>
-      Effect.gen(function* () {
+    unassign: Effect.fn("CompanionHostRegistry.unassign")(function* (hostId, key) {
         assignments.get(hostId)?.delete(keyOf(key));
         yield* send(hostId, { type: "unmount", ...wireKey(key) }).pipe(Effect.ignore);
       }),
-    connect: (transport) =>
-      Effect.gen(function* () {
+    connect: Effect.fn("CompanionHostRegistry.connect")(function* (transport) {
         const lock = yield* Semaphore.make(1);
         const decoder = new CompanionFrameDecoder();
         const textDecoder = new TextDecoder();
@@ -158,8 +154,7 @@ const make = Effect.gen(function* () {
         let ended = false;
         let loggedUnknown = false;
         const announced = new Set<string>();
-        const close = (code: number, reason: string) =>
-          Effect.gen(function* () {
+        const close = Effect.fn("CompanionHostRegistry.close")(function* (code: number, reason: string) {
             if (ended) return;
             ended = true;
             if (identity) yield* disconnect(identity.hostId, identity.generation);
@@ -188,8 +183,7 @@ const make = Effect.gen(function* () {
         yield* Effect.addFinalizer(() =>
           identity ? disconnect(identity.hostId, identity.generation) : Effect.void,
         );
-        const receive = (frame: string | Uint8Array) =>
-          Effect.gen(function* () {
+        const receive = Effect.fn("CompanionHostRegistry.receive")(function* (frame: string | Uint8Array) {
             if (
               ended ||
               (identity && connections.get(identity.hostId)?.generation !== identity.generation)
@@ -288,7 +282,7 @@ const make = Effect.gen(function* () {
               if (message.event.type === "detached") announced.delete(keyOf(message.event));
               yield* PubSub.publish(events, { type: "browser", ...identity, event: message.event });
             }
-          }).pipe(Effect.catch((error) => close(error.code, "invalid framing")));
+          }, Effect.catch((error) => close(error.code, "invalid framing")));
         const heartbeat = Effect.gen(function* () {
           yield* Effect.sleep(HEARTBEAT_MS);
           if (ended) return yield* Effect.interrupt;

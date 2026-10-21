@@ -51,8 +51,7 @@ const make = Effect.gen(function* () {
   >();
   const inbound = new Map<string, Queue.Queue<string>>();
   let attachmentGeneration = 0;
-  const detach = (key: DesktopTabKey) =>
-    Effect.gen(function* () {
+  const detach = Effect.fn("CompanionBrowserChannel.detach")(function* (key: DesktopTabKey) {
       attached.delete(keyOf(key));
       const queue = inbound.get(keyOf(key));
       if (queue) {

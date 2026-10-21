@@ -31,12 +31,7 @@ export const issue = (
   });
   return handle;
 };
-export const consume = (
-  handle: NativeWorkspaceSetupCustody | undefined,
-  claim: Repository.NativeCreationStoredIntent,
-  basis: NativeWorkspaceBasis,
-) =>
-  Effect.gen(function* () {
+export const consume = Effect.fn("NativeWorkspaceSetupCustody.consume")(function* (handle: NativeWorkspaceSetupCustody | undefined, claim: Repository.NativeCreationStoredIntent, basis: NativeWorkspaceBasis) {
     const value = handle === undefined ? undefined : issued.get(handle);
     if (
       value === undefined ||

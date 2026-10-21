@@ -50,13 +50,7 @@ export function placeCommand(
   return ChildProcess.make(placed.command, placed.args, { ...command.options, shell: false });
 }
 
-function placeScopedCommand(
-  command: ChildProcess.Command,
-  binding: ProcessPlacementBinding,
-  scope: AgentScopeShape,
-  platform: NodeJS.Platform,
-): Effect.Effect<ChildProcess.Command, never, Scope.Scope> {
-  return Effect.gen(function* () {
+const placeScopedCommand: (command: ChildProcess.Command, binding: ProcessPlacementBinding, scope: AgentScopeShape, platform: NodeJS.Platform) => Effect.Effect<ChildProcess.Command, never, Scope.Scope> = Effect.fn("processPlacementSpawner.placeScopedCommand")(function* (command: ChildProcess.Command, binding: ProcessPlacementBinding, scope: AgentScopeShape, platform: NodeJS.Platform): Effect.fn.Return<ChildProcess.Command, never, Scope.Scope> {
     if (command._tag === "PipedCommand") {
       return ChildProcess.pipeTo(
         yield* placeScopedCommand(command.left, binding, scope, platform),
@@ -86,7 +80,6 @@ function placeScopedCommand(
     yield* Effect.addFinalizer(() => placed.stop!.pipe(Effect.ignoreCause({ log: true })));
     return ChildProcess.make(placed.command, placed.args, { ...command.options, shell: false });
   });
-}
 
 export const layer = (binding: ProcessPlacementBinding | undefined) =>
   Layer.effect(

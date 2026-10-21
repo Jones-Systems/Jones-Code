@@ -24,8 +24,7 @@ export const previewCompanionHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const registry = yield* CompanionHostRegistry.CompanionHostRegistry;
     const selection = yield* RenderHostSelection.RenderHostSelection;
-    const authorize = (write: boolean) =>
-      Effect.gen(function* () {
+    const authorize = Effect.fn("http.authorize")(function* (write: boolean) {
         const principal = yield* requireEnvironmentScope(AuthOrchestrationReadScope);
         if (principal.subject === "mcp-client")
           return yield* failEnvironmentScopeRequired(AuthPreviewOperateScope);

@@ -59,8 +59,7 @@ const make = Effect.gen(function* () {
     const expanded = expandHomePath(value, home);
     return value.trim() !== "" && path.isAbsolute(expanded) ? path.normalize(expanded) : null;
   };
-  const capture = (input: TargetInput) =>
-    Effect.gen(function* () {
+  const capture = Effect.fn("CheckoutTarget.capture")(function* (input: TargetInput) {
       const projectPath = normalize(input.projectRoot);
       const cwdPath = normalize(input.worktreePath ?? input.projectRoot);
       if (

@@ -545,13 +545,12 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(mapRepositoryError));
   const executionMethods = makeNativeExecutionMethods(sql, {
     // Execution references carry claim IDs; the public history reader accepts command IDs.
-    readHistory: (claimId) =>
-      Effect.gen(function* () {
+    readHistory: Effect.fn("NativeCreationRepositorySqlite.readHistory")(function* (claimId) {
         const rows =
           yield* sql`SELECT claim_id FROM native_creation_intents WHERE claim_id = ${claimId}`;
         if (rows.length === 0) return Option.none<Repository.NativeCreationHistory>();
         return Option.some(yield* readByClaim(claimId));
-      }).pipe(Effect.mapError(mapRepositoryError)),
+      }, Effect.mapError(mapRepositoryError)),
     getReservedCommand: (commandId) =>
       getReserved(commandId).pipe(Effect.mapError(mapRepositoryError)),
   });

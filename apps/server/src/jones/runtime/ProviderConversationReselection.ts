@@ -140,8 +140,7 @@ const make = Effect.gen(function* () {
   const locks = yield* ThreadCommands.ThreadCommandExecutor;
   const sql = yield* SqlClient.SqlClient;
   const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
-  const authorize = (principal: Principal) =>
-    Effect.gen(function* () {
+  const authorize = Effect.fn("ProviderConversationReselection.authorize")(function* (principal: Principal) {
       const session = yield* sessions.getById({ sessionId: principal.sessionId });
       const now = yield* DateTime.now;
       if (
@@ -161,13 +160,10 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* new ProviderConversationReselectionError({ reason: "actor_unavailable" });
-    }).pipe(
-      Effect.mapError(
+    }, Effect.mapError(
         () => new ProviderConversationReselectionError({ reason: "actor_unavailable" }),
-      ),
-    );
-  const snapshot = (input: ProviderConversationReselectionInput) =>
-    Effect.gen(function* () {
+      ));
+  const snapshot = Effect.fn("ProviderConversationReselection.snapshot")(function* (input: ProviderConversationReselectionInput) {
       const shell = yield* projections.getThreadShell(input.threadId);
       const attachment =
         manager.readCurrentThreadRuntimeAttachment === undefined
@@ -360,15 +356,12 @@ const make = Effect.gen(function* () {
         runtimeAttachment,
       };
       return { preview, target };
-    }).pipe(
-      Effect.mapError((cause) =>
+    }, Effect.mapError((cause) =>
         isReselectionError(cause)
           ? cause
           : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
-      ),
-    );
-  const preview = (candidate: ProviderConversationReselectionInput, principal: Principal) =>
-    Effect.gen(function* () {
+      ));
+  const preview = Effect.fn("ProviderConversationReselection.preview")(function* (candidate: ProviderConversationReselectionInput, principal: Principal) {
       const input = yield* decodePreviewInput(candidate, { onExcessProperty: "error" }).pipe(
         Effect.mapError(
           () => new ProviderConversationReselectionError({ reason: "invalid_request" }),
@@ -381,15 +374,12 @@ const make = Effect.gen(function* () {
           .withTransaction(authorize(principal).pipe(Effect.andThen(snapshot(input))))
           .pipe(Effect.map((state) => state.preview)),
       );
-    }).pipe(
-      Effect.mapError((cause) =>
+    }, Effect.mapError((cause) =>
         isReselectionError(cause)
           ? cause
           : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
-      ),
-    );
-  const reselect = (candidate: ReselectProviderConversationInput, principal: Principal) =>
-    Effect.gen(function* () {
+      ));
+  const reselect = Effect.fn("ProviderConversationReselection.reselect")(function* (candidate: ReselectProviderConversationInput, principal: Principal) {
       const input = yield* decodeCommitInput(candidate, { onExcessProperty: "error" }).pipe(
         Effect.mapError(
           () => new ProviderConversationReselectionError({ reason: "invalid_request" }),
@@ -416,11 +406,7 @@ const make = Effect.gen(function* () {
           const initial = yield* snapshot(input);
           const now = yield* DateTime.now;
           const eventId = providerConversationReselectionEventId(input);
-          const revalidate: ProviderConversationReselectionCommitContext["revalidate"] = (
-            envelope,
-            replay,
-          ) =>
-            Effect.gen(function* () {
+          const revalidate: ProviderConversationReselectionCommitContext["revalidate"] = Effect.fn("ProviderConversationReselection.revalidate")(function* (envelope, replay) {
               yield* authorize(principal);
               if (
                 envelope.commandId !== input.commandId ||

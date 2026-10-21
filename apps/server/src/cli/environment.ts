@@ -22,12 +22,7 @@ import { authLocationFlags, type CliAuthLocationFlags, resolveCliAuthConfig } fr
  * Links live in this environment's database and secret store, so these
  * commands work whether or not its server is running.
  */
-const runWithPeerLinks = <A, E>(
-  flags: CliAuthLocationFlags,
-  run: (links: PeerLinks.PeerLinks["Service"]) => Effect.Effect<A, E>,
-  options?: { readonly quietLogs?: boolean },
-) =>
-  Effect.gen(function* () {
+const runWithPeerLinks = Effect.fn("environment.runWithPeerLinks")(function* <A, E>(flags: CliAuthLocationFlags, run: (links: PeerLinks.PeerLinks["Service"]) => Effect.Effect<A, E>, options?: { readonly quietLogs?: boolean }) {
     const logLevel = yield* GlobalFlag.LogLevel;
     const config = yield* resolveCliAuthConfig(flags, logLevel);
     return yield* PeerLinks.PeerLinks.pipe(

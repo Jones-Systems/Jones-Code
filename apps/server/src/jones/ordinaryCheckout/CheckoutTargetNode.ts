@@ -95,8 +95,7 @@ const make = Effect.gen(function* () {
     });
   return CheckoutTargetObservation.of({
     directory,
-    git: (cwd) =>
-      Effect.gen(function* () {
+    git: Effect.fn("CheckoutTargetNode.git")(function* (cwd) {
         const inside = yield* read(cwd, ["rev-parse", "--is-inside-work-tree"]);
         if (inside.exitCode !== 0) {
           if (
