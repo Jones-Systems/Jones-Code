@@ -74,7 +74,8 @@ const make = Effect.gen(function* () {
     | Config.ServerConfig
   >();
   const dispatch = (payload: unknown, transport: "http" | "legacy_websocket" = "http") =>
-    Effect.fn("QueueCompatibility.dispatch")(function*() {
+    {
+    const dispatchEffect = Effect.fn("QueueCompatibility.dispatch")(function*() {
       const invalid = (
         cause: unknown,
         reason: QueueCompatibilityError["reason"] = "invalid_command",
@@ -437,7 +438,9 @@ const make = Effect.gen(function* () {
         Schema.is(QueueCompatibilityError)(cause)
           ? cause
           : new QueueCompatibilityError({ reason: "orchestration_dispatch_failed", cause }),
-      ))();
+      ));
+    return dispatchEffect();
+  };
   return QueueCompatibility.of({ dispatch });
 });
 export const layer = Layer.effect(QueueCompatibility, make);

@@ -380,7 +380,8 @@ const make = Effect.gen(function* () {
     runId: RunId,
     failed = false,
   ) =>
-    Effect.fn("RemoteDelegation.lastReply")(function*() {
+    {
+    const readLastReplyEffect = Effect.fn("RemoteDelegation.lastReply")(function*() {
       let reply: OrchestratorMcpThreadTimelineItem | undefined;
       let error: OrchestratorMcpThreadTimelineItem | undefined;
       let afterPosition: number | undefined;
@@ -419,7 +420,9 @@ const make = Effect.gen(function* () {
         textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
       }
       return text;
-    })();
+    });
+    return readLastReplyEffect();
+  };
 
   /**
    * Why following a task can never succeed, if that is what `error` means.

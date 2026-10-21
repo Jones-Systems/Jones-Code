@@ -1256,7 +1256,8 @@ export const layer: Layer.Layer<
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
       ) =>
-        Effect.fn("ProviderTurnStartService.startWithConfiguredEffort")(function*() {
+        {
+    const startWithConfiguredEffortEffect = Effect.fn("ProviderTurnStartService.startWithConfiguredEffort")(function*() {
           let dispatchInput = turnInput;
           if (
             session.driver === "codex" &&
@@ -1365,7 +1366,9 @@ export const layer: Layer.Layer<
                   runId: run.id,
                   cause,
                 }),
-          ))();
+          ));
+    return startWithConfiguredEffortEffect();
+  };
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const retryHandoff =
