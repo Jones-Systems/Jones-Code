@@ -1,7 +1,7 @@
 // @effect-diagnostics globalDate:off - Every date is derived from a validated build stamp; no ambient clock is read.
 import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 
-export const JONES_BUILD_TIME_ZONE = "America/New_York";
+const JONES_BUILD_TIME_ZONE = "America/New_York";
 export const parseJonesBuildStartedAt = (value: unknown): string | undefined =>
   readJonesBuildStartedAt({ jonesBuildStartedAt: value });
 export type JonesBuildLabelForm = "month-day" | "day";

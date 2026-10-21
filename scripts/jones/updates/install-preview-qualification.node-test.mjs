@@ -35,6 +35,7 @@ import {
   withOwnedScratch,
   fixtureProxy,
   scenarioSteps,
+  rendererSteps,
   indexedDbBrowserProof,
   waitInactive,
   waitProviderReady,
@@ -974,6 +975,48 @@ NodeTest.test(
       ]) {
         NodeAssert.throws(() => NodeAssert.deepEqual(read(invalid), step.expected));
       }
+    }
+  },
+);
+
+NodeTest.test(
+  "pending install assertion selects one disabled Install control despite copy buttons",
+  () => {
+    const assertions = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic").filter(
+      (step) => step.label === "Both production controls refuse duplicate pending installation",
+    );
+    NodeAssert.equal(assertions.length, 2);
+    const copy = { textContent: "1020·1713", disabled: false };
+    const install = (disabled) => ({ textContent: " Install ", disabled });
+    const sidebar = (disabled) => ({ getAttribute: () => disabled });
+    for (const step of assertions) {
+      const read = (settingsButtons, sidebarButtons) =>
+        new Function("document", "window", `return ${step.expression}`)(
+          {
+            querySelectorAll: (selector) => {
+              if (selector === '[data-testid="settings-updates"] button') return settingsButtons;
+              NodeAssert.equal(
+                selector,
+                '[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])',
+              );
+              return sidebarButtons;
+            },
+          },
+          { __jonesInstallPreview: { snapshot: () => ({}) } },
+        );
+      NodeAssert.equal(read([copy, install(true)], [sidebar("true")]), true);
+      for (const [settingsButtons, sidebarButtons] of [
+        [[copy, install(false)], [sidebar("true")]],
+        [[copy], [sidebar("true")]],
+        [[copy, install(true), install(true)], [sidebar("true")]],
+        [[copy, install(true)], [sidebar("false")]],
+        [[copy, install(true)], []],
+        [
+          [copy, install(true)],
+          [sidebar("true"), sidebar("true")],
+        ],
+      ])
+        NodeAssert.equal(read(settingsButtons, sidebarButtons), false);
     }
   },
 );

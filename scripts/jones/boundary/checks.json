@@ -2119,12 +2119,14 @@
         "apps/server/src/jones/updates/stagedSelection.test.ts",
         "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
         "scripts/build-desktop-artifact.test.ts",
-        "scripts/jones/updates/build-provenance.test.ts"
+        "scripts/jones/updates/build-provenance.test.ts",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "commands": [
         "vp test run packages/shared/src/jones/buildTime.test.ts packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/contracts/src/environment.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts scripts/stamp-jones-build.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts apps/mobile/src/jones/updates/buildVersion.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts apps/web/src/jones/updates/buildVersion.test.ts apps/web/src/jones/updates/JonesBuildStatus.test.tsx apps/web/src/jones/updates/clientUpdateBanner.test.tsx apps/web/src/jones/updates/localDesktopUpdate.test.ts apps/web/src/versionSkew.test.ts apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/jones/environmentFilters/SidebarEnvironmentFilters.test.tsx apps/web/src/jones/environmentFilters/environmentFilters.test.ts apps/web/src/jones/updates/installedSourceComparison.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/build-desktop-artifact.test.ts scripts/jones/updates/build-provenance.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts --filter @t3tools/shared --filter @t3tools/client-runtime --filter @t3tools/mobile --filter @t3tools/web --filter @t3tools/desktop --filter @t3tools/scripts --filter t3 --concurrency-limit 1 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --test --test-concurrency=1 scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ]
     }
   ]

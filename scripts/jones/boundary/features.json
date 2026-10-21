@@ -1291,7 +1291,8 @@
         "apps/server/src/jones/updates/stagedSelection.test.ts",
         "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
         "scripts/build-desktop-artifact.test.ts",
-        "scripts/jones/updates/build-provenance.test.ts"
+        "scripts/jones/updates/build-provenance.test.ts",
+        "scripts/jones/updates/install-preview-qualification.node-test.mjs"
       ],
       "scope": "Display-only Eastern Time minute build labels backed by optional exact workflow-attempt start metadata. Shared formatting covers default month/day and compact day labels, adjacent collisions, DST, and honest old-build fallback. Narrow upstream hooks forward optional metadata and render labels while full versions, source ancestry, candidate handles, receipts and persisted selections retain their existing meaning. Existing descriptor, updater and packager harnesses retain integration cases because they own those boundaries."
     }

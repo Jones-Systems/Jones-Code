@@ -1069,7 +1069,7 @@ export function scenarioSteps(remotePairing) {
   ];
 }
 
-function rendererSteps(origin, sourceSha, runId) {
+export function rendererSteps(origin, sourceSha, runId) {
   const steps = [];
   const click = (locator) => steps.push({ action: "click", locator });
   const control = (name) => click(`[data-testid="${name}"]`);
@@ -1112,7 +1112,13 @@ function rendererSteps(origin, sourceSha, runId) {
   const pendingDisabled = () =>
     check(
       "Both production controls refuse duplicate pending installation",
-      `document.querySelector('[data-testid="settings-updates"] button').disabled === true && document.querySelector('[data-testid="sidebar-updates"] button[aria-label]').getAttribute('aria-disabled') === 'true'`,
+      `(() => {
+        const install = [...document.querySelectorAll('[data-testid="settings-updates"] button')]
+          .filter(button => button.textContent?.trim() === 'Install');
+        const sidebar = document.querySelectorAll('[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])');
+        return install.length === 1 && install[0].disabled === true &&
+          sidebar.length === 1 && sidebar[0].getAttribute('aria-disabled') === 'true';
+      })()`,
     );
   begin("available");
   wait("available");
