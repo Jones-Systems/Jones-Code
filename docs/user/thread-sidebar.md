@@ -134,7 +134,9 @@ sending an answer or restarting the agent. Settling also closes the thread's
 terminals that wait at an idle prompt, and keeps their output. A terminal that
 runs a command, such as a dev server, stays open.
 
-Threads settled by agents or automatically appear in a persistent notification.
+Top-level threads and user-created forks settled by agents or automatically
+appear in a persistent notification. Subagent threads stay in their parent's
+lineage and do not appear in settlement notifications.
 Threads you settle yourself through the app's buttons, menus, shortcuts or bulk
 actions stay quiet. This distinction requires an updated server; older servers
 continue notifying for all settlements. Expand a notification with multiple

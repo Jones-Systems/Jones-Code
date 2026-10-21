@@ -319,6 +319,10 @@ it.effect(
         [112, "ClientLaunchRequests"],
         [114, "SelfSettlementProjectItems"],
         [115, "ScheduledWebhookPendingRuns"],
+        [116, "RemoteAdmission"],
+        [117, "RemoteDelegationIntents"],
+        [118, "RemoteAdmissionIntegration"],
+        [119, "PeerEnvironmentLinks"],
         [120, "SettlementRestores"],
       ]);
       assert.deepStrictEqual(

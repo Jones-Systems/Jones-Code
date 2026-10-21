@@ -1,3 +1,4 @@
+import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
 import {
   WorkstreamsNativeOwnerRequest,
   WorkstreamsNativeOwnerResponse,
@@ -535,6 +536,13 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
     EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,

@@ -130,14 +130,16 @@ export function createSettlementNotificationController(deps: {
     if (Option.isNone(state.snapshot)) return value;
     const titles = new Map<ThreadId, string>();
     const gone = new Set<ThreadId>();
+    const excluded = new Set<ThreadId>();
     for (const thread of [
       ...state.snapshot.value.threads,
       ...state.snapshot.value.archivedThreads,
     ]) {
+      if (thread.lineage.relationshipToParent === "subagent") excluded.add(thread.id);
       if (thread.deletedAt !== null) gone.add(thread.id);
       else titles.set(thread.id, thread.title);
     }
-    return refreshThreads(value, environmentId, titles, gone);
+    return refreshThreads(value, environmentId, titles, gone, excluded);
   }
 
   function refreshConfirmed(value: SettlementInboxState) {

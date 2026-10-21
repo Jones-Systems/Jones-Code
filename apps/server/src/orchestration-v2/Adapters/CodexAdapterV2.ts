@@ -3,6 +3,7 @@ import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
 import * as PhysicalProcess from "../../jones/runtime/PhysicalProcessEvidence.ts";
 import {
+  CODEX_START_ACK_TIMEOUT_MS,
   makeCodexLateStartRecovery,
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
@@ -2179,6 +2180,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly nativeContexts: Array<ActiveCodexTurnContext>;
           startDispatched: boolean;
           lateStartDispatch?: CodexStartDispatch | undefined;
+          pendingStartCancelled?: Deferred.Deferred<void> | undefined;
           timer?: Fiber.Fiber<void> | undefined;
           recoveryEnabled: boolean;
           logicalTerminalEmitted: boolean;
@@ -7009,6 +7011,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (request.timer !== undefined && !fromTimer) yield* Fiber.interrupt(request.timer);
             if (pending) {
               yield* finishUnknownCapacityStart(request);
+              if (request.pendingStartCancelled !== undefined)
+                yield* Deferred.succeed(request.pendingStartCancelled, undefined);
               return;
             }
             reduceCapacity(request, { type: "cancel", reason });
@@ -7062,6 +7066,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             request.lateStartDispatch = dispatch;
             // Keep the original RPC waiter in its producer's scope after the caller
             // times out. A replacement producer cannot acknowledge this dispatch.
+            const startCancelled = yield* Deferred.make<void>();
+            request.pendingStartCancelled = startCancelled;
             const pendingStart = yield* producer.client
               .request(
                 "turn/start",
@@ -7076,7 +7082,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ),
                 Effect.forkIn(producer.scope, { startImmediately: true }),
               );
-            const started = yield* Fiber.join(pendingStart).pipe(Effect.timeout("30 seconds"));
+            // Stop ends only this caller's wait; the producer retains the original RPC
+            // so its exact acknowledgement and completion can reconcile the unknown effect.
+            const started = yield* Fiber.join(pendingStart).pipe(
+              Effect.raceFirst(
+                Deferred.await(startCancelled).pipe(
+                  Effect.andThen(
+                    toProtocolError(
+                      "Codex start was cancelled before acknowledgement; its native outcome remains unknown.",
+                    ),
+                  ),
+                ),
+              ),
+              Effect.timeout(CODEX_START_ACK_TIMEOUT_MS),
+            );
             if (
               request.state.phase !== "awaiting_start" ||
               request.state.retryOrdinal !== retryOrdinal ||

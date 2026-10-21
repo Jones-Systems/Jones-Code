@@ -1960,6 +1960,105 @@
       ]
     },
     {
+      "id": "jones-cross-host-integration",
+      "tests": [
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/McpHttpServer.test.ts",
+        "apps/server/src/mcp/linkOrigin.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "packages/client-runtime/src/state/peerLinks.test.ts",
+        "packages/client-runtime/src/state/commandPermissions.test.ts",
+        "apps/mobile/src/features/threads/threadAgentsPresentation.test.ts",
+        "apps/mobile/src/state/thread-order.test.ts",
+        "apps/mobile/src/features/home/useThreadListActions.test.ts",
+        "apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.activity.test.ts",
+        "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
+        "apps/web/src/components/chat/MessagesTimeline.browser.test.tsx",
+        "apps/web/src/components/ThreadNotificationCoordinator.browser.test.tsx",
+        "apps/server/src/cli/sshHelper.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/mcp/linkOrigin.test.ts apps/server/src/peer/PeerForwarding.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts packages/client-runtime/src/state/peerLinks.test.ts packages/client-runtime/src/state/commandPermissions.test.ts apps/mobile/src/features/threads/threadAgentsPresentation.test.ts apps/mobile/src/state/thread-order.test.ts apps/mobile/src/features/home/useThreadListActions.test.ts apps/server/src/mcp/TaskCancelNativeSubagent.integration.test.ts apps/server/src/mcp/OrchestratorMcpService.activity.test.ts apps/server/src/cli/sshHelper.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web test src/components/ThreadNotificationCoordinator.badge.browser.test.tsx src/components/chat/MessagesTimeline.browser.test.tsx src/components/ThreadNotificationCoordinator.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts --filter @t3tools/client-runtime --filter @t3tools/web --filter @t3tools/mobile --filter t3 --concurrency-limit 1 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-remote-admission",
+      "tests": [
+        "apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "packages/contracts/src/environmentHttp.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/target.test.ts",
+        "apps/web/src/jones/remoteAdmission/presentation.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/remoteAdmission/RemoteAdmission.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/environmentHttp.test.ts apps/server/src/jones/remoteAdmissionIntegration/RemoteAdmissionIntake.test.ts apps/server/src/jones/remoteAdmissionIntegration/http.test.ts apps/server/src/jones/remoteAdmissionIntegration/target.test.ts apps/web/src/jones/remoteAdmission/presentation.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-remote-delegation",
+      "tests": [
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts",
+        "apps/server/src/jones/remoteDelegation/IntentStore.test.ts",
+        "apps/server/src/jones/remoteDelegation/Lifecycle.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/peer/PeerForwarding.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/peer/RemoteDelegation.test.ts apps/server/src/orchestration-v2/RemoteDelegatedTask.test.ts apps/server/src/jones/remoteDelegation/IntentStore.test.ts apps/server/src/jones/remoteDelegation/Lifecycle.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/peer/PeerForwarding.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-peer-transport",
+      "tests": [
+        "apps/server/src/jones/peerTransport/PeerMcpClient.test.ts",
+        "apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/peerTransport/PeerMcpClient.test.ts apps/server/src/jones/peerTransport/PeerMcpSessions.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-peer-persistence",
+      "tests": [
+        "apps/server/src/jones/peerPersistence/PeerPersistence.test.ts",
+        "apps/server/src/peer/PeerLinks.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
+        "apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts",
+        "apps/server/src/persistence/reconcileV2PreviewMigration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/peerPersistence/PeerPersistence.test.ts apps/server/src/peer/PeerLinks.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/jones/persistence/Migrations.test.ts apps/server/src/jones/updates/migrationPlan.test.ts apps/server/src/persistence/Migrations/055_OrchestrationV2.test.ts apps/server/src/persistence/reconcileV2PreviewMigration.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-remote-request-evaluation",
+      "tests": [
+        "packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts",
+        "packages/provider-core/src/server/textGenerationPrompts.test.ts",
+        "apps/server/src/textGeneration/TextGeneration.test.ts",
+        "apps/server/src/textGeneration/ClaudeTextGeneration.test.ts",
+        "apps/server/src/textGeneration/CodexTextGeneration.test.ts",
+        "apps/server/src/git/GitManager.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/provider-core/src/server/jones/remoteRequestEvaluation.test.ts packages/provider-core/src/server/textGenerationPrompts.test.ts apps/server/src/textGeneration/TextGeneration.test.ts apps/server/src/textGeneration/ClaudeTextGeneration.test.ts apps/server/src/textGeneration/CodexTextGeneration.test.ts apps/server/src/git/GitManager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/provider-core --filter @t3tools/provider-acp-registry --filter @t3tools/provider-muse --filter @t3tools/provider-opencode --filter t3 --concurrency-limit 1 typecheck"
+      ]
+    },
+    {
       "id": "jones-durable-owner-response",
       "tests": [
         "packages/contracts/src/jones/userResponseRequest.test.ts",

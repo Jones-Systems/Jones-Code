@@ -13,6 +13,7 @@ import * as Project from "../../../project/ProjectService.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import type { Caller } from "../../../mcp/threadAccess.ts";
 import { unavailable } from "../../../mcp/threadAccess.ts";
+import { callerLinkOrigin } from "../../../mcp/linkOrigin.ts";
 import type { StartedModes, ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import {
   clientLaunchIds,
@@ -150,6 +151,34 @@ export const fence = Effect.fn("jones.clientLaunch.fence")(function* (
   const result = yield* lookup(namespace, clientRequestId);
   if (result.state === "absent") return yield* unavailable();
   return { ...result, state: result.state };
+});
+
+// Linked launches use upstream IDs; Jones receipts cannot establish absence or fence that work.
+const assertLocalReceiptCaller = (caller: Caller) =>
+  callerLinkOrigin(caller) === undefined
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "Launch lookup and fencing are unavailable for linked-environment work. Retry the original launch with the same clientRequestId and unchanged request; a Jones receipt cannot prove its outcome.",
+        }),
+      );
+
+export const lookupForCaller = Effect.fn("jones.clientLaunch.lookupForCaller")(function* (
+  caller: Caller,
+  clientRequestId: string,
+) {
+  yield* assertLocalReceiptCaller(caller);
+  return yield* lookup(caller.scope.requestNamespace, clientRequestId);
+});
+
+export const fenceForCaller = Effect.fn("jones.clientLaunch.fenceForCaller")(function* (
+  caller: Caller,
+  clientRequestId: string,
+) {
+  yield* assertLocalReceiptCaller(caller);
+  return yield* fence(caller.scope.requestNamespace, clientRequestId);
 });
 
 export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
@@ -328,7 +357,16 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       yield* continueAccepted();
     } else {
       const result = yield* gate
-        .continueWithin(modes, invoke({ ...common, modelSelection, ...modes }))
+        .continueWithin(
+          modes,
+          invoke({
+            ...common,
+            modelSelection,
+            runtimeMode: modes.runtimeMode,
+            interactionMode: modes.interactionMode,
+            ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
+          }),
+        )
         .pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
