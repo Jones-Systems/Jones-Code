@@ -253,7 +253,7 @@ describe("image zoom interactions", () => {
     const top = region().scrollTop;
     expect(handle.current!.pan("ArrowDown")).toBe(true);
     expect(region().scrollTop).toBe(top + 40);
-    region().style.setProperty("--fixture-width", "400px");
+    region().style.setProperty("--fixture-width", "200px");
     expect(handle.current!.pan("ArrowRight")).toBe(true);
     expect(region().scrollLeft).toBe(left + 40);
     await key(region(), "0");
