@@ -72,12 +72,21 @@ vi.mock("pdfjs-dist/web/pdf_viewer.mjs", () => ({
     cleanup = vi.fn();
     bus: { dispatch: (name: string, data: object) => void };
     signal: AbortSignal;
+    pages: HTMLDivElement;
     constructor(options: {
       eventBus: { dispatch: (name: string, data: object) => void };
       abortSignal: AbortSignal;
+      container: HTMLDivElement;
+      viewer: HTMLDivElement;
     }) {
       this.bus = options.eventBus;
       this.signal = options.abortSignal;
+      this.pages = options.viewer;
+      Object.assign(options.container.style, {
+        height: "200px",
+        width: "400px",
+        overflow: "auto",
+      });
       engine.viewers.push(this);
     }
     get currentScale() {
@@ -91,7 +100,11 @@ vi.mock("pdfjs-dist/web/pdf_viewer.mjs", () => ({
     }
     setDocument(document: unknown) {
       this.document = document;
+      this.pages.replaceChildren();
       if (document) {
+        const page = this.pages.ownerDocument.createElement("div");
+        page.style.height = "1000px";
+        this.pages.append(page);
         this.bus.dispatch("pagesinit", {});
         this.bus.dispatch("pagerendered", {});
       }

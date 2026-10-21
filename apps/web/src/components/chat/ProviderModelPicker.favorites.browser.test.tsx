@@ -15,7 +15,8 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 
 let favorites: ClientSettings["favorites"] = [];
 
-vi.mock("~/hooks/useSettings", () => ({
+vi.mock("~/hooks/useSettings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/hooks/useSettings")>()),
   useEnvironmentModelPreferences: () => ({ favorites }),
   useToggleEnvironmentModelFavorite: () => vi.fn(),
 }));
@@ -23,8 +24,14 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useNavigate: () => vi.fn(),
 }));
-vi.mock("@effect/atom-react", () => ({ useAtomValue: () => [] }));
-vi.mock("../../state/server", () => ({ primaryServerKeybindingsAtom: {} }));
+vi.mock("@effect/atom-react", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@effect/atom-react")>()),
+  useAtomValue: () => [],
+}));
+vi.mock("../../state/server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/server")>()),
+  primaryServerKeybindingsAtom: {},
+}));
 vi.mock("./ChatGptSharingControl", () => ({ ChatGptSharingControl: () => null }));
 
 let container: HTMLDivElement;

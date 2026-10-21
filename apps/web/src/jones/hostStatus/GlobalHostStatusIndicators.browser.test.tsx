@@ -3,6 +3,7 @@ import { EnvironmentId, type HostStatusSnapshot } from "@t3tools/contracts";
 
 import { expect, it, vi } from "vite-plus/test";
 
+import { clearRetainedHostStatus } from "../../components/chat/HostStatusIndicators";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { discoverGlobalHostStatusSource } from "./globalSource";
 
@@ -63,6 +64,7 @@ async function setupTest(): Promise<AsyncDisposable> {
         await screen?.[Symbol.asyncDispose]();
       } finally {
         ownedContainer?.remove();
+        for (const id of [local, remote, other]) clearRetainedHostStatus(id);
         vi.restoreAllMocks();
         vi.unstubAllGlobals();
         vi.useRealTimers();
@@ -71,7 +73,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-    vi.resetModules();
     testTimers = fakeTimers();
     vi.setSystemTime(new Date("2026-10-14T12:00:00Z"));
     visibility = "visible";
@@ -88,9 +89,9 @@ async function setupTest(): Promise<AsyncDisposable> {
     ) {
       return new DOMRect(0, 0, this.getAttribute("aria-label") === "Host status" ? 1000 : 100, 32);
     });
-    connections.environmentIds = [local, remote];
-    connections.connectedEnvironmentIds = [local, remote];
-    connections.primaryEnvironmentId = local;
+    connections.environmentIds = [];
+    connections.connectedEnvironmentIds = [];
+    connections.primaryEnvironmentId = null;
     fetchStatus.mockReset();
     fetchStatus.mockImplementation(async (id) => (id === local ? unconfigured : available()));
     ({ GlobalHostStatusIndicators } = await import("./GlobalHostStatusIndicators"));
@@ -98,6 +99,14 @@ async function setupTest(): Promise<AsyncDisposable> {
     document.body.appendChild(container);
     root = await renderTest(null, { container: container, router: false });
     initialized = true;
+    // Browser ESM modules retain the selected gateway between cases. Remove all gateways
+    // through the component lifecycle before installing this case's independent roster.
+    await root.rerender(<GlobalHostStatusIndicators />);
+    await root.rerender(null);
+    for (const id of [local, remote, other]) clearRetainedHostStatus(id);
+    connections.environmentIds = [local, remote];
+    connections.connectedEnvironmentIds = [local, remote];
+    connections.primaryEnvironmentId = local;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {

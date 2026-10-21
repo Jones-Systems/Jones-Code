@@ -39,7 +39,20 @@ describe("image zoom interactions", () => {
     await act(
       async () =>
         await root.rerender(
-          <div onKeyDown={gallery}>
+          <div onKeyDown={gallery} data-zoom-fixture>
+            <style>{`
+              [data-zoom-fixture] [role="region"] {
+                position: fixed !important;
+                left: 0;
+                top: 0;
+                width: var(--fixture-width, 400px) !important;
+                height: var(--fixture-height, 200px) !important;
+                max-height: none !important;
+                overflow: auto;
+                scrollbar-width: none;
+              }
+              [data-zoom-fixture] img { display: block; max-width: none; }
+            `}</style>
             <ZoomableImage
               key={src}
               ref={handle}
@@ -51,17 +64,14 @@ describe("image zoom interactions", () => {
           </div>,
         ),
     );
-    Object.defineProperties(region(), {
-      clientWidth: { configurable: true, value: 400 },
-      clientHeight: { configurable: true, value: 200 },
-      offsetWidth: { configurable: true, value: 400 },
-      scrollWidth: { configurable: true, value: 800 },
-    });
     Object.defineProperties(image(), {
       naturalWidth: { value: 1000 },
       naturalHeight: { value: 500 },
     });
     await dispatch(image(), new Event("load"));
+    if (layout === "panel") {
+      await act(() => resize([{ contentRect: { width: 400, height: 200 } }]));
+    }
   };
 
   async function setupTest(): Promise<AsyncDisposable> {
@@ -91,7 +101,14 @@ describe("image zoom interactions", () => {
             ) => void,
           ) {}
           observe(target: Element) {
-            resize = (entries) => this.callback(entries.map((entry) => ({ ...entry, target })));
+            resize = (entries) => {
+              const size = entries[0]?.contentRect;
+              if (size) {
+                region().style.setProperty("--fixture-width", `${size.width}px`);
+                region().style.setProperty("--fixture-height", `${size.height}px`);
+              }
+              this.callback(entries.map((entry) => ({ ...entry, target })));
+            };
           }
           disconnect() {}
         },
@@ -228,14 +245,14 @@ describe("image zoom interactions", () => {
     await using _fixture = await setupTest();
     await render("dialog");
     await key(region(), "Enter");
-    Object.defineProperty(region(), "scrollWidth", { configurable: true, value: 400 });
+    region().style.setProperty("--fixture-width", `${image().getBoundingClientRect().width}px`);
     const left = region().scrollLeft;
     expect(handle.current!.pan("ArrowRight")).toBe(false);
     expect(region().scrollLeft).toBe(left);
     const top = region().scrollTop;
     expect(handle.current!.pan("ArrowDown")).toBe(true);
     expect(region().scrollTop).toBe(top + 40);
-    Object.defineProperty(region(), "scrollWidth", { configurable: true, value: 800 });
+    region().style.setProperty("--fixture-width", "400px");
     expect(handle.current!.pan("ArrowRight")).toBe(true);
     expect(region().scrollLeft).toBe(left + 40);
     await key(region(), "0");
