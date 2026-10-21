@@ -275,6 +275,8 @@ receipts have a separate role in idempotent dispatch.
 
 ### UI evidence
 
+Use the partial [local UI map](../ui-map/README.md) and maintained [Frontend view-map guide](https://github.com/Jones-Systems/Frontend-Development/blob/main/docs/guides/ui-view-maps.md) (access required) to find affected journeys and shared consumers.
+
 For user-visible changes, select the affected client and retain evidence.
 The primary agent exercises the affected flow
 once after integration, checks observable results, and retains captures.

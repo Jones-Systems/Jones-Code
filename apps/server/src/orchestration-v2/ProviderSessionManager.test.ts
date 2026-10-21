@@ -20,6 +20,7 @@ import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -2799,12 +2800,24 @@ it.effect("ProviderSessionManagerV2 releases idle sessions without sweeping all 
   }),
 );
 
-function openWorkModeRetentionSession(lineage?: OrchestrationV2AppThread["lineage"]) {
+function openWorkModeRetentionSession(
+  lineage?: OrchestrationV2AppThread["lineage"],
+  established = false,
+) {
   return Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const now = yield* DateTime.now;
     const fixture = workModeFixture();
+    const message = established
+      ? {
+          ...fixture.messages[0]!,
+          id: MessageId.make("work-mode:retention"),
+          text: "@@@@@",
+          createdBy: "system" as const,
+          creationSource: "server" as const,
+        }
+      : fixture.messages[0]!;
     const thread = {
       ...fixture.thread,
       ...(lineage === undefined ? {} : { lineage }),
@@ -2824,14 +2837,20 @@ function openWorkModeRetentionSession(lineage?: OrchestrationV2AppThread["lineag
         type: "run.created",
         threadId: thread.id,
         occurredAt: now,
-        payload: { ...fixture.runs[0]!, requestedAt: now, startedAt: now, completedAt: now },
+        payload: {
+          ...fixture.runs[0]!,
+          userMessageId: message.id,
+          requestedAt: now,
+          startedAt: now,
+          completedAt: now,
+        },
       },
       {
         id: EventId.make("retention:message"),
         type: "message.updated",
         threadId: thread.id,
         occurredAt: now,
-        payload: { ...fixture.messages[0]!, createdAt: now, updatedAt: now },
+        payload: { ...message, createdAt: now, updatedAt: now },
       },
       {
         id: EventId.make("retention:context"),
@@ -2845,7 +2864,12 @@ function openWorkModeRetentionSession(lineage?: OrchestrationV2AppThread["lineag
         type: "provider-turn.updated",
         threadId: thread.id,
         occurredAt: now,
-        payload: { ...fixture.providerTurns[0]!, startedAt: now, completedAt: now },
+        payload: {
+          ...fixture.providerTurns[0]!,
+          startedAt: now,
+          completedAt: now,
+          tokenUsage: { usedTokens: 1, inputTokens: 1, updatedAt: DateTime.formatIso(now) },
+        },
       },
     ];
     yield* sink.write({ events });
@@ -2870,7 +2894,10 @@ it.effect(
         const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
         const settings = yield* ServerSettings.ServerSettingsService;
         const projections = yield* ProjectionStore.ProjectionStoreV2;
-        const { threadId, providerSessionId } = yield* openWorkModeRetentionSession();
+        const { threadId, providerSessionId } = yield* openWorkModeRetentionSession(
+          undefined,
+          true,
+        );
         yield* TestClock.adjust("30 minutes");
         assert.equal((yield* Ref.get(state)).closeCount, 0);
         for (let round = 0; round < 9; round++) {

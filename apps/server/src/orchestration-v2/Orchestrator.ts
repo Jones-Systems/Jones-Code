@@ -1,3 +1,4 @@
+import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import {
   queuedSteerBatchCandidates,
   queuedSteerBatchEvents,
@@ -642,6 +643,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "user_input_request.record":
       return command.threadId;
     case "thread.fork":
     case "thread.merge_back":
@@ -7520,6 +7522,59 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  const dispatchUserInputRequestRecord = Effect.fn(
+    "orchestrationV2.dispatch.userInputRequestRecord",
+  )(function* (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "user_input_request.record" }
+    >,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* projectionStore
+      .getThreadRecords(command.threadId, [
+        "runs",
+        "nodes",
+        "turnItems",
+        "runtimeRequests",
+        "attempts",
+        "providerTurns",
+      ])
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+    const run = projection.runs.find((candidate) => candidate.id === command.runId);
+    const now = yield* DateTime.now;
+    const result = buildUserInputRequestRecord({
+      command,
+      projection,
+      now,
+      ordinal: yield* nextTurnItemOrdinal(projection),
+      providerTurnId: run === undefined ? null : (providerTurnForRun(projection, run)?.id ?? null),
+    });
+    if ("error" in result)
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: result.error,
+      });
+    const common = {
+      threadId: command.threadId,
+      runId: command.runId,
+      nodeId: command.requestNodeId,
+      providerInstanceId: command.providerInstanceId,
+      occurredAt: now,
+    };
+    yield* emit(events, command)({ ...common, type: "node.updated", payload: result.node });
+    yield* emit(events, command)({ ...common, type: "turn-item.updated", payload: result.item });
+    yield* emit(
+      events,
+      command,
+    )({ ...common, type: "runtime-request.updated", payload: result.request });
+  });
+
   const dispatchSecretRequestRecord = Effect.fn("orchestrationV2.dispatch.secretRequestRecord")(
     function* (
       command: Extract<OrchestrationV2InternalCommand, { readonly type: "secret_request.record" }>,
@@ -12308,6 +12363,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.created.record":
         yield* dispatchCreatedThreadRecord(command, events);
+        break;
+      case "user_input_request.record":
+        yield* dispatchUserInputRequestRecord(command, events);
         break;
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);

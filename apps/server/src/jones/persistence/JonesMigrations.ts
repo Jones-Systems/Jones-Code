@@ -33,6 +33,7 @@ import JonesMigration0111 from "./Migrations/111_JonesClientSettlementCommands.t
 import JonesMigration0112 from "./Migrations/112_JonesClientLaunchRequests.ts";
 
 import JonesMigration0114 from "./Migrations/114_JonesSelfSettlementProjectItems.ts";
+import JonesMigration0115 from "./Migrations/115_JonesScheduledWebhookPendingRuns.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -55,6 +56,7 @@ export const jonesMigrationEntries = [
   [111, "ClientSettlementCommands", JonesMigration0111],
   [112, "ClientLaunchRequests", JonesMigration0112],
   [114, "SelfSettlementProjectItems", JonesMigration0114],
+  [115, "ScheduledWebhookPendingRuns", JonesMigration0115],
 ] as const;
 
 export const runMigrations = () =>

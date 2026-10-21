@@ -92,11 +92,12 @@ export function workModeFixture(): OrchestrationV2ThreadProjection {
         providerThreadId: "provider-thread-work-mode",
         nodeId: "node-work-mode",
         runAttemptId: "attempt-work-mode",
-        nativeTurnRef: null,
+        nativeTurnRef: { driver: "codex", nativeId: "native-turn-work-mode", strength: "strong" },
         ordinal: 1,
         status: "completed",
         startedAt: at,
         completedAt: at,
+        tokenUsage: { usedTokens: 1, inputTokens: 1, updatedAt: at },
       },
     ],
     messages: [

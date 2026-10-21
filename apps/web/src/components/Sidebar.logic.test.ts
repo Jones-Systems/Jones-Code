@@ -1459,7 +1459,7 @@ describe("resolveThreadStatusPill", () => {
     ).toBeNull();
   });
 
-  it("shows plan ready when a settled plan turn has a proposed plan ready for follow-up", () => {
+  it("does not infer an input request from a settled plan turn with a proposed plan", () => {
     expect(
       resolveThreadStatusPill({
         thread: {
@@ -1473,7 +1473,7 @@ describe("resolveThreadStatusPill", () => {
           },
         },
       }),
-    ).toMatchObject({ label: "Plan Ready", pulse: false });
+    ).toBeNull();
   });
 
   it("does not manufacture completed state without a client visit marker", () => {

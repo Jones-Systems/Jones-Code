@@ -1,7 +1,10 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
-import { HostStatusIndicators } from "../../components/chat/HostStatusIndicators";
+import {
+  clearRetainedHostStatus,
+  HostStatusIndicators,
+} from "../../components/chat/HostStatusIndicators";
 import { fetchHostStatus, observeHostStatus } from "../../hostStatus";
 import {
   useConnectedEnvironmentIds,
@@ -10,7 +13,7 @@ import {
 } from "../../state/environments";
 import { discoverGlobalHostStatusSource } from "./globalSource";
 
-// Header remounts retain gateway identity only; metrics remain owned by the live observer.
+// Header remounts reuse the selected gateway and its freshness-bounded sample.
 let retainedEnvironmentId: EnvironmentId | null = null;
 
 export function GlobalHostStatusIndicators() {
@@ -22,7 +25,10 @@ export function GlobalHostStatusIndicators() {
 
   if (selection !== null && environmentId === null) setSelection(null);
   useEffect(() => {
-    if (environmentId === null) retainedEnvironmentId = null;
+    if (environmentId === null && retainedEnvironmentId !== null) {
+      clearRetainedHostStatus(retainedEnvironmentId);
+      retainedEnvironmentId = null;
+    }
   }, [environmentId]);
 
   useEffect(() => {

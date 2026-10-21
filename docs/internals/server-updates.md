@@ -149,6 +149,22 @@ continuation is still pending in the outbox is not a result yet; the continuatio
 settles it, or the handler settles it when it declines to continue. Schedulers wait for
 activation so they cannot start runs that reconciliation would then cancel.
 
+Watchers keep only what is stored. Timer tasks keep their next run: an interval
+due during the outage runs once, and a fixed time missed by more than ten minutes
+is skipped. Pull request watches keep their cursor on the thread's link, so the
+first sweep after startup reports outage changes once. Neither the relay nor a
+sender resends a webhook delivery the server acknowledged, so the server
+acknowledges one only after its relay claim, its log row and a pending record
+commit in one transaction. A failed write answers 503 with nothing claimed, so
+a retry runs it. The record stays until the run settles; a run that shutdown
+interrupts is not marked failed, and after activation the server runs records
+it does not own under the delivery's command id, which keeps a dispatch that
+landed from repeating
+([recovery](../../apps/server/src/jones/scheduledTasks/webhookRunRecovery.ts)).
+Requests that arrive while the server is down are lost unless T3 Connect holds
+them or the sender redelivers. Approvals bound to the provider process expire,
+and background shells, monitors and agent polling loops end with it.
+
 Qualified planned updates with caller-bound operation support capture eligible queues
 and live Work Mode conversations before handoff. Jones migration 106 stores this
 eligibility separately from upstream projections. Saved continuation preferences or

@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/userResponseRequest": {
+      "types": "./src/jones/userResponseRequest.ts",
+      "import": "./src/jones/userResponseRequest.ts"
+    },
     "./jones/workstreamsRegistrationAvailability": {
       "types": "./src/jones/workstreamsRegistrationAvailability.ts",
       "import": "./src/jones/workstreamsRegistrationAvailability.ts"

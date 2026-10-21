@@ -533,6 +533,352 @@ it("copies a Linux fallback in concurrent chunks and removes a partial copy afte
   });
 });
 
+function cpuSnapshot(busy: number, idle: number, count = 4): NodeOS.CpuInfo[] {
+  return Array.from({ length: count }, () => ({
+    model: "synthetic CPU",
+    speed: 1000,
+    times: { user: busy, nice: 0, sys: 0, irq: 0, idle },
+  }));
+}
+
+async function checkLinuxCopyConcurrency(
+  expected: number,
+  parallelism: () => number,
+  snapshots: () => NodeOS.CpuInfo[],
+  chunks = 6,
+) {
+  await fixture(async (base, database) => {
+    const chunk = 8 * 1024 * 1024;
+    await NodeFSP.truncate(database, chunks * chunk);
+    const destination = NodePath.join(base, "cpu-selected-copy");
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let active = 0;
+    let maximum = 0;
+    const originalOpen = NodeFSP.open;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const capacity = vi.spyOn(NodeOS, "availableParallelism").mockImplementation(parallelism);
+    const cpus = vi.spyOn(NodeOS, "cpus").mockImplementation(snapshots);
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      if (args[0] !== database) return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "read")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              active += 1;
+              maximum = Math.max(maximum, active);
+              entered.resolve();
+              try {
+                await release.promise;
+                return await target.read(buffer, offset, length, position);
+              } finally {
+                active -= 1;
+              }
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copying = copyQualifiedBackupFile(database, destination);
+    try {
+      await entered.promise;
+      assert.equal(active, 1, "baseline starts before CPU sampling completes");
+      await vi.advanceTimersByTimeAsync(100);
+      assert.equal(active, expected, "CPU evidence selects concurrent positioned reads");
+      release.resolve();
+      assert.deepEqual(await copying, { method: "copy", bytes: chunks * chunk });
+      assert.equal(maximum, expected);
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      release.resolve();
+      await copying.catch(() => {});
+      vi.useRealTimers();
+      open.mockRestore();
+      clone.mockRestore();
+      cpus.mockRestore();
+      capacity.mockRestore();
+      platform.mockRestore();
+    }
+  });
+}
+
+it("keeps a saturated Linux fallback on its baseline copy loop", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    1,
+    () => 4,
+    () => cpuSnapshot(samples++ * 100, 0),
+  );
+});
+
+it.each([
+  { name: "idle host", available: 8, busy: 0, idle: 100, expected: 4 },
+  { name: "two-core capacity hint", available: 2, busy: 0, idle: 100, expected: 2 },
+  { name: "one-core capacity hint", available: 1, busy: 0, idle: 100, expected: 1 },
+  { name: "one spare core", available: 4, busy: 75, idle: 25, expected: 2 },
+  { name: "less than one spare core", available: 4, busy: 90, idle: 10, expected: 1 },
+  { name: "zero capacity hint", available: 0, busy: 0, idle: 100, expected: 4 },
+  { name: "nonfinite capacity hint", available: NaN, busy: 0, idle: 100, expected: 4 },
+  { name: "fractional capacity hint", available: 1.5, busy: 0, idle: 100, expected: 4 },
+])("selects Linux copy concurrency for $name", async ({ available, busy, idle, expected }) => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    expected,
+    () => available,
+    () => {
+      if (available === 1) {
+        samples += 1;
+        throw new Error("one-core copies must not sample");
+      }
+      return samples++ === 0 ? cpuSnapshot(0, 0) : cpuSnapshot(busy, idle);
+    },
+  );
+  assert.equal(samples, available === 1 ? 0 : 2);
+});
+
+it.each([
+  { name: "empty", after: [] },
+  { name: "mismatched", after: cpuSnapshot(100, 200, 3) },
+  { name: "reset", after: cpuSnapshot(0, 200) },
+  { name: "nonfinite", after: cpuSnapshot(Infinity, 200) },
+  { name: "zero total delta", after: cpuSnapshot(100, 100) },
+])("keeps aggressive Linux copy capacity with $name CPU evidence", async ({ after }) => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    4,
+    () => 4,
+    () => (samples++ === 0 ? cpuSnapshot(100, 100) : after),
+  );
+});
+
+it.each([0, 1])(
+  "keeps aggressive Linux copy capacity when CPU snapshot %i throws",
+  async (failsAt) => {
+    let samples = 0;
+    await checkLinuxCopyConcurrency(
+      4,
+      () => 4,
+      () => {
+        if (samples++ === failsAt) throw new Error("synthetic CPU lookup failure");
+        return cpuSnapshot(0, 0);
+      },
+    );
+  },
+);
+
+it("keeps the four-loop ceiling when the capacity hint throws", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    4,
+    () => {
+      throw new Error("synthetic capacity lookup failure");
+    },
+    () => cpuSnapshot(0, samples++ * 100),
+  );
+});
+
+it("counts nice, system and interrupt CPU time as busy", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    1,
+    () => 4,
+    () => {
+      const value = samples++ * 100;
+      return cpuSnapshot(0, 0).map((cpu) => ({
+        ...cpu,
+        times: { user: 0, nice: value, sys: value, irq: value, idle: 0 },
+      }));
+    },
+  );
+});
+
+it.each([false, true])(
+  "cancels Linux sampling when the baseline settles early (failure=%s)",
+  async (fails) => {
+    await fixture(async (base, database) => {
+      await NodeFSP.truncate(database, 3 * 8 * 1024 * 1024);
+      const destination = NodePath.join(base, "early-copy");
+      const failure = Object.assign(new Error("synthetic early write failure"), { code: "ENOSPC" });
+      const originalOpen = NodeFSP.open;
+      const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+      const capacity = vi.spyOn(NodeOS, "availableParallelism").mockReturnValue(4);
+      const cpus = vi.spyOn(NodeOS, "cpus").mockReturnValue(cpuSnapshot(0, 0));
+      const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+      const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+        const handle = await originalOpen(...args);
+        if (!fails || args[0] !== destination) return handle;
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "write")
+              return async () => {
+                throw failure;
+              };
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const copying = copyQualifiedBackupFile(database, destination);
+        if (fails) {
+          await NodeAssert.rejects(copying, (cause) => cause === failure);
+          await NodeAssert.rejects(NodeFSP.lstat(destination), { code: "ENOENT" });
+        } else {
+          assert.equal((await copying).bytes, 3 * 8 * 1024 * 1024);
+        }
+        assert.equal(cpus.mock.calls.length, 1);
+        assert.equal(vi.getTimerCount(), 0);
+        await vi.advanceTimersByTimeAsync(100);
+        assert.equal(cpus.mock.calls.length, 1);
+      } finally {
+        vi.useRealTimers();
+        open.mockRestore();
+        clone.mockRestore();
+        cpus.mockRestore();
+        capacity.mockRestore();
+        platform.mockRestore();
+      }
+    });
+  },
+);
+
+it("bypasses CPU sampling for empty, single-chunk and cloned Linux files", async () => {
+  await fixture(async (base, database) => {
+    const originalCopy = NodeFSP.copyFile;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const cpus = vi.spyOn(NodeOS, "cpus");
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      for (const size of [0, 1, 8 * 1024 * 1024]) {
+        await NodeFSP.truncate(database, size);
+        assert.deepEqual(
+          await copyQualifiedBackupFile(database, NodePath.join(base, `small-${size}`)),
+          {
+            method: "copy",
+            bytes: size,
+          },
+        );
+      }
+      await NodeFSP.truncate(database, 2 * 8 * 1024 * 1024);
+      clone.mockImplementation((source, target) =>
+        originalCopy(source, target, NodeFS.constants.COPYFILE_EXCL),
+      );
+      assert.equal(
+        (await copyQualifiedBackupFile(database, NodePath.join(base, "cloned-large"))).method,
+        "clone",
+      );
+      assert.equal(cpus.mock.calls.length, 0);
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      vi.useRealTimers();
+      clone.mockRestore();
+      cpus.mockRestore();
+      platform.mockRestore();
+    }
+  });
+});
+
+it("caps idle Linux copy workers at the file's chunk count", async () => {
+  let samples = 0;
+  await checkLinuxCopyConcurrency(
+    2,
+    () => 4,
+    () => cpuSnapshot(0, samples++ * 100),
+    2,
+  );
+});
+
+it("settles every started Linux copy loop before closing and removing a failed output", async () => {
+  await fixture(async (base, database) => {
+    const chunk = 8 * 1024 * 1024;
+    await NodeFSP.truncate(database, 6 * chunk);
+    const destination = NodePath.join(base, "settled-failure");
+    const baselineEntered = Promise.withResolvers<void>();
+    const baselineRelease = Promise.withResolvers<void>();
+    const failedWrite = Promise.withResolvers<void>();
+    const failure = Object.assign(new Error("synthetic concurrent disk full"), { code: "ENOSPC" });
+    const originalOpen = NodeFSP.open;
+    let samples = 0;
+    let reads = 0;
+    let closes = 0;
+    let active = 0;
+    const platform = vi.spyOn(NodeOS, "platform").mockReturnValue("linux");
+    const capacity = vi.spyOn(NodeOS, "availableParallelism").mockReturnValue(4);
+    const cpus = vi.spyOn(NodeOS, "cpus").mockImplementation(() => cpuSnapshot(0, samples++ * 100));
+    const clone = vi.spyOn(NodeFSP, "copyFile").mockRejectedValue(unsupported());
+    const open = vi.spyOn(NodeFSP, "open").mockImplementation(async (...args) => {
+      const handle = await originalOpen(...args);
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "read")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              reads += 1;
+              active += 1;
+              try {
+                if (position === 0) {
+                  baselineEntered.resolve();
+                  await baselineRelease.promise;
+                }
+                return await target.read(buffer, offset, length, position);
+              } finally {
+                active -= 1;
+              }
+            };
+          if (property === "write")
+            return async (buffer: Buffer, offset: number, length: number, position: number) => {
+              if (position !== 0) {
+                failedWrite.resolve();
+                throw failure;
+              }
+              return target.write(buffer, offset, length, position);
+            };
+          if (property === "close")
+            return async () => {
+              assert.equal(active, 0, "handles remain open until every read settles");
+              closes += 1;
+              await target.close();
+            };
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const copying = copyQualifiedBackupFile(database, destination);
+    const rejected = NodeAssert.rejects(copying, (cause) => cause === failure);
+    try {
+      await baselineEntered.promise;
+      await vi.advanceTimersByTimeAsync(100);
+      await failedWrite.promise;
+      assert.equal(reads, 4);
+      assert.equal(closes, 0);
+      await NodeFSP.access(destination);
+      baselineRelease.resolve();
+      await rejected;
+      assert.equal(closes, 2);
+      assert.equal(reads, 4, "a failed loop prevents claiming additional chunks");
+      await NodeAssert.rejects(NodeFSP.lstat(destination), { code: "ENOENT" });
+      assert.equal(vi.getTimerCount(), 0);
+    } finally {
+      baselineRelease.resolve();
+      await copying.catch(() => {});
+      await rejected.catch(() => {});
+      vi.useRealTimers();
+      open.mockRestore();
+      clone.mockRestore();
+      cpus.mockRestore();
+      capacity.mockRestore();
+      platform.mockRestore();
+    }
+  });
+});
+
 it("reserves the exact copy rollback buffer and trial headroom before stopping", async () => {
   await fixture(async (base, database) => {
     await NodeFSP.writeFile(`${database}-wal`, "wal");
