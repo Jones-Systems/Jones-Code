@@ -1448,7 +1448,13 @@
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/115_JonesScheduledWebhookPendingRuns.test.ts": "jones-owned",
     "apps/server/src/scheduledTasks/webhookRoute.test.ts": "jones-tests-in-upstream",
-    "scripts/jones/boundary/fragments/watcher-restart-survival.json": "policy"
+    "scripts/jones/boundary/fragments/watcher-restart-survival.json": "policy",
+    "apps/server/src/jones/updates/recoverStagedSelection.ts": "jones-owned",
+    "apps/server/src/jones/updates/recoverStagedSelection.test.ts": "jones-owned",
+    "scripts/jones/updates/recover-staged-selection.ts": "jones-owned",
+    "scripts/jones/updates/recover-staged-selection.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
+    "docs/operations/staged-selection-recovery.md": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

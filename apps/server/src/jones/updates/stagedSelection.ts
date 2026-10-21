@@ -13,7 +13,7 @@ import {
   type StagedQualifiedRuntime,
 } from "../cloud/qualifiedRuntime.ts";
 
-function selectionPath(binding: QualifiedRuntimeBinding): string {
+export function selectionPath(binding: QualifiedRuntimeBinding): string {
   const key = NodeCrypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex");
   return NodePath.join(binding.baseDir, "runtime", "jones-updates", "selections", `${key}.json`);
 }

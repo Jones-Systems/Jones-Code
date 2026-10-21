@@ -1264,6 +1264,15 @@
         "packages/provider-core/src/server/orchestrationInstructions.test.ts"
       ],
       "scope": "Provider-neutral self-only durable owner response MCP tool. Jones-owned service creates existing message-capable user input through an internal serialized command with active-run/root/provider validation; no public command, database schema or UI changes. Contract export, internal union, orchestrator dispatch, HTTP registration and tool presentation/instruction hooks are narrow shared edits. Existing shared presentation/instruction tests cover their consumed hooks. Jones-local integration uses the existing replay harness with scoped synthetic state cleanup and real receipts, projections, recovery and response dispatch. Permission prompts remain authoritative; eligible live retries only."
+    },
+    {
+      "id": "staged-selection-recovery",
+      "tests": [
+        "apps/server/src/jones/updates/recoverStagedSelection.test.ts",
+        "scripts/jones/updates/recover-staged-selection.test.ts",
+        "apps/server/src/jones/updates/stagedSelection.test.ts"
+      ],
+      "scope": "Standalone operator recovery reattaches one existing verified native staged handle through the native selection writer under the existing updater lock. Dry-run creates no files; apply preserves receipts, payloads, active state and native install controls. Tests cover exact binding, conflicting pointers, revocation, unknown write and durability effects. No product entry point, installation, service control or adoption change."
     }
   ]
 }
