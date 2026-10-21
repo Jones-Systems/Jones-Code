@@ -1,3 +1,4 @@
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import { seedUserInputDraftAnswers } from "@t3tools/client-runtime/state/thread-requests";
 import {
   EnvironmentId,
@@ -5,9 +6,8 @@ import {
   ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import { ComposerBanner } from "../../components/chat/ComposerBanner";
 import "../../index.css";
@@ -124,20 +124,38 @@ function Harness({
   );
 }
 
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
+  ownedContainer = container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -162,7 +180,8 @@ function output(id: string) {
 }
 
 it("answers inside the card without sending or changing the independent thread draft", async () => {
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("My written answer");
   await act(async () => button("Send").click());
   expect(output("answer")).toBe(JSON.stringify({ approach: "My written answer" }));
@@ -173,7 +192,8 @@ it("answers inside the card without sending or changing the independent thread d
 });
 
 it("sending the thread message leaves the question and its written answer pending", async () => {
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Keep this answer");
   await act(async () => button("Send thread message").click());
   expect(output("answer")).toBe("null");
@@ -182,9 +202,10 @@ it("sending the thread message leaves the question and its written answer pendin
 });
 
 it("aligns the one-line answer and Send with the option content, then caps growth at four lines", async () => {
+    await using _fixture = await setupTest();
   container.style.width = "680px";
   await act(async () =>
-    root.render(
+    await root.rerender(
       <ComposerBanner.Root>
         <Harness />
       </ComposerBanner.Root>,

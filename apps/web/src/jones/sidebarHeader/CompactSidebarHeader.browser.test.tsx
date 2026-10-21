@@ -1,24 +1,53 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+
+import { expect, it, vi } from "vite-plus/test";
 import "~/index.css";
 import { CompactSidebarHeader } from "./CompactSidebarHeader";
 import { ThreadStatusFilterPill } from "../threadStatusFilter/ThreadStatusFilterPill";
 
-let root: Root;
+let resizeRevision = 0;
+let root: Screen;
 let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+  resizeRevision = 0;
+  const NativeResizeObserver = globalThis.ResizeObserver;
+  vi.stubGlobal("ResizeObserver", class extends NativeResizeObserver {
+    constructor(callback: ResizeObserverCallback) {
+      super((entries, observer) => {
+        callback(entries, observer);
+        resizeRevision += 1;
+      });
+    }
+  });
+  ownedContainer = container = document.createElement("div");
   container.style.width = "500px";
   document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 
 function Fixture({ large = false, label = "Preview" }: { large?: boolean; label?: string }) {
   return (
@@ -48,21 +77,21 @@ function Fixture({ large = false, label = "Preview" }: { large?: boolean; label?
     </CompactSidebarHeader>
   );
 }
-const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const waitForResize = (previous: number) =>
+  vi.waitFor(() => expect(resizeRevision).toBeGreaterThan(previous), { interval: 1 });
 
 it("scales smoothly at actual sidebar widths, keeps Work in the row, and restores the brand on expansion", async () => {
-  await act(async () => root.render(<Fixture />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Fixture />));
   const row = container.firstElementChild as HTMLElement;
   const densities = new Set<string>();
   const factors: number[] = [];
   const brand = container.querySelector("[data-sidebar-brand]")!;
   const code = container.querySelector("[data-sidebar-brand-code]")!;
   for (let width = 400; width >= 160; width -= 2) {
+    const previousResize = resizeRevision;
     container.style.width = `${width}px`;
-    await act(async () => {
-      await frame();
-      await frame();
-    });
+    await waitForResize(previousResize);
     densities.add(row.dataset.density!);
     const factor = Number(row.style.getPropertyValue("--sidebar-header-spacing"));
     expect(factor).toBeGreaterThanOrEqual(0.25);
@@ -104,9 +133,11 @@ it("scales smoothly at actual sidebar widths, keeps Work in the row, and restore
 });
 
 it("refits changed large counts and an environment label without clipping controls", async () => {
+    await using _fixture = await setupTest();
   container.style.width = "320px";
-  await act(async () => root.render(<Fixture />));
-  await act(async () => root.render(<Fixture large label="Preview EU" />));
+  await act(async () => await root.rerender(<Fixture />));
+  const previousResize = resizeRevision;
+  await act(async () => await root.rerender(<Fixture large label="Preview EU" />));
   const row = container.firstElementChild as HTMLElement;
   await expect.poll(() => row.scrollWidth <= row.clientWidth).toBe(true);
   expect(container.textContent).toContain("999999");
@@ -114,12 +145,9 @@ it("refits changed large counts and an environment label without clipping contro
   expect(container.querySelector("button")!.getAttribute("aria-label")).toContain("999999 working");
   const factor = row.style.getPropertyValue("--sidebar-header-spacing");
   const density = row.dataset.density;
-  await act(async () => {
-    await frame();
-    await frame();
-  });
+  await waitForResize(previousResize);
   expect(row.style.getPropertyValue("--sidebar-header-spacing")).toBe(factor);
   expect(row.dataset.density).toBe(density);
-  await act(async () => root.render(<Fixture />));
+  await act(async () => await root.rerender(<Fixture />));
   await expect.poll(() => row.dataset.density).not.toBe("minimal");
 });

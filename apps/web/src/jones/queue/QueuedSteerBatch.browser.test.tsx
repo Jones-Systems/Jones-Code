@@ -1,6 +1,6 @@
-import { act, createRef } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest } from "../../../test/render";
+import { createRef } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   QUEUED_STEER_BATCH_LIMITS,
   type OrchestrationV2ThreadProjection,
@@ -44,7 +44,6 @@ import {
   type QueuedRunsControlHandle,
 } from "../../components/chat/QueuedRunsControl";
 
-const roots: Root[] = [];
 function queueProjection(): OrchestrationV2ThreadProjection {
   const modelSelection = { instanceId: "codex", model: "gpt-test" };
   return {
@@ -107,29 +106,16 @@ function queueProjection(): OrchestrationV2ThreadProjection {
   } as unknown as OrchestrationV2ThreadProjection;
 }
 
-beforeEach(() => {
+function setupTest() {
   state.projection = queueProjection();
   state.capability = QUEUED_STEER_BATCH_LIMITS;
   state.batch.mockReset().mockResolvedValue({ _tag: "Success", value: { sequence: 1 } });
   state.row.mockReset().mockResolvedValue({ _tag: "Success" });
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-});
-afterEach(async () => {
-  await act(async () => {
-    for (const root of roots.splice(0)) root.unmount();
-  });
-  document.body.replaceChildren();
-  vi.unstubAllGlobals();
-});
+}
+
 
 async function render(props: Partial<React.ComponentProps<typeof QueuedRunsControl>> = {}) {
-  const container = document.createElement("div");
-  document.body.append(container);
-  const root = createRoot(container);
-  roots.push(root);
-  await act(async () =>
-    root.render(
-      <QueuedRunsControl
+ return renderTest(<QueuedRunsControl
         environmentId={"environment:test" as never}
         threadId={"thread:test" as never}
         optimisticMessages={[]}
@@ -137,10 +123,7 @@ async function render(props: Partial<React.ComponentProps<typeof QueuedRunsContr
         onEditQueuedRun={() => undefined}
         onCancelEdit={() => undefined}
         {...props}
-      />,
-    ),
-  );
-  return container;
+      />, { router: false });
 }
 function button(view: HTMLElement, label: string) {
   return [...view.querySelectorAll("button")].find(
@@ -150,6 +133,7 @@ function button(view: HTMLElement, label: string) {
 
 describe("queue header batch action", () => {
   it("one click dispatches all 22 IDs once, keeps the queue expanded, and locks row actions", async () => {
+setupTest();
     const ref = createRef<QueuedRunsControlHandle>();
     let finish!: (result: unknown) => void;
     state.batch.mockImplementation(
@@ -158,7 +142,8 @@ describe("queue header batch action", () => {
           finish = resolve;
         }),
     );
-    const view = await render({ ref });
+    await using screen = await render({ ref });
+const view = screen.container;
     const send = button(view, "Steer all (22)")!;
     expect(send).toBeDefined();
     expect(send.closest("button")?.parentElement?.closest("button")).toBeNull();
@@ -201,16 +186,20 @@ describe("queue header batch action", () => {
   });
 
   it("hides on old servers and never dispatches a fallback", async () => {
+setupTest();
     state.capability = undefined;
-    const view = await render();
+    await using screen = await render();
+const view = screen.container;
     expect(button(view, "Steer all (22)")).toBeUndefined();
     expect(state.batch).not.toHaveBeenCalled();
     expect(state.row).not.toHaveBeenCalled();
   });
 
   it("shows the bounded prefix and remainder instead of claiming all", async () => {
+setupTest();
     state.capability = { ...QUEUED_STEER_BATCH_LIMITS, maxItems: 3 };
-    const view = await render();
+    await using screen = await render();
+const view = screen.container;
     expect(button(view, "Steer all (22)")).toBeUndefined();
     expect(view.textContent).toContain("19 still queued — batch size limit");
     await act(async () => {
@@ -223,6 +212,7 @@ describe("queue header batch action", () => {
   it.each(["editing", "unsaved", "pending question", "ended turn", "restart only", "oversized"])(
     "disables while %s",
     async (condition) => {
+setupTest();
       const projection = state.projection as OrchestrationV2ThreadProjection;
       if (condition === "pending question")
         state.projection = { ...projection, runtimeRequests: [{ status: "pending" }] };
@@ -241,7 +231,7 @@ describe("queue header batch action", () => {
         };
       if (condition === "oversized")
         state.capability = { ...QUEUED_STEER_BATCH_LIMITS, maxInputChars: 1 };
-      const view = await render({
+      await using screen = await render({
         ...(condition === "editing" ? { editingRunId: "queued-0" as never } : {}),
         ...(condition === "unsaved"
           ? {
@@ -256,6 +246,7 @@ describe("queue header batch action", () => {
             }
           : {}),
       });
+const view = screen.container;
       expect(button(view, "Steer all (22)")?.disabled).toBe(true);
       expect(state.batch).not.toHaveBeenCalled();
     },
@@ -264,10 +255,12 @@ describe("queue header batch action", () => {
   it.each(["failure", "rejection"])(
     "keeps all rows after %s and retries the identical batch",
     async (outcome) => {
+setupTest();
       if (outcome === "rejection")
         state.batch.mockRejectedValueOnce(new Error("Transport unavailable"));
       else state.batch.mockResolvedValueOnce({ _tag: "Failure" });
-      const view = await render();
+      await using screen = await render();
+const view = screen.container;
       await act(async () => {
         button(view, "Steer all (22)")!.click();
       });

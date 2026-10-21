@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, createRef, type ComponentProps } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+import { createRef, type ComponentProps } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -36,10 +35,10 @@ const claude: Extract<ProviderOptionDescriptor, { type: "select" }> = {
   promptInjectedValues: ["ultrathink"],
 };
 let container: HTMLDivElement;
-let root: Root;
+let root: Screen;
 let onPromptChange = vi.fn<(prompt: string) => void>();
 
-function render(
+async function render(
   overrides: Partial<ComponentProps<typeof ReasoningEffortShortcuts>> = {},
   descriptors: ReadonlyArray<ProviderOptionDescriptor> = [effort, fast],
   withMenu = false,
@@ -64,8 +63,8 @@ function render(
     visible: true,
     ...overrides,
   };
-  act(() =>
-    root.render(
+  await act(async () =>
+    await root.rerender(
       <>
         <ReasoningEffortShortcuts {...props} />
         {withMenu ? (
@@ -85,10 +84,10 @@ function buttons() {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('[role="group"] button'));
 }
 
-function click(label: string) {
+async function click(label: string) {
   const button = buttons().find((button) => button.textContent === label);
   expect(button).toBeDefined();
-  act(() => button?.click());
+  await act(() => button?.click());
 }
 
 function selectedLabel() {
@@ -99,8 +98,24 @@ function currentOptions(id = instanceId) {
   return useComposerDraftStore.getState().stickyModelSelectionByProvider[id]?.options;
 }
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
   onPromptChange = vi.fn();
   useComposerDraftStore.setState({
     draftsByThreadKey: {},
@@ -115,21 +130,24 @@ beforeEach(() => {
       disconnect() {}
     },
   );
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
 
-afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 describe("reasoning effort shortcuts", () => {
-  it("uses current model defaults and preserves other saved options in draft and sticky selection", () => {
-    render({
+  it("uses current model defaults and preserves other saved options in draft and sticky selection", async () => {
+    await using _fixture = await setupTest();
+    await render({
       modelOptions: [
         { id: "fastMode", value: true },
         { id: "futureTrait", value: "saved" },
@@ -137,7 +155,7 @@ describe("reasoning effort shortcuts", () => {
     });
     expect(buttons().map((button) => button.textContent)).toEqual(["Low", "High", "Max"]);
     expect(selectedLabel()).toBe("High");
-    click("Max");
+    await click("Max");
     const state = useComposerDraftStore.getState();
     const selection = state.stickyModelSelectionByProvider[instanceId];
     expect(selection).toEqual({
@@ -152,25 +170,27 @@ describe("reasoning effort shortcuts", () => {
     expect(Object.values(state.draftsByThreadKey)[0]?.modelSelectionByProvider[instanceId]).toEqual(
       selection,
     );
-    render({ modelOptions: selection?.options });
+    await render({ modelOptions: selection?.options });
     expect(selectedLabel()).toBe("Max");
     expect(buttons()[2]?.title).toBe("Maximum");
   });
 
   it.each(["effort", "variant", "reasoning"])(
     "selects the %s descriptor without exposing unrelated selectors",
-    (id) => {
-      render({}, [
+    async (id) => {
+    await using _fixture = await setupTest();
+      await render({}, [
         { ...effort, id },
         { id: "agent", label: "Agent", type: "select", options: [{ id: "build", label: "Build" }] },
       ]);
-      click("Low");
+      await click("Low");
       expect(currentOptions()).toContainEqual({ id, value: "low" });
       expect(container.textContent).not.toContain("Build");
     },
   );
 
-  it("selects every actual effort choice and keeps unknown metadata labels in full", () => {
+  it("selects every actual effort choice and keeps unknown metadata labels in full", async () => {
+    await using _fixture = await setupTest();
     const options = [
       { id: "none", label: "None" },
       { id: "minimal", label: "Minimal" },
@@ -194,20 +214,21 @@ describe("reasoning effort shortcuts", () => {
       "Ultra",
       "Adaptive model supplied effort",
     ];
-    render({}, [descriptor]);
+    await render({}, [descriptor]);
     expect(buttons().map((button) => button.textContent)).toEqual(labels);
     for (const [index, option] of options.entries()) {
-      click(labels[index]!);
+      await click(labels[index]!);
       expect(currentOptions()).toEqual([
         { id: "reasoningEffort", value: option.id },
         { id: "fastMode", value: true },
       ]);
-      render({ modelOptions: currentOptions() }, [descriptor]);
+      await render({ modelOptions: currentOptions() }, [descriptor]);
       expect(selectedLabel()).toBe(labels[index]);
     }
   });
 
-  it("inherits the same configured Codex default as the menu without persisting it until selected", () => {
+  it("inherits the same configured Codex default as the menu without persisting it until selected", async () => {
+    await using _fixture = await setupTest();
     const resolved = getComposerEffectiveTraitsOptions({
       provider: ProviderDriverKind.make("codex"),
       instanceId,
@@ -222,7 +243,7 @@ describe("reasoning effort shortcuts", () => {
       defaultDriverKind: ProviderDriverKind.make("codex"),
       planModeEnabled: true,
     });
-    render({
+    await render({
       ...resolved,
       provider: ProviderDriverKind.make("codex"),
       model: "gpt-6.1-sol",
@@ -230,15 +251,16 @@ describe("reasoning effort shortcuts", () => {
     });
     expect(selectedLabel()).toBe("Medium");
     expect(currentOptions()).toBeUndefined();
-    act(() => familyButton("GPT-6.1 Sol, High reasoning").click());
+    await act(() => familyButton("GPT-6.1 Sol, High reasoning").click());
     expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "high" });
   });
 
-  it("follows the selected instance and model catalog without offering prior model choices", () => {
+  it("follows the selected instance and model catalog without offering prior model choices", async () => {
+    await using _fixture = await setupTest();
     const otherInstance = ProviderInstanceId.make("other-reasoning-instance");
-    render();
-    click("Low");
-    render({
+    await render();
+    await click("Low");
+    await render({
       instanceId: otherInstance,
       model: "other-model",
       modelOptions: undefined,
@@ -256,23 +278,24 @@ describe("reasoning effort shortcuts", () => {
       ],
     });
     expect(buttons().map((button) => button.textContent)).toEqual(["XH"]);
-    click("XH");
+    await click("XH");
     expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "low" });
     expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[otherInstance]).toEqual({
       instanceId: otherInstance,
       model: "other-model",
       options: [{ id: "reasoningEffort", value: "xhigh" }],
     });
-    render({ modelOptions: currentOptions() });
+    await render({ modelOptions: currentOptions() });
     expect(selectedLabel()).toBe("Low");
   });
 
-  it("hides unsupported models and unavailable OpenCode metadata", () => {
-    render({}, [fast]);
+  it("hides unsupported models and unavailable OpenCode metadata", async () => {
+    await using _fixture = await setupTest();
+    await render({}, [fast]);
     expect(buttons()).toEqual([]);
-    render({ model: "missing-model" });
+    await render({ model: "missing-model" });
     expect(buttons()).toEqual([]);
-    render({
+    await render({
       provider: ProviderDriverKind.make("opencode"),
       models: [],
       modelOptions: [{ id: "variant", value: "max" }],
@@ -281,28 +304,31 @@ describe("reasoning effort shortcuts", () => {
     expect(currentOptions()).toBeUndefined();
   });
 
-  it("inserts and removes the prompt-injected prefix in the descriptor fallback without persisting prompt-injected values", () => {
-    render({ prompt: "Explain" }, [claude]);
-    click("Ultra");
+  it("inserts and removes the prompt-injected prefix in the descriptor fallback without persisting prompt-injected values", async () => {
+    await using _fixture = await setupTest();
+    await render({ prompt: "Explain" }, [claude]);
+    await click("Ultra");
     expect(onPromptChange).toHaveBeenLastCalledWith("Ultrathink:\nExplain");
     expect(currentOptions()).toBeUndefined();
-    render({ prompt: "Ultrathink:\nExplain" }, [claude]);
+    await render({ prompt: "Ultrathink:\nExplain" }, [claude]);
     expect(selectedLabel()).toBe("Ultra");
-    click("High");
+    await click("High");
     expect(onPromptChange).toHaveBeenLastCalledWith("Explain");
     expect(currentOptions()).toContainEqual({ id: "effort", value: "high" });
   });
 
-  it("locks effort when ultrathink remains in the prompt body", () => {
-    render({ prompt: "Please ultrathink about this" }, [claude]);
+  it("locks effort when ultrathink remains in the prompt body", async () => {
+    await using _fixture = await setupTest();
+    await render({ prompt: "Please ultrathink about this" }, [claude]);
     expect(buttons().every((button) => button.disabled)).toBe(true);
-    click("High");
-    click("Ultra");
+    await click("High");
+    await click("Ultra");
     expect(onPromptChange).not.toHaveBeenCalled();
     expect(currentOptions()).toBeUndefined();
   });
 
-  it("guards prompt injection in the shared handler even when invoked outside a disabled control", () => {
+  it("guards prompt injection in the shared handler even when invoked outside a disabled control", async () => {
+    await using _fixture = await setupTest();
     function AttemptInjection() {
       const traits = useTraitsSelection({
         provider: ProviderDriverKind.make("claudeAgent"),
@@ -328,17 +354,18 @@ describe("reasoning effort shortcuts", () => {
         </button>
       );
     }
-    act(() => root.render(<AttemptInjection />));
-    act(() => container.querySelector("button")?.click());
+    await act(async () => await root.rerender(<AttemptInjection />));
+    await act(() => container.querySelector("button")?.click());
     expect(onPromptChange).not.toHaveBeenCalled();
     expect(currentOptions()).toBeUndefined();
-    render({ allowPromptInjectedEffort: false }, [claude]);
+    await render({ allowPromptInjectedEffort: false }, [claude]);
     expect(buttons().find((button) => button.textContent === "Ultra")?.disabled).toBe(true);
   });
 
-  it("retains the measurable group while hidden and blocks activation until the parent restores it", () => {
+  it("retains the measurable group while hidden and blocks activation until the parent restores it", async () => {
+    await using _fixture = await setupTest();
     const groupRef = createRef<HTMLDivElement>();
-    render({ visible: false, groupRef });
+    await render({ visible: false, groupRef });
     const group = groupRef.current;
     expect(group).toBe(container.querySelector('[role="group"]'));
     expect(group?.style.visibility).toBe("hidden");
@@ -346,20 +373,21 @@ describe("reasoning effort shortcuts", () => {
     expect(buttons().every((button) => button.disabled && button.tabIndex === -1)).toBe(true);
     const button = buttons()[0]!;
     button.disabled = false;
-    act(() => button.click());
+    await act(() => button.click());
     expect(currentOptions()).toBeUndefined();
-    render({ visible: true, groupRef });
+    await render({ visible: true, groupRef });
     expect(groupRef.current).toBe(group);
     expect(group?.style.visibility).toBe("visible");
     expect(group?.hasAttribute("inert")).toBe(false);
-    click("Low");
+    await click("Low");
     expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "low" });
   });
 
   it("keeps actual menu and shortcut selections in parity through both directions", async () => {
-    render({}, [effort, fast], true);
-    click("Low");
-    render({ modelOptions: currentOptions() }, [effort, fast], true);
+    await using _fixture = await setupTest();
+    await render({}, [effort, fast], true);
+    await click("Low");
+    await render({ modelOptions: currentOptions() }, [effort, fast], true);
     const lowItem = Array.from(
       document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
     ).find((item) => item.textContent?.startsWith("Quick"));
@@ -373,7 +401,7 @@ describe("reasoning effort shortcuts", () => {
       { id: "reasoningEffort", value: "max" },
       { id: "fastMode", value: true },
     ]);
-    render({ modelOptions: currentOptions() }, [effort, fast], true);
+    await render({ modelOptions: currentOptions() }, [effort, fast], true);
     expect(selectedLabel()).toBe("Max");
     const selectedItem = Array.from(
       document.querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
@@ -414,7 +442,8 @@ function familyButton(name: string) {
   return button!;
 }
 
-it("selects a model and effort together on the current account, retaining same-model traits", () => {
+it("selects a model and effort together on the current account, retaining same-model traits", async () => {
+    await using _fixture = await setupTest();
   const onProviderModelSelect = vi.fn();
   const props = {
     provider: ProviderDriverKind.make("codex"),
@@ -422,7 +451,7 @@ it("selects a model and effort together on the current account, retaining same-m
     model: "gpt-6.1-sol",
     onProviderModelSelect,
   };
-  render(props);
+  await render(props);
   expect(buttons().map((button) => button.textContent)).toEqual([
     "Medium",
     "High",
@@ -433,18 +462,18 @@ it("selects a model and effort together on the current account, retaining same-m
   ]);
   expect(familyButton("GPT-6.1 Sol, High reasoning").getAttribute("aria-pressed")).toBe("true");
   expect(familyButton("GPT-6 Astra, High reasoning").getAttribute("aria-pressed")).toBe("false");
-  act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  await act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
   expect(currentOptions()).toEqual([
     { id: "reasoningEffort", value: "medium" },
     { id: "fastMode", value: true },
   ]);
   expect(onProviderModelSelect).not.toHaveBeenCalled();
-  act(() => familyButton("GPT-6 Astra, Extra High reasoning").click());
+  await act(() => familyButton("GPT-6 Astra, Extra High reasoning").click());
   expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "gpt-6-astra", {
     effort: { id: "reasoningEffort", value: "xhigh" },
   });
   expect(currentOptions()).toContainEqual({ id: "reasoningEffort", value: "medium" });
-  render({
+  await render({
     ...props,
     model: "gpt-6-astra",
     modelOptions: [{ id: "reasoningEffort", value: "xhigh" }],
@@ -457,7 +486,8 @@ it("selects a model and effort together on the current account, retaining same-m
   );
 });
 
-it("keeps missing families and unsupported efforts disabled, and enforces model locks and rail hiding", () => {
+it("keeps missing families and unsupported efforts disabled, and enforces model locks and rail hiding", async () => {
+    await using _fixture = await setupTest();
   const onProviderModelSelect = vi.fn();
   const props = {
     provider: ProviderDriverKind.make("codex"),
@@ -465,22 +495,23 @@ it("keeps missing families and unsupported efforts disabled, and enforces model 
     models: [familyModels[0]!],
     onProviderModelSelect,
   };
-  render(props);
+  await render(props);
   expect(familyButton("GPT-6 Astra, Medium reasoning").disabled).toBe(true);
   expect(familyButton("GPT-6 Astra, Medium reasoning").title).toContain("isn't available");
   expect(familyButton("GPT-6.1 Sol, Medium reasoning").disabled).toBe(false);
-  render({ ...props, getModelDisabledReason: () => "Session model is locked" });
+  await render({ ...props, getModelDisabledReason: () => "Session model is locked" });
   expect(buttons().every((button) => button.disabled)).toBe(true);
-  act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
+  await act(() => familyButton("GPT-6.1 Sol, Medium reasoning").click());
   expect(onProviderModelSelect).not.toHaveBeenCalled();
-  render({ ...props, visible: false });
+  await render({ ...props, visible: false });
   const button = familyButton("GPT-6.1 Sol, Medium reasoning");
   button.disabled = false;
-  act(() => button.click());
+  await act(() => button.click());
   expect(onProviderModelSelect).not.toHaveBeenCalled();
 });
 
-it("preserves Claude body locks and strips the prefix on same- and cross-model effort choices", () => {
+it("preserves Claude body locks and strips the prefix on same- and cross-model effort choices", async () => {
+    await using _fixture = await setupTest();
   const descriptor = { ...familyEffort, id: "effort", promptInjectedValues: ["ultrathink"] };
   const models = ["opus", "sonnet"].map((family) => ({
     slug: `claude-${family}-5-5`,
@@ -495,18 +526,18 @@ it("preserves Claude body locks and strips the prefix on same- and cross-model e
     models,
     onProviderModelSelect,
   };
-  render({ ...props, prompt: "Ultrathink:\nExplain" });
+  await render({ ...props, prompt: "Ultrathink:\nExplain" });
   expect(selectedLabel()).toBeUndefined();
-  act(() => familyButton("Claude opus, Medium reasoning").click());
+  await act(() => familyButton("Claude opus, Medium reasoning").click());
   expect(onPromptChange).toHaveBeenLastCalledWith("Explain");
   expect(currentOptions()).toContainEqual({ id: "effort", value: "medium" });
-  act(() => familyButton("Claude sonnet, Extra High reasoning").click());
+  await act(() => familyButton("Claude sonnet, Extra High reasoning").click());
   expect(onProviderModelSelect).toHaveBeenCalledExactlyOnceWith(instanceId, "claude-sonnet-5-5", {
     effort: { id: "effort", value: "xhigh" },
   });
   expect(onPromptChange).toHaveBeenLastCalledWith("Explain");
-  render({ ...props, prompt: "Ultrathink:\nPlease ultrathink further" });
+  await render({ ...props, prompt: "Ultrathink:\nPlease ultrathink further" });
   expect(buttons().every((button) => button.disabled)).toBe(true);
-  act(() => familyButton("Claude sonnet, High reasoning").click());
+  await act(() => familyButton("Claude sonnet, High reasoning").click());
   expect(onProviderModelSelect).toHaveBeenCalledTimes(1);
 });

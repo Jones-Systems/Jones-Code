@@ -93,11 +93,7 @@ export function installedComparisonFor(input: {
  * Asks this laptop's own server, which reads GitHub. A server that predates the route, a timeout,
  * or any other failure leaves the order unknown rather than failing the update controls.
  */
-export const readInstalledSourceAncestry = (
-  prepared: PreparedConnection,
-  pair: InstalledSourcePair,
-) =>
-  Effect.gen(function* () {
+export const readInstalledSourceAncestry = Effect.fn("readInstalledSourceAncestry")(function* (prepared: PreparedConnection, pair: InstalledSourcePair) {
     const report = yield* executeAuthenticatedEnvironmentHttpRequest({
       prepared,
       signer: yield* Effect.serviceOption(ManagedRelay.ManagedRelay.ManagedRelayDpopSigner),
@@ -110,4 +106,4 @@ export const readInstalledSourceAncestry = (
       request: ({ client, headers }) => client.sourceRelation({ headers, query: pair }),
     });
     return installedSourceAncestry(pair, report);
-  }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  }, (effect) => effect.pipe(Effect.catch(() => Effect.succeed(undefined))));

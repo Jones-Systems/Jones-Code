@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act } from "../jones/testing/nodeRenderer";
 
-import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 
@@ -21,7 +20,6 @@ const threadKey = (thread: Thread) =>
 
 let renderer: ReactTestRenderer | undefined;
 
-beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
 afterEach(async () => {
   if (renderer) await act(() => renderer?.unmount());
   renderer = undefined;

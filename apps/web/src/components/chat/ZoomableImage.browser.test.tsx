@@ -1,12 +1,11 @@
-// @vitest-environment jsdom
-import { act, createRef, type KeyboardEventHandler } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+import { createRef, type KeyboardEventHandler } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { ZoomableImage, type ZoomableImageHandle } from "./ZoomableImage";
 
 describe("image zoom interactions", () => {
   let gallery = vi.fn<KeyboardEventHandler<HTMLDivElement>>();
-  let root: Root;
+  let root: Screen;
   let container: HTMLDivElement;
   let resize: (entries: { contentRect: { width: number; height: number } }[]) => void;
   const handle = createRef<ZoomableImageHandle>();
@@ -15,13 +14,13 @@ describe("image zoom interactions", () => {
   const percent = () => container.querySelector('[aria-live="polite"]')!.textContent;
   const image = () => container.querySelector<HTMLImageElement>("img")!;
   const dispatch = async (target: Element, event: Event) =>
-    act(() => {
+    await act(() => {
       target.dispatchEvent(event);
     });
   const click = async (target: Element, detail = 1) =>
-    dispatch(target, new MouseEvent("click", { bubbles: true, detail, clientX: 100, clientY: 50 }));
+    await dispatch(target, new MouseEvent("click", { bubbles: true, detail, clientX: 100, clientY: 50 }));
   const key = async (target: Element, key: string) =>
-    dispatch(target, new KeyboardEvent("keydown", { bubbles: true, key }));
+    await dispatch(target, new KeyboardEvent("keydown", { bubbles: true, key }));
   const edit = async (value: string, commit = "Enter") => {
     await act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -34,8 +33,8 @@ describe("image zoom interactions", () => {
     else await key(input(), commit);
   };
   const render = async (layout: "dialog" | "panel" = "dialog", src = "fixture.png") => {
-    await act(() =>
-      root.render(
+    await act(async () =>
+      await root.rerender(
         <div onKeyDown={gallery}>
           <ZoomableImage
             key={src}
@@ -61,8 +60,24 @@ describe("image zoom interactions", () => {
     await dispatch(image(), new Event("load"));
   };
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+    await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -78,18 +93,21 @@ describe("image zoom interactions", () => {
       },
     );
     gallery = vi.fn<KeyboardEventHandler<HTMLDivElement>>();
-    container = document.createElement("div");
+    ownedContainer = container = document.createElement("div");
     document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
+    root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 
   it("counts rapid clicks, changes cursor, cycles with Enter and space, and resets on a new image", async () => {
+    await using _fixture = await setupTest();
     await render("panel");
     for (const [index, percent] of [110, 120, 130, 140, 150, 100].entries()) {
       await click(image(), index + 1);
@@ -105,6 +123,7 @@ describe("image zoom interactions", () => {
   });
 
   it("commits valid percentages, restores invalid entries, steps by ten points and resets", async () => {
+    await using _fixture = await setupTest();
     await render("panel");
     await edit("245");
     expect(input().value).toBe("245");
@@ -135,6 +154,7 @@ describe("image zoom interactions", () => {
   });
 
   it("hides dialog controls while wheel zoom stops at sixty percent and can zoom back in", async () => {
+    await using _fixture = await setupTest();
     await render("dialog");
     const fittedWidth = Number.parseFloat(image().style.width);
     expect(container.querySelector('[role="toolbar"]')).toBeNull();
@@ -173,6 +193,7 @@ describe("image zoom interactions", () => {
   });
 
   it("fits the constrained panel, refits on resize, and keeps pointer-anchored wheel zoom and keyboard pan", async () => {
+    await using _fixture = await setupTest();
     await render("panel");
     await act(() => resize([{ contentRect: { width: 400, height: 200 } }]));
     expect(image().style.width).toBe("400px");
@@ -201,6 +222,7 @@ describe("image zoom interactions", () => {
   });
 
   it("leaves gallery arrows available without horizontal overflow and pans only while zoomed", async () => {
+    await using _fixture = await setupTest();
     await render("dialog");
     await key(region(), "Enter");
     Object.defineProperty(region(), "scrollWidth", { configurable: true, value: 400 });
@@ -218,6 +240,7 @@ describe("image zoom interactions", () => {
   });
 
   it("suppresses the release click after a drag and shows grabbing only after movement", async () => {
+    await using _fixture = await setupTest();
     await render("panel");
     await edit("150");
     region().setPointerCapture = vi.fn();

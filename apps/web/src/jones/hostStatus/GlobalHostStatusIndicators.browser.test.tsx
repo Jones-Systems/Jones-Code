@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
 import { EnvironmentId, type HostStatusSnapshot } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+
+import { expect, it, vi } from "vite-plus/test";
 
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { discoverGlobalHostStatusSource } from "./globalSource";
@@ -39,22 +38,42 @@ function available(cpuUsagePercent = 23): HostStatusSnapshot {
         occupiedMemoryBytes: 12 * 1024 ** 3,
         availableMemoryBytes: 4 * 1024 ** 3,
         totalMemoryBytes: 16 * 1024 ** 3,
-        sampledAt: new Date().toISOString(),
+        sampledAt: vi.getMockedSystemTime()!.toISOString(),
       },
     ],
   };
 }
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Screen;
 let GlobalHostStatusIndicators: typeof import("./GlobalHostStatusIndicators").GlobalHostStatusIndicators;
 let visibility: DocumentVisibilityState;
 
-beforeEach(async () => {
+async function setupTest(): Promise<AsyncDisposable> {
+  let testTimers: Disposable | undefined;
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+  expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+        testTimers?.[Symbol.dispose]();
+      }
+    }
+  }
+  try {
   vi.resetModules();
-  vi.useFakeTimers();
+  testTimers = fakeTimers();
   vi.setSystemTime(new Date("2026-10-14T12:00:00Z"));
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   visibility = "visible";
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
   vi.stubGlobal(
@@ -75,23 +94,23 @@ beforeEach(async () => {
   fetchStatus.mockReset();
   fetchStatus.mockImplementation(async (id) => (id === local ? unconfigured : available()));
   ({ GlobalHostStatusIndicators } = await import("./GlobalHostStatusIndicators"));
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.appendChild(container);
-  root = createRoot(container);
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  expect(vi.getTimerCount()).toBe(0);
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 async function render(threadEnvironmentId = local) {
   await act(async () => {
-    root.render(
+    await root.rerender(
       <TooltipProvider>
         <div data-thread-environment={threadEnvironmentId}>
           <GlobalHostStatusIndicators />
@@ -111,6 +130,7 @@ function requests(id: EnvironmentId) {
 }
 
 it("keeps the global VPS source across local, remote, and local thread navigation and header remounts", async () => {
+    await using _fixture = await setupTest();
   await render(local);
   expect(vps()?.textContent).toBe("VPS · 23% · 4");
   expect(requests(local)).toHaveLength(1);
@@ -122,7 +142,7 @@ it("keeps the global VPS source across local, remote, and local thread navigatio
   await advance(10_000);
   expect(requests(local)).toHaveLength(1);
   expect(requests(remote)).toHaveLength(3);
-  await act(async () => root.render(null));
+  await act(async () => await root.rerender(null));
   expect(vi.getTimerCount()).toBe(0);
   await render();
   expect(requests(local)).toHaveLength(1);
@@ -131,6 +151,7 @@ it("keeps the global VPS source across local, remote, and local thread navigatio
 });
 
 it("uses the primary first, then stable registered ready IDs, and skips denied or unconfigured gateways", async () => {
+    await using _fixture = await setupTest();
   const request = vi.fn(async (id: EnvironmentId) => {
     if (id === other) throw new Error("403 orchestration:read denied");
     return id === local ? unconfigured : available();
@@ -152,6 +173,7 @@ it("uses the primary first, then stable registered ready IDs, and skips denied o
 it.each(["upstream_unavailable", "invalid_response", "stale"] as const)(
   "selects a configured but %s VPS gateway and retains it when another becomes ready",
   async (reason) => {
+    await using _fixture = await setupTest();
     fetchStatus.mockResolvedValue({ hosts: [{ id: "vps", status: "unavailable", reason }] });
     await render();
     expect(requests(local)).toHaveLength(2);
@@ -168,6 +190,7 @@ it.each(["upstream_unavailable", "invalid_response", "stale"] as const)(
 );
 
 it("retains a disconnected source on failure and recovers its values without probing other gateways", async () => {
+    await using _fixture = await setupTest();
   await render();
   connections.connectedEnvironmentIds = [local];
   fetchStatus.mockRejectedValue(new Error("disconnected"));
@@ -182,6 +205,7 @@ it("retains a disconnected source on failure and recovers its values without pro
 });
 
 it("drops a removed source, aborts its poll, and never leaks a late sample into its replacement", async () => {
+    await using _fixture = await setupTest();
   await render();
   let resolve!: (snapshot: HostStatusSnapshot) => void;
   fetchStatus.mockImplementation((id) =>
@@ -205,6 +229,7 @@ it("drops a removed source, aborts its poll, and never leaks a late sample into 
 });
 
 it("aborts discovery on removal and ignores a configured late completion", async () => {
+    await using _fixture = await setupTest();
   let resolve!: (snapshot: HostStatusSnapshot) => void;
   fetchStatus.mockImplementation((id) =>
     id === remote
@@ -227,6 +252,7 @@ it("aborts discovery on removal and ignores a configured late completion", async
 });
 
 it("waits for ready gateways and retries unconfigured or denied discovery only while visible", async () => {
+    await using _fixture = await setupTest();
   connections.environmentIds = [];
   connections.connectedEnvironmentIds = [];
   await render();
@@ -260,6 +286,7 @@ it("waits for ready gateways and retries unconfigured or denied discovery only w
 });
 
 it("requires the VPS slot and does not continue discovery after cancellation", async () => {
+    await using _fixture = await setupTest();
   const abort = new AbortController();
   const request = vi.fn(async () => ({ hosts: [] }) as HostStatusSnapshot);
   expect(await discoverGlobalHostStatusSource(connections, abort.signal, request)).toBeNull();
@@ -273,11 +300,12 @@ it("requires the VPS slot and does not continue discovery after cancellation", a
 });
 
 it("retains fresh values across a true remount without a redundant request and expires while pending", async () => {
+    await using _fixture = await setupTest();
   await render();
   const count = fetchStatus.mock.calls.length;
   fetchStatus.mockImplementation(() => new Promise(() => {}));
   await advance(1_000);
-  await act(async () => root.render(null));
+  await act(async () => await root.rerender(null));
   await render();
   expect(vps()?.textContent).toBe("VPS · 23% · 4");
   expect(fetchStatus).toHaveBeenCalledTimes(count);
@@ -291,6 +319,7 @@ it("retains fresh values across a true remount without a redundant request and e
 });
 
 it("retains values and cadence across hide/show and revalidates stale values on resume", async () => {
+    await using _fixture = await setupTest();
   await render();
   const count = fetchStatus.mock.calls.length;
   await act(async () => {
@@ -321,8 +350,9 @@ it("retains values and cadence across hide/show and revalidates stale values on 
 });
 
 it("clears the retained sample when its gateway is removed and re-added", async () => {
+    await using _fixture = await setupTest();
   await render();
-  await act(async () => root.render(null));
+  await act(async () => await root.rerender(null));
   connections.environmentIds = [];
   connections.connectedEnvironmentIds = [];
   await render();

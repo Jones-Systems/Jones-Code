@@ -1,6 +1,5 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { act, render as renderTest } from "../../../test/render";
+
 import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { JonesBlockedHostUpdates } from "./JonesBlockedHostUpdates";
@@ -20,14 +19,13 @@ describe("historical host update management", () => {
           settle = resolve;
         }),
     );
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const container = document.createElement("div");
     document.body.append(container);
-    const root = createRoot(container);
+    await using root = await renderTest(null, { container: container, router: false });
     try {
       const environmentId = EnvironmentId.make("historical-off-host");
       await act(async () => {
-        root.render(<JonesBlockedHostUpdates environmentId={environmentId} historical />);
+        await root.rerender(<JonesBlockedHostUpdates environmentId={environmentId} historical />);
       });
       expect(container.textContent).toContain("Previously required an update.");
       expect(container.textContent).toContain("The saved connection remains switched off.");

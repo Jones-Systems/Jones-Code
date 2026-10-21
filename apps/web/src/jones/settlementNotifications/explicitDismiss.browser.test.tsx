@@ -1,7 +1,7 @@
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import "~/index.css";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+
+import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 vi.mock(import("~/hooks/useThreadRouteTarget"), () => ({
@@ -10,23 +10,41 @@ vi.mock(import("~/hooks/useThreadRouteTarget"), () => ({
 
 import { ToastProvider, toastManager } from "~/components/ui/toast";
 
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
 
-beforeEach(async () => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  await act(async () => root.render(<ToastProvider />));
-});
-
-afterEach(async () => {
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
   await act(async () => toastManager.close());
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+  ownedContainer = container = document.createElement("div");
+  document.body.append(container);
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+  await act(async () => await root.rerender(<ToastProvider />));
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 function closeButton() {
   return document.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!;
@@ -48,6 +66,7 @@ async function addToast(explicitDismissOnly = false) {
 }
 
 it("keeps default Escape dismissal", async () => {
+    await using _fixture = await setupTest();
   await addToast();
   closeButton().focus();
   await userEvent.keyboard("{Escape}");
@@ -55,6 +74,7 @@ it("keeps default Escape dismissal", async () => {
 });
 
 it("keeps an explicit-only toast through navigation and Escape until X closes it once", async () => {
+    await using _fixture = await setupTest();
   const { onClose, navigate } = await addToast(true);
   const title = document.querySelector<HTMLButtonElement>('[data-slot="toast-title"] button')!;
   await userEvent.click(title);
@@ -106,12 +126,14 @@ async function swipeRight() {
 }
 
 it("keeps default swipe dismissal", async () => {
+    await using _fixture = await setupTest();
   await addToast();
   await swipeRight();
   await expect.poll(() => closeButton()).toBeNull();
 });
 
 it("ignores swipe dismissal for an explicit-only toast", async () => {
+    await using _fixture = await setupTest();
   const { onClose } = await addToast(true);
   await swipeRight();
   expect(closeButton()).not.toBeNull();
@@ -122,6 +144,7 @@ it("ignores swipe dismissal for an explicit-only toast", async () => {
 });
 
 it("keeps ordinary expandable toasts at their original width", async () => {
+    await using _fixture = await setupTest();
   await act(async () => {
     toastManager.add({
       title: "Ordinary notice",

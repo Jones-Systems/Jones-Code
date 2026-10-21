@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+import { useState } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const engine = vi.hoisted(() => ({
   viewers: [] as {
@@ -107,21 +106,21 @@ import PdfPreview from "./PdfPreview";
 
 describe("PDF zoom and lifetime", () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Screen;
   let notifyResize: () => void;
   const region = () => container.querySelector<HTMLElement>('[role="region"]')!;
   const input = () => container.querySelector<HTMLInputElement>('[aria-label="Zoom percentage"]')!;
   const viewer = () => engine.viewers.at(-1)!;
   const dispatch = async (target: Element, event: Event) =>
-    act(() => {
+    await act(() => {
       target.dispatchEvent(event);
     });
-  const key = (target: Element, key: string) =>
-    dispatch(target, new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
-  const click = (target: Element) =>
-    dispatch(target, new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 80 }));
+  const key = async (target: Element, key: string) =>
+    await dispatch(target, new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  const click = async (target: Element) =>
+    await dispatch(target, new MouseEvent("click", { bubbles: true, clientX: 100, clientY: 80 }));
   const render = async (src = "/fixture.pdf") =>
-    act(() => root.render(<PdfPreview src={src} title="Fixture" />));
+    await act(async () => await root.rerender(<PdfPreview src={src} title="Fixture" />));
   const edit = async (value: string) => {
     await act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
@@ -132,7 +131,23 @@ describe("PDF zoom and lifetime", () => {
     });
     await key(input(), "Enter");
   };
-  beforeEach(() => {
+  async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+    await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
     engine.viewers.length = 0;
     engine.tasks.length = 0;
     engine.failed = false;
@@ -140,7 +155,6 @@ describe("PDF zoom and lifetime", () => {
     engine.scales.mockClear();
     engine.loads.mockClear();
     engine.finds.mockClear();
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal(
       "ResizeObserver",
       class {
@@ -165,17 +179,21 @@ describe("PDF zoom and lifetime", () => {
         }
       },
     );
-    container = document.createElement("div");
+    ownedContainer = container = document.createElement("div");
     document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
-  });
+    root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 
   it("zooms from fitted width through the click cycle and keyboard steps", async () => {
+    await using _fixture = await setupTest();
     await render();
     expect(viewer().scale).toBe(0.5);
     for (const percent of [110, 120, 130, 140, 150, 100]) {
@@ -194,6 +212,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("commits percentages, rejects invalid values, clamps wheel and button steps, and resets", async () => {
+    await using _fixture = await setupTest();
     await render();
     await edit("245");
     expect(viewer().scale).toBeCloseTo(1.23);
@@ -240,6 +259,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("enforces the fitted sixty-percent floor despite engine rounding", async () => {
+    await using _fixture = await setupTest();
     engine.fitScale = 0.556;
     await render();
     await edit("60");
@@ -249,6 +269,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("retains zoom when scrollbars narrow the viewport and refits when the panel narrows", async () => {
+    await using _fixture = await setupTest();
     await render();
     const sizing = region().parentElement!;
     Object.defineProperty(sizing, "clientWidth", { configurable: true, value: 400 });
@@ -264,6 +285,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("preserves link/form actions and suppresses zoom after dragging text selection", async () => {
+    await using _fixture = await setupTest();
     await render();
     const link = document.createElement("a");
     link.href = "#page2";
@@ -288,6 +310,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("destroys the previous task and cancels viewer observers on source change and unmount", async () => {
+    await using _fixture = await setupTest();
     await render();
     await edit("150");
     const oldViewer = viewer();
@@ -304,10 +327,11 @@ describe("PDF zoom and lifetime", () => {
     await act(() => root.unmount());
     expect(currentTask.destroy).toHaveBeenCalledOnce();
     expect(currentViewer.signal.aborted).toBe(true);
-    root = createRoot(container);
+    root = await renderTest(null, { container: container, router: false });
   });
 
   it("shows a truthful failure and retries a failed load", async () => {
+    await using _fixture = await setupTest();
     engine.failed = true;
     await render();
     expect(container.querySelector('[role="alert"]')!.textContent).toContain("Unable to preview");
@@ -325,6 +349,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("renews authorization before the owning panel remounts a failed PDF", async () => {
+    await using _fixture = await setupTest();
     engine.failed = true;
     const renew = vi.fn().mockResolvedValue("/renewed.pdf");
     function AuthorizedPreview() {
@@ -338,7 +363,7 @@ describe("PDF zoom and lifetime", () => {
         />
       );
     }
-    await act(() => root.render(<AuthorizedPreview />));
+    await act(async () => await root.rerender(<AuthorizedPreview />));
     const oldTask = engine.tasks[0]!;
     engine.failed = false;
     await click(
@@ -357,6 +382,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("keeps the failure and external-open link when reauthorization fails without reloading", async () => {
+    await using _fixture = await setupTest();
     engine.failed = true;
     let reject!: (error: Error) => void;
     const onRetry = vi.fn(
@@ -365,8 +391,8 @@ describe("PDF zoom and lifetime", () => {
           reject = no;
         }),
     );
-    await act(() =>
-      root.render(<PdfPreview src="/expired.pdf" title="Fixture" onRetry={onRetry} />),
+    await act(async () =>
+      await root.rerender(<PdfPreview src="/expired.pdf" title="Fixture" onRetry={onRetry} />),
     );
     const retry = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Retry",
@@ -382,6 +408,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("offers external open for a password-protected PDF", async () => {
+    await using _fixture = await setupTest();
     await render();
     await act(() => engine.tasks[0]!.onPassword!());
     expect(input().disabled).toBe(true);
@@ -393,6 +420,7 @@ describe("PDF zoom and lifetime", () => {
   });
 
   it("routes PDF find and repeat searches through the engine", async () => {
+    await using _fixture = await setupTest();
     await render();
     await dispatch(
       region(),

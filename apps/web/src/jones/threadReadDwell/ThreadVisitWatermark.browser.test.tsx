@@ -1,6 +1,6 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
+
+import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { makeThreadFixture } from "../../test-fixtures";
@@ -26,30 +26,50 @@ const thread = makeThreadFixture({
   updatedAt,
   lastVisitedAt: "2026-10-17T11:00:00.000Z",
 });
-let root: Root;
-const render = (next = thread) =>
-  act(async () => {
+let root: Screen;
+const render = async (next = thread) =>
+  await act(async () => {
     state.thread = next;
-    root.render(<ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />);
+    await root.rerender(<ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />);
   });
-const advance = (ms: number) => act(async () => vi.advanceTimersByTime(ms));
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.useFakeTimers();
+const advance = async (ms: number) => await act(async () => vi.advanceTimersByTime(ms));
+async function setupTest(): Promise<AsyncDisposable> {
+  let testTimers: Disposable | undefined;
+  let initialized = false;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        testTimers?.[Symbol.dispose]();
+      }
+    }
+  }
+  try {
+  testTimers = fakeTimers();
   vi.setSystemTime(new Date(updatedAt));
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   state.visit.mockClear();
   useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  root = createRoot(document.createElement("div"));
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+  root = await renderTest(null, { container: document.createElement("div"), router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 it("waits until 3000 continuous visible milliseconds before dispatching the visit", async () => {
+    await using _fixture = await setupTest();
   await render();
   await advance(2999);
   expect(state.visit).not.toHaveBeenCalled();
@@ -60,6 +80,7 @@ it("waits until 3000 continuous visible milliseconds before dispatching the visi
   });
 });
 it("cancels rapid navigation and gives the same thread ID in another environment a fresh dwell", async () => {
+    await using _fixture = await setupTest();
   await render();
   await advance(2000);
   const next = { ...thread, environmentId: EnvironmentId.make("second") };
@@ -73,6 +94,7 @@ it("cancels rapid navigation and gives the same thread ID in another environment
   });
 });
 it("does not restart initial dwell for streaming updates and dispatches the newest watermark", async () => {
+    await using _fixture = await setupTest();
   await render();
   await advance(1000);
   await render({ ...thread, updatedAt: "2026-10-17T12:00:01.000Z" });
@@ -85,6 +107,7 @@ it("does not restart initial dwell for streaming updates and dispatches the newe
   });
 });
 it("cancels hidden or unfocused viewing and starts a fresh foreground dwell", async () => {
+    await using _fixture = await setupTest();
   await render();
   await advance(2000);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -104,6 +127,7 @@ it("cancels hidden or unfocused viewing and starts a fresh foreground dwell", as
   expect(state.visit).toHaveBeenCalledTimes(1);
 });
 it("applies the same dwell to older servers' local watermark", async () => {
+    await using _fixture = await setupTest();
   const legacyThread = { ...thread };
   delete legacyThread.lastVisitedAt;
   await render(legacyThread);

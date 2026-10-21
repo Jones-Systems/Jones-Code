@@ -1,6 +1,6 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
+
+import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { makeThreadFixture } from "../../test-fixtures";
@@ -58,7 +58,7 @@ const thread = makeThreadFixture({
     completedAt: updatedAt,
   },
 });
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
 function Viewing({ selected }: { selected: SidebarThreadSummary }) {
   const markUnread = useMarkThreadUnread();
@@ -70,16 +70,34 @@ function Viewing({ selected }: { selected: SidebarThreadSummary }) {
     </>
   );
 }
-const render = (next = thread) =>
-  act(async () => {
+const render = async (next = thread) =>
+  await act(async () => {
     state.thread = next;
-    root.render(<Viewing selected={next} />);
+    await root.rerender(<Viewing selected={next} />);
   });
-const advance = (ms: number) => act(async () => vi.advanceTimersByTime(ms));
-const markUnread = () => act(async () => container.querySelector("button")!.click());
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.useFakeTimers();
+const advance = async (ms: number) => await act(async () => vi.advanceTimersByTime(ms));
+const markUnread = async () => await act(async () => container.querySelector("button")!.click());
+async function setupTest(): Promise<AsyncDisposable> {
+  let testTimers: Disposable | undefined;
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        testTimers?.[Symbol.dispose]();
+      }
+    }
+  }
+  try {
+  testTimers = fakeTimers();
   vi.setSystemTime(new Date(updatedAt));
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
@@ -87,18 +105,21 @@ beforeEach(() => {
   state.visit.mockClear();
   state.unread.mockClear();
   useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  container = document.createElement("div");
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  vi.useRealTimers();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+  ownedContainer = container = document.createElement("div");
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 it.each([1000, 3000])(
   "preserves explicit server unread at %i ms through activity until the next visit",
   async (elapsed) => {
+    await using _fixture = await setupTest();
     await render();
     await advance(elapsed);
     const priorVisits = state.visit.mock.calls.length;
@@ -120,6 +141,7 @@ it.each([1000, 3000])(
   },
 );
 it("keeps an older server's explicit unread watermark during pending dwell and later activity", async () => {
+    await using _fixture = await setupTest();
   state.supportsVisits = false;
   const legacy = { ...thread };
   delete legacy.lastVisitedAt;
@@ -136,9 +158,10 @@ it("keeps an older server's explicit unread watermark during pending dwell and l
   expect(state.unread).not.toHaveBeenCalled();
 });
 it("cancels on unmount without leaving an automatic visit queued", async () => {
+    await using _fixture = await setupTest();
   await render();
   await advance(2000);
-  await act(async () => root.render(null));
+  await act(async () => await root.rerender(null));
   await advance(30_000);
   expect(state.visit).not.toHaveBeenCalled();
 });

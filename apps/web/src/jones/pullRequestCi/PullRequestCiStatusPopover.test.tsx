@@ -1,5 +1,6 @@
+import { act } from "../testing/nodeRenderer";
 import { EnvironmentId, type PullRequestCiStatusResult } from "@t3tools/contracts";
-import { act, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -75,7 +76,6 @@ let page: EventTarget & { visibilityState: string };
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
   vi.stubGlobal("window", new EventTarget());
@@ -83,15 +83,15 @@ beforeEach(() => {
   host.refresh.mockClear();
   host.data = null;
 });
-afterEach(() => {
-  act(() => renderer?.unmount());
+afterEach(async () => {
+  await act(() => renderer?.unmount());
   renderer = undefined;
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
-it("reads only while open and visible, and stops refreshing after closing", () => {
-  act(() => {
+it("reads only while open and visible, and stops refreshing after closing", async () => {
+  await act(() => {
     renderer = create(
       <PullRequestCiStatusPopover
         environments={[{ environmentId: EnvironmentId.make("ci-test"), label: "VPS" }]}
@@ -100,22 +100,22 @@ it("reads only while open and visible, and stops refreshing after closing", () =
     );
   });
   expect(host.read).not.toHaveBeenCalled();
-  const changeOpen = (open: boolean) =>
-    act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(open));
-  changeOpen(true);
+  const changeOpen = async (open: boolean) =>
+    await act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(open));
+  await changeOpen(true);
   expect(host.read).toHaveBeenCalled();
-  act(() => vi.advanceTimersByTime(60_000));
+  await act(() => vi.advanceTimersByTime(60_000));
   expect(host.refresh).toHaveBeenCalledTimes(1);
-  act(() => {
+  await act(() => {
     page.visibilityState = "hidden";
     page.dispatchEvent(new Event("visibilitychange"));
   });
   host.read.mockClear();
-  act(() => vi.advanceTimersByTime(120_000));
+  await act(() => vi.advanceTimersByTime(120_000));
   expect(host.read).not.toHaveBeenCalled();
   expect(host.refresh).toHaveBeenCalledTimes(1);
-  changeOpen(false);
-  act(() => {
+  await changeOpen(false);
+  await act(() => {
     page.visibilityState = "visible";
     page.dispatchEvent(new Event("visibilitychange"));
     vi.advanceTimersByTime(60_000);
@@ -123,7 +123,7 @@ it("reads only while open and visible, and stops refreshing after closing", () =
   expect(host.refresh).toHaveBeenCalledTimes(1);
 });
 
-it("summarizes online capacity separately from offline inventory and workflow runs", () => {
+it("summarizes online capacity separately from offline inventory and workflow runs", async () => {
   host.data = {
     host: "github.com",
     organization: "Jones-Systems",
@@ -159,7 +159,7 @@ it("summarizes online capacity separately from offline inventory and workflow ru
       ],
     },
   };
-  act(() => {
+  await act(() => {
     renderer = create(
       <PullRequestCiStatusPopover
         environments={[{ environmentId: EnvironmentId.make("ci-summary"), label: "VPS" }]}
@@ -167,7 +167,7 @@ it("summarizes online capacity separately from offline inventory and workflow ru
       />,
     );
   });
-  act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(true));
+  await act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(true));
   const text = (node: import("react-test-renderer").ReactTestInstance): string =>
     node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
   const summary = renderer!.root.findByProps({ "aria-label": "CI summary" });
@@ -185,7 +185,7 @@ it("summarizes online capacity separately from offline inventory and workflow ru
     jobs: { state: "unavailable", reasons: [], items: [] },
     runners: { state: "unavailable", reasons: [], items: [] },
   };
-  act(() =>
+  await act(() =>
     renderer!.update(
       <PullRequestCiStatusPopover
         environments={[{ environmentId: EnvironmentId.make("ci-summary"), label: "VPS" }]}

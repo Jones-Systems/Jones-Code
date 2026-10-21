@@ -1,3 +1,4 @@
+import type { AtomRegistry } from "effect/reactivity";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { LibraryReply, LibraryRequest } from "@t3tools/contracts/conversationLibrary";
 import { fetchEnvironmentConversationLibraryRequest } from "@t3tools/client-runtime/conversations";
@@ -23,8 +24,7 @@ class ConversationLibraryConnectionNotReadyError extends Data.TaggedError(
  */
 export const requestConversationLibrary = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-conversation-library:request",
-  execute: (request: LibraryRequest, _registry, environmentId) =>
-    Effect.gen(function* () {
+  execute: Effect.fn("web-conversation-library:request")(function* (request: LibraryRequest, _registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) {
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const prepared = yield* SubscriptionRef.get(supervisor.prepared);
       if (Option.isNone(prepared)) {

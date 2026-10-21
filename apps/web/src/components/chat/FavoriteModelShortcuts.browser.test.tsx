@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act, type ComponentProps } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+import { type ComponentProps } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
@@ -36,12 +35,12 @@ const entries = deriveProviderInstanceEntries([
 ]);
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Screen;
 let onSelect = vi.fn<(instanceId: ProviderInstanceId, model: string) => void>();
 
-function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>> = {}) {
-  act(() =>
-    root.render(
+async function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>> = {}) {
+  await act(async () =>
+    await root.rerender(
       <FavoriteModelShortcuts
         instanceEntries={entries}
         settings={DEFAULT_UNIFIED_SETTINGS}
@@ -59,35 +58,55 @@ function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>
   );
 }
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
   onSelect = vi.fn();
   client.favorites = ["first", "second", "third"].map((model) => ({ provider: instanceId, model }));
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
 
-afterEach(() => {
-  act(() => root.unmount());
-  container.remove();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 describe("provider account shortcuts", () => {
-  it("keeps an enabled provider account reachable without favorite models", () => {
+  it("keeps an enabled provider account reachable without favorite models", async () => {
+    await using _fixture = await setupTest();
     client.favorites = [];
-    render();
+    await render();
     const button = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Work: First model"]',
     );
     expect(button).not.toBeNull();
-    act(() => button?.click());
+    await act(() => button?.click());
     expect(onSelect).toHaveBeenCalledWith(instanceId, "first");
   });
-  it("shows one cell per account rather than one per favorite model", () => {
-    render();
+  it("shows one cell per account rather than one per favorite model", async () => {
+    await using _fixture = await setupTest();
+    await render();
     expect(container.querySelectorAll("button")).toHaveLength(1);
     expect(container.querySelector("button")?.getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector("button")?.textContent).toBe("WO");
@@ -99,22 +118,24 @@ describe("provider account shortcuts", () => {
     { lockedProvider: driver, lockedContinuationGroupKey: "other-account" },
     { getModelDisabledReason: () => "Start a new thread." },
     { instanceEntries: entries.map((entry) => ({ ...entry, status: "error" as const })) },
-  ])("prevents selection when restricted: %j", (overrides) => {
-    render(overrides);
+  ])("prevents selection when restricted: %j", async (overrides) => {
+    await using _fixture = await setupTest();
+    await render(overrides);
     const button = container.querySelector<HTMLButtonElement>("button")!;
     expect(button.disabled).toBe(true);
-    act(() => button.click());
+    await act(() => button.click());
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("omits settings-disabled accounts and retains unavailable accounts with an explanation", () => {
+  it("omits settings-disabled accounts and retains unavailable accounts with an explanation", async () => {
+    await using _fixture = await setupTest();
     const disabled = { ...entries[0]!, enabled: false };
     const unavailable = {
       ...entries[0]!,
       instanceId: ProviderInstanceId.make("codex_offline"),
       isAvailable: false,
     };
-    render({ instanceEntries: [disabled, unavailable] });
+    await render({ instanceEntries: [disabled, unavailable] });
     const buttons = container.querySelectorAll<HTMLButtonElement>("button");
     expect(buttons).toHaveLength(1);
     expect(buttons[0]?.disabled).toBe(true);
@@ -122,57 +143,62 @@ describe("provider account shortcuts", () => {
     expect(buttons[0]?.title).toContain("No models are available");
   });
 
-  it("keeps nine accounts and hides the entire group above the cap", () => {
+  it("keeps nine accounts and hides the entire group above the cap", async () => {
+    await using _fixture = await setupTest();
     const many = Array.from({ length: 10 }, (_, index) => ({
       ...entries[0]!,
       instanceId: ProviderInstanceId.make(`codex_${index}`),
       displayName: `Account ${index}`,
     }));
-    render({ instanceEntries: many.slice(0, 9) });
+    await render({ instanceEntries: many.slice(0, 9) });
     expect(container.querySelectorAll("button")).toHaveLength(9);
-    render({ instanceEntries: many });
+    await render({ instanceEntries: many });
     expect(container.childElementCount).toBe(0);
   });
 
-  it("keeps hidden measurements inert and refuses clicks until restored", () => {
-    render({ visible: false });
+  it("keeps hidden measurements inert and refuses clicks until restored", async () => {
+    await using _fixture = await setupTest();
+    await render({ visible: false });
     const group = container.querySelector<HTMLElement>('[role="group"]')!;
     const button = container.querySelector<HTMLButtonElement>("button")!;
     expect(group.hasAttribute("inert")).toBe(true);
     expect(button.tabIndex).toBe(-1);
-    act(() => button.click());
+    await act(() => button.click());
     expect(onSelect).not.toHaveBeenCalled();
-    render({ visible: true });
-    act(() => button.click());
+    await render({ visible: true });
+    await act(() => button.click());
     expect(onSelect).toHaveBeenCalledWith(instanceId, "first");
   });
 
-  it("hides measurements and selection in multiple-model mode", () => {
-    render({ selectedModels: [{ instanceId, model: "first" }] });
+  it("hides measurements and selection in multiple-model mode", async () => {
+    await using _fixture = await setupTest();
+    await render({ selectedModels: [{ instanceId, model: "first" }] });
     expect(container.querySelector<HTMLElement>('[role="group"]')?.hasAttribute("inert")).toBe(
       true,
     );
-    act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+    await act(() => container.querySelector<HTMLButtonElement>("button")?.click());
     expect(onSelect).not.toHaveBeenCalled();
   });
 
-  it("uses the existing exact-instance draft memory and updates account selection on rerender", () => {
+  it("uses the existing exact-instance draft memory and updates account selection on rerender", async () => {
+    await using _fixture = await setupTest();
     const otherId = ProviderInstanceId.make("codex_personal");
     const other = { ...entries[0]!, instanceId: otherId, displayName: "Personal" };
-    render({
+    await render({
       instanceEntries: [...entries, other],
       rememberedSelections: { [otherId]: { instanceId: otherId, model: "second" } },
     });
     const button = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Personal: Second model"]',
     )!;
-    act(() => button.click());
+    await act(() => button.click());
     expect(onSelect).toHaveBeenCalledWith(otherId, "second");
-    render({ instanceEntries: [...entries, other], activeInstanceId: otherId, model: "second" });
+    await render({ instanceEntries: [...entries, other], activeInstanceId: otherId, model: "second" });
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("keeps Antigravity selection on the session account without continuation metadata", () => {
+  it("keeps Antigravity selection on the session account without continuation metadata", async () => {
+    await using _fixture = await setupTest();
     const antigravity = ProviderDriverKind.make("antigravity");
     const activeId = ProviderInstanceId.make("antigravity_work");
     const siblingId = ProviderInstanceId.make("antigravity_personal");
@@ -192,7 +218,7 @@ describe("provider account shortcuts", () => {
       lockedInstanceId: activeId,
       lockedContinuationGroupKey: null,
     };
-    render(overrides);
+    await render(overrides);
     const active = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Work: First model"]',
     )!;
@@ -201,17 +227,18 @@ describe("provider account shortcuts", () => {
     )!;
     expect(active.disabled).toBe(false);
     expect(sibling.disabled).toBe(true);
-    act(() => sibling.click());
+    await act(() => sibling.click());
     expect(onSelect).not.toHaveBeenCalled();
-    act(() => active.click());
+    await act(() => active.click());
     expect(onSelect).toHaveBeenCalledWith(activeId, "first");
   });
 
-  it("uses the session account lock even when draft selection points at a sibling", () => {
+  it("uses the session account lock even when draft selection points at a sibling", async () => {
+    await using _fixture = await setupTest();
     const antigravity = ProviderDriverKind.make("antigravity");
     const sessionId = ProviderInstanceId.make("antigravity_work");
     const siblingId = ProviderInstanceId.make("antigravity_personal");
-    render({
+    await render({
       instanceEntries: deriveProviderInstanceEntries([
         {
           ...entries[0]!.snapshot,
@@ -238,13 +265,14 @@ describe("provider account shortcuts", () => {
     )!;
     expect(session.disabled).toBe(false);
     expect(sibling.disabled).toBe(true);
-    act(() => sibling.click());
+    await act(() => sibling.click());
     expect(onSelect).not.toHaveBeenCalled();
-    act(() => session.click());
+    await act(() => session.click());
     expect(onSelect).toHaveBeenCalledWith(sessionId, "first");
   });
 
-  it("allows Antigravity accounts in the shared continuation group", () => {
+  it("allows Antigravity accounts in the shared continuation group", async () => {
+    await using _fixture = await setupTest();
     const antigravity = ProviderDriverKind.make("antigravity");
     const activeId = ProviderInstanceId.make("antigravity_work");
     const siblingId = ProviderInstanceId.make("antigravity_personal");
@@ -257,7 +285,7 @@ describe("provider account shortcuts", () => {
         displayName: "Personal",
       },
     ]).map((entry) => ({ ...entry, continuationGroupKey: "shared-google-profile" }));
-    render({
+    await render({
       instanceEntries: accountEntries,
       activeInstanceId: activeId,
       lockedProvider: antigravity,
@@ -268,7 +296,7 @@ describe("provider account shortcuts", () => {
       'button[aria-label="Personal: First model"]',
     )!;
     expect(sibling.disabled).toBe(false);
-    act(() => sibling.click());
+    await act(() => sibling.click());
     expect(onSelect).toHaveBeenCalledWith(siblingId, "first");
   });
 });

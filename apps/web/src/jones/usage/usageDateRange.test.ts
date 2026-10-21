@@ -158,7 +158,7 @@ describe("usage date ranges", () => {
     vi.stubEnv("TZ", "America/New_York");
 
     expect(
-      validateCustomUsageWindow("2026-03-08T02:30", "2026-03-08T03:30", new Date()),
+      validateCustomUsageWindow("2026-03-08T02:30", "2026-03-08T03:30", new Date("2026-03-09T12:00:00.000Z")),
     ).toMatchObject({
       ok: false,
       error: "Enter valid local dates and times.",

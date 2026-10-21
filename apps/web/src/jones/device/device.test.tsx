@@ -1,3 +1,4 @@
+import { act } from "../testing/nodeRenderer";
 import { EnvironmentId } from "@t3tools/contracts";
 import type {
   createDeviceMediaRouteManager,
@@ -5,7 +6,7 @@ import type {
 } from "@t3tools/client-runtime/device/hub-access";
 import type { DeviceHubAccess } from "@t3tools/client-runtime/state/deviceHubAccess";
 import { AsyncResult } from "effect/reactivity";
-import { act, useLayoutEffect } from "react";
+import { useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 
@@ -111,7 +112,6 @@ beforeEach(() => {
   state.managers.length = 0;
   state.refresh.mockClear();
   committed.length = 0;
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", { location: { origin: "https://renderer.test" } });
   vi.stubGlobal("fetch", vi.fn());
 });

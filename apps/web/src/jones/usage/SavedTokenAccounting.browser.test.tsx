@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import {
   EnvironmentId,
   TOKEN_ACCOUNTING_CAVEATS,
@@ -16,9 +16,8 @@ import {
 } from "@t3tools/client-runtime/connection";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { StrictMode, act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { StrictMode } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 const testState = vi.hoisted(() => ({
   presentations: new Map(),
@@ -264,32 +263,50 @@ function deferredRead() {
 }
 
 describe("saved token accounting panel", () => {
-  let renderer: Root;
+  let renderer: Screen;
   let container: HTMLDivElement;
   let mounted: boolean;
 
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
+  async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? renderer : undefined;
+    try {
+    if (mounted) await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+    ownedContainer = container = document.createElement("div");
     document.body.append(container);
-    renderer = createRoot(container);
+    renderer = await renderTest(null, { container: container, router: false });
+  initialized = true;
     mounted = true;
     testState.read.mockReset().mockResolvedValue(AsyncResult.success(ready()));
     testState.presentations = new Map([[primaryId, environment(primaryId)]]);
     testState.connections = new Map();
     connect();
-  });
 
-  afterEach(async () => {
-    if (mounted) await act(() => renderer.unmount());
-    container.remove();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
-  });
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
   async function render() {
-    await act(() =>
-      renderer.render(
+    await act(async () =>
+      await renderer.rerender(
         <StrictMode>
           <SavedTokenAccounting />
         </StrictMode>,
@@ -317,6 +334,7 @@ describe("saved token accounting panel", () => {
   }
 
   it("reads only on an explicit click, including after disclosure, rerender and reconnect", async () => {
+    await using _fixture = await setupTest();
     await render();
     const details = container.querySelector("details")!;
     expect(details.open).toBe(false);
@@ -350,6 +368,7 @@ describe("saved token accounting panel", () => {
   it.each(["omitted", false] as const)(
     "does not expose or dispatch a reader when capability is %s",
     async (capability) => {
+    await using _fixture = await setupTest();
       testState.presentations = new Map(testState.presentations).set(
         primaryId,
         environment(primaryId, { capability }),
@@ -361,6 +380,7 @@ describe("saved token accounting panel", () => {
   );
 
   it("never dispatches while disconnected, even when presentation is one update behind", async () => {
+    await using _fixture = await setupTest();
     connect(primaryId, 1, "offline");
     await render();
     await openPanel();
@@ -379,6 +399,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("discards an in-flight result after a connection generation changes", async () => {
+    await using _fixture = await setupTest();
     const finish = deferredRead();
     await render();
     await click("Load saved report");
@@ -395,6 +416,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("clears results on a target change and drops a late result from the old environment", async () => {
+    await using _fixture = await setupTest();
     await render();
     await click("Load saved report");
     const finish = deferredRead();
@@ -411,13 +433,14 @@ describe("saved token accounting panel", () => {
   });
 
   it("drops a late result after unmount and remount starts without a report", async () => {
+    await using _fixture = await setupTest();
     const finish = deferredRead();
     await render();
     await click("Load saved report");
     await act(() => renderer.unmount());
     mounted = false;
     await act(() => finish());
-    renderer = createRoot(container);
+    renderer = await renderTest(null, { container: container, router: false });
     mounted = true;
     await render();
     expect(container.textContent).not.toContain(REPORT_ID);
@@ -425,6 +448,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("clears an in-flight read when the environment stops advertising the capability", async () => {
+    await using _fixture = await setupTest();
     const finish = deferredRead();
     await render();
     await click("Load saved report");
@@ -445,6 +469,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("requires an explicit target with several capable non-primary environments", async () => {
+    await using _fixture = await setupTest();
     const first = EnvironmentId.make("first");
     const second = EnvironmentId.make("second");
     testState.presentations = new Map([
@@ -472,6 +497,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("renders partial sums, wholly unknown metrics and coverage without zero-filling", async () => {
+    await using _fixture = await setupTest();
     const saved = report();
     testState.read.mockResolvedValue(
       AsyncResult.success(
@@ -507,6 +533,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("keeps excluded statuses, estimator failures and overlapping mechanism counts visible", async () => {
+    await using _fixture = await setupTest();
     await render();
     await click("Load saved report");
     expect(metricText(container, "Primary · additive")).toBe("2");
@@ -532,6 +559,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("preserves an all-indexed-history window and partial indexed selection", async () => {
+    await using _fixture = await setupTest();
     const saved = report();
     testState.read.mockResolvedValue(
       AsyncResult.success(
@@ -569,6 +597,7 @@ describe("saved token accounting panel", () => {
   ])(
     "renders the fixed $status unavailable state with read observation",
     async ({ status, reason, text }) => {
+    await using _fixture = await setupTest();
       const unavailable = Schema.decodeUnknownSync(TokenAccountingReadResult)({
         state: "unavailable",
         status,
@@ -586,6 +615,7 @@ describe("saved token accounting panel", () => {
   );
 
   it("shows a generic transport error without displaying an arbitrary exception", async () => {
+    await using _fixture = await setupTest();
     testState.read.mockRejectedValue(new Error("synthetic private exception text"));
     await render();
     await click("Load saved report");
@@ -596,6 +626,7 @@ describe("saved token accounting panel", () => {
   });
 
   it("also shows a generic message for a settled transport failure", async () => {
+    await using _fixture = await setupTest();
     testState.read.mockResolvedValue(AsyncResult.fail(new Error("synthetic transport failure")));
     await render();
     await click("Load saved report");

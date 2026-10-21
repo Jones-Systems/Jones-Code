@@ -1,7 +1,6 @@
-// @vitest-environment jsdom
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   voiceReviewRecentFixture,
   threadRegistrySnapshotFixture,
@@ -11,25 +10,43 @@ import type { VoiceReviewRecentEntry } from "@t3tools/contracts";
 import { RecentVoicePrompts, recentThread } from "./RecentVoicePrompts";
 
 describe("recent voice prompt interactions", () => {
-  let root: Root;
+  let root: Screen;
   let container: HTMLDivElement;
-  beforeEach(() => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    container = document.createElement("div");
+  async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+    await act(() => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+    ownedContainer = container = document.createElement("div");
     document.body.append(container);
-    root = createRoot(container);
-  });
-  afterEach(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
-  });
+    root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
   async function render(
     entries: readonly VoiceReviewRecentEntry[] = voiceReviewRecentFixture.entries,
     correctAssociation = vi.fn(),
   ) {
-    await act(() =>
-      root.render(
+    await act(async () =>
+      await root.rerender(
         <RecentVoicePrompts
           entries={entries}
           registry={threadRegistrySnapshotFixture}
@@ -48,6 +65,7 @@ describe("recent voice prompt interactions", () => {
     return found;
   }
   it("shows opaque remaining delivery identities without claiming native handoff", async () => {
+    await using _fixture = await setupTest();
     await render([
       {
         ...voiceReviewRecentFixture.entries[0]!,
@@ -76,7 +94,8 @@ describe("recent voice prompt interactions", () => {
     expect(details.textContent).toContain("Instance: opaque-instance");
     expect(details.textContent).toContain("do not prove native handoff");
   });
-  it("joins only the verified composite key and never a bare routing target", () => {
+  it("joins only the verified composite key and never a bare routing target", async () => {
+    await using _fixture = await setupTest();
     const entry = voiceReviewRecentFixture.entries[0]!;
     const thread = threadRegistrySnapshotFixture.threads[0]!;
     expect(
@@ -93,6 +112,7 @@ describe("recent voice prompt interactions", () => {
     expect(recentThread({ ...entry, thread_key: "unmapped" }, [thread])).toBeNull();
   });
   it("explains retained unlinked siblings even after all explicit links were matched", async () => {
+    await using _fixture = await setupTest();
     await render([
       {
         ...voiceReviewRecentFixture.entries[0]!,
@@ -114,6 +134,7 @@ describe("recent voice prompt interactions", () => {
     expect(details.textContent).not.toContain("Queue request:");
   });
   it("shows literal prompt text immediately and discloses provenance without fabricating missing text", async () => {
+    await using _fixture = await setupTest();
     const retained = voiceReviewRecentFixture.entries[0]!;
     const deleted = voiceReviewRecentFixture.entries[2]!;
     await render([
@@ -142,6 +163,7 @@ describe("recent voice prompt interactions", () => {
     expect(articles[0]!.textContent).toContain("literal retained text");
   });
   it("removes only acknowledged metadata and re-adds the same workstream at the suppression revision", async () => {
+    await using _fixture = await setupTest();
     const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
     vi.stubGlobal("crypto", { getRandomValues });
     expect(globalThis.crypto.randomUUID).toBeUndefined();
@@ -192,14 +214,15 @@ describe("recent voice prompt interactions", () => {
     ).not.toBeNull();
   });
   it("keeps native membership read-only and accepts updated workstream lists", async () => {
+    await using _fixture = await setupTest();
     const entry = { ...voiceReviewRecentFixture.entries[0]!, workstream_refs: ["native:board"] };
     const correctAssociation = await render([entry]);
     expect(container.textContent).toContain("native:board");
     expect(
       container.querySelector('button[aria-label="Remove native:board workstream"]'),
     ).toBeNull();
-    await act(() =>
-      root.render(
+    await act(async () =>
+      await root.rerender(
         <RecentVoicePrompts
           entries={[entry]}
           registry={threadRegistrySnapshotFixture}
@@ -226,6 +249,7 @@ describe("recent voice prompt interactions", () => {
     expect(correctAssociation).not.toHaveBeenCalled();
   });
   it("does not make a missing revision actionable", async () => {
+    await using _fixture = await setupTest();
     const correctAssociation = await render([
       { ...voiceReviewRecentFixture.entries[0]!, associations: undefined },
     ]);
@@ -237,14 +261,16 @@ describe("recent voice prompt interactions", () => {
     expect(container.textContent).toContain("association revisions are observed");
   });
   it("shows an empty observation without offering metadata corrections", async () => {
+    await using _fixture = await setupTest();
     await render([]);
     expect(container.textContent).toContain("No recent prompts observed.");
     expect(container.querySelector("article, select")).toBeNull();
   });
   it("keeps stale prompt text readable but disables corrections when context is unavailable", async () => {
+    await using _fixture = await setupTest();
     const correctAssociation = vi.fn();
-    await act(() =>
-      root.render(
+    await act(async () =>
+      await root.rerender(
         <RecentVoicePrompts
           entries={[voiceReviewRecentFixture.entries[0]!]}
           registry={{
@@ -272,6 +298,7 @@ describe("recent voice prompt interactions", () => {
     expect(correctAssociation).not.toHaveBeenCalled();
   });
   it("requires successful metadata refresh after an uncertain correction without retrying it", async () => {
+    await using _fixture = await setupTest();
     let rejectCorrection!: (error: Error) => void;
     const correction = new Promise<never>((_, reject) => {
       rejectCorrection = reject;
@@ -281,8 +308,8 @@ describe("recent voice prompt interactions", () => {
       .fn()
       .mockRejectedValueOnce(new Error("Offline"))
       .mockResolvedValueOnce(undefined);
-    await act(() =>
-      root.render(
+    await act(async () =>
+      await root.rerender(
         <RecentVoicePrompts
           entries={[voiceReviewRecentFixture.entries[0]!]}
           registry={threadRegistrySnapshotFixture}

@@ -1,6 +1,6 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+
+import { describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { makeThreadFixture } from "../../test-fixtures";
@@ -65,27 +65,46 @@ function Selection(props: Input) {
     </>
   );
 }
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
 let input: Input;
-const render = (updates: Partial<Input> = {}) => {
+const render = async (updates: Partial<Input> = {}) => {
   input = { ...input, ...updates };
-  return act(async () => root.render(<Selection {...input} />));
+  return await act(async () => await root.rerender(<Selection {...input} />));
 };
 const visible = () => [...container.querySelectorAll("ul li")].map((row) => row.textContent);
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
   useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  container = document.createElement("div");
-  root = createRoot(container);
+  ownedContainer = container = document.createElement("div");
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
   input = { threads: [thread], layout: "current", filter: "done", selected: key(thread) };
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  vi.unstubAllGlobals();
-});
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 describe.each(["current", "legacy"] as const)("%s active status-filter retention", (layout) => {
   it("retains a selected completion after its read watermark changes, with actual counts", async () => {
+    await using _fixture = await setupTest();
     await render({ layout });
     expect(visible()).toEqual([key(thread)]);
     await render({ threads: [{ ...thread, lastVisitedAt: completed }] });
@@ -96,6 +115,7 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
     expect(visible()).toEqual([]);
   });
   it("retains Needs Input through a response, and resets on filter change", async () => {
+    await using _fixture = await setupTest();
     await render({ layout, filter: "input", threads: [{ ...thread, hasPendingUserInput: true }] });
     await render({ threads: [{ ...thread, lastVisitedAt: completed }] });
     expect(visible()).toEqual([key(thread)]);
@@ -104,6 +124,7 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
     expect(visible()).toEqual([]);
   });
   it("never retains a nonqualifying selection or the same ID in a different environment", async () => {
+    await using _fixture = await setupTest();
     await render({ layout, threads: [{ ...thread, lastVisitedAt: completed }] });
     expect(visible()).toEqual([]);
     await render({ threads: [thread] });
@@ -113,6 +134,7 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
     expect(visible()).toEqual([]);
   });
   it("drops a removed scoped row and does not revive its old retention when it returns", async () => {
+    await using _fixture = await setupTest();
     await render({ layout });
     await render({ threads: [] });
     expect(visible()).toEqual([]);
@@ -120,6 +142,7 @@ describe.each(["current", "legacy"] as const)("%s active status-filter retention
     expect(visible()).toEqual([]);
   });
   it("preserves a completion read through the local compatibility watermark", async () => {
+    await using _fixture = await setupTest();
     const legacyThread = { ...thread };
     delete legacyThread.lastVisitedAt;
     await render({ layout, threads: [legacyThread] });

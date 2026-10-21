@@ -316,7 +316,7 @@ describe("source timestamp expiry", () => {
   });
   it("expires each host from its own source time and rejects already stale samples", async () => {
     const receive = vi.fn();
-    const older = { ...available, sampledAt: new Date(Date.now() - 25_000).toISOString() };
+    const older = { ...available, sampledAt: new Date(vi.getMockedSystemTime()!.getTime() - 25_000).toISOString() };
     const mini = { ...available, id: "mini" as const };
     const stop = observeHostStatus(
       new Visibility(),
@@ -467,7 +467,7 @@ describe("typed selected-environment gateway request", () => {
 
 describe("retained host-status cache", () => {
   it("seeds fresh values synchronously, preserves the due time, and expires during a pending refresh", async () => {
-    const cache: HostStatusCache = { snapshot, settledAt: Date.now() };
+    const cache: HostStatusCache = { snapshot, settledAt: vi.getMockedSystemTime()!.getTime() };
     const receive = vi.fn();
     const request = vi.fn(() => new Promise<HostStatusSnapshot>(() => {}));
     await vi.advanceTimersByTimeAsync(1_000);
@@ -483,7 +483,7 @@ describe("retained host-status cache", () => {
   });
 
   it("ignores a canceled late result without changing the retained sample or cadence", async () => {
-    const cache: HostStatusCache = { snapshot, settledAt: Date.now() - 10_000 };
+    const cache: HostStatusCache = { snapshot, settledAt: vi.getMockedSystemTime()!.getTime() - 10_000 };
     const original = { ...cache };
     let resolve!: (value: HostStatusSnapshot) => void;
     const stop = observeHostStatus(
@@ -517,7 +517,7 @@ describe("retained host-status cache", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     resolve(snapshot);
     await vi.advanceTimersByTimeAsync(0);
-    expect(cache).toEqual({ snapshot, settledAt: Date.now() });
+    expect(cache).toEqual({ snapshot, settledAt: vi.getMockedSystemTime()!.getTime() });
     visibility.set("visible");
     await vi.advanceTimersByTimeAsync(9_999);
     expect(request).toHaveBeenCalledTimes(1);
@@ -532,7 +532,7 @@ describe("retained host-status cache", () => {
     (sampledAt) => {
       const cache: HostStatusCache = {
         snapshot: { hosts: [{ ...available, sampledAt }] },
-        settledAt: Date.now(),
+        settledAt: vi.getMockedSystemTime()!.getTime(),
       };
       const receive = vi.fn();
       const stop = observeHostStatus(new Visibility(), receive, vi.fn(), cache);

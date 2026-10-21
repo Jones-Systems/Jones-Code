@@ -1,3 +1,4 @@
+import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
 import { readPreparedConnection } from "../../state/session";
 import { readThreadShell } from "../../state/entities";
 import { THREAD_CONTEXT_DROP_EVENT } from "../../components/chat/threadContextDrag";
@@ -29,9 +30,8 @@ import {
   ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { act, useEffect, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { useEffect, useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import {
   buildPendingUserInputAnswers,
@@ -244,9 +244,32 @@ function Harness({
   );
 }
 
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
-beforeEach(() => {
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+  for (const id of ["approach", "second"])
+    clearQuestionAttachmentDraft(
+      questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
+    );
+  useAttachmentUploadStore.setState({ uploadsByImageId: {} });
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
   vi.mocked(readPreparedConnection).mockReturnValue({
     httpBaseUrl: "http://synthetic.invalid",
   } as never);
@@ -255,23 +278,18 @@ beforeEach(() => {
     _tag: "Success",
     value: { threadId: input.threadId, excerpt: capturedExcerpt },
   }));
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  for (const id of ["approach", "second"])
-    clearQuestionAttachmentDraft(
-      questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
-    );
-  useAttachmentUploadStore.setState({ uploadsByImageId: {} });
-  container.remove();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -307,7 +325,8 @@ async function key(init: KeyboardEventInit) {
 }
 
 it("ignores digits, Shift+Enter and IME while typing, then submits once with Enter", async () => {
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("1 custom answer");
   await key({ key: "1" });
   expect(answerField().value).toBe("1 custom answer");
@@ -320,8 +339,9 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
 });
 
 it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter", async (value) => {
+    await using _fixture = await setupTest();
   await act(async () =>
-    root.render(<Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />),
+    await root.rerender(<Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />),
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
@@ -333,8 +353,9 @@ it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter",
 });
 
 it("keeps each answer across Next, Back, minimize and restore", async () => {
+    await using _fixture = await setupTest();
   await act(async () =>
-    root.render(
+    await root.rerender(
       <Harness questions={[question, { ...question, id: "second", header: "Second" }]} />,
     ),
   );
@@ -362,8 +383,9 @@ it("keeps each answer across Next, Back, minimize and restore", async () => {
 });
 
 it("choosing an option replaces the custom answer and auto-submits without sending a message", async () => {
-  vi.useFakeTimers();
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
   const option = [...container.querySelectorAll("button")].find((b) =>
     b.textContent?.includes("Incremental"),
@@ -379,8 +401,9 @@ it("choosing an option replaces the custom answer and auto-submits without sendi
 });
 
 it("typing cancels a pending option auto-advance", async () => {
-  vi.useFakeTimers();
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     [...container.querySelectorAll("button")]
       .find((b) => b.textContent?.includes("Incremental"))!
@@ -396,9 +419,10 @@ it("typing cancels a pending option auto-advance", async () => {
 it.each([false, true])(
   "preserves options-only selection with multiSelect=%s",
   async (multiSelect) => {
-    vi.useFakeTimers();
+    await using _fixture = await setupTest();
+    using _timers = fakeTimers();
     await act(async () =>
-      root.render(<Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />),
+      await root.rerender(<Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />),
     );
     expect(container.querySelector('[aria-label="Your answer"]')).toBeNull();
     await act(async () =>
@@ -419,9 +443,10 @@ it.each([false, true])(
 );
 
 it("omits Skip and dismisses only through the question header without a thread submit", async () => {
-  await act(async () => root.render(<Harness />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   expect(button("Skip")).toBeUndefined();
-  await act(async () => root.render(<Harness dismissible capability="message" />));
+  await act(async () => await root.rerender(<Harness dismissible capability="message" />));
   expect(button("Skip")).toBeUndefined();
   await act(async () =>
     container.querySelector<HTMLButtonElement>("[data-pending-user-input-dismiss]")!.click(),
@@ -434,7 +459,8 @@ it("omits Skip and dismisses only through the question header without a thread s
 it.each([{ disabled: true }, { responding: true }, { capability: "not_resumable" as const }])(
   "blocks card actions while unavailable: %o",
   async (state) => {
-    await act(async () => root.render(<Harness {...state} />));
+    await using _fixture = await setupTest();
+    await act(async () => await root.rerender(<Harness {...state} />));
     expect(answerField().disabled).toBe(true);
     expect(button(state.responding ? "Sending…" : "Send").disabled).toBe(true);
     await act(async () =>
@@ -447,11 +473,12 @@ it.each([{ disabled: true }, { responding: true }, { capability: "not_resumable"
 );
 
 it("does not steal focus when a question arrives", async () => {
+    await using _fixture = await setupTest();
   const focused = document.createElement("textarea");
   document.body.append(focused);
   focused.focus();
   try {
-    await act(async () => root.render(<Harness />));
+    await act(async () => await root.rerender(<Harness />));
     expect(document.activeElement).toBe(focused);
   } finally {
     focused.remove();
@@ -466,6 +493,7 @@ const capabilities = {
 };
 
 it("pastes files into the answer draft only, blocks until ready, then submits them with the answer", async () => {
+    await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -473,7 +501,7 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
     "approach",
   );
   await act(async () =>
-    root.render(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+    await root.rerender(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
   );
   await typeAnswer("Read this file");
   const clipboardData = new DataTransfer();
@@ -506,6 +534,7 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
 });
 
 it("uses the inline paperclip picker for the question while preserving normal attachments", async () => {
+    await using _fixture = await setupTest();
   const normalFile = {
     type: "file" as const,
     id: "normal-file",
@@ -518,7 +547,7 @@ it("uses the inline paperclip picker for the question while preserving normal at
   store.addFiles(threadRef, [normalFile], { appendReference: false });
   try {
     await act(async () =>
-      root.render(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+      await root.rerender(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
     );
     await typeAnswer("Question response");
     const picker = container.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -578,6 +607,7 @@ it("uses the inline paperclip picker for the question while preserving normal at
 });
 
 it("releases a failed image preparation so the written answer can still be sent", async () => {
+    await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -591,7 +621,7 @@ it("releases a failed image preparation so the written answer can still be sent"
         rejectPreparation = reject;
       }),
   );
-  await act(async () => root.render(<Harness capabilities={capabilities} />));
+  await act(async () => await root.rerender(<Harness capabilities={capabilities} />));
   await typeAnswer("Answer survives attachment failure");
   const clipboardData = new DataTransfer();
   clipboardData.items.add(new File(["image"], "failed.png", { type: "image/png" }));
@@ -617,6 +647,7 @@ it("releases a failed image preparation so the written answer can still be sent"
 });
 
 it("shows legacy unavailable attachments and removes them without changing the thread draft", async () => {
+    await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -637,7 +668,7 @@ it("shows legacy unavailable attachments and removes them without changing the t
     ],
     { appendReference: false },
   );
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Answer without the file");
   expect(button("Send").disabled).toBe(true);
   await act(async () =>
@@ -653,6 +684,7 @@ it("shows legacy unavailable attachments and removes them without changing the t
 it.each(["question-test", "foreign-environment"])(
   "pastes a %s thread with bounded source context without exporting or uploading files",
   async (source) => {
+    await using _fixture = await setupTest();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     const record = threadContextRecord(
       { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("related") },
@@ -671,7 +703,7 @@ it.each(["question-test", "foreign-environment"])(
         records: [record],
       })!,
     );
-    await act(async () => root.render(<Harness />));
+    await act(async () => await root.rerender(<Harness />));
     await act(async () =>
       answerField().dispatchEvent(
         new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
@@ -731,8 +763,9 @@ function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: 
 }
 
 it("clears the workspace overlay after a stopped reply drop and attaches only to the reply", async () => {
+    await using _fixture = await setupTest();
   const onWorkspaceFiles = vi.fn();
-  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />));
+  await act(async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />));
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(
     new File(["screenshot contents"], "screenshot.txt", { type: "text/plain" }),
@@ -792,7 +825,8 @@ it("clears the workspace overlay after a stopped reply drop and attaches only to
 });
 
 it("clears the workspace overlay on dragend and disposes global listeners", async () => {
-  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
+    await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(new File(["file"], "answer.txt", { type: "text/plain" }));
   await act(async () =>
@@ -818,10 +852,11 @@ it("clears the workspace overlay on dragend and disposes global listeners", asyn
 it.each(["question-test", "foreign-environment"])(
   "drops a %s thread without exporting or uploading its history",
   async (source) => {
+    await using _fixture = await setupTest();
     const ref = { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("dropped") };
     vi.mocked(readThreadShell).mockReturnValue({ title: "Dropped thread" } as never);
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    await act(async () => root.render(<Harness />));
+    await act(async () => await root.rerender(<Harness />));
     await act(async () =>
       container
         .querySelector("[data-thread-context-drop]")!
@@ -852,6 +887,7 @@ it.each(["question-test", "foreign-environment"])(
 );
 
 it("blocks question submission while thread context is captured, then submits the snapshot", async () => {
+    await using _fixture = await setupTest();
   let resolve!: (value: unknown) => void;
   excerptRequest.mockImplementation(
     () =>
@@ -864,7 +900,7 @@ it("blocks question submission while thread context is captured, then submits th
     threadId: ThreadId.make("pending-thread"),
   };
   vi.mocked(readThreadShell).mockReturnValue({ title: "Pending thread" } as never);
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     container
       .querySelector("[data-thread-context-drop]")!
@@ -881,6 +917,7 @@ it("blocks question submission while thread context is captured, then submits th
 });
 
 it("copies a captured question reference without requesting a newer snapshot", async () => {
+    await using _fixture = await setupTest();
   const record = {
     ...threadContextRecord(
       {
@@ -901,7 +938,7 @@ it("copies a captured question reference without requesting a newer snapshot", a
       records: [record],
     })!,
   );
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     answerField().dispatchEvent(
       new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
@@ -913,13 +950,14 @@ it("copies a captured question reference without requesting a newer snapshot", a
 });
 
 it("keeps disconnected source identity without trying the current environment", async () => {
+    await using _fixture = await setupTest();
   vi.mocked(readPreparedConnection).mockReturnValue(null);
   const ref = {
     environmentId: EnvironmentId.make("disconnected-source"),
     threadId: ThreadId.make("unavailable"),
   };
   vi.mocked(readThreadShell).mockReturnValue({ title: "Unavailable thread" } as never);
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     container
       .querySelector("[data-thread-context-drop]")!
@@ -934,6 +972,7 @@ it("keeps disconnected source identity without trying the current environment", 
 });
 
 it("does not apply a capture after its question component unmounts", async () => {
+    await using _fixture = await setupTest();
   let resolve!: (value: unknown) => void;
   excerptRequest.mockImplementation(
     () =>
@@ -946,13 +985,13 @@ it("does not apply a capture after its question component unmounts", async () =>
     threadId: ThreadId.make("late-thread"),
   };
   vi.mocked(readThreadShell).mockReturnValue({ title: "Late thread" } as never);
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     container
       .querySelector("[data-thread-context-drop]")!
       .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
   );
-  await act(async () => root.render(<div />));
+  await act(async () => await root.rerender(<div />));
   await act(async () =>
     resolve({ _tag: "Success", value: { threadId: ref.threadId, excerpt: capturedExcerpt } }),
   );

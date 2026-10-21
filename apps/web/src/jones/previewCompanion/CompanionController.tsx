@@ -22,8 +22,7 @@ import { subscribeCompanionController } from "./controller.ts";
 
 const ticketCommand = createEnvironmentCommand(connectionAtomRuntime, {
   label: "companion:ticket",
-  execute: (input: { readonly environmentId: DesktopCompanionTicketRequest["environmentId"] }) =>
-    Effect.gen(function* () {
+  execute: Effect.fn("companion:ticket")(function* (input: { readonly environmentId: DesktopCompanionTicketRequest["environmentId"] }) {
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const prepared = yield* SubscriptionRef.get(supervisor.prepared);
       if (Option.isNone(prepared)) return { _tag: "unavailable" } as const;

@@ -1,8 +1,7 @@
-// @vitest-environment jsdom
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import { EnvironmentId, type HostStatusSnapshot } from "@t3tools/contracts";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+
+import { expect, it, vi } from "vite-plus/test";
 
 import { observeHostStatus } from "../../hostStatus";
 import { TooltipProvider } from "../ui/tooltip";
@@ -14,17 +13,37 @@ vi.mock("../../hostStatus", async (importOriginal) => ({
 }));
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Screen;
 let receive: (snapshot: HostStatusSnapshot | null) => void;
 let availableWidth: number;
 let bubbleWidths: number[];
 let resize: () => void;
 let observerDisconnected: boolean;
 
-beforeEach(async () => {
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+  expect(observerDisconnected).toBe(true);
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        vi.clearAllMocks();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
+  vi.setSystemTime(new Date("2026-10-21T12:00:00.000Z"));
   clearRetainedHostStatus(EnvironmentId.make("remote-a"));
   clearRetainedHostStatus(EnvironmentId.make("remote-b"));
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   availableWidth = 1000;
   bubbleWidths = [100, 110, 120, 130];
   observerDisconnected = false;
@@ -74,28 +93,29 @@ beforeEach(async () => {
     };
     return () => {};
   });
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.appendChild(container);
-  root = createRoot(container);
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
   await act(async () => {
-    root.render(
+    await root.rerender(
       <TooltipProvider>
         <HostStatusIndicators environmentId={EnvironmentId.make("remote-a")} />
       </TooltipProvider>,
     );
   });
-});
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  expect(observerDisconnected).toBe(true);
-  container.remove();
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
-});
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 it("keeps one bubble per host while live samples update both metric colors and accessible detail", async () => {
+    await using _fixture = await setupTest();
   const bubbles = () => Array.from(container.querySelectorAll('[role="img"]'));
   expect(bubbles().map((bubble) => bubble.textContent)).toEqual([
     "VPS · — · —",
@@ -115,7 +135,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
           occupiedMemoryBytes: 12 * 1024 ** 3,
           totalMemoryBytes: 16 * 1024 ** 3,
           availableMemoryBytes: 4 * 1024 ** 3,
-          sampledAt: new Date().toISOString(),
+          sampledAt: vi.getMockedSystemTime()!.toISOString(),
         },
       ],
     }),
@@ -139,6 +159,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
 });
 
 it("shows Mac swap activity without a low available-RAM alarm", async () => {
+    await using _fixture = await setupTest();
   await act(async () =>
     receive({
       hosts: [
@@ -151,7 +172,7 @@ it("shows Mac swap activity without a low available-RAM alarm", async () => {
           totalMemoryBytes: 16 * 1024 ** 3,
           availableMemoryBytes: 0,
           swapIoBytesPerSecond: 0.3 * 1024 ** 2,
-          sampledAt: new Date().toISOString(),
+          sampledAt: vi.getMockedSystemTime()!.toISOString(),
         },
       ],
     }),
@@ -164,6 +185,7 @@ it("shows Mac swap activity without a low available-RAM alarm", async () => {
 });
 
 it("colors CPU and RAM separately while either can raise the host background", async () => {
+    await using _fixture = await setupTest();
   for (const [cpuUsagePercent, availablePercent, cpuColor, ramColor, background] of [
     [49, 60, "emerald", "emerald", "emerald"],
     [50, 24, "yellow", "orange", "orange"],
@@ -182,7 +204,7 @@ it("colors CPU and RAM separately while either can raise the host background", a
             occupiedMemoryBytes: 0,
             totalMemoryBytes: 100 * 1024 ** 3,
             availableMemoryBytes: availablePercent * 1024 ** 3,
-            sampledAt: new Date().toISOString(),
+            sampledAt: vi.getMockedSystemTime()!.toISOString(),
           },
         ],
       }),
@@ -196,6 +218,7 @@ it("colors CPU and RAM separately while either can raise the host background", a
 });
 
 it("removes complete bubbles from the right as available header space shrinks and restores them", async () => {
+    await using _fixture = await setupTest();
   const names = () =>
     Array.from(container.querySelectorAll('[role="img"]')).map(
       (bubble) => bubble.textContent?.split(" · ")[0],
@@ -224,6 +247,7 @@ it("removes complete bubbles from the right as available header space shrinks an
 });
 
 it("recalculates fitting bubbles when live metric text changes width without a viewport resize", async () => {
+    await using _fixture = await setupTest();
   const names = () =>
     Array.from(container.querySelectorAll('[role="img"]')).map(
       (bubble) => bubble.textContent?.split(" · ")[0],
@@ -244,7 +268,7 @@ it("recalculates fitting bubbles when live metric text changes width without a v
           occupiedMemoryBytes: 128 * 1024 ** 3,
           totalMemoryBytes: 256 * 1024 ** 3,
           availableMemoryBytes: 128 * 1024 ** 3,
-          sampledAt: new Date().toISOString(),
+          sampledAt: vi.getMockedSystemTime()!.toISOString(),
         },
       ],
     });
@@ -268,6 +292,7 @@ it("recalculates fitting bubbles when live metric text changes width without a v
 });
 
 it("clears the previous environment immediately and ignores its late sample after switching", async () => {
+    await using _fixture = await setupTest();
   const sample: HostStatusSnapshot = {
     hosts: [
       {
@@ -278,7 +303,7 @@ it("clears the previous environment immediately and ignores its late sample afte
         occupiedMemoryBytes: 12 * 1024 ** 3,
         totalMemoryBytes: 16 * 1024 ** 3,
         availableMemoryBytes: 4 * 1024 ** 3,
-        sampledAt: new Date().toISOString(),
+        sampledAt: vi.getMockedSystemTime()!.toISOString(),
       },
     ],
   };
@@ -286,7 +311,7 @@ it("clears the previous environment immediately and ignores its late sample afte
   await act(async () => oldReceive(sample));
   expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · 23% · 4");
   await act(async () =>
-    root.render(
+    await root.rerender(
       <TooltipProvider>
         <HostStatusIndicators environmentId={EnvironmentId.make("remote-b")} />
       </TooltipProvider>,

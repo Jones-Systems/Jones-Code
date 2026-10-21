@@ -1,4 +1,4 @@
-// @vitest-environment jsdom
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import {
   EnvironmentId,
   ProviderDriverKind,
@@ -6,9 +6,8 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import type { ClientSettings } from "@t3tools/contracts/settings";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+
+import { expect, it, vi } from "vite-plus/test";
 
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { TooltipProvider } from "../ui/tooltip";
@@ -20,16 +19,34 @@ vi.mock("~/hooks/useSettings", () => ({
   useEnvironmentModelPreferences: () => ({ favorites }),
   useToggleEnvironmentModelFavorite: () => vi.fn(),
 }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => vi.fn(),
+}));
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => [] }));
 vi.mock("../../state/server", () => ({ primaryServerKeybindingsAtom: {} }));
 vi.mock("./ChatGptSharingControl", () => ({ ChatGptSharingControl: () => null }));
 
 let container: HTMLDivElement;
-let root: Root;
+let root: Screen;
 
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+  await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
   vi.stubGlobal(
     "ResizeObserver",
     class {
@@ -39,16 +56,19 @@ beforeEach(() => {
     },
   );
   favorites = [];
-  container = document.createElement("div");
+  ownedContainer = container = document.createElement("div");
   document.body.appendChild(container);
-  root = createRoot(container);
-});
+  root = await renderTest(null, { container: container, router: false });
+  initialized = true;
 
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
+
 
 it.each([
   {
@@ -75,6 +95,7 @@ it.each([
   },
   { name: "provider needing setup", saved: true, locked: false, unavailable: false, setup: true },
 ])("opens Favorites on every opening for $name", async ({ saved, locked, unavailable, setup }) => {
+    await using _fixture = await setupTest();
   const instanceId = ProviderInstanceId.make("opencode");
   const provider: ServerProvider = {
     instanceId,
@@ -95,7 +116,7 @@ it.each([
   const onInstanceModelChange = vi.fn();
   const render = async (open: boolean) => {
     await act(async () =>
-      root.render(
+      await root.rerender(
         <TooltipProvider>
           <ProviderModelPicker
             environmentId={EnvironmentId.make("test-environment")}
