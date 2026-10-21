@@ -252,57 +252,57 @@ export const layer = Layer.effect(
             Effect.succeed(blocked("The desktop host could not accept this request.")),
           ),
         );
-      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(function* (
-        input: JonesNativePrepareInput,
-      ) {
-        const mismatch =
-          !/^[a-f0-9]{64}$/.test(input.stagedHandle) || !/^[a-f0-9]{64}$/.test(input.transactionId)
-            ? "the request is malformed"
-            : state.stagedHandle !== input.stagedHandle
-              ? "the backend has not observed this staged build"
-              : !state.capability.install
-                ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
-                : state.environmentId !== input.environmentId ||
-                    state.currentVersion !== input.currentVersion
-                  ? "the environment or running version differs"
-                  : undefined;
-        if (mismatch !== undefined) {
-          const reason = `Native preparation was refused: ${mismatch}.`;
-          yield* Effect.promise(() =>
-            recordNativePreparationRefusal({
-              home: config.baseDir,
-              handle: input.stagedHandle,
-              transactionId: input.transactionId,
-              reason,
-            }),
-          );
-          return blocked(reason);
-        }
-        yield* Effect.tryPromise({
-          try: () =>
-            prepareNativeContinuationReceipt({
-              home: config.baseDir,
-              databasePath: config.dbPath,
-              environmentId: input.environmentId,
-              version: input.currentVersion,
-              handle: input.stagedHandle,
-              transactionId: input.transactionId,
-              prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
-              clear: (ids) =>
-                run(
-                  startup.clearProviderSessionContinuationMarkers(
-                    ids.map((id) => ThreadId.make(id)),
+      const prepareNative = Effect.fn("JonesUpdates.prepareNative")(
+        function* (input: JonesNativePrepareInput) {
+          const mismatch =
+            !/^[a-f0-9]{64}$/.test(input.stagedHandle) ||
+            !/^[a-f0-9]{64}$/.test(input.transactionId)
+              ? "the request is malformed"
+              : state.stagedHandle !== input.stagedHandle
+                ? "the backend has not observed this staged build"
+                : !state.capability.install
+                  ? `the backend's desktop state does not allow Install (${state.capability.reason ?? state.phase})`
+                  : state.environmentId !== input.environmentId ||
+                      state.currentVersion !== input.currentVersion
+                    ? "the environment or running version differs"
+                    : undefined;
+          if (mismatch !== undefined) {
+            const reason = `Native preparation was refused: ${mismatch}.`;
+            yield* Effect.promise(() =>
+              recordNativePreparationRefusal({
+                home: config.baseDir,
+                handle: input.stagedHandle,
+                transactionId: input.transactionId,
+                reason,
+              }),
+            );
+            return blocked(reason);
+          }
+          yield* Effect.tryPromise({
+            try: () =>
+              prepareNativeContinuationReceipt({
+                home: config.baseDir,
+                databasePath: config.dbPath,
+                environmentId: input.environmentId,
+                version: input.currentVersion,
+                handle: input.stagedHandle,
+                transactionId: input.transactionId,
+                prepare: () => run(startup.markOptedInProviderSessionsForContinuation),
+                clear: (ids) =>
+                  run(
+                    startup.clearProviderSessionContinuationMarkers(
+                      ids.map((id) => ThreadId.make(id)),
+                    ),
                   ),
-                ),
-            }),
-          catch: (cause) =>
-            new ServerSelfUpdateError({
-              reason: "Could not prepare the native recovery pair.",
-              cause,
-            }),
-        });
-        return snapshot();
-      }).pipe(
+              }),
+            catch: (cause) =>
+              new ServerSelfUpdateError({
+                reason: "Could not prepare the native recovery pair.",
+                cause,
+              }),
+          });
+          return snapshot();
+        },
         Effect.catch((error) =>
           Effect.succeed(
             blocked(
