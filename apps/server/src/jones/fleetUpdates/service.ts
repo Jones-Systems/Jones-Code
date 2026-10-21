@@ -99,18 +99,16 @@ const nativeMatches = (operation: FleetHostOperation, binding: NativeBinding | u
   binding.targetSource === operation.input.targetSource &&
   binding.stagedHandle === operation.stagedHandle;
 
-export const makeFleetUpdates = (options: {
+export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(function* (options: {
   readonly environmentId: FleetHostStatus["environmentId"];
   readonly serviceMode: boolean;
   readonly store: FleetHostStore;
   readonly updates: FleetHostUpdater;
-}) =>
-  Effect.gen(function* () {
+}) {
     const { environmentId, store, updates } = options;
     const gate = yield* Semaphore.make(1);
     const activeNative = new Set<string>();
-    const requireEnrollment = (input: { environmentId: string; enrollmentId: string }) =>
-      Effect.gen(function* () {
+    const requireEnrollment = Effect.fn("FleetUpdates.requireEnrollment")(function* (input: { environmentId: string; enrollmentId: string }) {
         if (input.environmentId !== environmentId)
           return yield* fail("binding", "The connected environment changed.");
         const enrollment = yield* storage(store.readEnrollment);
@@ -146,8 +144,7 @@ export const makeFleetUpdates = (options: {
           return operation;
         }),
       );
-    const reconcile = (operation: FleetHostOperation) =>
-      Effect.gen(function* () {
+    const reconcile = Effect.fn("FleetUpdates.reconcile")(function* (operation: FleetHostOperation) {
         if (
           !["dispatching", "install-blocked", "pending", "reconciling"].includes(operation.phase) ||
           activeNative.has(operation.input.operationId)
@@ -181,8 +178,7 @@ export const makeFleetUpdates = (options: {
           ...(native.reason === undefined ? {} : { reason: native.reason }),
         });
       });
-    const status = (operationId?: string) =>
-      Effect.gen(function* () {
+    const status = Effect.fn("FleetUpdates.status")(function* (operationId?: string) {
         const enrollment = yield* storage(store.readEnrollment);
         const operation =
           operationId === undefined ? null : yield* storage(() => store.readOperation(operationId));
@@ -195,8 +191,7 @@ export const makeFleetUpdates = (options: {
           update: yield* updates.state(),
         } satisfies FleetHostStatus;
       });
-    const enroll = (input: FleetEnrollmentInput) =>
-      Effect.gen(function* () {
+    const enroll = Effect.fn("FleetUpdates.enroll")(function* (input: FleetEnrollmentInput) {
         if (input.enrollment.environmentId !== environmentId)
           return yield* fail("binding", "The connected environment changed.");
         const update = yield* updates.state();
@@ -224,8 +219,7 @@ export const makeFleetUpdates = (options: {
         );
         return yield* status();
       });
-    const stage = (input: FleetStageInput) =>
-      Effect.gen(function* () {
+    const stage = Effect.fn("FleetUpdates.stage")(function* (input: FleetStageInput) {
         const enrollment = yield* requireEnrollment(input);
         const old = yield* storage(() => store.readOperation(input.operationId));
         if (old !== null && !sameIntent(old.input, input))
@@ -283,8 +277,7 @@ export const makeFleetUpdates = (options: {
         );
         return yield* status(operation.input.operationId);
       });
-    const retire = (input: FleetRetireInput) =>
-      Effect.gen(function* () {
+    const retire = Effect.fn("FleetUpdates.retire")(function* (input: FleetRetireInput) {
         if (input.environmentId !== environmentId)
           return yield* fail("binding", "The connected environment changed.");
         let operation = yield* storage(() => store.readOperation(input.operationId));
@@ -361,8 +354,7 @@ export const makeFleetUpdates = (options: {
         });
         return yield* status(input.operationId);
       });
-    const activate = (input: FleetActivateInput) =>
-      Effect.gen(function* () {
+    const activate = Effect.fn("FleetUpdates.activate")(function* (input: FleetActivateInput) {
         const enrollment = yield* requireEnrollment(input);
         let operation = yield* storage(() => store.readOperation(input.operationId));
         if (

@@ -67,8 +67,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
     now: () => clock.currentTimeMillisUnsafe(),
     readIdentities: () => initial,
     gateway: {
-      readThreadPlacements: (request) =>
-        Effect.gen(function* () {
+      readThreadPlacements: Effect.fn("VoiceReviewComposition.readThreadPlacements")(function* (request) {
           const fresh = yield* readIdentities(
             request.identities.map((item) => item.native_thread_id),
           ).pipe(
@@ -93,7 +92,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
               detail: "Native voice projection changed.",
             });
           return yield* gateway.readThreadPlacements(request);
-        }).pipe(
+        }, (effect) => effect.pipe(
           Effect.mapError(
             () =>
               new WorkstreamGatewayError({
@@ -101,7 +100,7 @@ export const makeVoiceReviewComposition = Effect.fn("voiceReview.makeComposition
                 detail: "Native voice binding is unavailable.",
               }),
           ),
-        ),
+        )),
     },
   });
 });

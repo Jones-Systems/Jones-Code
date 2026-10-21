@@ -148,8 +148,9 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
         ),
       ),
     ),
-    set: (environmentId, routeBinding, kind) =>
-      Effect.gen(function* () {
+    set: Effect.fn("MobileConnectionCatalogStore.set")(function* (environmentId,
+routeBinding,
+kind) {
         if (
           kind !== null &&
           catalogCompatibilityRouteBinding(yield* snapshot, environmentId) !== routeBinding

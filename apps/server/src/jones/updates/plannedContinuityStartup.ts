@@ -12,13 +12,12 @@ import {
   type PlannedUpdateProof,
 } from "./PlannedUpdateContinuityService.ts";
 
-export function activatePlannedUpdateContinuity(input: {
+export const activatePlannedUpdateContinuity = Effect.fn("PlannedContinuityStartup.activatePlannedUpdateContinuity")(function* (input: {
   readonly baseDir: string;
   readonly dbPath: string;
   readonly launcher: ServiceLauncherClient["Service"];
   readonly continuity: PlannedUpdateContinuity["Service"];
 }) {
-  return Effect.gen(function* () {
     const outcome = input.launcher.qualifiedStartupOutcome;
     if (
       !input.launcher.managed ||
@@ -60,4 +59,3 @@ export function activatePlannedUpdateContinuity(input: {
     });
     yield* input.continuity.activate(proof);
   });
-}

@@ -293,8 +293,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
       ),
     });
     const bindAuthorityToSqlClient: TrustedNativeEnrollmentCliContext["bindAuthorityToSqlClient"] =
-      (client) =>
-        Effect.gen(function* () {
+      Effect.fn("TrustedNativeEnrollmentCliContext.bindAuthorityToSqlClient")(function* (client) {
           yield* verifyUnchanged;
           if (
             access !== "apply" ||

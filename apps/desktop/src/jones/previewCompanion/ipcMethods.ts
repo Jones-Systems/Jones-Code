@@ -32,8 +32,7 @@ export class CompanionIpcPayloadError extends Schema.TaggedError<CompanionIpcPay
   }
 }
 
-const mainRenderer = (event?: DesktopIpc.DesktopIpcInvokeEvent) =>
-  Effect.gen(function* () {
+const mainRenderer = Effect.fn("CompanionIpc.mainRenderer")(function* (event?: DesktopIpc.DesktopIpcInvokeEvent) {
     const windows = yield* ElectronWindow.ElectronWindow;
     const main = yield* windows.main;
     if (
@@ -50,8 +49,8 @@ export const getState = DesktopIpc.makeIpcMethod({
   channel: Channels.GET_STATE,
   payload: Schema.Void,
   result: DesktopCompanionState,
-  handler: (_, event) =>
-    Effect.gen(function* () {
+  handler: Effect.fn("CompanionIpc.getState")(function* (_,
+event) {
       yield* mainRenderer(event);
       return yield* (yield* CompanionUplink.CompanionUplink).getState;
     }),
@@ -61,8 +60,8 @@ const configure = DesktopIpc.makeIpcMethod({
   channel: Channels.CONFIGURE,
   payload: DesktopCompanionConfigureInput,
   result: DesktopCompanionState,
-  handler: (input, event) =>
-    Effect.gen(function* () {
+  handler: Effect.fn("CompanionIpc.configure")(function* (input,
+event) {
       yield* mainRenderer(event);
       const store = yield* CompanionConfig.CompanionConfig;
       const uplink = yield* CompanionUplink.CompanionUplink;
@@ -85,8 +84,8 @@ export const setTicketProviderReady = DesktopIpc.makeIpcMethod({
   channel: Channels.TICKET_PROVIDER_READY,
   payload: Schema.Boolean,
   result: Schema.Void,
-  handler: (ready, event) =>
-    Effect.gen(function* () {
+  handler: Effect.fn("CompanionIpc.setTicketProviderReady")(function* (ready,
+event) {
       const renderer = yield* mainRenderer(event);
       yield* (yield* CompanionUplink.CompanionUplink).setReady(ready, renderer);
     }),
@@ -97,8 +96,8 @@ export const completeTicket = DesktopIpc.makeIpcMethod({
   // Decode after sender validation, replacing schema errors that could contain a ticket URL.
   payload: Schema.Unknown,
   result: Schema.Void,
-  handler: (raw, event) =>
-    Effect.gen(function* () {
+  handler: Effect.fn("CompanionIpc.completeTicket")(function* (raw,
+event) {
       yield* mainRenderer(event);
       const response = yield* Schema.decodeUnknownEffect(DesktopCompanionTicketResponse)(raw).pipe(
         Effect.mapError(() => new CompanionIpcPayloadError()),
@@ -111,8 +110,8 @@ export const retry = DesktopIpc.makeIpcMethod({
   channel: Channels.RETRY,
   payload: Schema.Void,
   result: Schema.Void,
-  handler: (_, event) =>
-    Effect.gen(function* () {
+  handler: Effect.fn("CompanionIpc.retry")(function* (_,
+event) {
       yield* mainRenderer(event);
       yield* (yield* CompanionUplink.CompanionUplink).retry;
     }),

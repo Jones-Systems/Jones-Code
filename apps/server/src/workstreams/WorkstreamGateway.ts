@@ -571,7 +571,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       );
     });
     const readMetadata: WorkstreamGateway["Service"]["readMetadata"] = (input = {}) =>
-      Effect.gen(function* () {
+      Effect.fn("WorkstreamGateway.readMetadata")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const request = yield* Effect.try({
           try: () => pageInput(input),
@@ -625,13 +625,13 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         };
         remember(pageCache, cacheKey, { result, at: now() });
         return result;
-      });
+      })();
 
     const boundRead = <A>(
       run: (request: PageInput & ContractInput) => Effect.Effect<A, WorkstreamTransportError>,
       input?: { readonly limit?: number; readonly cursor?: string },
     ) =>
-      Effect.gen(function* () {
+      Effect.fn("WorkstreamGateway.boundRead")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const page = yield* Effect.try({
           try: () => pageInput(input),
@@ -641,13 +641,13 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           Effect.mapError(transportFailure),
         );
         return yield* validateContext(value, authorized.binding);
-      });
+      })();
     const boundDetail = <A>(run: () => Effect.Effect<A, WorkstreamTransportError>) =>
-      Effect.gen(function* () {
+      Effect.fn("WorkstreamGateway.boundDetail")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const value = yield* run().pipe(Effect.mapError(transportFailure));
         return yield* validateContext(value, authorized.binding);
-      });
+      })();
     const validateReceipt = (
       receipt: WorkstreamReceipt,
       commandId: string,
@@ -673,16 +673,14 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         );
       return Effect.succeed(receipt);
     };
-    const pollCommand = (commandId: string) =>
-      Effect.gen(function* () {
+    const pollCommand = Effect.fn("WorkstreamGateway.pollCommand")(function* (commandId: string) {
         const authorized = yield* authorize("workstreams:read");
         const receipt = yield* transport
           .getCommand({ commandId, ...contractInput })
           .pipe(Effect.mapError(transportFailure));
         return yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
       });
-    const submit = (command: WorkstreamCommand) =>
-      Effect.gen(function* () {
+    const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
         const authorized = yield* authorize("workstreams:write").pipe(
           Effect.mapError((error) =>
             error.reason === "permission-denied" ||
@@ -811,8 +809,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
 
     return WorkstreamGateway.of({
       readRegistryCounts,
-      readAppearance: (ids) =>
-        Effect.gen(function* () {
+      readAppearance: Effect.fn("WorkstreamGateway.readAppearance")(function* (ids) {
           const authorized = yield* authorize("workstreams:read");
           if (!transport.readAppearance) return { supported: false as const };
           const result = yield* transport
@@ -832,8 +829,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           }
           return result;
         }),
-      saveAppearance: (input) =>
-        Effect.gen(function* () {
+      saveAppearance: Effect.fn("WorkstreamGateway.saveAppearance")(function* (input) {
           yield* authorize("workstreams:write");
           if (!transport.saveAppearance)
             return yield* new WorkstreamGatewayError({

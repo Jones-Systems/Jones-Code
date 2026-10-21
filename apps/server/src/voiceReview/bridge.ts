@@ -665,8 +665,9 @@ const make = Effect.gen(function* () {
     });
   return VoiceReview.of({
     recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
-    registrySnapshot: (principal, cursor, limit) =>
-      Effect.gen(function* () {
+    registrySnapshot: Effect.fn("VoiceReviewBridge.registrySnapshot")(function* (principal,
+cursor,
+limit) {
         const native =
           compositionFactory === undefined
             ? undefined

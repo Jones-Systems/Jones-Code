@@ -478,8 +478,7 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
-  const decryptDocument = (document: EncryptedConnectionCatalogDocument) =>
-    Effect.gen(function* () {
+  const decryptDocument = Effect.fn("DesktopConnectionCatalogStore.decryptDocument")(function* (document: EncryptedConnectionCatalogDocument) {
       if (!(yield* encryptionAvailable)) return Option.none<string>();
       const encrypted = yield* decodeSecretBytes(catalogPath, document.encryptedCatalog);
       const decrypted = yield* safeStorage.decryptString(encrypted).pipe(

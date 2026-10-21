@@ -190,8 +190,7 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
     const registrationContext = yield* WorkstreamsRegistrationContext;
-    const read = (name: string) =>
-      Effect.gen(function* () {
+    const read = Effect.fn("WorkstreamHttp.read")(function* (name: string) {
         yield* annotateEnvironmentRequest(name);
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });

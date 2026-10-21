@@ -89,8 +89,7 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-  const read = (threadId: ThreadId) =>
-    Effect.gen(function* () {
+  const read = Effect.fn("PlannedUpdateContinuity.read")(function* (threadId: ThreadId) {
       const current = yield* Ref.get(active);
       if (current === undefined || !current.threadIds.includes(threadId)) return undefined;
       const rows = yield* sql<{ snapshot_json: string; queue_done: number; work_done: number }>`
@@ -102,11 +101,8 @@ export const make = Effect.gen(function* () {
       return { ...row, snapshot, operationId: current.operationId };
     });
 
-  const controlsUnchanged = (
-    snapshot: PlannedThreadSnapshot,
-    projection: OrchestrationV2ThreadProjection,
-  ) =>
-    Effect.gen(function* () {
+  const controlsUnchanged = Effect.fn("PlannedUpdateContinuity.controlsUnchanged")(function* (snapshot: PlannedThreadSnapshot,
+projection: OrchestrationV2ThreadProjection) {
       if (snapshot.receiptRowId !== 0) {
         const anchor = yield* sql<{
           command_id: string;

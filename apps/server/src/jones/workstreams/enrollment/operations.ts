@@ -69,8 +69,7 @@ export const makeNativeEnrollmentOperations = (ports: NativeEnrollmentOperationP
     if (code === "record_unavailable") return { state: "unknown", reason: "records_unavailable" };
     return { state: "conflict", reason: "qualification_failed" };
   };
-  const plan = (request: NativeEnrollmentRequest) =>
-    Effect.gen(function* () {
+  const plan = Effect.fn("NativeEnrollmentOperations.plan")(function* (request: NativeEnrollmentRequest) {
       const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
       if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
       const file = yield* ports.credential.observe().pipe(Effect.result);
@@ -84,8 +83,8 @@ export const makeNativeEnrollmentOperations = (ports: NativeEnrollmentOperationP
         file_post_sha256: file.success.sha256,
       });
     });
-  const readback = (request: NativeEnrollmentRequest, expectedCredentialSha256: string) =>
-    Effect.gen(function* () {
+  const readback = Effect.fn("NativeEnrollmentOperations.readback")(function* (request: NativeEnrollmentRequest,
+expectedCredentialSha256: string) {
       const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
       if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
       if (records.success.state !== "reserved")
@@ -114,8 +113,8 @@ export const makeNativeEnrollmentOperations = (ports: NativeEnrollmentOperationP
         file_post_sha256: file.success.sha256,
       });
     });
-  const apply = (request: NativeEnrollmentRequest, expectedBeforeSha256: string | null) =>
-    Effect.gen(function* () {
+  const apply = Effect.fn("NativeEnrollmentOperations.apply")(function* (request: NativeEnrollmentRequest,
+expectedBeforeSha256: string | null) {
       const observed = yield* ports.enrollments.inspect(request).pipe(Effect.result);
       if (observed._tag === "Failure")
         return receipt(request, recordFailure(observed.failure.code));

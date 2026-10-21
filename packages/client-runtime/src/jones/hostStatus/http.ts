@@ -4,8 +4,7 @@ import type { PreparedConnection } from "../../connection/model.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 
-export const fetchEnvironmentHostStatus = (prepared: PreparedConnection) =>
-  Effect.gen(function* () {
+export const fetchEnvironmentHostStatus = Effect.fn("HostStatusHttp.fetchEnvironmentHostStatus")(function* (prepared: PreparedConnection) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       prepared,
       group: "hostStatus",

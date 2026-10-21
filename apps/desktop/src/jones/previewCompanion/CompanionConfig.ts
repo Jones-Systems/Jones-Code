@@ -55,8 +55,7 @@ const make = Effect.gen(function* () {
           : Effect.fail(new CompanionConfigError({ operation: "read" })),
       ),
     );
-  const write = (config: DesktopCompanionConfig) =>
-    Effect.gen(function* () {
+  const write = Effect.fn("CompanionConfig.write")(function* (config: DesktopCompanionConfig) {
       const id = yield* crypto.randomUUIDv4();
       const temporary = `${target}.${id}.tmp`;
       const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(
@@ -69,7 +68,7 @@ const make = Effect.gen(function* () {
           Effect.andThen(fs.rename(temporary, target)),
           Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
         );
-    }).pipe(Effect.mapError(() => new CompanionConfigError({ operation: "write" })));
+    }, (effect) => effect.pipe(Effect.mapError(() => new CompanionConfigError({ operation: "write" }))));
   const initial =
     raw === null
       ? {
@@ -128,8 +127,7 @@ export class CompanionBrowserOnlyError extends Schema.TaggedError<CompanionBrows
   }
 }
 
-export const checkLocalEnvironmentEnable = (enabled: boolean) =>
-  Effect.gen(function* () {
+export const checkLocalEnvironmentEnable = Effect.fn("CompanionConfig.checkLocalEnvironmentEnable")(function* (enabled: boolean) {
     if (!enabled) return;
     // Main supplies config; legacy isolated IPC contexts retain ordinary behavior.
     const config = yield* Effect.serviceOption(CompanionConfig);

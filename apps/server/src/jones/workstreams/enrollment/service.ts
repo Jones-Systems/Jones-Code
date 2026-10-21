@@ -77,8 +77,7 @@ const decodeBinding = Schema.decodeUnknownEffect(
 );
 const jsonBinding = Schema.encodeSync(Schema.fromJsonString(NativeProviderEnrollmentBinding));
 
-export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
-  Effect.gen(function* () {
+export const makeNativeEnrollments = Effect.fn("NativeEnrollments.makeNativeEnrollments")(function* (ports: NativeEnrollmentPorts) {
     const sql = yield* SqlClient.SqlClient;
     const sessions = yield* AuthSessions.AuthSessionRepository;
     const read = (enrollmentId: string, sessionId: string) =>
@@ -93,8 +92,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
       decodeRequest(input).pipe(
         Effect.mapError(() => new NativeEnrollmentError({ code: "invalid_request" })),
       );
-    const qualify = (request: NativeEnrollmentRequest) =>
-      Effect.gen(function* () {
+    const qualify = Effect.fn("NativeEnrollments.qualify")(function* (request: NativeEnrollmentRequest) {
         const now = yield* DateTime.now;
         if (
           Date.parse(request.session.issued_at) > now.epochMilliseconds ||
@@ -120,8 +118,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         )
           return yield* new NativeEnrollmentError({ code: "build_mismatch" });
       });
-    const checkedRowRequest = (row: Row) =>
-      Effect.gen(function* () {
+    const checkedRowRequest = Effect.fn("NativeEnrollments.checkedRowRequest")(function* (row: Row) {
         const request = yield* decodePersistedRequest(row.requestJson);
         const binding = yield* decodeBinding(row.bindingJson);
         if (
@@ -134,9 +131,8 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         )
           return yield* new NativeEnrollmentError({ code: "enrollment_conflict" });
         return request;
-      }).pipe(Effect.mapError(() => new NativeEnrollmentError({ code: "enrollment_conflict" })));
-    const activeSession = (request: NativeEnrollmentRequest) =>
-      Effect.gen(function* () {
+      }, (effect) => effect.pipe(Effect.mapError(() => new NativeEnrollmentError({ code: "enrollment_conflict" }))));
+    const activeSession = Effect.fn("NativeEnrollments.activeSession")(function* (request: NativeEnrollmentRequest) {
         const session = yield* sessions
           .getById({ sessionId: request.session.session_id })
           .pipe(Effect.mapError(() => new NativeEnrollmentError({ code: "record_unavailable" })));
@@ -151,8 +147,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
           return yield* new NativeEnrollmentError({ code: "session_conflict" });
         return true;
       });
-    const inspectRecords = (request: NativeEnrollmentRequest) =>
-      Effect.gen(function* () {
+    const inspectRecords = Effect.fn("NativeEnrollments.inspectRecords")(function* (request: NativeEnrollmentRequest) {
         const rows = yield* read(request.enrollment_id, request.session.session_id);
         const active = yield* activeSession(request);
         if (rows.length === 0) return { state: "absent" as const };
@@ -164,16 +159,14 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         if (!active) return yield* new NativeEnrollmentError({ code: "session_conflict" });
         return { state: "reserved" as const };
       });
-    const inspect: NativeEnrollments["Service"]["inspect"] = (input) =>
-      Effect.gen(function* () {
+    const inspect: NativeEnrollments["Service"]["inspect"] = Effect.fn("NativeEnrollments.inspect")(function* (input) {
         const request = yield* validate(input);
         yield* qualify(request);
         const result = yield* inspectRecords(request);
         yield* qualify(request);
         return result;
       });
-    const reserve: NativeEnrollments["Service"]["reserve"] = (input) =>
-      Effect.gen(function* () {
+    const reserve: NativeEnrollments["Service"]["reserve"] = Effect.fn("NativeEnrollments.reserve")(function* (input) {
         const request = yield* validate(input);
         yield* qualify(request);
         // A failed COMMIT is unresolved; callers inspect exact records before any later reserve.
@@ -209,8 +202,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         yield* qualify(request);
         return result;
       });
-    const getBySessionId: NativeEnrollments["Service"]["getBySessionId"] = (sessionId) =>
-      Effect.gen(function* () {
+    const getBySessionId: NativeEnrollments["Service"]["getBySessionId"] = Effect.fn("NativeEnrollments.getBySessionId")(function* (sessionId) {
         const rows = yield* read("", sessionId);
         if (rows.length === 0) return Option.none<NativeProviderEnrollmentBinding>();
         if (rows.length !== 1)
@@ -219,7 +211,7 @@ export const makeNativeEnrollments = (ports: NativeEnrollmentPorts) =>
         if (request.session.session_id !== sessionId || !(yield* activeSession(request)))
           return Option.none<NativeProviderEnrollmentBinding>();
         return Option.some(deriveNativeEnrollmentBinding(request));
-      }).pipe(Effect.catch(() => Effect.succeed(Option.none<NativeProviderEnrollmentBinding>())));
+      }, (effect) => effect.pipe(Effect.catch(() => Effect.succeed(Option.none<NativeProviderEnrollmentBinding>()))));
     return NativeEnrollments.of({ inspect, reserve, getBySessionId });
   });
 

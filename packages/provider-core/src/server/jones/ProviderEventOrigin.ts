@@ -78,16 +78,13 @@ export function makeProviderEventProducer(
   };
 }
 
-export function revalidateProviderEventOrigin(
-  event: ProviderAdapterV2Event,
-  runtime: {
+export const revalidateProviderEventOrigin = Effect.fn("ProviderEventOrigin.revalidateProviderEventOrigin")(function* (event: ProviderAdapterV2Event,
+runtime: {
     readonly driver: ProviderDriverKind;
     readonly instanceId: ProviderInstanceId;
     readonly providerSessionId: ProviderSessionId;
     readonly eventOriginMode?: "captured";
-  },
-): Effect.Effect<void, ProviderEventOriginStaleError> {
-  return Effect.gen(function* () {
+  }): Effect.fn.Return<void, ProviderEventOriginStaleError> {
     const origin = readProviderEventOrigin(event);
     if (origin === undefined) {
       if (runtime.eventOriginMode === "captured")
@@ -131,7 +128,6 @@ export function revalidateProviderEventOrigin(
     }
     yield* producer.revalidateCurrent;
   });
-}
 
 export class ProviderEventOriginConflictError extends Error {
   override readonly name = "ProviderEventOriginConflictError";

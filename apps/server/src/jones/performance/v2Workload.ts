@@ -64,8 +64,7 @@ function summarize(values: readonly number[]) {
   };
 }
 
-export const runV2Workload = (options: V2Workload) =>
-  Effect.gen(function* () {
+export const runV2Workload = Effect.fn("V2Workload.runV2Workload")(function* (options: V2Workload) {
     validateV2Workload(options);
     const sink = yield* EventSink.EventSinkV2;
     const eventStore = yield* EventStore.EventStoreV2;
@@ -126,8 +125,7 @@ export const runV2Workload = (options: V2Workload) =>
       ],
       effects: [],
     });
-    const capture = () =>
-      Effect.gen(function* () {
+    const capture = Effect.fn("V2Workload.capture")(function* () {
         const sequence = yield* sink.latestSequence({ threadId });
         const projection = yield* projections.getThreadProjection(threadId);
         const receipts =
@@ -174,12 +172,12 @@ export const runV2Workload = (options: V2Workload) =>
 
     const protocol: number[] = [];
     const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
+      Effect.fn("V2Workload.timed")(function* () {
         const start = NodePerfHooks.performance.now();
         const value = yield* effect;
         protocol.push(NodePerfHooks.performance.now() - start);
         return value;
-      });
+      })();
     const beforeReplay = yield* capture();
     const replay = yield* timed(sink.commitCommand(commands[0]!));
     NodeAssert.equal(replay.committed, false);

@@ -1177,8 +1177,7 @@ export function createServerEnvironmentAtoms<R, E>(
       tag: WS_METHODS.serverReadTokenAccounting,
       execute: (input) =>
         requestGuarded(WS_METHODS.serverReadTokenAccounting, input, {
-          validateSession: (session) =>
-            Effect.gen(function* () {
+          validateSession: Effect.fn("ClientServerState.validateSession")(function* (session) {
               const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
               const config = yield* session.initialConfig;
               if (config.environment.capabilities.savedTokenAccounting !== true) {

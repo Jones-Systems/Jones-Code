@@ -51,18 +51,15 @@ function ciReadReason(error: unknown): string {
 }
 
 /** Read only under the caller's verified credential; error payloads never cross the wire. */
-export const readGitHubCiStatus = (
-  github: Pick<GitHubRest.GitHubRest["Service"], "rest">,
-  input: {
+export const readGitHubCiStatus = Effect.fn("GitHubCiStatus.readGitHubCiStatus")(function* (github: Pick<GitHubRest.GitHubRest["Service"], "rest">,
+input: {
     readonly cwd: string;
     readonly host: string;
     readonly organization: string;
     readonly accountId: string;
     readonly repositories: ReadonlyArray<string>;
     readonly scopeTruncated: boolean;
-  },
-): Effect.Effect<PullRequestCiStatusResult> =>
-  Effect.gen(function* () {
+  }): Effect.fn.Return<PullRequestCiStatusResult> {
     const started = yield* Clock.currentTimeMillis;
     const rateLimits = yield* Effect.serviceOption(SourceControlRateLimit.SourceControlRateLimit);
     const rateLimitKey = { provider: SourceControlProviderKind.make("github"), host: input.host };
@@ -126,7 +123,7 @@ export const readGitHubCiStatus = (
       maxPages: number,
       repository?: string,
     ) =>
-      Effect.gen(function* () {
+      Effect.fn("GitHubCiStatus.page")(function* () {
         const items: Array<A> = [];
         const reasons: string[] = [];
         let succeeded = false;
@@ -183,7 +180,7 @@ export const readGitHubCiStatus = (
           }
         }
         return { items, reasons, succeeded };
-      });
+      })();
     const runnerRead = yield* page(
       `orgs/${encodeURIComponent(input.organization)}/actions/runners`,
       "runners",

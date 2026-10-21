@@ -36,7 +36,7 @@ export const requestRemoteAdmission = Effect.fn("clientRuntime.remoteAdmission.r
     url: (urls) => urls[input.action](),
     timeoutMs: 45_000,
     request: ({ client, headers }) =>
-      Effect.gen(function* () {
+      Effect.fn("RemoteAdmission.request")(function* () {
         switch (input.action) {
           case "attention":
             return yield* client.attention({ headers });
@@ -47,6 +47,6 @@ export const requestRemoteAdmission = Effect.fn("clientRuntime.remoteAdmission.r
           case "decide":
             return yield* client.decide({ headers, payload: input.input });
         }
-      }),
+      })(),
   });
 });

@@ -74,8 +74,7 @@ export const jonesMigrationEntries = [
   [120, "SettlementRestores", JonesMigration0120],
 ] as const;
 
-export const runMigrations = () =>
-  Effect.gen(function* () {
+export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
     const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
     if (jonesMigrations.length > 0) {
       yield* Effect.log("Jones migrations ran successfully").pipe(

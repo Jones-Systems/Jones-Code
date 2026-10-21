@@ -101,8 +101,7 @@ export class OpenCodeAuthority extends Context.Service<
   }
 >()("@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy/OpenCodeAuthority") {}
 
-export const requireCurrent = (parent: OpenCodeOwnedProcess | undefined) =>
-  Effect.gen(function* () {
+export const requireCurrent = Effect.fn("OpenCodeCreationPolicy.requireCurrent")(function* (parent: OpenCodeOwnedProcess | undefined) {
     if (parent === undefined || !(yield* parent.isCurrent)) {
       return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
         operation: "adoptServer",

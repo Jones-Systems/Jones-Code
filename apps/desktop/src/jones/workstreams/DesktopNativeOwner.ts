@@ -31,8 +31,8 @@ export const makeDesktopNativeOwnerChannel = Effect.fn("makeDesktopNativeOwnerCh
   return {
     input: Stream.fromQueue(replies),
     close,
-    bind: (pid: number, output: Stream.Stream<Uint8Array, PlatformError.PlatformError>) =>
-      Effect.gen(function* () {
+    bind: Effect.fn("DesktopNativeOwner.bind")(function* (pid: number,
+output: Stream.Stream<Uint8Array, PlatformError.PlatformError>) {
         if (!active || childPid !== undefined || !Number.isSafeInteger(pid) || pid < 1)
           return yield* Effect.die(new Error("Desktop owner channel cannot adopt another child."));
         childPid = pid;

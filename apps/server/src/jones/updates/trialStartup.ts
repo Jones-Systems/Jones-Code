@@ -27,7 +27,7 @@ export const awaitJonesTrialStartup = <E, R>(input: {
   readonly waitUntilParked: Effect.Effect<void, E, R>;
   readonly observedListener: Effect.Effect<NetAddress.SocketAddress, E, R>;
 }) =>
-  Effect.gen(function* () {
+  Effect.fn("JonesTrialStartup.awaitJonesTrialStartup")(function* () {
     const environment = yield* HostProcess.Environment;
     const descriptorPath = environment.T3CODE_JONES_TRIAL_DESCRIPTOR;
     if (descriptorPath === undefined) return;
@@ -73,13 +73,13 @@ export const awaitJonesTrialStartup = <E, R>(input: {
               : new JonesTrialGateError({ step: "cancel", uncertain: false, cause }),
         }).pipe(Effect.catch((error) => (error.uncertain ? Effect.fail(error) : Effect.void))),
     );
-  });
+  })();
 
 export const awaitSelectedJonesTrialStartup = <E, R>(input: {
   readonly waitUntilParked: Effect.Effect<void, E, R>;
   readonly observedListener: Effect.Effect<NetAddress.SocketAddress, E, R>;
 }) =>
-  Effect.gen(function* () {
+  Effect.fn("JonesTrialStartup.awaitSelectedJonesTrialStartup")(function* () {
     const descriptor = yield* hasJonesTrialDescriptor;
     const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
     const qualified = launcher.requiresQualifiedTrialGate === true;
@@ -116,4 +116,4 @@ export const awaitSelectedJonesTrialStartup = <E, R>(input: {
       processId: process.pid,
     };
     yield* launcher.prepareQualifiedTrial(witness);
-  });
+  })();

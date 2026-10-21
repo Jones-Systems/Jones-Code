@@ -5,8 +5,7 @@ import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 
-const options = (prepared: PreparedConnection) =>
-  Effect.gen(function* () {
+const options = Effect.fn("PreviewCompanionHttp.options")(function* (prepared: PreparedConnection) {
     return {
       prepared,
       group: "previewCompanion" as const,
@@ -16,8 +15,7 @@ const options = (prepared: PreparedConnection) =>
     };
   });
 
-export const fetchCompanionHosts = (prepared: PreparedConnection) =>
-  Effect.gen(function* () {
+export const fetchCompanionHosts = Effect.fn("PreviewCompanionHttp.fetchCompanionHosts")(function* (prepared: PreparedConnection) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "GET",
@@ -26,8 +24,8 @@ export const fetchCompanionHosts = (prepared: PreparedConnection) =>
     });
   });
 
-export const fetchCompanionThread = (prepared: PreparedConnection, threadId: ThreadId) =>
-  Effect.gen(function* () {
+export const fetchCompanionThread = Effect.fn("PreviewCompanionHttp.fetchCompanionThread")(function* (prepared: PreparedConnection,
+threadId: ThreadId) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "GET",
@@ -36,11 +34,8 @@ export const fetchCompanionThread = (prepared: PreparedConnection, threadId: Thr
     });
   });
 
-export const setCompanionDefault = (
-  prepared: PreparedConnection,
-  selection: PreviewRenderHostSelection,
-) =>
-  Effect.gen(function* () {
+export const setCompanionDefault = Effect.fn("PreviewCompanionHttp.setCompanionDefault")(function* (prepared: PreparedConnection,
+selection: PreviewRenderHostSelection) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "PUT",
@@ -49,12 +44,9 @@ export const setCompanionDefault = (
     });
   });
 
-export const setCompanionThread = (
-  prepared: PreparedConnection,
-  threadId: ThreadId,
-  selection: PreviewRenderHostSelection | null,
-) =>
-  Effect.gen(function* () {
+export const setCompanionThread = Effect.fn("PreviewCompanionHttp.setCompanionThread")(function* (prepared: PreparedConnection,
+threadId: ThreadId,
+selection: PreviewRenderHostSelection | null) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       ...(yield* options(prepared)),
       method: "PUT",

@@ -69,8 +69,7 @@ const makeNativeWorkstreamsRuntimeLayer = (
       const enrollments = yield* NativeProviderEnrollment;
       return NativeWorkstreamsRuntime.of({
         enrollments,
-        ownerOperations: (request) =>
-          Effect.gen(function* () {
+        ownerOperations: Effect.fn("NativeWorkstreamIntegration.ownerOperations")(function* (request) {
             yield* owner.refresh;
             const binding = owner.binding;
             if (!owner.available || binding === undefined)
@@ -86,13 +85,13 @@ const makeNativeWorkstreamsRuntimeLayer = (
                 environmentId: binding.environmentId,
               },
             );
-          }).pipe(
+          }, (effect) => effect.pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.mapError(
               () =>
                 new EnvironmentHttpBadRequestError({ message: "desktop_native_owner_unavailable" }),
             ),
-          ),
+          )),
         provider: makeWorkstreamsNativeProvider({
           authority,
           threadExists: (threadId) =>
