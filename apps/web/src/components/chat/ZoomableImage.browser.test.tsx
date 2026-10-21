@@ -249,6 +249,7 @@ describe("image zoom interactions", () => {
     const left = region().scrollLeft;
     expect(handle.current!.pan("ArrowRight")).toBe(false);
     expect(region().scrollLeft).toBe(left);
+    region().style.setProperty("--fixture-height", "100px");
     const top = region().scrollTop;
     expect(handle.current!.pan("ArrowDown")).toBe(true);
     expect(region().scrollTop).toBe(top + 40);
