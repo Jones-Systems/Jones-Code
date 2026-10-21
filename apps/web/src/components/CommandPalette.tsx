@@ -201,7 +201,8 @@ import {
   reduceCommandPaletteUiState,
   type SearchOverlayMode,
 } from "./CommandPalette.logic";
-import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
+import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
+import { sortEnvironmentOptions } from "../jones/presentationOrder/environmentOrder";
 import { resolveEnvironmentOptionLabel } from "./BranchToolbar.logic";
 import { CommandPaletteContent } from "./CommandPaletteContent";
 import {
@@ -242,12 +243,8 @@ import { stackedThreadToast, toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { ComposerHandleContext, useComposerHandleContext } from "../composerHandleContext";
 import type { ChatComposerHandle } from "./chat/ChatComposer";
-import { getProjectOrderKey } from "../logicalProject";
-import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
-import {
-  buildSidebarProjectPickerEntries,
-  buildSidebarProjectSnapshots,
-} from "../sidebarProjectGrouping";
+import { useUiStateStore } from "../uiStateStore";
+import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
 import type { Project } from "../types";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
@@ -449,38 +446,6 @@ const selectCommandPaletteClientSettings = (settings: ClientSettings) => ({
   sidebarProjectSortOrder: settings.sidebarProjectSortOrder,
   sidebarThreadSortOrder: settings.sidebarThreadSortOrder,
 });
-
-function useSortedProjectGroups(environmentLabelById: ReadonlyMap<EnvironmentId, string>) {
-  const projects = useProjects();
-  const threads = useThreadShells();
-  const projectOrder = useUiStateStore((store) => store.projectOrder);
-  const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const projectGroupingSettings = {
-    sidebarProjectGroupingMode: clientSettings.sidebarProjectGroupingMode,
-    sidebarProjectGroupingOverrides: clientSettings.sidebarProjectGroupingOverrides,
-  };
-  const orderedProjects = orderItemsByPreferredIds({
-    items: projects,
-    preferredIds: projectOrder,
-    getId: getProjectOrderKey,
-    getPreferenceIds: (project) => [
-      getProjectOrderKey(project),
-      legacyProjectCwdPreferenceKey(project.workspaceRoot),
-    ],
-  });
-  const unsortedProjectGroups = buildSidebarProjectSnapshots({
-    projects: clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
-    settings: projectGroupingSettings,
-    primaryEnvironmentId,
-    resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
-  });
-  return sortLogicalProjectsForSidebar(
-    unsortedProjectGroups,
-    threads,
-    clientSettings.sidebarProjectSortOrder,
-  );
-}
 
 export function CommandPalette({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -737,6 +702,7 @@ function OpenCommandPaletteDialog(props: {
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+  const environmentOrder = useUiStateStore((store) => store.environmentOrder);
   const { environments } = useEnvironments();
   const desktopLocalBootstraps = useDesktopLocalBootstraps();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -851,7 +817,7 @@ function OpenCommandPaletteDialog(props: {
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
   const { environmentLabelById, projectEnvironmentLocationById } = useEnvironmentLookups();
-  const projectGroups = useSortedProjectGroups(environmentLabelById);
+  const projectGroups = useSidebarProjectGroups();
   const contextualProjectRef = resolveThreadActionProjectRef({
     activeDraftThread,
     activeThread: activeThread ?? undefined,
@@ -892,19 +858,13 @@ function OpenCommandPaletteDialog(props: {
         };
       });
 
-    options.sort((left, right) => {
-      if (left.isPrimary !== right.isPrimary) {
-        return left.isPrimary ? -1 : 1;
-      }
-      return left.label.localeCompare(right.label);
-    });
-
-    return options;
+    return sortEnvironmentOptions(options, environmentOrder);
   })();
   const defaultAddProjectEnvironmentId =
-    addProjectEnvironmentOptions.find((option) => option.isConnected)?.environmentId ?? null;
+    sortEnvironmentOptions(addProjectEnvironmentOptions, []).find((option) => option.isConnected)
+      ?.environmentId ?? null;
   const wslAddProjectEnvironmentOption =
-    addProjectEnvironmentOptions.find((option) => {
+    sortEnvironmentOptions(addProjectEnvironmentOptions, []).find((option) => {
       if (!option.isConnected) {
         return false;
       }
@@ -1571,7 +1531,7 @@ function OpenCommandPaletteDialog(props: {
   };
 
   const openNewProjectFlow = () => {
-    const firstOption = newProjectEnvironmentOptions[0];
+    const firstOption = sortEnvironmentOptions(newProjectEnvironmentOptions, [])[0];
     if (firstOption) startNewProject(firstOption.environmentId, null);
   };
 

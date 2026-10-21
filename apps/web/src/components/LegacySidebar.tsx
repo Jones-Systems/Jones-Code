@@ -1,3 +1,4 @@
+import { projectPreferenceIds } from "../jones/presentationOrder/projectOrder";
 import { RemoteAdmissionAttention } from "../jones/remoteAdmission/RemoteAdmissionAttention";
 import {
   useThreadStatusFilter,
@@ -3081,10 +3082,7 @@ function useLegacySidebarProjects() {
     items: projects,
     preferredIds: projectOrder,
     getId: getProjectOrderKey,
-    getPreferenceIds: (project) => [
-      getProjectOrderKey(project),
-      legacyProjectCwdPreferenceKey(project.workspaceRoot),
-    ],
+    getPreferenceIds: projectPreferenceIds,
   });
   const physicalToLogicalKey = buildPhysicalToLogicalProjectKeyMap({
     projects: orderedProjects,

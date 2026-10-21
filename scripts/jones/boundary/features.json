@@ -1328,6 +1328,18 @@
         "apps/server/src/jones/updates/stagedSelection.test.ts"
       ],
       "scope": "Standalone operator recovery reattaches one existing verified native staged handle through the native selection writer under the existing updater lock. Dry-run creates no files; apply preserves receipts, payloads, active state and native install controls. Tests cover exact binding, conflicting pointers, revocation, unknown write and durability effects. No product entry point, installation, service control or adoption change."
+    },
+    {
+      "id": "presentation-order",
+      "tests": [
+        "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx",
+        "apps/web/src/jones/presentationOrder/environmentOrder.test.ts",
+        "apps/web/src/jones/presentationOrder/projectOrder.test.ts",
+        "apps/web/src/uiStateStore.test.ts",
+        "apps/web/src/components/Sidebar.logic.test.ts",
+        "apps/web/src/hooks/useHandleNewThread.test.ts"
+      ],
+      "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
     }
   ]
 }

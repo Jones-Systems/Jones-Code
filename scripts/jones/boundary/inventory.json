@@ -1502,7 +1502,21 @@
     "scripts/jones/updates/recover-staged-selection.ts": "jones-owned",
     "scripts/jones/updates/recover-staged-selection.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/staged-selection-recovery.json": "jones-owned",
-    "docs/operations/staged-selection-recovery.md": "jones-owned"
+    "docs/operations/staged-selection-recovery.md": "jones-owned",
+    "apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx": "jones-owned",
+    "apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx": "jones-owned",
+    "apps/web/src/jones/presentationOrder/SortableOrderList.tsx": "jones-owned",
+    "apps/web/src/jones/presentationOrder/environmentOrder.test.ts": "jones-owned",
+    "apps/web/src/jones/presentationOrder/environmentOrder.ts": "jones-owned",
+    "apps/web/src/jones/presentationOrder/projectOrder.test.ts": "jones-owned",
+    "apps/web/src/jones/presentationOrder/projectOrder.ts": "jones-owned",
+    "apps/web/src/hooks/useLogicalProjectEnvironments.ts": "hook",
+    "apps/web/src/hooks/useHandleNewThread.ts": "hook",
+    "apps/web/src/components/chat/DraftHeroHeadline.tsx": "hook",
+    "apps/web/src/components/CommandPalette.tsx": "hook",
+    "apps/web/src/uiStateStore.ts": "accepted-shared",
+    "apps/web/src/uiStateStore.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/hooks/useHandleNewThread.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
