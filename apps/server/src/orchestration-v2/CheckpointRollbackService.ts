@@ -322,28 +322,18 @@ export const layer: Layer.Layer<
               }),
             );
           }
-          if (targetOrdinal > 0 && runsToRollback.length > 0) {
-            const projection = yield* projections.getThreadRecords(input.threadId, [
-              "runs",
-              "attempts",
-            ]);
-            const targetRun = projection.runs.find((run) => run.ordinal === targetOrdinal);
-            const targetAttempt = projection.attempts.find(
-              (attempt) => attempt.id === targetRun?.activeAttemptId,
+          if (targetOrdinal > 0 && runsToRollback.length > 0 && targetAttempt !== undefined) {
+            events.push(
+              yield* makeEvent({
+                type: "run-attempt.updated",
+                threadId: input.threadId,
+                runId: targetAttempt.runId,
+                nodeId: targetAttempt.rootNodeId,
+                providerInstanceId: targetAttempt.providerInstanceId,
+                occurredAt: now,
+                payload: { ...targetAttempt, providerSettlement: null },
+              }),
             );
-            if (targetRun !== undefined && targetAttempt !== undefined) {
-              events.push(
-                yield* makeEvent({
-                  type: "run-attempt.updated",
-                  threadId: input.threadId,
-                  runId: targetRun.id,
-                  nodeId: targetAttempt.rootNodeId,
-                  providerInstanceId: targetAttempt.providerInstanceId,
-                  occurredAt: now,
-                  payload: { ...targetAttempt, providerSettlement: null },
-                }),
-              );
-            }
           }
           for (const run of runsToRollback) {
             const rootNode = context.rootNodes.find((candidate) => candidate.id === run.rootNodeId);

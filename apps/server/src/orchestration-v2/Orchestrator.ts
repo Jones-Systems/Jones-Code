@@ -2666,20 +2666,69 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       "orchestration_v2.driver": command.modelSelection.instanceId,
     });
 
-    // Tombstones reserve their ids too; recreating one would overwrite its history.
+    // Retained history reserves its id. Only an empty shell with exact completed deletion may recur.
     const existing = yield* projectionStore.getThread(command.threadId).pipe(
       Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
       Effect.mapError(
         (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
       ),
     );
+    const existingError = new OrchestratorThreadAlreadyExistsError({
+      commandId: command.commandId,
+      threadId: command.threadId,
+    });
     if (existing !== null) {
-      return yield* new OrchestratorThreadAlreadyExistsError({
-        commandId: command.commandId,
-        threadId: command.threadId,
-      });
+      if (
+        existing.deletedAt === null ||
+        existing.projectId !== command.projectId ||
+        existing.activeProviderThreadId !== null
+      )
+        return yield* existingError;
+      const projection = yield* projectionStore
+        .getThreadProjection(command.threadId)
+        .pipe(mapDispatchError(command));
+      if (Object.values(projection).some((value) => Array.isArray(value) && value.length > 0))
+        return yield* existingError;
+      const sql = yield* SqlClient.SqlClient;
+      const deletionRows = yield* sql<{ command_id: string | null; sequence: number }>`
+        SELECT command_id, sequence FROM orchestration_events
+        WHERE stream_id = ${command.threadId} AND event_type = 'thread.deleted'
+        ORDER BY sequence DESC LIMIT 1
+      `.pipe(mapDispatchError(command));
+      const deletionRow = deletionRows[0];
+      if (deletionRow === undefined || deletionRow.command_id === null)
+        return yield* existingError;
+      const deletionCommandId = CommandId.make(deletionRow.command_id);
+      const deletion = (yield* eventSink
+        .readByCommandId({ commandId: deletionCommandId })
+        .pipe(Stream.runCollect, mapDispatchError(command))).find(
+        (stored) => stored.sequence === deletionRow.sequence,
+      );
+      if (
+        deletion?.event.type !== "thread.deleted" ||
+        deletion.event.threadId !== command.threadId ||
+        deletion.event.payload.deletedAt === null ||
+        DateTime.toEpochMillis(deletion.event.payload.deletedAt) !==
+          DateTime.toEpochMillis(existing.deletedAt)
+      )
+        return yield* existingError;
+      const receipt = yield* commandReceipts
+        .getByCommandId(deletionCommandId)
+        .pipe(mapDispatchError(command));
+      if (
+        Option.isNone(receipt) ||
+        receipt.value.status !== "accepted" ||
+        receipt.value.commandType !== "thread.delete" ||
+        receipt.value.threadId !== command.threadId ||
+        receipt.value.resultSequence !== deletion.sequence
+      )
+        return yield* existingError;
+      const deletionEffects = yield* effectOutbox
+        .listByCommandId(deletionCommandId)
+        .pipe(mapDispatchError(command));
+      if (!deletionEffects.some((effect) => effect.request.type === "terminal.cleanup"))
+        return yield* existingError;
     }
-
     const cleanup = threadCreationCleanupEffects(
       yield* effectOutbox.listByThreadId(command.threadId).pipe(mapDispatchError(command)),
     );
@@ -4692,7 +4741,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     let restartTransfer: OrchestrationV2ContextTransfer | null = null;
     const canResumeAcrossInstances =
       providerInstanceChanged &&
-      providerThread.nativeThreadRef !== null &&
       (yield* providerSwitchService
         .plan({
           projection: {
@@ -5544,43 +5592,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       dispatchMode.type === "start_immediately" ||
       dispatchMode.type === "queue_after_active";
     const shouldQueue = queueBehindRun !== undefined && startsOrQueuesRun;
-    // A message the user sends from a client means they are back, so the
-    // queue a stop or a restart held runs again, in its order, rather than
-    // waiting for a Resume.
-    // Continuations and scheduled tasks the server sends for them are not
-    // them coming back. Starting the queue still re-holds it for a failed
-    // provider or a usage limit; a queue held after worktree setup failed
-    // keeps its hold until a worktree exists, even once later messages have
-    // run, since its messages would start in the project checkout.
-    const worktreeSetupUnresolved =
-      projection.thread.worktreePath === null &&
-      projection.runs.some(
-        (run) =>
-          (run.status === "failed" || run.status === "interrupted") &&
-          run.workspacePreparation?.type === "worktree",
-      );
-    const sentByUserFromClient =
-      command.createdBy === "user" &&
-      (command.creationSource === "web" || command.creationSource === "mobile") &&
-      command.scheduledTaskId === undefined;
-    const heldRunsToRelease =
-      sentByUserFromClient && startsOrQueuesRun && !worktreeSetupUnresolved
-        ? projection.runs.filter((run) => run.status === "queued" && run.queueHeld === true)
-        : [];
-    const releasedAt = yield* DateTime.now;
-    for (const held of heldRunsToRelease) {
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "run.updated",
-        threadId: command.threadId,
-        runId: held.id,
-        providerInstanceId: held.providerInstanceId,
-        occurredAt: releasedAt,
-        payload: { ...held, queueHeld: false },
-      });
-    }
+    // A new message does not release work held by Stop; queue.resume owns that choice.
     if (shouldQueue) {
       if (pendingMergeBackTransfers.length > 0) {
         return yield* new OrchestratorDispatchError({
@@ -5693,13 +5705,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ? {}
           : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
         ...(worktreeMissingRun !== undefined ||
-        (heldRunsToRelease.length === 0 &&
-          projection.runs.some(
-            (candidate) =>
-              candidate.status === "queued" &&
-              candidate.queueHeld === true &&
-              candidate.ordinal > queueBehindRun.ordinal,
-          ))
+        projection.runs.some(
+          (candidate) =>
+            candidate.status === "queued" &&
+            candidate.queueHeld === true &&
+            candidate.ordinal > queueBehindRun.ordinal,
+        )
           ? { queueHeld: true }
           : {}),
         queuePosition:
@@ -13227,7 +13238,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           effects: plan.effects.filter(
             (effect) =>
               effect.request.type !== "terminal.cleanup" &&
-              effect.request.type !== "preview.cleanup",
+              effect.request.type !== "preview.cleanup" &&
+              effect.request.type !== "scheduled-tasks.cleanup",
           ),
         };
       }
@@ -14636,6 +14648,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       // child lock here would invert that order, and the keyed executor's
       // semaphores are neither reentrant nor deadlock-aware.
       if (delegatedTaskTerminalStatus(run.status) !== null) {
+        yield* threadDispatch.withLock(threadId, consumeSelfSettlement(threadId, run.id));
         yield* threadDispatch.withLock(
           threadId,
           finalizeDelegatedCompletionDelivery(threadId, run.id),

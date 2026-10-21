@@ -182,14 +182,16 @@ const providerInstance = {
 const alternateProviderInstance = {
   ...providerInstance,
   instanceId: alternateInstanceId,
+  driverKind: ProviderDriverKind.make("claudeCode"),
   continuationIdentity: {
-    driverKind: driver,
-    continuationKey: "codex:test:alternate",
+    driverKind: ProviderDriverKind.make("claudeCode"),
+    continuationKey: "claude:test:alternate",
   },
-  displayName: "Codex alternate test",
+  displayName: "Claude alternate test",
   orchestrationAdapter: {
     ...orchestrationAdapter,
     instanceId: alternateInstanceId,
+    driver: ProviderDriverKind.make("claudeCode"),
   },
 } satisfies ProviderInstance;
 
@@ -4189,7 +4191,7 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
             occurredAt: now,
             payload: {
               id: ProviderSessionId.make(`${threadId}:other-session`),
-              driver,
+              driver: alternateProviderInstance.driverKind,
               providerInstanceId: alternateInstanceId,
               status: "error",
               cwd: process.cwd(),
@@ -7892,6 +7894,34 @@ it.layer(QueueGuardTestLayer)("V2 queue dispatch guard and historical observatio
         assert.isUndefined(recreation.pollUnsafe());
         assert.isTrue(Option.isNone(yield* receipts.getByCommandId(create.commandId)));
         assert.isNotNull((yield* f.engine.getThreadProjection(f.threadId)).thread.deletedAt);
+        const previewCleanup = yield* outbox.claimNext({
+          workerId: "creation-fence-worker",
+          leaseDurationMs: 30_000,
+        });
+        assert.isTrue(Option.isSome(previewCleanup));
+        if (Option.isSome(previewCleanup)) {
+          assert.equal(previewCleanup.value.commandId, deletionId);
+          assert.equal(previewCleanup.value.request.type, "preview.cleanup");
+          yield* outbox.succeed({
+            effectId: previewCleanup.value.id,
+            workerId: "creation-fence-worker",
+          });
+        }
+        assert.isUndefined(recreation.pollUnsafe());
+        const scheduledCleanup = yield* outbox.claimNext({
+          workerId: "creation-fence-worker",
+          leaseDurationMs: 30_000,
+        });
+        assert.isTrue(Option.isSome(scheduledCleanup));
+        if (Option.isSome(scheduledCleanup)) {
+          assert.equal(scheduledCleanup.value.commandId, deletionId);
+          assert.equal(scheduledCleanup.value.request.type, "scheduled-tasks.cleanup");
+          yield* outbox.succeed({
+            effectId: scheduledCleanup.value.id,
+            workerId: "creation-fence-worker",
+          });
+        }
+        assert.isUndefined(recreation.pollUnsafe());
         const cleanup = yield* outbox.claimNext({
           workerId: "creation-fence-worker",
           leaseDurationMs: 30_000,

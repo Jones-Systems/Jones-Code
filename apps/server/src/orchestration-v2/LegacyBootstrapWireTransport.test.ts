@@ -1,3 +1,7 @@
+import * as WsProviderMaintenanceRunner from "../provider/providerMaintenanceRunner.ts";
+import * as WsSourceControlDiscovery from "../sourceControl/SourceControlDiscovery.ts";
+import * as WsOtlpEndpointCheck from "../observability/OtlpEndpointCheck.ts";
+import * as WsAgentSessionScanner from "../project/AgentSessionScanner.ts";
 import * as WsDirectEndpoints from "../environment/DirectEndpoints.ts";
 import * as WsPeerLinks from "../peer/PeerLinks.ts";
 import * as WsMcpAppRequests from "../mcpApps/McpAppRequests.ts";
@@ -533,6 +537,10 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/synthetic-unused-projects",
     }),
+    Layer.mock(WsProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+    Layer.mock(WsSourceControlDiscovery.SourceControlDiscovery)({}),
+    Layer.mock(WsOtlpEndpointCheck.OtlpEndpointCheck)({}),
+    Layer.mock(WsAgentSessionScanner.AgentSessionScanner)({}),
     Layer.mock(WsThreadSearch.ThreadSearch)({}),
     Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
     Layer.mock(WsAnalyticsService.AnalyticsService)({}),
@@ -1265,6 +1273,10 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsManagedProjectFolders.ManagedProjectFolders)({
             namedProjectsRoot: "/synthetic-unused-projects",
           }),
+          Layer.mock(WsProviderMaintenanceRunner.ProviderMaintenanceRunner)({}),
+          Layer.mock(WsSourceControlDiscovery.SourceControlDiscovery)({}),
+          Layer.mock(WsOtlpEndpointCheck.OtlpEndpointCheck)({}),
+          Layer.mock(WsAgentSessionScanner.AgentSessionScanner)({}),
           Layer.mock(WsThreadSearch.ThreadSearch)({}),
           Layer.mock(WsProviderSessionManager.ProviderSessionManagerV2)({}),
           Layer.mock(WsAnalyticsService.AnalyticsService)({ record: () => Effect.void }),

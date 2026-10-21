@@ -614,7 +614,7 @@ it.effect.each(["thread.stop", "run.interrupt"] as const)(
     }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("a message the user sends after Stop releases the held queue; an agent's does not", () =>
+it.effect("only explicit resume releases Stop-held work after user and agent messages", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -688,10 +688,22 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
       payload: { ...scheduled, status: "completed", completedAt: now },
     });
 
-    // The user is back: the held message follows their run, and a wake that
-    // queues behind it is not held by the old Stop.
+    // New work has its own queue cohort; the old Stop hold requires explicit resume.
     yield* send(threadId, "back", "start_immediately");
     yield* agentSend("task finished");
+    assert.deepEqual((yield* threadState(threadId)).runs, [
+      "interrupted",
+      "queued:held",
+      "completed",
+      "completed",
+      "starting",
+      "queued",
+    ]);
+    yield* orchestrator.dispatch({
+      type: "queue.resume",
+      commandId: CommandId.make("explicit-resume-after-return"),
+      threadId,
+    });
     assert.deepEqual((yield* threadState(threadId)).runs, [
       "interrupted",
       "queued",

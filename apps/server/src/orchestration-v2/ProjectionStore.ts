@@ -266,21 +266,13 @@ export interface ProjectionCheckpointCaptureContext {
   readonly readyCheckpointOrdinals: ReadonlyArray<number>;
 }
 
-const RollbackTargetAttempts = Schema.Array(
-  OrchestrationV2RunAttemptJsonSchema.mapFields(({ id, providerTurnId }) => ({
-    id,
-    providerTurnId,
-  })),
-);
-const decodeRollbackTargetAttempts = Schema.decodeUnknownEffect(RollbackTargetAttempts);
-
 export interface ProjectionCheckpointRollbackContext {
   readonly thread: OrchestrationV2AppThread;
   readonly providerThread: OrchestrationV2ProviderThread | undefined;
   readonly providerSession: OrchestrationV2ThreadProjection["providerSessions"][number] | undefined;
   readonly checkpoint: OrchestrationV2Checkpoint | undefined;
   readonly scope: OrchestrationV2CheckpointScope | undefined;
-  readonly targetAttempt: (typeof RollbackTargetAttempts.Type)[number] | undefined;
+  readonly targetAttempt: OrchestrationV2ThreadProjection["attempts"][number] | undefined;
   readonly providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly rolledBackAttemptIds: ReadonlyArray<RunAttemptId>;
   readonly runsToRollback: ReadonlyArray<OrchestrationV2Run>;
@@ -5617,7 +5609,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
             const [attemptRows, runRows, sessionRows, rolledBackAttempts, staleRows] =
               yield* Effect.all([
-                sql`SELECT attempt.attempt_id AS id, attempt.provider_turn_id AS "providerTurnId"
+                sql<PayloadRow>`SELECT attempt.payload_json
             FROM orchestration_v2_projection_run_attempts AS attempt
             JOIN orchestration_v2_projection_runs AS run
               ON attempt.attempt_id = json_extract(run.payload_json, '$.activeAttemptId')
@@ -5643,7 +5635,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND app_run_ordinal > ${targetOrdinal}
             ORDER BY ordinal_within_scope ASC`,
               ]);
-            const targetAttempt = (yield* decodeRollbackTargetAttempts(attemptRows))[0];
+            const targetAttempt =
+              attemptRows[0] === undefined
+                ? undefined
+                : yield* decodeRunAttemptPayload(attemptRows[0].payload_json);
             const runsToRollback = yield* decodeRows(decodeRunPayload, threadId)(runRows);
             const [nodeRows, turnRows] = yield* Effect.all([
               sql<PayloadRow>`SELECT payload_json FROM orchestration_v2_projection_nodes
@@ -7924,10 +7919,7 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
           );
           return {
             ...context,
-            targetAttempt:
-              attempt === undefined
-                ? undefined
-                : { id: attempt.id, providerTurnId: attempt.providerTurnId },
+            targetAttempt: attempt,
             runsToRollback,
             rootNodes: projection.nodes.filter((node) => rootNodeIds.has(node.id)),
             rolledBackAttemptIds: projection.attempts
@@ -8036,14 +8028,13 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
         return (
           projection.thread.archivedAt === null &&
           projection.thread.deletedAt === null &&
-          projection.runs.some((run) => run.status === "queued") &&
+          projection.runs.some((run) => run.status === "queued" && run.queueHeld !== true) &&
           !projection.runs.some(
             (run) =>
               run.status === "preparing" ||
               run.status === "starting" ||
               run.status === "running" ||
-              run.status === "waiting" ||
-              (run.status === "queued" && run.queueHeld === true),
+              run.status === "waiting",
           )
         );
       }),

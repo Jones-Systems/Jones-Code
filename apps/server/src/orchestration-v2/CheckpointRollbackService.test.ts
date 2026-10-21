@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it, vi } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointRef,
@@ -633,102 +633,102 @@ const seedRollbackHistory = Effect.gen(function* () {
   };
 });
 
-it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)))(
-  "rollback history reads",
-  (it) => {
-    it.effect("rolls back later terminal runs despite obsolete unrelated SQLite payloads", () =>
+describe("rollback history reads", () => {
+  const layerHistory = ProjectionStore.layer.pipe(
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+  );
+  it.effect("rolls back later terminal runs despite obsolete unrelated SQLite payloads", () =>
+    Effect.gen(function* () {
+      const history = yield* seedRollbackHistory;
+      const sql = yield* SqlClient.SqlClient;
+      const { threadId, runId, nodeId, checkpointId } = history;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
+          parent_item_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES ('rollback-obsolete-transcript', ${threadId}, ${runId(1)}, ${nodeId(1)},
+          NULL, NULL, NULL, 1, 'assistant_message', 'completed', ${DateTime.formatIso(history.now)},
+          '{"obsolete":"transcript"}')`;
+      yield* sql`UPDATE orchestration_v2_projection_runs
+        SET payload_json = '{"obsolete":"run"}' WHERE run_id = ${runId(1)}`;
+      yield* sql`UPDATE orchestration_v2_projection_nodes
+        SET payload_json = '{"obsolete":"node"}' WHERE node_id = ${nodeId(1)}`;
+      yield* sql`UPDATE orchestration_v2_projection_checkpoints
+        SET payload_json = json_set(payload_json, '$.files', 'obsolete file summary')
+        WHERE checkpoint_id IN (${checkpointId(0)}, ${checkpointId(1)}, ${checkpointId(7)}, ${checkpointId(8)})`;
+      assert.equal(
+        (yield* Effect.exit(history.store.getThreadProjection(threadId)))._tag,
+        "Failure",
+      );
+
+      yield* history.rollback(2);
+
+      assert.deepEqual(history.rollbackCounts, [4]);
+      assert.deepEqual(history.restored, [checkpointId(2)]);
+      assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
+      const runs = yield* sql<{ ordinal: number; status: string }>`
+        SELECT ordinal, status FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${threadId} ORDER BY ordinal`;
+      assert.deepEqual(
+        runs.map((run) => run.status),
+        [
+          "completed",
+          "completed",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+          "rolled_back",
+        ],
+      );
+      const nodes = yield* sql<{ status: string }>`
+        SELECT status FROM orchestration_v2_projection_nodes
+        WHERE thread_id = ${threadId} ORDER BY node_id`;
+      assert.deepEqual(
+        nodes.map((node) => node.status),
+        runs.map((run) => run.status),
+      );
+      const checkpoints = yield* sql<{ status: string }>`
+        SELECT status FROM orchestration_v2_projection_checkpoints
+        WHERE thread_id = ${threadId} ORDER BY ordinal_within_scope`;
+      assert.deepEqual(
+        checkpoints.map((checkpoint) => checkpoint.status),
+        ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
+      );
+    }).pipe(Effect.provide(layerHistory)),
+  );
+
+  it.effect(
+    "rewinds stopped runs repeatedly without counting discarded provider turns again",
+    () =>
       Effect.gen(function* () {
         const history = yield* seedRollbackHistory;
-        const sql = yield* SqlClient.SqlClient;
-        const { threadId, runId, nodeId, checkpointId } = history;
-        yield* sql`
-          INSERT INTO orchestration_v2_projection_turn_items (
-            turn_item_id, thread_id, run_id, node_id, provider_thread_id, provider_turn_id,
-            parent_item_id, ordinal, type, status, updated_at, payload_json
-          ) VALUES ('rollback-obsolete-transcript', ${threadId}, ${runId(1)}, ${nodeId(1)},
-            NULL, NULL, NULL, 1, 'assistant_message', 'completed', ${DateTime.formatIso(history.now)},
-            '{"obsolete":"transcript"}')`;
-        yield* sql`UPDATE orchestration_v2_projection_runs
-          SET payload_json = '{"obsolete":"run"}' WHERE run_id = ${runId(1)}`;
-        yield* sql`UPDATE orchestration_v2_projection_nodes
-          SET payload_json = '{"obsolete":"node"}' WHERE node_id = ${nodeId(1)}`;
-        yield* sql`UPDATE orchestration_v2_projection_checkpoints
-          SET payload_json = json_set(payload_json, '$.files', 'obsolete file summary')
-          WHERE checkpoint_id IN (${checkpointId(0)}, ${checkpointId(1)}, ${checkpointId(7)}, ${checkpointId(8)})`;
-        assert.equal(
-          (yield* Effect.exit(history.store.getThreadProjection(threadId)))._tag,
-          "Failure",
-        );
-
+        yield* history.rollback(5);
         yield* history.rollback(2);
+        yield* history.rollback(0);
+        yield* history.rollback(0);
 
-        assert.deepEqual(history.rollbackCounts, [4]);
-        assert.deepEqual(history.restored, [checkpointId(2)]);
-        assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
-        const runs = yield* sql<{ ordinal: number; status: string }>`
-          SELECT ordinal, status FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${threadId} ORDER BY ordinal`;
-        assert.deepEqual(
-          runs.map((run) => run.status),
-          [
-            "completed",
-            "completed",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-            "rolled_back",
-          ],
+        assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
+        assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
+        assert.sameMembers(
+          history.committed
+            .filter((event) => event.type === "run.updated")
+            .map((event) => event.payload.id),
+          [1, 2, 3, 4, 5, 6].map(history.runId),
         );
-        const nodes = yield* sql<{ status: string }>`
-          SELECT status FROM orchestration_v2_projection_nodes
-          WHERE thread_id = ${threadId} ORDER BY node_id`;
-        assert.deepEqual(
-          nodes.map((node) => node.status),
-          runs.map((run) => run.status),
+        const records = yield* history.store.getThreadRecords(history.threadId, [
+          "runs",
+          "nodes",
+          "checkpoints",
+        ]);
+        assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
+        assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
+        assert.sameMembers(
+          records.checkpoints
+            .filter((checkpoint) => checkpoint.status === "ready")
+            .map((checkpoint) => checkpoint.id),
+          [history.checkpointId(0), history.checkpointId(8)],
         );
-        const checkpoints = yield* sql<{ status: string }>`
-          SELECT status FROM orchestration_v2_projection_checkpoints
-          WHERE thread_id = ${threadId} ORDER BY ordinal_within_scope`;
-        assert.deepEqual(
-          checkpoints.map((checkpoint) => checkpoint.status),
-          ["ready", "ready", "ready", "stale", "stale", "stale", "stale", "stale", "ready"],
-        );
-      }),
-    );
-
-    it.effect(
-      "rewinds stopped runs repeatedly without counting discarded provider turns again",
-      () =>
-        Effect.gen(function* () {
-          const history = yield* seedRollbackHistory;
-          yield* history.rollback(5);
-          yield* history.rollback(2);
-          yield* history.rollback(0);
-          yield* history.rollback(0);
-
-          assert.deepEqual(history.rollbackCounts, [1, 3, 3]);
-          assert.sameMembers(history.deletedRefs, [1, 2, 3, 4, 5, 6].map(history.checkpointId));
-          assert.sameMembers(
-            history.committed
-              .filter((event) => event.type === "run.updated")
-              .map((event) => event.payload.id),
-            [1, 2, 3, 4, 5, 6].map(history.runId),
-          );
-          const records = yield* history.store.getThreadRecords(history.threadId, [
-            "runs",
-            "nodes",
-            "checkpoints",
-          ]);
-          assert.isTrue(records.runs.every((run) => run.status === "rolled_back"));
-          assert.isTrue(records.nodes.every((node) => node.status === "rolled_back"));
-          assert.sameMembers(
-            records.checkpoints
-              .filter((checkpoint) => checkpoint.status === "ready")
-              .map((checkpoint) => checkpoint.id),
-            [history.checkpointId(0), history.checkpointId(8)],
-          );
-        }),
-    );
-  },
-);
+      }).pipe(Effect.provide(layerHistory)),
+  );
+});
