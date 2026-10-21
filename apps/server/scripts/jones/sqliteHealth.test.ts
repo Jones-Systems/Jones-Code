@@ -69,7 +69,7 @@ async function withFixture(
   configure?: (database: NodeSqlite.DatabaseSync, databasePath: string) => void,
 ) {
   const scratch = NodeFS.mkdtempSync(
-    NodePath.join(NodePath.dirname(worktreePath), ".health-test-"),
+    NodePath.join(NodeOS.tmpdir(), ".health-test-"),
   );
   const binding = {
     repository: "Jones-Systems/Jones-Code",
@@ -427,7 +427,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     };
     const policy = healthPolicy();
     const owner = createOwnedRoot({
-      parentPath: NodePath.dirname(worktreePath),
+      parentPath: NodeOS.tmpdir(),
       childName: `.health-integration-test-${binding.runId}`,
       binding,
       policy,

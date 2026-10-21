@@ -212,7 +212,7 @@ async function populateFixture(root: string, options: FixtureOptions) {
   const home = NodePath.join(root, "home");
   const runtime = NodePath.join(base, "runtime");
   const active = NodePath.join(runtime, "versions", oldVersion);
-  await NodeFSP.mkdir(active, { recursive: true });
+  await NodeFSP.mkdir(active, { recursive: true, mode: 0o700 });
   await NodeFSP.mkdir(NodePath.join(base, "userdata"));
   await NodeFSP.writeFile(NodePath.join(active, "t3"), runtimeExecutable(oldVersion), {
     mode: 0o755,
