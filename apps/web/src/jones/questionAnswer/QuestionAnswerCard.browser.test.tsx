@@ -132,7 +132,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -144,10 +144,10 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -155,7 +155,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -180,7 +179,7 @@ function output(id: string) {
 }
 
 it("answers inside the card without sending or changing the independent thread draft", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("My written answer");
   await act(async () => button("Send").click());
@@ -192,7 +191,7 @@ it("answers inside the card without sending or changing the independent thread d
 });
 
 it("sending the thread message leaves the question and its written answer pending", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Keep this answer");
   await act(async () => button("Send thread message").click());
@@ -202,14 +201,15 @@ it("sending the thread message leaves the question and its written answer pendin
 });
 
 it("aligns the one-line answer and Send with the option content, then caps growth at four lines", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   container.style.width = "680px";
-  await act(async () =>
-    await root.rerender(
-      <ComposerBanner.Root>
-        <Harness />
-      </ComposerBanner.Root>,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <ComposerBanner.Root>
+          <Harness />
+        </ComposerBanner.Root>,
+      ),
   );
   const field = answerField();
   const style = getComputedStyle(field);

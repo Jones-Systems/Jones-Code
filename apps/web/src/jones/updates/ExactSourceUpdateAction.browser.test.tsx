@@ -104,15 +104,14 @@ async function setupFixture1() {
   const stack = new AsyncDisposableStack();
   renderDisposables = stack;
   stack.defer(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
   });
   try {
-  container = document.createElement("div");
-  document.body.append(container);
-  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
     return stack;
   } catch (error) {
@@ -120,7 +119,6 @@ async function setupFixture1() {
     throw error;
   }
 }
-
 
 async function mount(world: ReturnType<typeof createHost>) {
   const draw = () =>

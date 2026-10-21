@@ -36,14 +36,14 @@ const requestContext = Effect.gen(function* () {
 const list = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:list",
   execute: Effect.fn("web-voice-review:list")(function* (scope: "pending" | "recent") {
-      return yield* fetchVoiceReviewDrafts({ ...(yield* requestContext), scope, limit: 50 });
-    }),
+    return yield* fetchVoiceReviewDrafts({ ...(yield* requestContext), scope, limit: 50 });
+  }),
 });
 const get = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:get",
   execute: Effect.fn("web-voice-review:get")(function* (id: string) {
-      return yield* fetchVoiceReviewDraft({ ...(yield* requestContext), id });
-    }),
+    return yield* fetchVoiceReviewDraft({ ...(yield* requestContext), id });
+  }),
 });
 const mutate = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:mutate",
@@ -52,39 +52,41 @@ const mutate = createEnvironmentCommand(connectionAtomRuntime, {
     action: VoiceReviewAction;
     payload: VoiceReviewMutationPayload;
   }) {
-      return yield* mutateVoiceReviewDraft({ ...(yield* requestContext), ...input });
-    }),
+    return yield* mutateVoiceReviewDraft({ ...(yield* requestContext), ...input });
+  }),
 });
 
 const recent = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:recent",
   execute: Effect.fn("web-voice-review:recent")(function* () {
-      return yield* fetchVoiceReviewRecent({ ...(yield* requestContext), limit: 50 });
-    }),
+    return yield* fetchVoiceReviewRecent({ ...(yield* requestContext), limit: 50 });
+  }),
 });
 const registry = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:registry",
   execute: Effect.fn("web-voice-review:registry")(function* () {
-      return yield* fetchThreadRegistrySnapshot({ ...(yield* requestContext), limit: 200 });
-    }),
+    return yield* fetchThreadRegistrySnapshot({ ...(yield* requestContext), limit: 200 });
+  }),
 });
 const workstreams = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:workstreams",
   execute: Effect.fn("web-voice-review:workstreams")(function* () {
-      return yield* fetchThreadRegistryWorkstreams(yield* requestContext);
-    }),
+    return yield* fetchThreadRegistryWorkstreams(yield* requestContext);
+  }),
 });
 const diagnostics = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:diagnostics",
   execute: Effect.fn("web-voice-review:diagnostics")(function* (id: string) {
-      return yield* fetchVoiceReviewDiagnostics({ ...(yield* requestContext), id });
-    }),
+    return yield* fetchVoiceReviewDiagnostics({ ...(yield* requestContext), id });
+  }),
 });
 const association = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-voice-review:association",
-  execute: Effect.fn("web-voice-review:association")(function* (payload: ThreadRegistryAssociationPayload) {
-      return yield* correctThreadRegistryAssociation({ ...(yield* requestContext), payload });
-    }),
+  execute: Effect.fn("web-voice-review:association")(function* (
+    payload: ThreadRegistryAssociationPayload,
+  ) {
+    return yield* correctThreadRegistryAssociation({ ...(yield* requestContext), payload });
+  }),
 });
 
 export function useVoiceReview(environmentId: EnvironmentId) {

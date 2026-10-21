@@ -467,7 +467,10 @@ describe("durable Workstream assignment display", () => {
   it("displays a newly attested assignment immediately after the post-command reload", async () => {
     vi.setSystemTime(Date.parse("2026-09-30T12:00:45Z"));
     const threads = nativeThreads(2);
-    const server = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const server = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
     await mount(threads);
     await settle(() => loaded());

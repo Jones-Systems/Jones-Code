@@ -33,4 +33,3 @@ export async function watchFile(file: string, signal: AbortSignal) {
     watcher.close();
   }
 }
-

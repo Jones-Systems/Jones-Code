@@ -39,7 +39,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -50,22 +50,22 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  state.instances = {
-    [defaultId]: { driver, displayName: "Default" },
-    malcolm: { driver, displayName: "Malcolm" },
-    jace: { driver, displayName: "Jace" },
-    wallace: { driver, displayName: "Wallace" },
-    claude: { driver: ProviderDriverKind.make("claudeAgent"), displayName: "Claude" },
-  };
-  state.canManage = true;
-  state.persist.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
-  state.toast.mockReset();
-  selected = "";
-  ownedContainer = container = document.createElement("div");
-  container.style.width = "272px";
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    state.instances = {
+      [defaultId]: { driver, displayName: "Default" },
+      malcolm: { driver, displayName: "Malcolm" },
+      jace: { driver, displayName: "Jace" },
+      wallace: { driver, displayName: "Wallace" },
+      claude: { driver: ProviderDriverKind.make("claudeAgent"), displayName: "Claude" },
+    };
+    state.canManage = true;
+    state.persist.mockReset().mockResolvedValue({ _tag: "Success", value: undefined });
+    state.toast.mockReset();
+    selected = "";
+    ownedContainer = container = document.createElement("div");
+    container.style.width = "272px";
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -81,27 +81,28 @@ async function render(readOnly = false, environment = "test") {
     explicitInstance: instance,
     isDefault: id === defaultId,
   }));
-  await act(async () =>
-    await root.rerender(
-      <SortableProviderRows
-        environmentId={EnvironmentId.make(environment)}
-        rows={rows}
-        readOnly={readOnly}
-        renderRow={(row) => (
-          <div style={{ height: 72, paddingLeft: 16 }}>
-            <button
-              onClick={() => {
-                selected = row.instanceId;
-              }}
-              data-provider={row.instanceId}
-            >
-              {row.explicitInstance.displayName}
-            </button>
-            <input type="checkbox" aria-label={`Enable ${row.instanceId}`} />
-          </div>
-        )}
-      />,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <SortableProviderRows
+          environmentId={EnvironmentId.make(environment)}
+          rows={rows}
+          readOnly={readOnly}
+          renderRow={(row) => (
+            <div style={{ height: 72, paddingLeft: 16 }}>
+              <button
+                onClick={() => {
+                  selected = row.instanceId;
+                }}
+                data-provider={row.instanceId}
+              >
+                {row.explicitInstance.displayName}
+              </button>
+              <input type="checkbox" aria-label={`Enable ${row.instanceId}`} />
+            </div>
+          )}
+        />,
+      ),
   );
 }
 const order = () =>
@@ -122,7 +123,7 @@ async function moveMalcolm() {
 }
 
 it("reorders with the keyboard while keeping default and other types pinned", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   expect(container.querySelector('[aria-label="Reorder Default"]')).toBeNull();
   expect(container.querySelector('[aria-label="Reorder Claude"]')).toBeNull();
@@ -142,7 +143,7 @@ it("reorders with the keyboard while keeping default and other types pinned", as
 });
 
 it("keeps selection and enablement independent and cancels a keyboard drag", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await act(async () =>
     container.querySelector<HTMLButtonElement>('[data-provider="malcolm"]')!.click(),
@@ -165,7 +166,7 @@ it("keeps selection and enablement independent and cancels a keyboard drag", asy
 });
 
 it("removes drag activators for read-only or unauthorized sessions", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render(true);
   expect(container.querySelector('[aria-label^="Reorder"]')).toBeNull();
   state.canManage = false;
@@ -175,7 +176,7 @@ it("removes drag activators for read-only or unauthorized sessions", async () =>
 });
 
 it("rolls back a failed save and permits another attempt", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   state.persist.mockResolvedValueOnce(
     AsyncResult.failure(Cause.fail(new Error("Synthetic failure"))),
   );
@@ -191,7 +192,7 @@ it("rolls back a failed save and permits another attempt", async () => {
 });
 
 it("does not carry a pending save into a different environment", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   let reject!: (error: Error) => void;
   state.persist.mockImplementationOnce(
     () =>
@@ -211,7 +212,7 @@ it("does not carry a pending save into a different environment", async () => {
 });
 
 it("clears an interrupted save without a toast and permits retry", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   state.persist.mockResolvedValueOnce(AsyncResult.failure(Cause.interrupt()));
   await render();
   await moveMalcolm();

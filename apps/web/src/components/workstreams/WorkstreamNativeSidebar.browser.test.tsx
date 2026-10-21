@@ -84,74 +84,73 @@ async function setupFixture1() {
   const stack = new AsyncDisposableStack();
   renderDisposables = stack;
   stack.defer(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  localStorage.clear();
-  dismissContextMenu();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-
+    await act(async () => root.unmount());
+    container.remove();
+    localStorage.clear();
+    dismissContextMenu();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
   try {
-  vi.spyOn(Date, "now").mockReturnValue(now);
-  localStorage.clear();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-  const submit = vi.fn(async (command: WorkstreamCommand) => ({
-    ...committed,
-    command_id: command.command_id,
-    owner_id: "owner",
-    server_generation: 7,
-    operation: command.action.operation,
-  }));
-  controller = {
-    data,
-    registrationContext,
-    assignNativeThread: (selected, destination, options) =>
-      assignNativeThread({
-        ...options,
-        data: controller.data!,
-        thread: selected,
-        destination,
-        runBindingOperation: controller.runBindingOperation,
-        loadSnapshot: async () => {
-          const loaded = await controller.loadDetail(destination ?? "alpha", options);
-          return {
-            data: controller.data!,
-            registrationContext: controller.registrationContext!,
-            placements: controller.placements!,
-            reference: { context: loaded.detail.context, reference, latest_observation: null },
-            destinationMemberships:
-              destination === null
-                ? null
-                : {
-                    context: loaded.detail.context,
-                    items: loaded.memberships.items,
-                    next_cursor: null,
-                  },
-          };
-        },
-      }),
-    placements,
-    placementInventory: {
-      coverage: "complete",
-      identities: threads.map((item) => ({
-        source_instance_id: item.environmentId,
-        native_thread_id: item.id,
-      })),
-      json: "[]",
-      totalIdentities: threads.length,
-    },
-    error: null,
-    loading: false,
-    refresh: vi.fn(),
-    submit,
-    runBindingOperation: (operation) => operation(submit),
-    loadDetail: vi.fn(async () => detail),
-    loadReference: vi.fn(),
-  };
-  reorder.mockClear();
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    localStorage.clear();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    const submit = vi.fn(async (command: WorkstreamCommand) => ({
+      ...committed,
+      command_id: command.command_id,
+      owner_id: "owner",
+      server_generation: 7,
+      operation: command.action.operation,
+    }));
+    controller = {
+      data,
+      registrationContext,
+      assignNativeThread: (selected, destination, options) =>
+        assignNativeThread({
+          ...options,
+          data: controller.data!,
+          thread: selected,
+          destination,
+          runBindingOperation: controller.runBindingOperation,
+          loadSnapshot: async () => {
+            const loaded = await controller.loadDetail(destination ?? "alpha", options);
+            return {
+              data: controller.data!,
+              registrationContext: controller.registrationContext!,
+              placements: controller.placements!,
+              reference: { context: loaded.detail.context, reference, latest_observation: null },
+              destinationMemberships:
+                destination === null
+                  ? null
+                  : {
+                      context: loaded.detail.context,
+                      items: loaded.memberships.items,
+                      next_cursor: null,
+                    },
+            };
+          },
+        }),
+      placements,
+      placementInventory: {
+        coverage: "complete",
+        identities: threads.map((item) => ({
+          source_instance_id: item.environmentId,
+          native_thread_id: item.id,
+        })),
+        json: "[]",
+        totalIdentities: threads.length,
+      },
+      error: null,
+      loading: false,
+      refresh: vi.fn(),
+      submit,
+      runBindingOperation: (operation) => operation(submit),
+      loadDetail: vi.fn(async () => detail),
+      loadReference: vi.fn(),
+    };
+    reorder.mockClear();
 
     return stack;
   } catch (error) {
@@ -159,8 +158,6 @@ async function setupFixture1() {
     throw error;
   }
 }
-
-
 
 async function render(
   visibleThreads: readonly EnvironmentThreadShell[] = threads,

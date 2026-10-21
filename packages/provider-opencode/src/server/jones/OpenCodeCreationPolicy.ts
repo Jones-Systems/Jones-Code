@@ -101,15 +101,17 @@ export class OpenCodeAuthority extends Context.Service<
   }
 >()("@t3tools/provider-opencode/server/jones/OpenCodeCreationPolicy/OpenCodeAuthority") {}
 
-export const requireCurrent = Effect.fn("OpenCodeCreationPolicy.requireCurrent")(function* (parent: OpenCodeOwnedProcess | undefined) {
-    if (parent === undefined || !(yield* parent.isCurrent)) {
-      return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
-        operation: "adoptServer",
-        detail: "A current captured OpenCode physical incarnation is required.",
-      });
-    }
-    return parent;
-  });
+export const requireCurrent = Effect.fn("OpenCodeCreationPolicy.requireCurrent")(function* (
+  parent: OpenCodeOwnedProcess | undefined,
+) {
+  if (parent === undefined || !(yield* parent.isCurrent)) {
+    return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+      operation: "adoptServer",
+      detail: "A current captured OpenCode physical incarnation is required.",
+    });
+  }
+  return parent;
+});
 
 export const adoptSession = Effect.fn("OpenCodeCreationPolicy.adoptSession")(
   (input: {

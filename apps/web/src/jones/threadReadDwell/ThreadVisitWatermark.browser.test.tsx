@@ -30,7 +30,9 @@ let root: Screen;
 const render = async (next = thread) =>
   await act(async () => {
     state.thread = next;
-    await root.rerender(<ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />);
+    await root.rerender(
+      <ThreadVisitWatermark threadRef={scopeThreadRef(next.environmentId, next.id)} />,
+    );
   });
 const advance = async (ms: number) => await act(async () => vi.advanceTimersByTime(ms));
 async function setupTest(): Promise<AsyncDisposable> {
@@ -39,7 +41,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -52,14 +54,14 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  testTimers = fakeTimers();
-  vi.setSystemTime(new Date(updatedAt));
-  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  vi.spyOn(document, "hasFocus").mockReturnValue(true);
-  state.visit.mockClear();
-  useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  root = await renderTest(null, { container: document.createElement("div"), router: false });
-  initialized = true;
+    testTimers = fakeTimers();
+    vi.setSystemTime(new Date(updatedAt));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    state.visit.mockClear();
+    useUiStateStore.setState({ threadLastVisitedAtById: {} });
+    root = await renderTest(null, { container: document.createElement("div"), router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -69,7 +71,7 @@ async function setupTest(): Promise<AsyncDisposable> {
 }
 
 it("waits until 3000 continuous visible milliseconds before dispatching the visit", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await advance(2999);
   expect(state.visit).not.toHaveBeenCalled();
@@ -80,7 +82,7 @@ it("waits until 3000 continuous visible milliseconds before dispatching the visi
   });
 });
 it("cancels rapid navigation and gives the same thread ID in another environment a fresh dwell", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await advance(2000);
   const next = { ...thread, environmentId: EnvironmentId.make("second") };
@@ -94,7 +96,7 @@ it("cancels rapid navigation and gives the same thread ID in another environment
   });
 });
 it("does not restart initial dwell for streaming updates and dispatches the newest watermark", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await advance(1000);
   await render({ ...thread, updatedAt: "2026-10-17T12:00:01.000Z" });
@@ -107,7 +109,7 @@ it("does not restart initial dwell for streaming updates and dispatches the newe
   });
 });
 it("cancels hidden or unfocused viewing and starts a fresh foreground dwell", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await advance(2000);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -127,7 +129,7 @@ it("cancels hidden or unfocused viewing and starts a fresh foreground dwell", as
   expect(state.visit).toHaveBeenCalledTimes(1);
 });
 it("applies the same dwell to older servers' local watermark", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const legacyThread = { ...thread };
   delete legacyThread.lastVisitedAt;
   await render(legacyThread);

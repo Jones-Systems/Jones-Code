@@ -113,17 +113,19 @@ function setupTest() {
   state.row.mockReset().mockResolvedValue({ _tag: "Success" });
 }
 
-
 async function render(props: Partial<React.ComponentProps<typeof QueuedRunsControl>> = {}) {
- return renderTest(<QueuedRunsControl
-        environmentId={"environment:test" as never}
-        threadId={"thread:test" as never}
-        optimisticMessages={[]}
-        editingRunId={null}
-        onEditQueuedRun={() => undefined}
-        onCancelEdit={() => undefined}
-        {...props}
-      />, { router: false });
+  return renderTest(
+    <QueuedRunsControl
+      environmentId={"environment:test" as never}
+      threadId={"thread:test" as never}
+      optimisticMessages={[]}
+      editingRunId={null}
+      onEditQueuedRun={() => undefined}
+      onCancelEdit={() => undefined}
+      {...props}
+    />,
+    { router: false },
+  );
 }
 function button(view: HTMLElement, label: string) {
   return [...view.querySelectorAll("button")].find(
@@ -133,7 +135,7 @@ function button(view: HTMLElement, label: string) {
 
 describe("queue header batch action", () => {
   it("one click dispatches all 22 IDs once, keeps the queue expanded, and locks row actions", async () => {
-setupTest();
+    setupTest();
     const ref = createRef<QueuedRunsControlHandle>();
     let finish!: (result: unknown) => void;
     state.batch.mockImplementation(
@@ -143,7 +145,7 @@ setupTest();
         }),
     );
     await using screen = await render({ ref });
-const view = screen.container;
+    const view = screen.container;
     const send = button(view, "Steer all (22)")!;
     expect(send).toBeDefined();
     expect(send.closest("button")?.parentElement?.closest("button")).toBeNull();
@@ -186,20 +188,20 @@ const view = screen.container;
   });
 
   it("hides on old servers and never dispatches a fallback", async () => {
-setupTest();
+    setupTest();
     state.capability = undefined;
     await using screen = await render();
-const view = screen.container;
+    const view = screen.container;
     expect(button(view, "Steer all (22)")).toBeUndefined();
     expect(state.batch).not.toHaveBeenCalled();
     expect(state.row).not.toHaveBeenCalled();
   });
 
   it("shows the bounded prefix and remainder instead of claiming all", async () => {
-setupTest();
+    setupTest();
     state.capability = { ...QUEUED_STEER_BATCH_LIMITS, maxItems: 3 };
     await using screen = await render();
-const view = screen.container;
+    const view = screen.container;
     expect(button(view, "Steer all (22)")).toBeUndefined();
     expect(view.textContent).toContain("19 still queued — batch size limit");
     await act(async () => {
@@ -212,7 +214,7 @@ const view = screen.container;
   it.each(["editing", "unsaved", "pending question", "ended turn", "restart only", "oversized"])(
     "disables while %s",
     async (condition) => {
-setupTest();
+      setupTest();
       const projection = state.projection as OrchestrationV2ThreadProjection;
       if (condition === "pending question")
         state.projection = { ...projection, runtimeRequests: [{ status: "pending" }] };
@@ -246,7 +248,7 @@ setupTest();
             }
           : {}),
       });
-const view = screen.container;
+      const view = screen.container;
       expect(button(view, "Steer all (22)")?.disabled).toBe(true);
       expect(state.batch).not.toHaveBeenCalled();
     },
@@ -255,12 +257,12 @@ const view = screen.container;
   it.each(["failure", "rejection"])(
     "keeps all rows after %s and retries the identical batch",
     async (outcome) => {
-setupTest();
+      setupTest();
       if (outcome === "rejection")
         state.batch.mockRejectedValueOnce(new Error("Transport unavailable"));
       else state.batch.mockResolvedValueOnce({ _tag: "Failure" });
       await using screen = await render();
-const view = screen.container;
+      const view = screen.container;
       await act(async () => {
         button(view, "Steer all (22)")!.click();
       });

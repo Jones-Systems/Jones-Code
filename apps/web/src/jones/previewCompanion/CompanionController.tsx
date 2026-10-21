@@ -22,21 +22,23 @@ import { subscribeCompanionController } from "./controller.ts";
 
 const ticketCommand = createEnvironmentCommand(connectionAtomRuntime, {
   label: "companion:ticket",
-  execute: Effect.fn("companion:ticket")(function* (input: { readonly environmentId: DesktopCompanionTicketRequest["environmentId"] }) {
-      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
-      if (Option.isNone(prepared)) return { _tag: "unavailable" } as const;
-      const entry = appAtomRegistry
-        .get(environmentCatalog.catalogValueAtom)
-        .entries.get(input.environmentId);
-      const rejected = companionTicketEligibility({
-        registered: !!entry,
-        enabled: entry?.enabled === true,
-        prepared: prepared.value,
-        session: appAtomRegistry.get(environmentSession.sessionStateValueAtom(input.environmentId)),
-      });
-      return rejected ?? (yield* resolveCompanionTicket(prepared.value));
-    }),
+  execute: Effect.fn("companion:ticket")(function* (input: {
+    readonly environmentId: DesktopCompanionTicketRequest["environmentId"];
+  }) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+    if (Option.isNone(prepared)) return { _tag: "unavailable" } as const;
+    const entry = appAtomRegistry
+      .get(environmentCatalog.catalogValueAtom)
+      .entries.get(input.environmentId);
+    const rejected = companionTicketEligibility({
+      registered: !!entry,
+      enabled: entry?.enabled === true,
+      prepared: prepared.value,
+      session: appAtomRegistry.get(environmentSession.sessionStateValueAtom(input.environmentId)),
+    });
+    return rejected ?? (yield* resolveCompanionTicket(prepared.value));
+  }),
 });
 
 async function ticket(

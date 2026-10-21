@@ -109,48 +109,45 @@ import { UnifiedQueuePage } from "./UnifiedQueuePage";
 
 describe("Prompts environment composition", () => {
   let root: Screen;
-let renderDisposables: AsyncDisposableStack;
+  let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   let originals: typeof fixture.environments;
 
   async function setupFixture1() {
-  const stack = new AsyncDisposableStack();
-  renderDisposables = stack;
-  stack.defer(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    fixture.environments = originals;
-    vi.unstubAllGlobals();
-
-  });
-  try {
-    originals = structuredClone(fixture.environments);
-    fixture.mounts.clear();
-    fixture.recent = null;
-    fixture.selfIdentity.mockReset();
-    fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
-    fixture.blockerStatus = "idle";
-    fixture.blockerOptions = null;
-    fixture.load
-      .mockReset()
-      .mockResolvedValue({ status: "unconfigured", reason: "not_configured" });
-    fixture.reset.mockReset().mockImplementation(async () => {
-      fixture.blockerStatus = "idle";
-      await root.rerender(<UnifiedQueuePage />);
+    const stack = new AsyncDisposableStack();
+    renderDisposables = stack;
+    stack.defer(async () => {
+      await act(async () => root.unmount());
+      container.remove();
+      fixture.environments = originals;
+      vi.unstubAllGlobals();
     });
-    fixture.proceed.mockReset().mockImplementation(() => root.rerender(<p>Destination</p>));
-    container = document.createElement("div");
-    document.body.append(container);
-    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    try {
+      originals = structuredClone(fixture.environments);
+      fixture.mounts.clear();
+      fixture.recent = null;
+      fixture.selfIdentity.mockReset();
+      fixture.voiceList.mockReset().mockResolvedValue({ drafts: [] });
+      fixture.blockerStatus = "idle";
+      fixture.blockerOptions = null;
+      fixture.load
+        .mockReset()
+        .mockResolvedValue({ status: "unconfigured", reason: "not_configured" });
+      fixture.reset.mockReset().mockImplementation(async () => {
+        fixture.blockerStatus = "idle";
+        await root.rerender(<UnifiedQueuePage />);
+      });
+      fixture.proceed.mockReset().mockImplementation(() => root.rerender(<p>Destination</p>));
+      container = document.createElement("div");
+      document.body.append(container);
+      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-    return stack;
-  } catch (error) {
-    await stack.disposeAsync();
-    throw error;
+      return stack;
+    } catch (error) {
+      await stack.disposeAsync();
+      throw error;
+    }
   }
-}
-
-
 
   function setConnection(environmentId: string, phase: string) {
     fixture.environments = fixture.environments.map((environment) =>
@@ -550,7 +547,7 @@ let renderDisposables: AsyncDisposableStack;
   it.each(["VoiceReviewForbiddenError", "VoiceReviewNotConfiguredError"])(
     "keeps %s discovery honest without device setup or identity reads",
     async (_tag) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       setConnection("beta", "disconnected");
       fixture.voiceList.mockRejectedValue({ _tag });
       await render();

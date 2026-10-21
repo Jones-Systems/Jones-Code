@@ -75,10 +75,10 @@ export const jonesMigrationEntries = [
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
-    const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
-    if (jonesMigrations.length > 0) {
-      yield* Effect.log("Jones migrations ran successfully").pipe(
-        Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
-      );
-    }
-  });
+  const jonesMigrations = yield* runJonesMigrations(jonesMigrationEntries);
+  if (jonesMigrations.length > 0) {
+    yield* Effect.log("Jones migrations ran successfully").pipe(
+      Effect.annotateLogs({ migrations: jonesMigrations.map(([id, name]) => `${id}_${name}`) }),
+    );
+  }
+});

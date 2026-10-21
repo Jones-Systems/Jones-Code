@@ -268,49 +268,48 @@ describe("saved token accounting panel", () => {
   let mounted: boolean;
 
   async function setupTest(): Promise<AsyncDisposable> {
-  let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
-  async function cleanup() {
-    const screen = initialized ? renderer : undefined;
-    try {
-    if (mounted) await act(() => screen?.unmount());
-    } finally {
+    let initialized = false;
+    let ownedContainer: HTMLDivElement | undefined;
+    async function cleanup() {
+      const screen = initialized ? renderer : undefined;
       try {
-        await screen?.[Symbol.asyncDispose]();
+        if (mounted) await act(() => screen?.unmount());
       } finally {
-        ownedContainer?.remove();
-        vi.restoreAllMocks();
-        vi.unstubAllGlobals();
+        try {
+          await screen?.[Symbol.asyncDispose]();
+        } finally {
+          ownedContainer?.remove();
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+        }
       }
     }
+    try {
+      ownedContainer = container = document.createElement("div");
+      document.body.append(container);
+      renderer = await renderTest(null, { container: container, router: false });
+      initialized = true;
+      mounted = true;
+      testState.read.mockReset().mockResolvedValue(AsyncResult.success(ready()));
+      testState.presentations = new Map([[primaryId, environment(primaryId)]]);
+      testState.connections = new Map();
+      connect();
+
+      return { [Symbol.asyncDispose]: cleanup };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
-  try {
-    ownedContainer = container = document.createElement("div");
-    document.body.append(container);
-    renderer = await renderTest(null, { container: container, router: false });
-  initialized = true;
-    mounted = true;
-    testState.read.mockReset().mockResolvedValue(AsyncResult.success(ready()));
-    testState.presentations = new Map([[primaryId, environment(primaryId)]]);
-    testState.connections = new Map();
-    connect();
-
-    return { [Symbol.asyncDispose]: cleanup };
-  } catch (error) {
-    await cleanup();
-    throw error;
-  }
-}
-
-
 
   async function render() {
-    await act(async () =>
-      await renderer.rerender(
-        <StrictMode>
-          <SavedTokenAccounting />
-        </StrictMode>,
-      ),
+    await act(
+      async () =>
+        await renderer.rerender(
+          <StrictMode>
+            <SavedTokenAccounting />
+          </StrictMode>,
+        ),
     );
   }
 
@@ -368,7 +367,7 @@ describe("saved token accounting panel", () => {
   it.each(["omitted", false] as const)(
     "does not expose or dispatch a reader when capability is %s",
     async (capability) => {
-    await using _fixture = await setupTest();
+      await using _fixture = await setupTest();
       testState.presentations = new Map(testState.presentations).set(
         primaryId,
         environment(primaryId, { capability }),
@@ -597,7 +596,7 @@ describe("saved token accounting panel", () => {
   ])(
     "renders the fixed $status unavailable state with read observation",
     async ({ status, reason, text }) => {
-    await using _fixture = await setupTest();
+      await using _fixture = await setupTest();
       const unavailable = Schema.decodeUnknownSync(TokenAccountingReadResult)({
         state: "unavailable",
         status,

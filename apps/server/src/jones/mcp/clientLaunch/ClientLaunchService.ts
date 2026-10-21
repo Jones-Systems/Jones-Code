@@ -27,10 +27,10 @@ interface Claim {
 }
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const fenceReason = "jones-client-launch:v1:fenced";
-const readClaim = Effect.fn("ClientLaunchService.readClaim")(function*(commandId: CommandId) {
-    const sql = yield* SqlClient.SqlClient;
-    return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
-  },Effect.mapError(unavailable));
+const readClaim = Effect.fn("ClientLaunchService.readClaim")(function* (commandId: CommandId) {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
+}, Effect.mapError(unavailable));
 const readReceipt = (commandId: CommandId) =>
   Receipts.CommandReceiptStoreV2.pipe(
     Effect.flatMap((receipts) => receipts.getByCommandId(commandId)),
@@ -242,36 +242,36 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
   let replayed = receipt?.status === "accepted";
-  const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function*() {
-      const claim = yield* readClaim(ids.commandId);
-      if (claim?.request_digest !== digest)
-        return yield* new OrchestratorMcpFailure({
-          code: "request_conflict",
-          message: "The key belongs to a different launch request.",
-        });
-      const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
-      if (state.threadDeleted)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "The recorded launch thread was deleted; this key cannot relaunch it.",
-        });
-      const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
-      if (shell === null) return yield* unavailable();
-      if (
-        state.initialMessage === "pending" ||
-        (state.initialMessage === "accepted" && state.preparation === "unscheduled")
-      ) {
-        yield* gate.continueWithin(
-          shell,
-          invoke({
-            ...common,
-            modelSelection: shell.modelSelection,
-            runtimeMode: shell.runtimeMode,
-            interactionMode: shell.interactionMode,
-          }),
-        );
-      }
-    });
+  const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function* () {
+    const claim = yield* readClaim(ids.commandId);
+    if (claim?.request_digest !== digest)
+      return yield* new OrchestratorMcpFailure({
+        code: "request_conflict",
+        message: "The key belongs to a different launch request.",
+      });
+    const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
+    if (state.threadDeleted)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "The recorded launch thread was deleted; this key cannot relaunch it.",
+      });
+    const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
+    if (shell === null) return yield* unavailable();
+    if (
+      state.initialMessage === "pending" ||
+      (state.initialMessage === "accepted" && state.preparation === "unscheduled")
+    ) {
+      yield* gate.continueWithin(
+        shell,
+        invoke({
+          ...common,
+          modelSelection: shell.modelSelection,
+          runtimeMode: shell.runtimeMode,
+          interactionMode: shell.interactionMode,
+        }),
+      );
+    }
+  });
   if (replayed) {
     yield* continueAccepted();
   } else {

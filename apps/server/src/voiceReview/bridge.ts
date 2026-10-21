@@ -665,9 +665,8 @@ const make = Effect.gen(function* () {
     });
   return VoiceReview.of({
     recent: (principal, limit) => call(() => bridge.recent(principal, limit)),
-    registrySnapshot: Effect.fn("VoiceReviewBridge.registrySnapshot")(function* (principal,
-cursor,
-limit) {
+    registrySnapshot: Effect.fn("VoiceReviewBridge.registrySnapshot")(
+      function* (principal, cursor, limit) {
         const native =
           compositionFactory === undefined
             ? undefined
@@ -683,7 +682,8 @@ limit) {
             limit,
           ),
         );
-      }),
+      },
+    ),
     registryWorkstreams: (principal) => call(() => bridge.registryWorkstreams(principal)),
     registryEvents: (principal, after, limit) =>
       call(() => bridge.registryEvents(principal, after, limit)),

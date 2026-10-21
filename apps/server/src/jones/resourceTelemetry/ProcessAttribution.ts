@@ -41,46 +41,48 @@ export const make = Effect.fn("resourceTelemetry.processAttribution.make")(funct
   >();
   const registrations = yield* Ref.make(new Map<number, RegisteredProcessAttribution>());
 
-  const registerProviderRoot: ProcessAttribution["Service"]["registerProviderRoot"] = Effect.fn("ProcessAttribution.registerProviderRoot")(function* (input) {
-      const registeredAtMs = DateTime.toEpochMillis(yield* DateTime.now);
-      const token = {};
-      const registration: RegisteredProcessAttribution = {
-        pid: input.pid,
-        category: "provider-root",
-        owner: {
-          kind: "provider",
-          threadId: input.threadId,
-          provider: input.provider,
-        },
-        registeredAtMs,
-        token,
-      };
-      yield* Ref.update(registrations, (current) => {
-        const next = new Map(current);
-        next.set(input.pid, registration);
-        return next;
-      });
-      yield* Effect.addFinalizer(() =>
-        Ref.update(registrations, (current) => {
-          if (current.get(input.pid)?.token !== token) return current;
-          const next = new Map(current);
-          next.delete(input.pid);
-          return next;
-        }),
-      );
+  const registerProviderRoot: ProcessAttribution["Service"]["registerProviderRoot"] = Effect.fn(
+    "ProcessAttribution.registerProviderRoot",
+  )(function* (input) {
+    const registeredAtMs = DateTime.toEpochMillis(yield* DateTime.now);
+    const token = {};
+    const registration: RegisteredProcessAttribution = {
+      pid: input.pid,
+      category: "provider-root",
+      owner: {
+        kind: "provider",
+        threadId: input.threadId,
+        provider: input.provider,
+      },
+      registeredAtMs,
+      token,
+    };
+    yield* Ref.update(registrations, (current) => {
+      const next = new Map(current);
+      next.set(input.pid, registration);
+      return next;
     });
+    yield* Effect.addFinalizer(() =>
+      Ref.update(registrations, (current) => {
+        if (current.get(input.pid)?.token !== token) return current;
+        const next = new Map(current);
+        next.delete(input.pid);
+        return next;
+      }),
+    );
+  });
 
   return ProcessAttribution.of({
     registerProviderRoot,
     bindLauncher: Effect.fn("ProcessAttribution.bindLauncher")(function* (client, identity) {
-        const token = {};
-        launchers.set(client, { identity, token });
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            if (launchers.get(client)?.token === token) launchers.delete(client);
-          }),
-        );
-      }),
+      const token = {};
+      launchers.set(client, { identity, token });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          if (launchers.get(client)?.token === token) launchers.delete(client);
+        }),
+      );
+    }),
     launcherFor: (client) => Effect.sync(() => launchers.get(client)?.identity ?? null),
     snapshot: Ref.get(registrations).pipe(
       Effect.map(

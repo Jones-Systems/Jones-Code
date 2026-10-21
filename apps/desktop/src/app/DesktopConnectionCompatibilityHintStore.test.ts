@@ -6,7 +6,11 @@ import * as NodePath from "node:path";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import { afterEach, vi } from "vite-plus/test";
-import { startChild, ownChild, FixtureCustodyError } from "./DesktopConnectionCustody.testFixtures.ts";
+import {
+  startChild,
+  ownChild,
+  FixtureCustodyError,
+} from "./DesktopConnectionCustody.testFixtures.ts";
 
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -176,7 +180,6 @@ it("serializes exact record operations across independent processes", async () =
   }
   if (failure !== undefined) throw failure;
 });
-
 
 it("requests child-side shutdown and requires close after exit before releasing custody", async () => {
   vi.useFakeTimers();

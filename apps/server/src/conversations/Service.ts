@@ -24,42 +24,42 @@ export class ConversationLibrary extends Context.Service<
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   return ConversationLibrary.of({
-    execute: Effect.fn("Conversations.execute")(function*(request, canWrite) {
-        const mutates = libraryRequestMutates(request);
-        if (mutates && !canWrite) {
-          return yield* Effect.fail(
-            new ConversationLibraryError(
-              "forbidden",
-              "The conversation library operation is not allowed.",
-            ),
-          );
-        }
-        const now = yield* Clock.currentTimeMillis;
-        return yield* Effect.acquireUseRelease(
-          Effect.tryPromise({
-            try: () => openConversationLibrary(config.stateDir, mutates, now),
+    execute: Effect.fn("Conversations.execute")(function* (request, canWrite) {
+      const mutates = libraryRequestMutates(request);
+      if (mutates && !canWrite) {
+        return yield* Effect.fail(
+          new ConversationLibraryError(
+            "forbidden",
+            "The conversation library operation is not allowed.",
+          ),
+        );
+      }
+      const now = yield* Clock.currentTimeMillis;
+      return yield* Effect.acquireUseRelease(
+        Effect.tryPromise({
+          try: () => openConversationLibrary(config.stateDir, mutates, now),
+          catch: (cause) =>
+            cause instanceof ConversationLibraryError
+              ? cause
+              : new ConversationLibraryError(
+                  "storage",
+                  "The conversation library could not be opened.",
+                ),
+        }),
+        (store) =>
+          Effect.try({
+            try: () => store.execute(request, canWrite),
             catch: (cause) =>
               cause instanceof ConversationLibraryError
                 ? cause
                 : new ConversationLibraryError(
                     "storage",
-                    "The conversation library could not be opened.",
+                    "The conversation library could not be read or changed.",
                   ),
           }),
-          (store) =>
-            Effect.try({
-              try: () => store.execute(request, canWrite),
-              catch: (cause) =>
-                cause instanceof ConversationLibraryError
-                  ? cause
-                  : new ConversationLibraryError(
-                      "storage",
-                      "The conversation library could not be read or changed.",
-                    ),
-            }),
-          (store) => Effect.sync(() => store.close()),
-        );
-      }),
+        (store) => Effect.sync(() => store.close()),
+      );
+    }),
   });
 });
 

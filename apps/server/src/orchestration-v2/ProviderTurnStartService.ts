@@ -1255,107 +1255,109 @@ export const layer: Layer.Layer<
       const startWithConfiguredEffort = (
         turnInput: Parameters<typeof session.startTurn>[0],
         compact = false,
-      ) =>
-        {
-    const startWithConfiguredEffortEffect = Effect.fn("ProviderTurnStartService.startWithConfiguredEffort")(function*() {
-          let dispatchInput = turnInput;
-          if (
-            session.driver === "codex" &&
-            !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
-          ) {
-            const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
-            if (Option.isSome(settingsResult)) {
-              const project = yield* projects
-                .getById(projection.thread.projectId)
-                .pipe(Effect.catch(() => Effect.succeedNone));
-              const settings = resolveProjectSettings(
-                settingsResult.value,
-                projection.thread.projectId,
-                Option.getOrUndefined(project),
-              ).settings;
-              const defaultSelection = settings.defaultModelSelection ?? undefined;
-              const selected = yield* instanceRegistry.getInstance(
-                turnInput.modelSelection.instanceId,
-              );
-              const snapshot =
-                selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
-              const defaultInstance =
-                defaultSelection === undefined
-                  ? undefined
-                  : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
-              const canonical = normalizeModelSlug(
-                codexModelFamily(turnInput.modelSelection.model),
-                session.driver,
-              );
-              const model =
-                snapshot?.models.find(
-                  (candidate) => candidate.slug === turnInput.modelSelection.model,
-                ) ??
-                snapshot?.models.find((candidate) =>
-                  [candidate.slug, ...(candidate.aliases ?? [])].some(
-                    (slug) =>
-                      normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
-                  ),
+      ) => {
+        const startWithConfiguredEffortEffect = Effect.fn(
+          "ProviderTurnStartService.startWithConfiguredEffort",
+        )(
+          function* () {
+            let dispatchInput = turnInput;
+            if (
+              session.driver === "codex" &&
+              !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
+            ) {
+              const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
+              if (Option.isSome(settingsResult)) {
+                const project = yield* projects
+                  .getById(projection.thread.projectId)
+                  .pipe(Effect.catch(() => Effect.succeedNone));
+                const settings = resolveProjectSettings(
+                  settingsResult.value,
+                  projection.thread.projectId,
+                  Option.getOrUndefined(project),
+                ).settings;
+                const defaultSelection = settings.defaultModelSelection ?? undefined;
+                const selected = yield* instanceRegistry.getInstance(
+                  turnInput.modelSelection.instanceId,
                 );
-              const effort = getConfiguredReasoningEffort({
-                modelSelection: turnInput.modelSelection,
-                driverKind: session.driver,
-                capabilities: model?.capabilities ?? undefined,
-                defaultModelSelection: defaultSelection,
-                defaultDriverKind:
+                const snapshot =
+                  selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
+                const defaultInstance =
                   defaultSelection === undefined
                     ? undefined
-                    : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
-                      defaultInstance?.driverKind),
-              });
-              if (effort !== undefined)
-                dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
-            }
-          }
-          // A settings read can outlive the attempt. Never dispatch its stale prompt.
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
-          dispatchInput = {
-            ...dispatchInput,
-            revalidateStartAdmission:
-              eventSink.assertRuntimeStopStartAllowed === undefined
-                ? Effect.void
-                : eventSink
-                    .assertRuntimeStopStartAllowed({
-                      threadId: input.threadId,
-                      runId,
-                      providerThreadId: providerThread.id,
-                      ...(stopRuntimeGeneration === undefined
-                        ? {}
-                        : {
-                            runtimeGeneration: stopRuntimeGeneration,
-                          }),
-                    })
-                    .pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterTurnStartError({
-                            driver: session.driver,
-                            threadId: input.threadId,
-                            providerThreadId: providerThread.id,
-                            runId,
-                            cause,
-                          }),
-                      ),
+                    : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
+                const canonical = normalizeModelSlug(
+                  codexModelFamily(turnInput.modelSelection.model),
+                  session.driver,
+                );
+                const model =
+                  snapshot?.models.find(
+                    (candidate) => candidate.slug === turnInput.modelSelection.model,
+                  ) ??
+                  snapshot?.models.find((candidate) =>
+                    [candidate.slug, ...(candidate.aliases ?? [])].some(
+                      (slug) =>
+                        normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
                     ),
-          };
-          const start = compact ? session.compactThread! : session.startTurn;
-          if (eventSink.assertRuntimeStopStartAllowed)
-            yield* eventSink.assertRuntimeStopStartAllowed({
-              threadId: input.threadId,
-              runId,
-              providerThreadId: providerThread.id,
-              ...(stopRuntimeGeneration === undefined
-                ? {}
-                : { runtimeGeneration: stopRuntimeGeneration }),
-            });
-          yield* start(dispatchInput);
-        },
+                  );
+                const effort = getConfiguredReasoningEffort({
+                  modelSelection: turnInput.modelSelection,
+                  driverKind: session.driver,
+                  capabilities: model?.capabilities ?? undefined,
+                  defaultModelSelection: defaultSelection,
+                  defaultDriverKind:
+                    defaultSelection === undefined
+                      ? undefined
+                      : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
+                        defaultInstance?.driverKind),
+                });
+                if (effort !== undefined)
+                  dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
+              }
+            }
+            // A settings read can outlive the attempt. Never dispatch its stale prompt.
+            if (!(yield* isCurrentAttemptInStatus("running"))) return;
+            const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
+            dispatchInput = {
+              ...dispatchInput,
+              revalidateStartAdmission:
+                eventSink.assertRuntimeStopStartAllowed === undefined
+                  ? Effect.void
+                  : eventSink
+                      .assertRuntimeStopStartAllowed({
+                        threadId: input.threadId,
+                        runId,
+                        providerThreadId: providerThread.id,
+                        ...(stopRuntimeGeneration === undefined
+                          ? {}
+                          : {
+                              runtimeGeneration: stopRuntimeGeneration,
+                            }),
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderAdapterTurnStartError({
+                              driver: session.driver,
+                              threadId: input.threadId,
+                              providerThreadId: providerThread.id,
+                              runId,
+                              cause,
+                            }),
+                        ),
+                      ),
+            };
+            const start = compact ? session.compactThread! : session.startTurn;
+            if (eventSink.assertRuntimeStopStartAllowed)
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: input.threadId,
+                runId,
+                providerThreadId: providerThread.id,
+                ...(stopRuntimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: stopRuntimeGeneration }),
+              });
+            yield* start(dispatchInput);
+          },
           Effect.mapError((cause) =>
             cause._tag === "ProviderAdapterTurnStartError"
               ? cause
@@ -1366,9 +1368,10 @@ export const layer: Layer.Layer<
                   runId: run.id,
                   cause,
                 }),
-          ));
-    return startWithConfiguredEffortEffect();
-  };
+          ),
+        );
+        return startWithConfiguredEffortEffect();
+      };
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const retryHandoff =
@@ -1553,7 +1556,8 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
-      startNative: Effect.fn("ProviderTurnStartService.startNative")(function*(input) {
+      startNative: Effect.fn("ProviderTurnStartService.startNative")(
+        function* (input) {
           yield* start({
             threadId: input.threadId,
             runId: input.runId,
@@ -1566,12 +1570,16 @@ export const layer: Layer.Layer<
               cause: "Native start did not receive its direct whole-operation acknowledgement.",
             });
           return evidence;
-        }, (effect, input) => effect.pipe(
-          Effect.mapError((cause) =>
-            isProviderTurnStartError(cause)
-              ? cause
-              : new ProviderTurnStartError({ runId: input.runId, cause }),
-          ))),
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              isProviderTurnStartError(cause)
+                ? cause
+                : new ProviderTurnStartError({ runId: input.runId, cause }),
+            ),
+          ),
+      ),
       start: Effect.fn("ProviderTurnStartService.start")(
         function* (input) {
           // Storage cleanup removes worktrees under the same lease. Only startup

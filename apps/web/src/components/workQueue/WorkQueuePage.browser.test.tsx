@@ -51,29 +51,28 @@ function makeSource(items: readonly WorkQueueItem[] = [first, second]) {
 
 describe("submitted work preview", () => {
   let root: Screen;
-let renderDisposables: AsyncDisposableStack;
+  let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   async function setupFixture1() {
-  const stack = new AsyncDisposableStack();
-  renderDisposables = stack;
-  stack.defer(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
+    const stack = new AsyncDisposableStack();
+    renderDisposables = stack;
+    stack.defer(async () => {
+      await act(() => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+    try {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-  });
-  try {
-    container = document.createElement("div");
-    document.body.append(container);
-    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-
-    return stack;
-  } catch (error) {
-    await stack.disposeAsync();
-    throw error;
+      return stack;
+    } catch (error) {
+      await stack.disposeAsync();
+      throw error;
+    }
   }
-}
 
   async function render(source: WorkQueueSource) {
     await act(() => root.rerender(<WorkQueuePanel source={source} />));
@@ -231,7 +230,7 @@ let renderDisposables: AsyncDisposableStack;
   it.each(["conflict", "unknown"] as const)(
     "keeps %s edits protected beyond the grace interval",
     async (outcome) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       using _timers = fakeTimers();
       const source = createMockWorkQueueSource();
       const original = (await source.load())[0]!;
@@ -369,7 +368,7 @@ let renderDisposables: AsyncDisposableStack;
   it.each(["held", "none", "unknown"] as const)(
     "preserves drafts for %s outcomes without retrying",
     async (outcome) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       const source = makeSource();
       source.save.mockResolvedValue(
         outcome === "held"
@@ -527,29 +526,28 @@ describe("submitted work page integration", () => {
     "../ui/sidebar",
   ];
   let root: Screen;
-let renderDisposables: AsyncDisposableStack;
+  let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   async function setupFixture2() {
-  const stack = new AsyncDisposableStack();
-  renderDisposables = stack;
-  stack.defer(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    for (const path of mockedModules) vi.doUnmock(path);
-    vi.unstubAllGlobals();
+    const stack = new AsyncDisposableStack();
+    renderDisposables = stack;
+    stack.defer(async () => {
+      await act(() => root.unmount());
+      container.remove();
+      for (const path of mockedModules) vi.doUnmock(path);
+      vi.unstubAllGlobals();
+    });
+    try {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-  });
-  try {
-    container = document.createElement("div");
-    document.body.append(container);
-    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-
-    return stack;
-  } catch (error) {
-    await stack.disposeAsync();
-    throw error;
+      return stack;
+    } catch (error) {
+      await stack.disposeAsync();
+      throw error;
+    }
   }
-}
 
   it.each([
     [false, "pending"],
@@ -559,7 +557,7 @@ let renderDisposables: AsyncDisposableStack;
   ] as const)(
     "negotiates metadata capability=%s and hydrates initial stage=%s without synthetic controls",
     async (supported, initialStage) => {
-    await using _fixture = await setupFixture2();
+      await using _fixture = await setupFixture2();
       vi.resetModules();
       const load = vi.fn<WorkQueueMetadataLoader>(async () => ({
         status: "unconfigured",

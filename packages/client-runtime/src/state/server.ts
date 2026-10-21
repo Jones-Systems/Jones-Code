@@ -1178,17 +1178,17 @@ export function createServerEnvironmentAtoms<R, E>(
       execute: (input) =>
         requestGuarded(WS_METHODS.serverReadTokenAccounting, input, {
           validateSession: Effect.fn("ClientServerState.validateSession")(function* (session) {
-              const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-              const config = yield* session.initialConfig;
-              if (config.environment.capabilities.savedTokenAccounting !== true) {
-                return yield* Effect.fail(
-                  new EnvironmentRpcUnavailableError({
-                    environmentId: supervisor.target.environmentId,
-                    message: "This environment does not advertise a saved accounting reader.",
-                  }),
-                );
-              }
-            }),
+            const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+            const config = yield* session.initialConfig;
+            if (config.environment.capabilities.savedTokenAccounting !== true) {
+              return yield* Effect.fail(
+                new EnvironmentRpcUnavailableError({
+                  environmentId: supervisor.target.environmentId,
+                  message: "This environment does not advertise a saved accounting reader.",
+                }),
+              );
+            }
+          }),
         }),
       concurrency: { mode: "singleFlight", key: ({ environmentId }) => environmentId },
     }),

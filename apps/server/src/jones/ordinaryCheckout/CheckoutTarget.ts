@@ -60,67 +60,67 @@ const make = Effect.gen(function* () {
     return value.trim() !== "" && path.isAbsolute(expanded) ? path.normalize(expanded) : null;
   };
   const capture = Effect.fn("CheckoutTarget.capture")(function* (input: TargetInput) {
-      const projectPath = normalize(input.projectRoot);
-      const cwdPath = normalize(input.worktreePath ?? input.projectRoot);
+    const projectPath = normalize(input.projectRoot);
+    const cwdPath = normalize(input.worktreePath ?? input.projectRoot);
+    if (
+      projectPath === null ||
+      cwdPath === null ||
+      !input.projectId ||
+      !input.threadId ||
+      !input.projectRevision ||
+      !input.threadRevision
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    const project = yield* observation.directory(projectPath);
+    const cwd = yield* observation.directory(cwdPath);
+    const projectGit = yield* observation.git(project.realPath);
+    const git = yield* observation.git(cwd.realPath);
+    const root = git === null ? cwd : yield* observation.directory(git.root);
+    if (
+      git !== null &&
+      cwd.realPath !== root.realPath &&
+      !cwd.realPath.startsWith(
+        root.realPath.endsWith(path.sep) ? root.realPath : `${root.realPath}${path.sep}`,
+      )
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    if (input.worktreePath !== null && cwd.realPath !== project.realPath) {
+      const insideProject = cwd.realPath.startsWith(
+        project.realPath.endsWith(path.sep) ? project.realPath : `${project.realPath}${path.sep}`,
+      );
       if (
-        projectPath === null ||
-        cwdPath === null ||
-        !input.projectId ||
-        !input.threadId ||
-        !input.projectRevision ||
-        !input.threadRevision
+        !insideProject &&
+        (projectGit === null ||
+          git === null ||
+          projectGit.commonDirectory !== git.commonDirectory ||
+          !projectGit.registeredWorktrees.includes(root.realPath))
       )
         return yield* new CheckoutError({ reason: "identity" });
-      const project = yield* observation.directory(projectPath);
-      const cwd = yield* observation.directory(cwdPath);
-      const projectGit = yield* observation.git(project.realPath);
-      const git = yield* observation.git(cwd.realPath);
-      const root = git === null ? cwd : yield* observation.directory(git.root);
-      if (
-        git !== null &&
-        cwd.realPath !== root.realPath &&
-        !cwd.realPath.startsWith(
-          root.realPath.endsWith(path.sep) ? root.realPath : `${root.realPath}${path.sep}`,
-        )
-      )
-        return yield* new CheckoutError({ reason: "identity" });
-      if (input.worktreePath !== null && cwd.realPath !== project.realPath) {
-        const insideProject = cwd.realPath.startsWith(
-          project.realPath.endsWith(path.sep) ? project.realPath : `${project.realPath}${path.sep}`,
-        );
-        if (
-          !insideProject &&
-          (projectGit === null ||
-            git === null ||
-            projectGit.commonDirectory !== git.commonDirectory ||
-            !projectGit.registeredWorktrees.includes(root.realPath))
-        )
-          return yield* new CheckoutError({ reason: "identity" });
-      }
-      if (git !== null && !git.registeredWorktrees.includes(root.realPath))
-        return yield* new CheckoutError({ reason: "identity" });
-      const requestedBranch =
-        input.threadBranch === null
-          ? null
-          : input.threadBranch.startsWith("refs/")
-            ? input.threadBranch
-            : `refs/heads/${input.threadBranch}`;
-      if (requestedBranch !== null && git?.branch !== requestedBranch)
-        return yield* new CheckoutError({ reason: "stale" });
-      return {
-        ...input,
-        version: 1 as const,
-        canonicalProjectRoot: project.realPath,
-        cwd: cwd.realPath,
-        checkoutKey: root.realPath,
-        directoryIdentity: root.identity,
-        gitCommonDirectory: git?.commonDirectory ?? null,
-        gitDirectory: git?.gitDirectory ?? null,
-        gitCommonIdentity: git?.commonIdentity ?? null,
-        gitDirectoryIdentity: git?.directoryIdentity ?? null,
-        branch: git?.branch ?? null,
-      };
-    });
+    }
+    if (git !== null && !git.registeredWorktrees.includes(root.realPath))
+      return yield* new CheckoutError({ reason: "identity" });
+    const requestedBranch =
+      input.threadBranch === null
+        ? null
+        : input.threadBranch.startsWith("refs/")
+          ? input.threadBranch
+          : `refs/heads/${input.threadBranch}`;
+    if (requestedBranch !== null && git?.branch !== requestedBranch)
+      return yield* new CheckoutError({ reason: "stale" });
+    return {
+      ...input,
+      version: 1 as const,
+      canonicalProjectRoot: project.realPath,
+      cwd: cwd.realPath,
+      checkoutKey: root.realPath,
+      directoryIdentity: root.identity,
+      gitCommonDirectory: git?.commonDirectory ?? null,
+      gitDirectory: git?.gitDirectory ?? null,
+      gitCommonIdentity: git?.commonIdentity ?? null,
+      gitDirectoryIdentity: git?.directoryIdentity ?? null,
+      branch: git?.branch ?? null,
+    };
+  });
   return CheckoutTarget.of({
     capture,
     revalidate: (target) =>

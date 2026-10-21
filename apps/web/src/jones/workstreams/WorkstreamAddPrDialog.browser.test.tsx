@@ -22,48 +22,47 @@ async function setupFixture1() {
   const stack = new AsyncDisposableStack();
   renderDisposables = stack;
   stack.defer(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-
+    await act(async () => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
   });
   try {
-  container = document.createElement("div");
-  document.body.append(container);
-  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-  controller = {
-    data,
-    registrationContext: {
-      protocol: "workstreams-registration-context/1.0.0",
-      state: "ready",
-      owner_id: "owner",
-      principal_id: "principal",
-      grant_id: "grant",
-      authorization_revision: 1,
-      server_generation: 7,
-      registry_version: 11,
-      sources: [
-        {
-          provider: "github",
-          source_instance_id: "github",
-          resource_kind: "pull_request",
-          id_kind: "external",
-          account_provenance: { kind: "not_account_scoped" },
-          authority_namespace: "github-authority",
-          store_generation: 1,
-        },
-      ],
-    },
-    loading: false,
-    retry: vi.fn(async () => {}),
-    runBindingOperation: vi.fn(),
-    loadActionSnapshot: vi.fn(),
-    loadDetail: vi.fn(),
-    loadReference: vi.fn(),
-  };
-  vi.mocked(prepareWorkstreamPr).mockReset();
-  onLinked.mockReset();
-  onOpenChange.mockReset();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    controller = {
+      data,
+      registrationContext: {
+        protocol: "workstreams-registration-context/1.0.0",
+        state: "ready",
+        owner_id: "owner",
+        principal_id: "principal",
+        grant_id: "grant",
+        authorization_revision: 1,
+        server_generation: 7,
+        registry_version: 11,
+        sources: [
+          {
+            provider: "github",
+            source_instance_id: "github",
+            resource_kind: "pull_request",
+            id_kind: "external",
+            account_provenance: { kind: "not_account_scoped" },
+            authority_namespace: "github-authority",
+            store_generation: 1,
+          },
+        ],
+      },
+      loading: false,
+      retry: vi.fn(async () => {}),
+      runBindingOperation: vi.fn(),
+      loadActionSnapshot: vi.fn(),
+      loadDetail: vi.fn(),
+      loadReference: vi.fn(),
+    };
+    vi.mocked(prepareWorkstreamPr).mockReset();
+    onLinked.mockReset();
+    onOpenChange.mockReset();
 
     return stack;
   } catch (error) {
@@ -71,7 +70,6 @@ async function setupFixture1() {
     throw error;
   }
 }
-
 
 const onLinked = vi.fn();
 const onOpenChange = vi.fn();

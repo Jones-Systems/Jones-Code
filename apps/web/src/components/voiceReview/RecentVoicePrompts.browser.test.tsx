@@ -13,49 +13,50 @@ describe("recent voice prompt interactions", () => {
   let root: Screen;
   let container: HTMLDivElement;
   async function setupTest(): Promise<AsyncDisposable> {
-  let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
-  async function cleanup() {
-    const screen = initialized ? root : undefined;
-    try {
-    await act(() => screen?.unmount());
-    } finally {
+    let initialized = false;
+    let ownedContainer: HTMLDivElement | undefined;
+    async function cleanup() {
+      const screen = initialized ? root : undefined;
       try {
-        await screen?.[Symbol.asyncDispose]();
+        await act(() => screen?.unmount());
       } finally {
-        ownedContainer?.remove();
-        vi.unstubAllGlobals();
+        try {
+          await screen?.[Symbol.asyncDispose]();
+        } finally {
+          ownedContainer?.remove();
+          vi.unstubAllGlobals();
+        }
       }
     }
-  }
-  try {
-    ownedContainer = container = document.createElement("div");
-    document.body.append(container);
-    root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    try {
+      ownedContainer = container = document.createElement("div");
+      document.body.append(container);
+      root = await renderTest(null, { container: container, router: false });
+      initialized = true;
 
-    return { [Symbol.asyncDispose]: cleanup };
-  } catch (error) {
-    await cleanup();
-    throw error;
+      return { [Symbol.asyncDispose]: cleanup };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
-}
 
   async function render(
     entries: readonly VoiceReviewRecentEntry[] = voiceReviewRecentFixture.entries,
     correctAssociation = vi.fn(),
   ) {
-    await act(async () =>
-      await root.rerender(
-        <RecentVoicePrompts
-          entries={entries}
-          registry={threadRegistrySnapshotFixture}
-          workstreams={threadRegistryWorkstreamsFixture}
-          transport={{ correctAssociation }}
-          onRefresh={async () => undefined}
-          unavailable={false}
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <RecentVoicePrompts
+            entries={entries}
+            registry={threadRegistrySnapshotFixture}
+            workstreams={threadRegistryWorkstreamsFixture}
+            transport={{ correctAssociation }}
+            onRefresh={async () => undefined}
+            unavailable={false}
+          />,
+        ),
     );
     return correctAssociation;
   }
@@ -221,27 +222,28 @@ describe("recent voice prompt interactions", () => {
     expect(
       container.querySelector('button[aria-label="Remove native:board workstream"]'),
     ).toBeNull();
-    await act(async () =>
-      await root.rerender(
-        <RecentVoicePrompts
-          entries={[entry]}
-          registry={threadRegistrySnapshotFixture}
-          workstreams={{
-            ...threadRegistryWorkstreamsFixture,
-            workstreams: [
-              ...threadRegistryWorkstreamsFixture.workstreams,
-              {
-                ...threadRegistryWorkstreamsFixture.workstreams[0]!,
-                label_id: "inferred:new",
-                name: "New workstream",
-              },
-            ],
-          }}
-          transport={{ correctAssociation }}
-          onRefresh={async () => undefined}
-          unavailable={false}
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <RecentVoicePrompts
+            entries={[entry]}
+            registry={threadRegistrySnapshotFixture}
+            workstreams={{
+              ...threadRegistryWorkstreamsFixture,
+              workstreams: [
+                ...threadRegistryWorkstreamsFixture.workstreams,
+                {
+                  ...threadRegistryWorkstreamsFixture.workstreams[0]!,
+                  label_id: "inferred:new",
+                  name: "New workstream",
+                },
+              ],
+            }}
+            transport={{ correctAssociation }}
+            onRefresh={async () => undefined}
+            unavailable={false}
+          />,
+        ),
     );
     expect([...container.querySelectorAll("option")].map((option) => option.textContent)).toContain(
       "New workstream",
@@ -269,23 +271,24 @@ describe("recent voice prompt interactions", () => {
   it("keeps stale prompt text readable but disables corrections when context is unavailable", async () => {
     await using _fixture = await setupTest();
     const correctAssociation = vi.fn();
-    await act(async () =>
-      await root.rerender(
-        <RecentVoicePrompts
-          entries={[voiceReviewRecentFixture.entries[0]!]}
-          registry={{
-            ...threadRegistrySnapshotFixture,
-            threads: threadRegistrySnapshotFixture.threads.map((thread) => ({
-              ...thread,
-              freshness: { ...thread.freshness, stale: true },
-            })),
-          }}
-          workstreams={threadRegistryWorkstreamsFixture}
-          transport={{ correctAssociation }}
-          onRefresh={async () => undefined}
-          unavailable
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <RecentVoicePrompts
+            entries={[voiceReviewRecentFixture.entries[0]!]}
+            registry={{
+              ...threadRegistrySnapshotFixture,
+              threads: threadRegistrySnapshotFixture.threads.map((thread) => ({
+                ...thread,
+                freshness: { ...thread.freshness, stale: true },
+              })),
+            }}
+            workstreams={threadRegistryWorkstreamsFixture}
+            transport={{ correctAssociation }}
+            onRefresh={async () => undefined}
+            unavailable
+          />,
+        ),
     );
     expect(container.textContent).toContain("Keep the recent prompts readable.");
     expect(container.textContent).toContain("Thread context is stale.");
@@ -308,17 +311,18 @@ describe("recent voice prompt interactions", () => {
       .fn()
       .mockRejectedValueOnce(new Error("Offline"))
       .mockResolvedValueOnce(undefined);
-    await act(async () =>
-      await root.rerender(
-        <RecentVoicePrompts
-          entries={[voiceReviewRecentFixture.entries[0]!]}
-          registry={threadRegistrySnapshotFixture}
-          workstreams={threadRegistryWorkstreamsFixture}
-          transport={{ correctAssociation }}
-          onRefresh={onRefresh}
-          unavailable={false}
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <RecentVoicePrompts
+            entries={[voiceReviewRecentFixture.entries[0]!]}
+            registry={threadRegistrySnapshotFixture}
+            workstreams={threadRegistryWorkstreamsFixture}
+            transport={{ correctAssociation }}
+            onRefresh={onRefresh}
+            unavailable={false}
+          />,
+        ),
     );
     const remove = () => {
       const current = container.querySelector<HTMLButtonElement>(

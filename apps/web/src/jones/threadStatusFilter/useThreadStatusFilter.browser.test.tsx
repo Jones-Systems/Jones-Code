@@ -79,7 +79,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -89,11 +89,11 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  ownedContainer = container = document.createElement("div");
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
-  input = { threads: [thread], layout: "current", filter: "done", selected: key(thread) };
+    useUiStateStore.setState({ threadLastVisitedAtById: {} });
+    ownedContainer = container = document.createElement("div");
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    input = { threads: [thread], layout: "current", filter: "done", selected: key(thread) };
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {

@@ -85,7 +85,8 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig;
   const server = yield* HttpServer.HttpServer;
   return OrganizationMetadataMcpService.of({
-    getInvocationContext: Effect.fn("OrganizationMetadataMcpService.getInvocationContext")(function*(caller) {
+    getInvocationContext: Effect.fn("OrganizationMetadataMcpService.getInvocationContext")(
+      function* (caller) {
         const { address } = server;
         let loopbackOrigin: string | null = null;
         if (
@@ -110,8 +111,10 @@ const make = Effect.gen(function* () {
           appIdentity: APP_IDENTITY,
           serverGeneration: null,
         };
-      }),
-    listThreadMetadata: Effect.fn("OrganizationMetadataMcpService.listThreadMetadata")(function*(environmentId, input) {
+      },
+    ),
+    listThreadMetadata: Effect.fn("OrganizationMetadataMcpService.listThreadMetadata")(
+      function* (environmentId, input) {
         // One unfiltered read covers active and archived threads in a single
         // projection transaction, so both halves share one snapshotSequence.
         const snapshot = yield* snapshots
@@ -151,7 +154,8 @@ const make = Effect.gen(function* () {
           threads: threads.slice(start, end).map(organizationThreadMetadata),
           nextOffset: end < threads.length ? end : null,
         };
-      }),
+      },
+    ),
   });
 });
 export const layer = Layer.effect(OrganizationMetadataMcpService, make);

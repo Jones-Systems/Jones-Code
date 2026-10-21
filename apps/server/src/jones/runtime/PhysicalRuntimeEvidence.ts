@@ -21,7 +21,8 @@ export const make = Effect.gen(function* () {
     generation: string,
     reason: Extract<PhysicalProcessObservation, { status: "unknown" }>["reason"],
   ): PhysicalProcessObservation => ({ status: "unknown", runtimeGeneration: generation, reason });
-  const persist = Effect.fn("PhysicalRuntimeEvidence.persist")(function* (binding: ProviderRuntimeBinding, observation: PhysicalProcessObservation) {
+  const persist = Effect.fn("PhysicalRuntimeEvidence.persist")(
+    function* (binding: ProviderRuntimeBinding, observation: PhysicalProcessObservation) {
       if (Option.isNone(storage)) return false;
       const sql = storage.value;
       return yield* sql.withTransaction(
@@ -38,8 +39,13 @@ export const make = Effect.gen(function* () {
           return true;
         }),
       );
-    }, Effect.catchCause(() => Effect.succeed(false)));
-  const read: (binding: ProviderRuntimeBinding) => Effect.Effect<PhysicalProcessObservation> = Effect.fn("PhysicalRuntimeEvidence.read")(function* (binding: ProviderRuntimeBinding): Effect.fn.Return<PhysicalProcessObservation> {
+    },
+    Effect.catchCause(() => Effect.succeed(false)),
+  );
+  const read: (binding: ProviderRuntimeBinding) => Effect.Effect<PhysicalProcessObservation> =
+    Effect.fn("PhysicalRuntimeEvidence.read")(function* (
+      binding: ProviderRuntimeBinding,
+    ): Effect.fn.Return<PhysicalProcessObservation> {
       const entry = leases.get(binding.providerThreadId);
       if (!entry || !equivalentBinding(entry.binding, binding))
         return unknown(binding.runtimeGeneration, "not_captured");
@@ -59,36 +65,41 @@ export const make = Effect.gen(function* () {
         return unknown(binding.runtimeGeneration, "retired");
       return observation;
     });
-  const invalidate = Effect.fn("PhysicalRuntimeEvidence.invalidate")(function* (binding: ProviderRuntimeBinding) {
-      const entry = leases.get(binding.providerThreadId);
-      if (!entry || entry.binding.runtimeGeneration !== binding.runtimeGeneration) return;
-      leases.delete(binding.providerThreadId);
-      yield* persist(binding, unknown(binding.runtimeGeneration, "retired"));
-    });
+  const invalidate = Effect.fn("PhysicalRuntimeEvidence.invalidate")(function* (
+    binding: ProviderRuntimeBinding,
+  ) {
+    const entry = leases.get(binding.providerThreadId);
+    if (!entry || entry.binding.runtimeGeneration !== binding.runtimeGeneration) return;
+    leases.delete(binding.providerThreadId);
+    yield* persist(binding, unknown(binding.runtimeGeneration, "retired"));
+  });
   return {
-    bind: Effect.fn("PhysicalRuntimeEvidence.bind")(function* (binding: ProviderRuntimeBinding, lease: PhysicalProcessLease | undefined) {
-        const previous = leases.get(binding.providerThreadId);
-        if (
-          previous &&
-          previous.lease === lease &&
-          previous.binding.runtimeGeneration === binding.runtimeGeneration
-        )
-          return;
-        leases.delete(binding.providerThreadId);
-        const entry =
-          lease && lease.runtimeGeneration === binding.runtimeGeneration
-            ? { binding, lease }
-            : undefined;
-        if (entry) leases.set(binding.providerThreadId, entry);
-        if (previous)
-          yield* persist(previous.binding, unknown(previous.binding.runtimeGeneration, "retired"));
-        if (entry && leases.get(binding.providerThreadId) === entry) yield* read(binding);
-      }),
+    bind: Effect.fn("PhysicalRuntimeEvidence.bind")(function* (
+      binding: ProviderRuntimeBinding,
+      lease: PhysicalProcessLease | undefined,
+    ) {
+      const previous = leases.get(binding.providerThreadId);
+      if (
+        previous &&
+        previous.lease === lease &&
+        previous.binding.runtimeGeneration === binding.runtimeGeneration
+      )
+        return;
+      leases.delete(binding.providerThreadId);
+      const entry =
+        lease && lease.runtimeGeneration === binding.runtimeGeneration
+          ? { binding, lease }
+          : undefined;
+      if (entry) leases.set(binding.providerThreadId, entry);
+      if (previous)
+        yield* persist(previous.binding, unknown(previous.binding.runtimeGeneration, "retired"));
+      if (entry && leases.get(binding.providerThreadId) === entry) yield* read(binding);
+    }),
     read,
     invalidate,
     abandon: Effect.fn("PhysicalRuntimeEvidence.abandon")(function* (generation: string) {
-        for (const entry of Array.from(leases.values()))
-          if (entry.binding.runtimeGeneration === generation) yield* invalidate(entry.binding);
-      }),
+      for (const entry of Array.from(leases.values()))
+        if (entry.binding.runtimeGeneration === generation) yield* invalidate(entry.binding);
+    }),
   };
 });

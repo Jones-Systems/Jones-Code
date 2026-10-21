@@ -123,134 +123,140 @@ export const makeDeletionAdmission = Effect.gen(function* () {
   const receipts = yield* Receipts.CommandReceiptStoreV2;
   const failure = (reason: string) => new DeletionAdmissionError({ reason });
   const load = Effect.fn("DeletionAdmission.load")(function* (effectId: string) {
-      const rows = yield* sql<{
-        readonly binding_json: string;
-        readonly start_json: string;
-        readonly state: string;
-      }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
-      if (rows.length !== 1) return null;
-      return {
-        binding: yield* Schema.decodeUnknownEffect(jsonBinding)(rows[0]!.binding_json),
-        start: yield* Schema.decodeUnknownEffect(jsonStart)(rows[0]!.start_json),
-        state: rows[0]!.state,
-      };
-    });
-  const validateBinding = Effect.fn("DeletionAdmission.validateBinding")(function* (binding: Binding) {
-      const target = binding.target;
-      if (
-        !binding.rules.worktreeOnDelete ||
-        target.force ||
-        !path.isAbsolute(target.path) ||
-        !path.isAbsolute(target.projectRoot) ||
-        path.resolve(target.path) !== target.path ||
-        path.resolve(target.projectRoot) !== target.projectRoot ||
-        overlaps(target.path, target.projectRoot)
-      )
-        return yield* failure("original_policy_target_invalid");
-      const native = yield* sql<{
-        readonly worktree_path: string;
-      }>`SELECT worktree_path FROM jones_native_workspace_admissions`;
-      if (native.some((row) => overlaps(row.worktree_path, target.path)))
-        return yield* failure("native_workspace_original_owner_handoff_required");
-      // Lease expiry is not evidence that an old owner's uncertain effect ended.
-      const claims = yield* sql<{
-        readonly worktree_path: string | null;
-      }>`SELECT worktree_path FROM native_creation_intents`;
-      if (
-        claims.some((row) => row.worktree_path !== null && overlaps(row.worktree_path, target.path))
-      )
-        return yield* failure("native_creation_original_owner_handoff_required");
-      const leases = yield* sql<{
-        readonly resource_path: string;
-      }>`SELECT resource_path FROM worktree_ownership_leases`;
-      if (leases.some((row) => overlaps(row.resource_path, target.path)))
-        return yield* failure("worktree_original_lease_owner_unavailable");
-      const deletion = yield* sql<{
-        readonly payload_json: string;
-        readonly command_id: string | null;
-      }>`SELECT payload_json,command_id FROM orchestration_events WHERE event_id=${binding.deletionEventId} AND sequence=${binding.deletionSequence} AND stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted'`;
-      if (
-        deletion.length !== 1 ||
-        deletion[0]!.command_id !== binding.commandId ||
-        deletion[0]!.payload_json !== binding.deletionPayload
-      )
-        return yield* failure("original_deletion_event_changed");
-      const receipt = Option.getOrNull(yield* receipts.getByCommandId(binding.commandId));
-      if (
-        receipt?.status !== "accepted" ||
-        receipt.threadId !== binding.threadId ||
-        receipt.commandType !== "thread.delete" ||
-        receipt.resultSequence < binding.deletionSequence
-      )
-        return yield* failure("original_deletion_receipt_unavailable");
-      const birth = yield* sql<{
-        readonly event_id: string;
-        readonly sequence: number;
-        readonly payload_json: string;
-      }>`SELECT event_id,sequence,payload_json FROM orchestration_events WHERE stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
-      if (
-        birth.length !== 1 ||
-        birth[0]!.event_id !== binding.birthEventId ||
-        birth[0]!.sequence !== binding.birthSequence ||
-        binding.birthSequence >= binding.deletionSequence
-      )
-        return yield* failure("original_application_birth_changed");
-      const identity = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
-        binding.deletionPayload,
-      );
-      const born = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(
-          Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
-        ),
-      )(birth[0]!.payload_json);
-      const projection = yield* sql<{
-        readonly payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId}`;
-      if (projection.length !== 1) return yield* failure("original_deleted_projection_unavailable");
-      const current = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
-        projection[0]!.payload_json,
-      );
-      if (
-        identity.id !== binding.threadId ||
-        identity.projectId !== target.projectId ||
-        identity.deletedAt === null ||
-        identity.worktreePath !== target.path ||
-        identity.branch !== target.branch ||
-        born.id !== identity.id ||
-        born.projectId !== identity.projectId ||
-        born.createdAt !== identity.createdAt ||
-        !same(current, identity)
-      )
-        return yield* failure("original_deleted_thread_target_changed");
-      const project = yield* sql<{
-        readonly workspace_root: string;
-      }>`SELECT workspace_root FROM projection_projects WHERE project_id=${target.projectId}`;
-      if (project.length !== 1 || project[0]!.workspace_root !== target.projectRoot)
-        return yield* failure("original_project_root_changed");
-      const active = yield* sql<{
-        readonly path: string | null;
-      }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
-      if (active.some((row) => row.path !== null && overlaps(row.path, target.path)))
-        return yield* failure("shared_worktree_retained");
-      const sessions = yield* sql<{
-        readonly cwd: string;
-      }>`SELECT json_extract(payload_json,'$.cwd') AS cwd FROM orchestration_v2_projection_provider_sessions WHERE status != 'stopped'`;
-      if (sessions.some((row) => overlaps(row.cwd, target.path)))
-        return yield* failure("provider_cleanup_not_observed");
-      const pending =
-        yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id=${binding.threadId} AND status NOT IN ('succeeded','cancelled') LIMIT 1`;
-      if (pending.length > 0) return yield* failure("original_cleanup_prerequisites_unsettled");
-    });
-  const checkCurrent = Effect.fn("DeletionAdmission.checkCurrent")(function* (binding: Binding, currentRules?: DeletionPolicyRead, currentLive?: DeletionLiveRead) {
-      if (currentRules === undefined || currentLive === undefined)
-        return yield* failure("current_policy_owner_unavailable");
-      const rules = yield* currentRules;
-      if (!rules.worktreeOnDelete || !same(rules, binding.rules))
-        return yield* failure("original_worktree_policy_changed");
-      if (!(yield* currentLive))
-        return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
-      yield* validateBinding(binding);
-    });
+    const rows = yield* sql<{
+      readonly binding_json: string;
+      readonly start_json: string;
+      readonly state: string;
+    }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
+    if (rows.length !== 1) return null;
+    return {
+      binding: yield* Schema.decodeUnknownEffect(jsonBinding)(rows[0]!.binding_json),
+      start: yield* Schema.decodeUnknownEffect(jsonStart)(rows[0]!.start_json),
+      state: rows[0]!.state,
+    };
+  });
+  const validateBinding = Effect.fn("DeletionAdmission.validateBinding")(function* (
+    binding: Binding,
+  ) {
+    const target = binding.target;
+    if (
+      !binding.rules.worktreeOnDelete ||
+      target.force ||
+      !path.isAbsolute(target.path) ||
+      !path.isAbsolute(target.projectRoot) ||
+      path.resolve(target.path) !== target.path ||
+      path.resolve(target.projectRoot) !== target.projectRoot ||
+      overlaps(target.path, target.projectRoot)
+    )
+      return yield* failure("original_policy_target_invalid");
+    const native = yield* sql<{
+      readonly worktree_path: string;
+    }>`SELECT worktree_path FROM jones_native_workspace_admissions`;
+    if (native.some((row) => overlaps(row.worktree_path, target.path)))
+      return yield* failure("native_workspace_original_owner_handoff_required");
+    // Lease expiry is not evidence that an old owner's uncertain effect ended.
+    const claims = yield* sql<{
+      readonly worktree_path: string | null;
+    }>`SELECT worktree_path FROM native_creation_intents`;
+    if (
+      claims.some((row) => row.worktree_path !== null && overlaps(row.worktree_path, target.path))
+    )
+      return yield* failure("native_creation_original_owner_handoff_required");
+    const leases = yield* sql<{
+      readonly resource_path: string;
+    }>`SELECT resource_path FROM worktree_ownership_leases`;
+    if (leases.some((row) => overlaps(row.resource_path, target.path)))
+      return yield* failure("worktree_original_lease_owner_unavailable");
+    const deletion = yield* sql<{
+      readonly payload_json: string;
+      readonly command_id: string | null;
+    }>`SELECT payload_json,command_id FROM orchestration_events WHERE event_id=${binding.deletionEventId} AND sequence=${binding.deletionSequence} AND stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.deleted'`;
+    if (
+      deletion.length !== 1 ||
+      deletion[0]!.command_id !== binding.commandId ||
+      deletion[0]!.payload_json !== binding.deletionPayload
+    )
+      return yield* failure("original_deletion_event_changed");
+    const receipt = Option.getOrNull(yield* receipts.getByCommandId(binding.commandId));
+    if (
+      receipt?.status !== "accepted" ||
+      receipt.threadId !== binding.threadId ||
+      receipt.commandType !== "thread.delete" ||
+      receipt.resultSequence < binding.deletionSequence
+    )
+      return yield* failure("original_deletion_receipt_unavailable");
+    const birth = yield* sql<{
+      readonly event_id: string;
+      readonly sequence: number;
+      readonly payload_json: string;
+    }>`SELECT event_id,sequence,payload_json FROM orchestration_events WHERE stream_id=${binding.threadId} AND application_event_version=2 AND aggregate_kind='thread' AND event_type='thread.created' ORDER BY sequence DESC LIMIT 1`;
+    if (
+      birth.length !== 1 ||
+      birth[0]!.event_id !== binding.birthEventId ||
+      birth[0]!.sequence !== binding.birthSequence ||
+      binding.birthSequence >= binding.deletionSequence
+    )
+      return yield* failure("original_application_birth_changed");
+    const identity = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
+      binding.deletionPayload,
+    );
+    const born = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(
+        Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
+      ),
+    )(birth[0]!.payload_json);
+    const projection = yield* sql<{
+      readonly payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId}`;
+    if (projection.length !== 1) return yield* failure("original_deleted_projection_unavailable");
+    const current = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ThreadIdentity))(
+      projection[0]!.payload_json,
+    );
+    if (
+      identity.id !== binding.threadId ||
+      identity.projectId !== target.projectId ||
+      identity.deletedAt === null ||
+      identity.worktreePath !== target.path ||
+      identity.branch !== target.branch ||
+      born.id !== identity.id ||
+      born.projectId !== identity.projectId ||
+      born.createdAt !== identity.createdAt ||
+      !same(current, identity)
+    )
+      return yield* failure("original_deleted_thread_target_changed");
+    const project = yield* sql<{
+      readonly workspace_root: string;
+    }>`SELECT workspace_root FROM projection_projects WHERE project_id=${target.projectId}`;
+    if (project.length !== 1 || project[0]!.workspace_root !== target.projectRoot)
+      return yield* failure("original_project_root_changed");
+    const active = yield* sql<{
+      readonly path: string | null;
+    }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    if (active.some((row) => row.path !== null && overlaps(row.path, target.path)))
+      return yield* failure("shared_worktree_retained");
+    const sessions = yield* sql<{
+      readonly cwd: string;
+    }>`SELECT json_extract(payload_json,'$.cwd') AS cwd FROM orchestration_v2_projection_provider_sessions WHERE status != 'stopped'`;
+    if (sessions.some((row) => overlaps(row.cwd, target.path)))
+      return yield* failure("provider_cleanup_not_observed");
+    const pending =
+      yield* sql`SELECT 1 FROM orchestration_v2_effect_outbox WHERE thread_id=${binding.threadId} AND status NOT IN ('succeeded','cancelled') LIMIT 1`;
+    if (pending.length > 0) return yield* failure("original_cleanup_prerequisites_unsettled");
+  });
+  const checkCurrent = Effect.fn("DeletionAdmission.checkCurrent")(function* (
+    binding: Binding,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) {
+    if (currentRules === undefined || currentLive === undefined)
+      return yield* failure("current_policy_owner_unavailable");
+    const rules = yield* currentRules;
+    if (!rules.worktreeOnDelete || !same(rules, binding.rules))
+      return yield* failure("original_worktree_policy_changed");
+    if (!(yield* currentLive))
+      return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
+    yield* validateBinding(binding);
+  });
   const start = (input: DeletionAdmissionInput) =>
     sql
       .withTransaction(
@@ -327,7 +333,8 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         (cause) => new DeletionAdmissionError({ reason: "original_start_read_failed", cause }),
       ),
     );
-  const readTarget = Effect.fn("DeletionAdmission.readTarget")(function* (threadId: ThreadId, target: DeletionWorktreeRemovalTargetV1) {
+  const readTarget = Effect.fn("DeletionAdmission.readTarget")(
+    function* (threadId: ThreadId, target: DeletionWorktreeRemovalTargetV1) {
       const rows = yield* sql<{
         readonly effect_id: string;
       }>`SELECT effect_id FROM jones_deletion_worktree_admissions WHERE worktree_path=${target.path}`;
@@ -340,11 +347,13 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       )
         return yield* failure("another_original_worktree_operation_retained");
       return { start: original.start, ordinal: 0 };
-    }, Effect.mapError((cause) =>
-        Schema.is(DeletionAdmissionError)(cause)
-          ? cause
-          : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
-      ));
+    },
+    Effect.mapError((cause) =>
+      Schema.is(DeletionAdmissionError)(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
+    ),
+  );
   const revalidate = (
     captured: DeletionWorktreeRemovalStartV1,
     ordinal: number,

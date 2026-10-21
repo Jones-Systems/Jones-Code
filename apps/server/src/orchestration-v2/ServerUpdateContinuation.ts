@@ -13,59 +13,61 @@ import {
   serverUpdateContinuationRun,
 } from "./ServerUpdateContinuationPolicy.ts";
 
-const mark = Effect.fn("ServerUpdateContinuation.mark")(function*(optedInOnly: boolean) {
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sink = yield* EventSink.EventSinkV2;
-    const sql = yield* SqlClient.SqlClient;
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const preferences = optedInOnly ? yield* settings.getSettings : null;
-    // A passive outbox record survives process loss without issuing a live prompt.
-    // The transaction also rolls back every new marker if preparation fails.
-    return yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const marked: ThreadId[] = [];
-        for (const threadId of yield* projections.getRecoveryThreadIds("runtime")) {
-          const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
-          const run = serverUpdateContinuationRun(projection, preferences, yield* DateTime.now);
-          if (run === undefined) continue;
-          const existing = yield* findPendingServerUpdateContinuation(threadId, run.id);
-          if (existing.length > 0) {
-            if (!optedInOnly) {
-              yield* sql`UPDATE orchestration_v2_effect_outbox
+const mark = Effect.fn("ServerUpdateContinuation.mark")(function* (optedInOnly: boolean) {
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const sink = yield* EventSink.EventSinkV2;
+  const sql = yield* SqlClient.SqlClient;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const preferences = optedInOnly ? yield* settings.getSettings : null;
+  // A passive outbox record survives process loss without issuing a live prompt.
+  // The transaction also rolls back every new marker if preparation fails.
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const marked: ThreadId[] = [];
+      for (const threadId of yield* projections.getRecoveryThreadIds("runtime")) {
+        const projection = yield* projections.getRuntimeRecoveryProjection(threadId);
+        const run = serverUpdateContinuationRun(projection, preferences, yield* DateTime.now);
+        if (run === undefined) continue;
+        const existing = yield* findPendingServerUpdateContinuation(threadId, run.id);
+        if (existing.length > 0) {
+          if (!optedInOnly) {
+            yield* sql`UPDATE orchestration_v2_effect_outbox
                 SET payload_json = json_set(payload_json, '$.continueWithoutPreference', json('true'))
                 WHERE effect_id = ${existing[0]!.effect_id} AND status = 'pending'`;
-            }
-            marked.push(threadId);
-            continue;
           }
-          const preparationId = yield* randomUuidV4;
-          const effect = serverUpdateContinuationEffect({
-            preparationId,
-            threadId,
-            sourceRunId: run.id,
-            optedInOnly,
-          });
-          yield* sink.writeWithEffects({
-            commandId: effect.commandId,
-            events: [],
-            effects: [effect],
-          });
           marked.push(threadId);
+          continue;
         }
-        return marked;
-      }),
-    );
-  });
+        const preparationId = yield* randomUuidV4;
+        const effect = serverUpdateContinuationEffect({
+          preparationId,
+          threadId,
+          sourceRunId: run.id,
+          optedInOnly,
+        });
+        yield* sink.writeWithEffects({
+          commandId: effect.commandId,
+          events: [],
+          effects: [effect],
+        });
+        marked.push(threadId);
+      }
+      return marked;
+    }),
+  );
+});
 
 export const markRunningProviderSessionsForContinuation = mark(false);
 export const markOptedInProviderSessionsForContinuation = mark(true);
 
-export const clearProviderSessionContinuationMarkers = Effect.fn("ServerUpdateContinuation.clearProviderSessionContinuationMarkers")(function*(threadIds: ReadonlyArray<ThreadId>) {
-    if (threadIds.length === 0) return;
-    const sql = yield* SqlClient.SqlClient;
-    const outbox = yield* EffectOutbox.EffectOutboxV2;
-    const now = DateTime.formatIso(yield* DateTime.now);
-    const cancelled = yield* sql<{ effect_id: string }>`UPDATE orchestration_v2_effect_outbox
+export const clearProviderSessionContinuationMarkers = Effect.fn(
+  "ServerUpdateContinuation.clearProviderSessionContinuationMarkers",
+)(function* (threadIds: ReadonlyArray<ThreadId>) {
+  if (threadIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const outbox = yield* EffectOutbox.EffectOutboxV2;
+  const now = DateTime.formatIso(yield* DateTime.now);
+  const cancelled = yield* sql<{ effect_id: string }>`UPDATE orchestration_v2_effect_outbox
     SET status = 'cancelled', updated_at = ${now}, completed_at = ${now},
       last_error = 'Server update preparation was cancelled.'
     WHERE thread_id IN ${sql.in(threadIds)} AND status = 'pending'
@@ -73,5 +75,5 @@ export const clearProviderSessionContinuationMarkers = Effect.fn("ServerUpdateCo
       AND effect_type = 'provider-runtime.continue'
       AND json_extract(payload_json, '$.preparedForRestart') = 1
     RETURNING effect_id`;
-    yield* outbox.signalCancellations(cancelled.map((row) => row.effect_id));
-  });
+  yield* outbox.signalCancellations(cancelled.map((row) => row.effect_id));
+});

@@ -4,7 +4,8 @@ import type { PreparedConnection } from "../../connection/model.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
 
-export const fetchEnvironmentHostStatus = Effect.fn("HostStatusHttp.fetchEnvironmentHostStatus")(function* (prepared: PreparedConnection) {
+export const fetchEnvironmentHostStatus = Effect.fn("HostStatusHttp.fetchEnvironmentHostStatus")(
+  function* (prepared: PreparedConnection) {
     return yield* executeAuthenticatedEnvironmentHttpRequest({
       prepared,
       group: "hostStatus",
@@ -15,4 +16,5 @@ export const fetchEnvironmentHostStatus = Effect.fn("HostStatusHttp.fetchEnviron
       remoteAuthorization: yield* Effect.serviceOption(RemoteEnvironmentAuthorization),
       request: ({ client, headers }) => client.snapshot({ headers }),
     });
-  });
+  },
+);

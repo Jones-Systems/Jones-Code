@@ -22,22 +22,29 @@ const decodeItems = Schema.decodeEffect(SettlementProjectRemaining);
 const encodeItems = Schema.encodeSync(Schema.fromJsonString(SettlementProjectRemaining));
 
 // EventSink calls this inside its acceptance transaction, before publishing committed events.
-export const recordSelfSettlementProjectRemaining = Effect.fn("SettlementOriginsProjectRemaining.recordSelfSettlementProjectRemaining")(function*(sql: SqlClient.SqlClient, tablePresent: JonesTablePresence, input: {
+export const recordSelfSettlementProjectRemaining = Effect.fn(
+  "SettlementOriginsProjectRemaining.recordSelfSettlementProjectRemaining",
+)(function* (
+  sql: SqlClient.SqlClient,
+  tablePresent: JonesTablePresence,
+  input: {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly commandType: string;
     readonly acceptedAt: DateTime.Utc;
-  }, context: SelfSettlementProjectRemaining) {
-    if (
-      input.commandId !== context.commandId ||
-      input.threadId !== context.threadId ||
-      input.commandType !== "thread.metadata.update"
-    )
-      return yield* new SelfSettlementProjectItemsError({ reason: "acceptance_mismatch" });
-    const items = yield* decodeItems(context.items);
-    if (items.length === 0) return;
-    if (!(yield* tablePresent("jones_self_settlement_project_items")))
-      return yield* new SelfSettlementProjectItemsError({ reason: "storage_unavailable" });
-    yield* sql`INSERT INTO jones_self_settlement_project_items (command_id, thread_id, items_json, recorded_at)
+  },
+  context: SelfSettlementProjectRemaining,
+) {
+  if (
+    input.commandId !== context.commandId ||
+    input.threadId !== context.threadId ||
+    input.commandType !== "thread.metadata.update"
+  )
+    return yield* new SelfSettlementProjectItemsError({ reason: "acceptance_mismatch" });
+  const items = yield* decodeItems(context.items);
+  if (items.length === 0) return;
+  if (!(yield* tablePresent("jones_self_settlement_project_items")))
+    return yield* new SelfSettlementProjectItemsError({ reason: "storage_unavailable" });
+  yield* sql`INSERT INTO jones_self_settlement_project_items (command_id, thread_id, items_json, recorded_at)
     VALUES (${context.commandId}, ${context.threadId}, ${encodeItems(items)}, ${DateTime.formatIso(input.acceptedAt)})`;
-  });
+});

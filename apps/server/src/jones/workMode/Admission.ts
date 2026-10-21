@@ -15,7 +15,9 @@ import {
 } from "./Policy.ts";
 
 // The orchestrator owns the thread lock and supplies its unlocked receipt dispatcher.
-export const admitWorkMode = Effect.fn("WorkModeAdmission.admitWorkMode")(function*<E>(candidate: WorkModeCandidate, dependencies: {
+export const admitWorkMode = Effect.fn("WorkModeAdmission.admitWorkMode")(function* <E>(
+  candidate: WorkModeCandidate,
+  dependencies: {
     readonly hasReceipt: Effect.Effect<boolean, E>;
     readonly getProviderContext: Effect.Effect<ProjectionThreadProviderContext, E>;
     readonly getProjection: Effect.Effect<OrchestrationV2ThreadProjection, E>;
@@ -30,47 +32,48 @@ export const admitWorkMode = Effect.fn("WorkModeAdmission.admitWorkMode")(functi
     ) => Effect.Effect<boolean, E>;
     readonly finishPlannedContext?: Effect.Effect<void, E>;
     readonly dispatch: (command: ReturnType<typeof workModeCommand>) => Effect.Effect<unknown, E>;
-  }): Effect.fn.Return<
+  },
+): Effect.fn.Return<
   WorkModeAdmissionResult,
   E | import("@t3tools/contracts").ServerSettingsError,
   ServerSettings.ServerSettingsService
 > {
-    if (yield* dependencies.hasReceipt) {
-      yield* dependencies.dispatch(workModeCommand(candidate));
-      return "acknowledged" as const;
-    }
-    const settings = yield* ServerSettings.ServerSettingsService;
-    return yield* settings.withSettingsSnapshot((preferences) =>
-      Effect.gen(function* () {
-        if (!preferences.workModeEnabled) return "skipped" as const;
-        // Idle eviction leaves old shells due; reject those before reading their histories.
-        const context = yield* dependencies.getProviderContext;
-        const currentOwner = context.providerThreads.find(
-          (thread) => thread.id === context.thread.activeProviderThreadId,
-        );
-        if (
-          currentOwner?.providerSessionId == null ||
-          currentOwner.status !== "idle" ||
-          currentOwner.nativeThreadRef == null
-        )
-          return "skipped" as const;
-        const live = yield* dependencies.hasLiveSession(currentOwner);
-        if (!live && !(yield* dependencies.hasPlannedContext ?? Effect.succeed(false)))
-          return "skipped" as const;
-        const projection = yield* dependencies.getProjection;
-        const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-        const fresh = workModeCandidate(threadShellFromProjection(projection), nowMs);
-        if (fresh === null || fresh.generation !== candidate.generation) return "skipped" as const;
-        const planned =
-          !live &&
-          dependencies.admitPlannedContext !== undefined &&
-          (yield* dependencies.admitPlannedContext(projection, fresh, nowMs));
-        const owner = workModeContext(projection, nowMs, { allowStoppedSession: planned });
-        if (owner === null || (!planned && !(yield* dependencies.hasLiveSession(owner))))
-          return "skipped" as const;
-        yield* dependencies.dispatch(workModeCommand(candidate, projection.thread.modelSelection));
-        yield* dependencies.finishPlannedContext ?? Effect.void;
-        return "dispatched" as const;
-      }),
-    );
-  });
+  if (yield* dependencies.hasReceipt) {
+    yield* dependencies.dispatch(workModeCommand(candidate));
+    return "acknowledged" as const;
+  }
+  const settings = yield* ServerSettings.ServerSettingsService;
+  return yield* settings.withSettingsSnapshot((preferences) =>
+    Effect.gen(function* () {
+      if (!preferences.workModeEnabled) return "skipped" as const;
+      // Idle eviction leaves old shells due; reject those before reading their histories.
+      const context = yield* dependencies.getProviderContext;
+      const currentOwner = context.providerThreads.find(
+        (thread) => thread.id === context.thread.activeProviderThreadId,
+      );
+      if (
+        currentOwner?.providerSessionId == null ||
+        currentOwner.status !== "idle" ||
+        currentOwner.nativeThreadRef == null
+      )
+        return "skipped" as const;
+      const live = yield* dependencies.hasLiveSession(currentOwner);
+      if (!live && !(yield* dependencies.hasPlannedContext ?? Effect.succeed(false)))
+        return "skipped" as const;
+      const projection = yield* dependencies.getProjection;
+      const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
+      const fresh = workModeCandidate(threadShellFromProjection(projection), nowMs);
+      if (fresh === null || fresh.generation !== candidate.generation) return "skipped" as const;
+      const planned =
+        !live &&
+        dependencies.admitPlannedContext !== undefined &&
+        (yield* dependencies.admitPlannedContext(projection, fresh, nowMs));
+      const owner = workModeContext(projection, nowMs, { allowStoppedSession: planned });
+      if (owner === null || (!planned && !(yield* dependencies.hasLiveSession(owner))))
+        return "skipped" as const;
+      yield* dependencies.dispatch(workModeCommand(candidate, projection.thread.modelSelection));
+      yield* dependencies.finishPlannedContext ?? Effect.void;
+      return "dispatched" as const;
+    }),
+  );
+});

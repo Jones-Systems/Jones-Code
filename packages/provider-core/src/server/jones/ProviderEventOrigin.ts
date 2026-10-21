@@ -78,56 +78,59 @@ export function makeProviderEventProducer(
   };
 }
 
-export const revalidateProviderEventOrigin = Effect.fn("ProviderEventOrigin.revalidateProviderEventOrigin")(function* (event: ProviderAdapterV2Event,
-runtime: {
+export const revalidateProviderEventOrigin = Effect.fn(
+  "ProviderEventOrigin.revalidateProviderEventOrigin",
+)(function* (
+  event: ProviderAdapterV2Event,
+  runtime: {
     readonly driver: ProviderDriverKind;
     readonly instanceId: ProviderInstanceId;
     readonly providerSessionId: ProviderSessionId;
     readonly eventOriginMode?: "captured";
-  }): Effect.fn.Return<void, ProviderEventOriginStaleError> {
-    const origin = readProviderEventOrigin(event);
-    if (origin === undefined) {
-      if (runtime.eventOriginMode === "captured")
-        return yield* new ProviderEventOriginStaleError({});
-      return;
-    }
-    const { producer, turn } = origin;
-    if (
-      producer.driver !== event.driver ||
-      producer.driver !== runtime.driver ||
-      producer.instanceId !== runtime.instanceId ||
-      producer.providerSessionId !== runtime.providerSessionId ||
-      (event.type === "runtime_identity.observed" &&
-        (event.binding.driver !== producer.driver ||
-          event.binding.providerInstanceId !== producer.instanceId ||
-          event.binding.providerSessionId !== producer.providerSessionId ||
-          (producer.runtimeGeneration !== undefined &&
-            event.binding.runtimeGeneration !== producer.runtimeGeneration))) ||
-      (event.type !== "runtime_identity.observed" &&
-        event.runtimeEvidence !== undefined &&
-        (event.runtimeEvidence.driver !== producer.driver ||
-          event.runtimeEvidence.providerInstanceId !== producer.instanceId ||
-          event.runtimeEvidence.providerSessionId !== producer.providerSessionId ||
-          (producer.runtimeGeneration !== undefined &&
-            event.runtimeEvidence.runtimeGeneration !== producer.runtimeGeneration))) ||
-      (turn !== undefined &&
-        (turn.binding.driver !== producer.driver ||
-          turn.binding.providerInstanceId !== producer.instanceId ||
-          turn.binding.providerSessionId !== producer.providerSessionId ||
-          (producer.runtimeGeneration !== undefined &&
-            turn.binding.runtimeGeneration !== producer.runtimeGeneration) ||
-          (event.type === "turn.terminal" &&
-            (event.providerThreadId !== turn.binding.providerThreadId ||
-              event.providerTurnId !== turn.providerTurnId)) ||
-          (event.type === "provider_turn.updated" &&
-            (event.providerTurn.providerThreadId !== turn.binding.providerThreadId ||
-              event.providerTurn.id !== turn.providerTurnId ||
-              event.providerTurn.runAttemptId !== turn.attemptId))))
-    ) {
-      return yield* new ProviderEventOriginStaleError({});
-    }
-    yield* producer.revalidateCurrent;
-  });
+  },
+): Effect.fn.Return<void, ProviderEventOriginStaleError> {
+  const origin = readProviderEventOrigin(event);
+  if (origin === undefined) {
+    if (runtime.eventOriginMode === "captured") return yield* new ProviderEventOriginStaleError({});
+    return;
+  }
+  const { producer, turn } = origin;
+  if (
+    producer.driver !== event.driver ||
+    producer.driver !== runtime.driver ||
+    producer.instanceId !== runtime.instanceId ||
+    producer.providerSessionId !== runtime.providerSessionId ||
+    (event.type === "runtime_identity.observed" &&
+      (event.binding.driver !== producer.driver ||
+        event.binding.providerInstanceId !== producer.instanceId ||
+        event.binding.providerSessionId !== producer.providerSessionId ||
+        (producer.runtimeGeneration !== undefined &&
+          event.binding.runtimeGeneration !== producer.runtimeGeneration))) ||
+    (event.type !== "runtime_identity.observed" &&
+      event.runtimeEvidence !== undefined &&
+      (event.runtimeEvidence.driver !== producer.driver ||
+        event.runtimeEvidence.providerInstanceId !== producer.instanceId ||
+        event.runtimeEvidence.providerSessionId !== producer.providerSessionId ||
+        (producer.runtimeGeneration !== undefined &&
+          event.runtimeEvidence.runtimeGeneration !== producer.runtimeGeneration))) ||
+    (turn !== undefined &&
+      (turn.binding.driver !== producer.driver ||
+        turn.binding.providerInstanceId !== producer.instanceId ||
+        turn.binding.providerSessionId !== producer.providerSessionId ||
+        (producer.runtimeGeneration !== undefined &&
+          turn.binding.runtimeGeneration !== producer.runtimeGeneration) ||
+        (event.type === "turn.terminal" &&
+          (event.providerThreadId !== turn.binding.providerThreadId ||
+            event.providerTurnId !== turn.providerTurnId)) ||
+        (event.type === "provider_turn.updated" &&
+          (event.providerTurn.providerThreadId !== turn.binding.providerThreadId ||
+            event.providerTurn.id !== turn.providerTurnId ||
+            event.providerTurn.runAttemptId !== turn.attemptId))))
+  ) {
+    return yield* new ProviderEventOriginStaleError({});
+  }
+  yield* producer.revalidateCurrent;
+});
 
 export class ProviderEventOriginConflictError extends Error {
   override readonly name = "ProviderEventOriginConflictError";

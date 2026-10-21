@@ -144,7 +144,8 @@ interface Row {
   readonly created_at: string;
   readonly updated_at: string;
 }
-const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(function*(row: Row) {
+const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(
+  function* (row: Row) {
     const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionEnvelope))(
       row.envelope_json,
     );
@@ -167,209 +168,216 @@ const decodeRow = Effect.fn("RemoteAdmission.decodeRow")(function*(row: Row) {
       return yield* Effect.fail(new RemoteAdmissionBindingMismatch({}));
     }
     return record;
-  },Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })));
+  },
+  Effect.mapError((cause) => new RemoteAdmissionPersistenceError({ cause })),
+);
 
-const make = Effect.fn("RemoteAdmission.make")(function*<E>(evaluate: RemoteAdmissionEvaluator<E>, timeoutMs: number) {
-    const sql = yield* SqlClient.SqlClient;
-    const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
-      effect.pipe(
-        Effect.catchTags({
-          SqlError: (cause) => Effect.fail(new RemoteAdmissionPersistenceError({ cause })),
-        }),
-      );
-    const get = (id: string) =>
-      database(
-        Effect.gen(function* () {
-          const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions WHERE id = ${id}`;
-          return rows[0] ? yield* decodeRow(rows[0]) : null;
-        }),
-      );
-    const bound = Effect.fn("RemoteAdmission.bound")(function*(input: BoundRequest) {
-        const record = yield* get(input.id);
-        if (!record) return yield* new RemoteAdmissionNotFound({});
-        if (record.bindingDigest !== input.bindingDigest)
-          return yield* new RemoteAdmissionBindingMismatch({});
-        return record;
-      });
-    const required = Effect.fn("RemoteAdmission.required")(function*(id: string) {
-        const record = yield* get(id);
-        if (!record) return yield* new RemoteAdmissionNotFound({});
-        return record;
-      });
+const make = Effect.fn("RemoteAdmission.make")(function* <E>(
+  evaluate: RemoteAdmissionEvaluator<E>,
+  timeoutMs: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
+    effect.pipe(
+      Effect.catchTags({
+        SqlError: (cause) => Effect.fail(new RemoteAdmissionPersistenceError({ cause })),
+      }),
+    );
+  const get = (id: string) =>
+    database(
+      Effect.gen(function* () {
+        const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions WHERE id = ${id}`;
+        return rows[0] ? yield* decodeRow(rows[0]) : null;
+      }),
+    );
+  const bound = Effect.fn("RemoteAdmission.bound")(function* (input: BoundRequest) {
+    const record = yield* get(input.id);
+    if (!record) return yield* new RemoteAdmissionNotFound({});
+    if (record.bindingDigest !== input.bindingDigest)
+      return yield* new RemoteAdmissionBindingMismatch({});
+    return record;
+  });
+  const required = Effect.fn("RemoteAdmission.required")(function* (id: string) {
+    const record = yield* get(id);
+    if (!record) return yield* new RemoteAdmissionNotFound({});
+    return record;
+  });
 
-    // Build once after the previous receiver service has stopped. A lost evaluation
-    // never becomes a pass, and a dispatch claim remains unreplayed for reconciliation.
-    yield* database(sql`UPDATE jones_remote_admissions SET status = 'held',
+  // Build once after the previous receiver service has stopped. A lost evaluation
+  // never becomes a pass, and a dispatch claim remains unreplayed for reconciliation.
+  yield* database(sql`UPDATE jones_remote_admissions SET status = 'held',
     reason = 'Evaluation was interrupted; owner review is required.', category = 'evaluation_interrupted',
     updated_at = ${yield* nowIso} WHERE status = 'evaluating'`);
 
-    const request: RemoteAdmission["Service"]["request"] = Effect.fn("RemoteAdmission.request")(function*(input) {
-        const decoded = yield* Schema.decodeEffect(RemoteAdmissionRequest)(input).pipe(
-          Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
-        );
-        const snapshot = yield* Effect.try({
-          try: () => {
-            const envelopeJson = canonicalJson(decoded.envelope);
-            const { receiverPolicy: _policy, ...incoming } = decoded.envelope;
-            return {
-              envelopeJson,
-              requestDigest: digest({ version: 1, incoming }),
-              bindingDigest: digest({ version: 1, envelope: decoded.envelope }),
-            };
-          },
-          catch: (cause) => new RemoteAdmissionInvalidRequest({ cause }),
-        });
-        const inserted = yield* database(
-          sql.withTransaction(
-            Effect.gen(function* () {
-              const existing = yield* sql<Row>`SELECT * FROM jones_remote_admissions
+  const request: RemoteAdmission["Service"]["request"] = Effect.fn("RemoteAdmission.request")(
+    function* (input) {
+      const decoded = yield* Schema.decodeEffect(RemoteAdmissionRequest)(input).pipe(
+        Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })),
+      );
+      const snapshot = yield* Effect.try({
+        try: () => {
+          const envelopeJson = canonicalJson(decoded.envelope);
+          const { receiverPolicy: _policy, ...incoming } = decoded.envelope;
+          return {
+            envelopeJson,
+            requestDigest: digest({ version: 1, incoming }),
+            bindingDigest: digest({ version: 1, envelope: decoded.envelope }),
+          };
+        },
+        catch: (cause) => new RemoteAdmissionInvalidRequest({ cause }),
+      });
+      const inserted = yield* database(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* sql<Row>`SELECT * FROM jones_remote_admissions
         WHERE client_id = ${decoded.envelope.identity.clientId} AND idempotency_key = ${decoded.idempotencyKey}`;
-              if (existing[0]) {
-                const record = yield* decodeRow(existing[0]);
-                if (record.requestDigest !== snapshot.requestDigest)
-                  return yield* new RemoteAdmissionKeyConflict({});
-                return { record, fresh: false };
-              }
-              const id = NodeCrypto.randomUUID();
-              const now = yield* nowIso;
-              const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
-              yield* sql`INSERT INTO jones_remote_admissions
+            if (existing[0]) {
+              const record = yield* decodeRow(existing[0]);
+              if (record.requestDigest !== snapshot.requestDigest)
+                return yield* new RemoteAdmissionKeyConflict({});
+              return { record, fresh: false };
+            }
+            const id = NodeCrypto.randomUUID();
+            const now = yield* nowIso;
+            const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
+            yield* sql`INSERT INTO jones_remote_admissions
         (id,client_id,idempotency_key,request_digest,binding_digest,envelope_json,status,created_at,updated_at)
         VALUES (${id},${decoded.envelope.identity.clientId},${decoded.idempotencyKey},${snapshot.requestDigest},
           ${snapshot.bindingDigest},${snapshot.envelopeJson},${status},${now},${now})`;
-              return { record: yield* required(id), fresh: true };
-            }),
-          ),
-        );
-        if (!inserted.fresh || inserted.record.status !== "evaluating") return inserted.record;
-        const evaluation = yield* Effect.suspend(() =>
-          inserted.record.envelope.receiverPolicy.modelSelection === null
-            ? Effect.succeed(null)
-            : evaluate(inserted.record.envelope),
-        ).pipe(
-          Effect.timeout(timeoutMs),
-          Effect.flatMap(Schema.decodeUnknownEffect(RemoteAdmissionEvaluation)),
-          Effect.map((result) => ({
-            status: result.verdict === "pass" ? "passed" : "held",
-            reason: result.reason,
-            category: result.category,
-          })),
-          Effect.catchCause(() =>
-            Effect.succeed({
-              status: "held",
-              reason: "Evaluation was unavailable; owner review is required.",
-              category: "evaluation_unavailable",
-            }),
-          ),
-        );
-        yield* database(sql`UPDATE jones_remote_admissions SET status = ${evaluation.status},
+            return { record: yield* required(id), fresh: true };
+          }),
+        ),
+      );
+      if (!inserted.fresh || inserted.record.status !== "evaluating") return inserted.record;
+      const evaluation = yield* Effect.suspend(() =>
+        inserted.record.envelope.receiverPolicy.modelSelection === null
+          ? Effect.succeed(null)
+          : evaluate(inserted.record.envelope),
+      ).pipe(
+        Effect.timeout(timeoutMs),
+        Effect.flatMap(Schema.decodeUnknownEffect(RemoteAdmissionEvaluation)),
+        Effect.map((result) => ({
+          status: result.verdict === "pass" ? "passed" : "held",
+          reason: result.reason,
+          category: result.category,
+        })),
+        Effect.catchCause(() =>
+          Effect.succeed({
+            status: "held",
+            reason: "Evaluation was unavailable; owner review is required.",
+            category: "evaluation_unavailable",
+          }),
+        ),
+      );
+      yield* database(sql`UPDATE jones_remote_admissions SET status = ${evaluation.status},
       reason = ${evaluation.reason}, category = ${evaluation.category}, updated_at = ${yield* nowIso}
       WHERE id = ${inserted.record.id} AND status = 'evaluating'`);
-        return yield* required(inserted.record.id);
-      });
+      return yield* required(inserted.record.id);
+    },
+  );
 
-    const resolve: RemoteAdmission["Service"]["resolve"] = (input) =>
-      database(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            if (input.principal.kind !== "human-owner")
-              return yield* new RemoteAdmissionForbidden({});
-            yield* validateIdentity(input.principal.subject);
-            const record = yield* bound(input);
-            const status = input.decision === "approve" ? "approved" : "denied";
-            if (input.decision !== "approve" && input.decision !== "deny")
-              return yield* new RemoteAdmissionForbidden({});
-            if (record.status === status) return record;
-            if (record.status !== "held")
-              return yield* new RemoteAdmissionStateConflict({ status: record.status });
-            const now = yield* nowIso;
-            yield* sql`UPDATE jones_remote_admissions SET status = ${status}, resolved_by = ${input.principal.subject},
+  const resolve: RemoteAdmission["Service"]["resolve"] = (input) =>
+    database(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          if (input.principal.kind !== "human-owner")
+            return yield* new RemoteAdmissionForbidden({});
+          yield* validateIdentity(input.principal.subject);
+          const record = yield* bound(input);
+          const status = input.decision === "approve" ? "approved" : "denied";
+          if (input.decision !== "approve" && input.decision !== "deny")
+            return yield* new RemoteAdmissionForbidden({});
+          if (record.status === status) return record;
+          if (record.status !== "held")
+            return yield* new RemoteAdmissionStateConflict({ status: record.status });
+          const now = yield* nowIso;
+          yield* sql`UPDATE jones_remote_admissions SET status = ${status}, resolved_by = ${input.principal.subject},
       resolved_at = ${now}, updated_at = ${now} WHERE id = ${input.id} AND status = 'held'`;
-            return yield* required(input.id);
-          }),
-        ),
-      );
+          return yield* required(input.id);
+        }),
+      ),
+    );
 
-    // clientId is supplied from authenticated connection identity, never the payload.
-    const withdraw: RemoteAdmission["Service"]["withdraw"] = (input) =>
-      database(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const record = yield* bound(input);
-            if (record.envelope.identity.clientId !== input.clientId)
-              return yield* new RemoteAdmissionForbidden({});
-            if (record.status === "cancelled") return record;
-            if (!["evaluating", "held", "passed", "approved"].includes(record.status)) {
-              return yield* new RemoteAdmissionStateConflict({ status: record.status });
-            }
-            yield* sql`UPDATE jones_remote_admissions SET status = 'cancelled', updated_at = ${yield* nowIso} WHERE id = ${input.id}`;
-            return yield* required(input.id);
-          }),
-        ),
-      );
+  // clientId is supplied from authenticated connection identity, never the payload.
+  const withdraw: RemoteAdmission["Service"]["withdraw"] = (input) =>
+    database(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const record = yield* bound(input);
+          if (record.envelope.identity.clientId !== input.clientId)
+            return yield* new RemoteAdmissionForbidden({});
+          if (record.status === "cancelled") return record;
+          if (!["evaluating", "held", "passed", "approved"].includes(record.status)) {
+            return yield* new RemoteAdmissionStateConflict({ status: record.status });
+          }
+          yield* sql`UPDATE jones_remote_admissions SET status = 'cancelled', updated_at = ${yield* nowIso} WHERE id = ${input.id}`;
+          return yield* required(input.id);
+        }),
+      ),
+    );
 
-    const claimDispatch: RemoteAdmission["Service"]["claimDispatch"] = (input) =>
-      database(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            yield* validateIdentity(input.commandId);
-            const currentPolicy = yield* Schema.decodeEffect(RemoteAdmissionReceiverPolicy)(
-              input.currentPolicy,
-            ).pipe(Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })));
-            const record = yield* bound(input);
-            if (canonicalJson(currentPolicy) !== canonicalJson(record.envelope.receiverPolicy))
-              return yield* new RemoteAdmissionPolicyChanged({});
-            if (record.status === "dispatching" || record.status === "dispatched") {
-              if (record.commandId !== input.commandId)
-                return yield* new RemoteAdmissionStateConflict({ status: record.status });
-              return { record, claimed: false };
-            }
-            if (record.status !== "passed" && record.status !== "approved")
+  const claimDispatch: RemoteAdmission["Service"]["claimDispatch"] = (input) =>
+    database(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          yield* validateIdentity(input.commandId);
+          const currentPolicy = yield* Schema.decodeEffect(RemoteAdmissionReceiverPolicy)(
+            input.currentPolicy,
+          ).pipe(Effect.mapError((cause) => new RemoteAdmissionInvalidRequest({ cause })));
+          const record = yield* bound(input);
+          if (canonicalJson(currentPolicy) !== canonicalJson(record.envelope.receiverPolicy))
+            return yield* new RemoteAdmissionPolicyChanged({});
+          if (record.status === "dispatching" || record.status === "dispatched") {
+            if (record.commandId !== input.commandId)
               return yield* new RemoteAdmissionStateConflict({ status: record.status });
-            yield* sql`UPDATE jones_remote_admissions SET status = 'dispatching', command_id = ${input.commandId},
+            return { record, claimed: false };
+          }
+          if (record.status !== "passed" && record.status !== "approved")
+            return yield* new RemoteAdmissionStateConflict({ status: record.status });
+          yield* sql`UPDATE jones_remote_admissions SET status = 'dispatching', command_id = ${input.commandId},
       updated_at = ${yield* nowIso} WHERE id = ${input.id} AND status IN ('passed','approved')`;
-            return { record: yield* required(input.id), claimed: true };
-          }),
-        ),
-      );
+          return { record: yield* required(input.id), claimed: true };
+        }),
+      ),
+    );
 
-    // Call only after observing normal dispatch's durable receipt for this exact command.
-    const markDispatched: RemoteAdmission["Service"]["markDispatched"] = (input) =>
-      database(
-        sql.withTransaction(
-          Effect.gen(function* () {
-            const record = yield* bound(input);
-            if (
-              record.commandId !== input.commandId ||
-              (record.status !== "dispatching" && record.status !== "dispatched")
-            ) {
-              return yield* new RemoteAdmissionStateConflict({ status: record.status });
-            }
-            if (record.status === "dispatched") return record;
-            yield* sql`UPDATE jones_remote_admissions SET status = 'dispatched', updated_at = ${yield* nowIso}
+  // Call only after observing normal dispatch's durable receipt for this exact command.
+  const markDispatched: RemoteAdmission["Service"]["markDispatched"] = (input) =>
+    database(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const record = yield* bound(input);
+          if (
+            record.commandId !== input.commandId ||
+            (record.status !== "dispatching" && record.status !== "dispatched")
+          ) {
+            return yield* new RemoteAdmissionStateConflict({ status: record.status });
+          }
+          if (record.status === "dispatched") return record;
+          yield* sql`UPDATE jones_remote_admissions SET status = 'dispatched', updated_at = ${yield* nowIso}
       WHERE id = ${input.id} AND status = 'dispatching'`;
-            return yield* required(input.id);
-          }),
-        ),
-      );
+          return yield* required(input.id);
+        }),
+      ),
+    );
 
-    return RemoteAdmission.of({
-      request,
-      get,
-      resolve,
-      withdraw,
-      claimDispatch,
-      markDispatched,
-      listPending: () =>
-        database(
-          Effect.gen(function* () {
-            const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions
+  return RemoteAdmission.of({
+    request,
+    get,
+    resolve,
+    withdraw,
+    claimDispatch,
+    markDispatched,
+    listPending: () =>
+      database(
+        Effect.gen(function* () {
+          const rows = yield* sql<Row>`SELECT * FROM jones_remote_admissions
         WHERE status IN ('held','evaluating','approved','dispatching') ORDER BY created_at, id LIMIT 200`;
-            return yield* Effect.forEach(rows, decodeRow);
-          }),
-        ),
-    });
+          return yield* Effect.forEach(rows, decodeRow);
+        }),
+      ),
   });
+});
 
 // The adapter supplies receiver-owned policy and authenticated identity; this service
 // screens intent heuristically and does not contain normal local execution tools.

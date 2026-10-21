@@ -51,7 +51,9 @@ export function measure<A, E, R>(
 // Owns each diagnostic phase origin so observations use the same native monotonic clock.
 export class NativeTimeline {
   readonly origins = new Map<string, number>();
-  mark(phase: string) { this.origins.set(phase, performance.now()); }
+  mark(phase: string) {
+    this.origins.set(phase, performance.now());
+  }
   elapsed(phase: string) {
     const origin = this.origins.get(phase);
     if (origin === undefined) throw new Error(`Diagnostic phase ${phase} has not started`);

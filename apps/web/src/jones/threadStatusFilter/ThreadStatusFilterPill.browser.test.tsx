@@ -86,7 +86,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -97,10 +97,10 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -130,13 +130,14 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     expect(getComputedStyle(workingNumber).textDecorationLine).toContain("line-through");
     await clickAt(1300);
     expect(titles()).toEqual(["Input", "Done", "Idle"]);
-    await act(async () =>
-      await root.rerender(
-        <Fixture
-          layout={layout}
-          rows={[working, input, done, { ...idle, runtime: working.runtime }]}
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <Fixture
+            layout={layout}
+            rows={[working, input, done, { ...idle, runtime: working.runtime }]}
+          />,
+        ),
     );
     expect(titles()).toEqual(["Input", "Done"]);
     await clickAt(1551);

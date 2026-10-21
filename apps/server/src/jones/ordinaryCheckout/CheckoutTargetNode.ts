@@ -96,53 +96,53 @@ const make = Effect.gen(function* () {
   return CheckoutTargetObservation.of({
     directory,
     git: Effect.fn("CheckoutTargetNode.git")(function* (cwd) {
-        const inside = yield* read(cwd, ["rev-parse", "--is-inside-work-tree"]);
-        if (inside.exitCode !== 0) {
-          if (
-            inside.exitCode !== 128 ||
-            inside.stdout !== "" ||
-            inside.stdoutTruncated ||
-            inside.stderrTruncated ||
-            !inside.stderr.startsWith("fatal: not a git repository") ||
-            (yield* marker(cwd))
-          )
-            return yield* new CheckoutError({ reason: "unavailable" });
-          // A failed probe without a repository marker is a non-Git workspace; bare repositories refuse below.
-          return null;
-        }
-        if (inside.stdout.trim() !== "true" || inside.stdoutTruncated || inside.stderrTruncated)
-          return yield* new CheckoutError({ reason: "unavailable" });
-        const root = yield* directory(yield* checked(cwd, ["rev-parse", "--show-toplevel"]));
-        const common = yield* directory(
-          yield* checked(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-        );
-        const gitDir = yield* directory(yield* checked(cwd, ["rev-parse", "--absolute-git-dir"]));
-        const symbolic = yield* read(cwd, ["symbolic-ref", "--quiet", "HEAD"]);
+      const inside = yield* read(cwd, ["rev-parse", "--is-inside-work-tree"]);
+      if (inside.exitCode !== 0) {
         if (
-          (symbolic.exitCode !== 0 && symbolic.exitCode !== 1) ||
-          symbolic.stdoutTruncated ||
-          symbolic.stderrTruncated
+          inside.exitCode !== 128 ||
+          inside.stdout !== "" ||
+          inside.stdoutTruncated ||
+          inside.stderrTruncated ||
+          !inside.stderr.startsWith("fatal: not a git repository") ||
+          (yield* marker(cwd))
         )
           return yield* new CheckoutError({ reason: "unavailable" });
-        const registrations = yield* checked(cwd, ["worktree", "list", "--porcelain", "-z"]);
-        const registeredWorktrees: string[] = [];
-        for (const item of registrations.split("\0")) {
-          if (!item.startsWith("worktree ")) continue;
-          // Stale unrelated registrations need not exist; the selected root must have a physical match.
-          const registered = item.slice(9);
-          if (registered === root.realPath) registeredWorktrees.push(root.realPath);
-          else registeredWorktrees.push(registered);
-        }
-        return {
-          root: root.realPath,
-          commonDirectory: common.realPath,
-          gitDirectory: gitDir.realPath,
-          commonIdentity: common.identity,
-          directoryIdentity: gitDir.identity,
-          branch: symbolic.exitCode === 1 ? null : symbolic.stdout.trim(),
-          registeredWorktrees,
-        };
-      }),
+        // A failed probe without a repository marker is a non-Git workspace; bare repositories refuse below.
+        return null;
+      }
+      if (inside.stdout.trim() !== "true" || inside.stdoutTruncated || inside.stderrTruncated)
+        return yield* new CheckoutError({ reason: "unavailable" });
+      const root = yield* directory(yield* checked(cwd, ["rev-parse", "--show-toplevel"]));
+      const common = yield* directory(
+        yield* checked(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+      );
+      const gitDir = yield* directory(yield* checked(cwd, ["rev-parse", "--absolute-git-dir"]));
+      const symbolic = yield* read(cwd, ["symbolic-ref", "--quiet", "HEAD"]);
+      if (
+        (symbolic.exitCode !== 0 && symbolic.exitCode !== 1) ||
+        symbolic.stdoutTruncated ||
+        symbolic.stderrTruncated
+      )
+        return yield* new CheckoutError({ reason: "unavailable" });
+      const registrations = yield* checked(cwd, ["worktree", "list", "--porcelain", "-z"]);
+      const registeredWorktrees: string[] = [];
+      for (const item of registrations.split("\0")) {
+        if (!item.startsWith("worktree ")) continue;
+        // Stale unrelated registrations need not exist; the selected root must have a physical match.
+        const registered = item.slice(9);
+        if (registered === root.realPath) registeredWorktrees.push(root.realPath);
+        else registeredWorktrees.push(registered);
+      }
+      return {
+        root: root.realPath,
+        commonDirectory: common.realPath,
+        gitDirectory: gitDir.realPath,
+        commonIdentity: common.identity,
+        directoryIdentity: gitDir.identity,
+        branch: symbolic.exitCode === 1 ? null : symbolic.stdout.trim(),
+        registeredWorktrees,
+      };
+    }),
   });
 });
 export const layer = Layer.effect(CheckoutTargetObservation, make);

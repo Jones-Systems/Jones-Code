@@ -37,9 +37,8 @@ export const workstreamRequest = <A, E>(
   method: "GET" | "POST",
   url: WorkstreamUrlSelector,
   request: (client: WorkstreamClient, headers: EnvironmentHttpAuthHeaders) => Effect.Effect<A, E>,
-) =>
-  {
-const runEffect = Effect.fn("MobileWorkstreamGateway.workstreamRequest")(function* () {
+) => {
+  const runEffect = Effect.fn("MobileWorkstreamGateway.workstreamRequest")(function* () {
     const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
     const remoteAuthorization = yield* Effect.serviceOption(RemoteEnvironmentAuthorization);
     return yield* executeAuthenticatedEnvironmentHttpRequest({
@@ -53,5 +52,5 @@ const runEffect = Effect.fn("MobileWorkstreamGateway.workstreamRequest")(functio
       request: ({ client, headers }) => request(client, headers),
     });
   });
-return runEffect();
+  return runEffect();
 };

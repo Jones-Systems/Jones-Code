@@ -36,7 +36,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -47,19 +47,19 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
-  favorites = [];
-  ownedContainer = container = document.createElement("div");
-  document.body.appendChild(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    favorites = [];
+    ownedContainer = container = document.createElement("div");
+    document.body.appendChild(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -67,8 +67,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
-
 
 it.each([
   {
@@ -95,7 +93,7 @@ it.each([
   },
   { name: "provider needing setup", saved: true, locked: false, unavailable: false, setup: true },
 ])("opens Favorites on every opening for $name", async ({ saved, locked, unavailable, setup }) => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const instanceId = ProviderInstanceId.make("opencode");
   const provider: ServerProvider = {
     instanceId,
@@ -115,29 +113,30 @@ it.each([
   const entries = deriveProviderInstanceEntries([provider]);
   const onInstanceModelChange = vi.fn();
   const render = async (open: boolean) => {
-    await act(async () =>
-      await root.rerender(
-        <TooltipProvider>
-          <ProviderModelPicker
-            environmentId={EnvironmentId.make("test-environment")}
-            open={open}
-            activeInstanceId={instanceId}
-            model="test-model"
-            lockedProvider={locked ? provider.driver : null}
-            instanceEntries={entries}
-            modelOptionsByInstance={
-              new Map([
-                [
-                  instanceId,
-                  [{ slug: "test-model", name: "Test model", isUnavailable: unavailable }],
-                ],
-              ])
-            }
-            onInstanceModelChange={onInstanceModelChange}
-            {...(setup ? { onOpenProviderSetup: vi.fn() } : {})}
-          />
-        </TooltipProvider>,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <TooltipProvider>
+            <ProviderModelPicker
+              environmentId={EnvironmentId.make("test-environment")}
+              open={open}
+              activeInstanceId={instanceId}
+              model="test-model"
+              lockedProvider={locked ? provider.driver : null}
+              instanceEntries={entries}
+              modelOptionsByInstance={
+                new Map([
+                  [
+                    instanceId,
+                    [{ slug: "test-model", name: "Test model", isUnavailable: unavailable }],
+                  ],
+                ])
+              }
+              onInstanceModelChange={onInstanceModelChange}
+              {...(setup ? { onOpenProviderSetup: vi.fn() } : {})}
+            />
+          </TooltipProvider>,
+        ),
     );
   };
   const favoritesButton = () =>

@@ -12,50 +12,52 @@ import {
   type PlannedUpdateProof,
 } from "./PlannedUpdateContinuityService.ts";
 
-export const activatePlannedUpdateContinuity = Effect.fn("PlannedContinuityStartup.activatePlannedUpdateContinuity")(function* (input: {
+export const activatePlannedUpdateContinuity = Effect.fn(
+  "PlannedContinuityStartup.activatePlannedUpdateContinuity",
+)(function* (input: {
   readonly baseDir: string;
   readonly dbPath: string;
   readonly launcher: ServiceLauncherClient["Service"];
   readonly continuity: PlannedUpdateContinuity["Service"];
 }) {
-    const outcome = input.launcher.qualifiedStartupOutcome;
-    if (
-      !input.launcher.managed ||
-      input.launcher.qualifiedOperations !== true ||
-      input.launcher.currentVersion === undefined ||
-      outcome === undefined ||
-      (outcome.status !== "committed" && outcome.status !== "rolled-back")
-    )
-      return;
-    const version = input.launcher.currentVersion;
-    const proof = yield* Effect.tryPromise({
-      try: async (): Promise<PlannedUpdateProof> => {
-        const baseDir = await NodeFSP.realpath(input.baseDir);
-        const state = parseServiceState(
-          await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
-        );
-        const update = state?.update;
-        if (
-          state?.activeVersion !== version ||
-          update?.id !== outcome.id ||
-          update.status !== outcome.status ||
-          update.qualified === undefined
-        )
-          throw new Error("Current native update generation differs from the startup outcome.");
-        const native = await reconcileUpdateOperation(baseDir, outcome.id, update);
-        if (native.state !== outcome.status)
-          throw new Error("Native operation outcome is not proven.");
-        const current = await currentQualifiedRuntimeBinding(baseDir, version);
-        if (current.dbPath !== (await NodeFSP.realpath(input.dbPath)))
-          throw new Error("Running database differs from planned update binding.");
-        return {
-          operationId: outcome.id,
-          outcome: outcome.status,
-          binding: operationBinding(update.qualified),
-          current,
-        };
-      },
-      catch: (cause) => new PlannedContinuityError({ cause }),
-    });
-    yield* input.continuity.activate(proof);
+  const outcome = input.launcher.qualifiedStartupOutcome;
+  if (
+    !input.launcher.managed ||
+    input.launcher.qualifiedOperations !== true ||
+    input.launcher.currentVersion === undefined ||
+    outcome === undefined ||
+    (outcome.status !== "committed" && outcome.status !== "rolled-back")
+  )
+    return;
+  const version = input.launcher.currentVersion;
+  const proof = yield* Effect.tryPromise({
+    try: async (): Promise<PlannedUpdateProof> => {
+      const baseDir = await NodeFSP.realpath(input.baseDir);
+      const state = parseServiceState(
+        await NodeFSP.readFile(NodePath.join(baseDir, "runtime", "service-state.json"), "utf8"),
+      );
+      const update = state?.update;
+      if (
+        state?.activeVersion !== version ||
+        update?.id !== outcome.id ||
+        update.status !== outcome.status ||
+        update.qualified === undefined
+      )
+        throw new Error("Current native update generation differs from the startup outcome.");
+      const native = await reconcileUpdateOperation(baseDir, outcome.id, update);
+      if (native.state !== outcome.status)
+        throw new Error("Native operation outcome is not proven.");
+      const current = await currentQualifiedRuntimeBinding(baseDir, version);
+      if (current.dbPath !== (await NodeFSP.realpath(input.dbPath)))
+        throw new Error("Running database differs from planned update binding.");
+      return {
+        operationId: outcome.id,
+        outcome: outcome.status,
+        binding: operationBinding(update.qualified),
+        current,
+      };
+    },
+    catch: (cause) => new PlannedContinuityError({ cause }),
   });
+  yield* input.continuity.activate(proof);
+});

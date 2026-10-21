@@ -38,37 +38,37 @@ const make = Effect.gen(function* () {
   return RenderPlacement.of({
     channel,
     place: Effect.fn("RenderPlacement.place")(function* (snapshot) {
-        const bound = yield* selection.bind(snapshot);
-        if (bound._tag === "server") return { _tag: desktop.available ? "local" : "headless" };
-        const status = yield* registry.status(bound.hostId);
-        if (!status?.online)
-          return yield* new CompanionHostRegistry.CompanionHostUnavailable({
-            hostId: bound.hostId,
-            label: status?.label ?? bound.hostId,
-            state: status ? "offline" : "unknown",
-          });
-        return {
-          _tag: "companion",
-          hostId: bound.hostId,
-          label: status.label,
-          capabilities: status.capabilities,
-        };
-      }),
-    awaitCompanion: Effect.fn("RenderPlacement.awaitCompanion")(function* (origin, key) {
-        yield* channel.mount(origin.hostId, key);
-        if (yield* channel.awaitAttached(key, "20 seconds")) return;
-        yield* channel.unmount(origin.hostId, key);
+      const bound = yield* selection.bind(snapshot);
+      if (bound._tag === "server") return { _tag: desktop.available ? "local" : "headless" };
+      const status = yield* registry.status(bound.hostId);
+      if (!status?.online)
         return yield* new CompanionHostRegistry.CompanionHostUnavailable({
-          hostId: origin.hostId,
-          label: origin.label,
-          state: "timeout",
+          hostId: bound.hostId,
+          label: status?.label ?? bound.hostId,
+          state: status ? "offline" : "unknown",
         });
-      }),
+      return {
+        _tag: "companion",
+        hostId: bound.hostId,
+        label: status.label,
+        capabilities: status.capabilities,
+      };
+    }),
+    awaitCompanion: Effect.fn("RenderPlacement.awaitCompanion")(function* (origin, key) {
+      yield* channel.mount(origin.hostId, key);
+      if (yield* channel.awaitAttached(key, "20 seconds")) return;
+      yield* channel.unmount(origin.hostId, key);
+      return yield* new CompanionHostRegistry.CompanionHostUnavailable({
+        hostId: origin.hostId,
+        label: origin.label,
+        state: "timeout",
+      });
+    }),
     release: Effect.fn("RenderPlacement.release")(function* (key) {
-        const binding = yield* selection.binding(key);
-        if (binding?._tag === "companion") yield* channel.unmount(binding.hostId, key);
-        yield* selection.release(key);
-      }),
+      const binding = yield* selection.binding(key);
+      if (binding?._tag === "companion") yield* channel.unmount(binding.hostId, key);
+      yield* selection.release(key);
+    }),
   });
 });
 export const layer = Layer.effect(RenderPlacement, make);

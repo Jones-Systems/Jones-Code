@@ -101,7 +101,8 @@ function isNotFound(error: unknown): boolean {
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const capture = Effect.fn("ThreadReferenceExcerpt.capture")(function* (input: { readonly threadId: ThreadId }) {
+  const capture = Effect.fn("ThreadReferenceExcerpt.capture")(
+    function* (input: { readonly threadId: ThreadId }) {
       const capturedAt = DateTime.formatIso(yield* DateTime.now);
       const unavailable = (reason: "not_found" | "invalid_response") => ({
         threadId: input.threadId,
@@ -176,20 +177,23 @@ const make = Effect.gen(function* () {
         return { threadId: input.threadId, excerpt };
       }
       return unavailable("invalid_response");
-    }, (effect, input) => effect.pipe(
-      Effect.catch((error) =>
-        Effect.gen(function* () {
-          return {
-            threadId: input.threadId,
-            excerpt: {
-              status: "unavailable" as const,
-              capturedAt: DateTime.formatIso(yield* DateTime.now),
-              reason: isNotFound(error) ? ("not_found" as const) : ("invalid_response" as const),
-            },
-          };
-        }),
+    },
+    (effect, input) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.gen(function* () {
+            return {
+              threadId: input.threadId,
+              excerpt: {
+                status: "unavailable" as const,
+                capturedAt: DateTime.formatIso(yield* DateTime.now),
+                reason: isNotFound(error) ? ("not_found" as const) : ("invalid_response" as const),
+              },
+            };
+          }),
+        ),
       ),
-    ));
+  );
   return ThreadReferenceExcerpts.of({ capture });
 });
 

@@ -14,7 +14,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -25,21 +25,24 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  resizeRevision = 0;
-  const NativeResizeObserver = globalThis.ResizeObserver;
-  vi.stubGlobal("ResizeObserver", class extends NativeResizeObserver {
-    constructor(callback: ResizeObserverCallback) {
-      super((entries, observer) => {
-        callback(entries, observer);
-        resizeRevision += 1;
-      });
-    }
-  });
-  ownedContainer = container = document.createElement("div");
-  container.style.width = "500px";
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    resizeRevision = 0;
+    const NativeResizeObserver = globalThis.ResizeObserver;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class extends NativeResizeObserver {
+        constructor(callback: ResizeObserverCallback) {
+          super((entries, observer) => {
+            callback(entries, observer);
+            resizeRevision += 1;
+          });
+        }
+      },
+    );
+    ownedContainer = container = document.createElement("div");
+    container.style.width = "500px";
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -47,7 +50,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
 
 function Fixture({ large = false, label = "Preview" }: { large?: boolean; label?: string }) {
   return (
@@ -81,7 +83,7 @@ const waitForResize = (previous: number) =>
   vi.waitFor(() => expect(resizeRevision).toBeGreaterThan(previous), { interval: 1 });
 
 it("scales smoothly at actual sidebar widths, keeps Work in the row, and restores the brand on expansion", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<Fixture />));
   const row = container.firstElementChild as HTMLElement;
   const densities = new Set<string>();
@@ -133,7 +135,7 @@ it("scales smoothly at actual sidebar widths, keeps Work in the row, and restore
 });
 
 it("refits changed large counts and an environment label without clipping controls", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   container.style.width = "320px";
   await act(async () => await root.rerender(<Fixture />));
   const previousResize = resizeRevision;

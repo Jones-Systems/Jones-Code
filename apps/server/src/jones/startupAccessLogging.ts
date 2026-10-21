@@ -29,20 +29,22 @@ export const formatHeadlessStartupOutput = (connectionString: string): string =>
   ].join("\n");
 };
 
-export const maybeOpenBrowser = Effect.fn("startupAccessLogging.maybeOpenBrowser")(function* (target: string) {
-    const serverConfig = yield* ServerConfig.ServerConfig;
-    if (serverConfig.noBrowser) {
-      return;
-    }
-    const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
+export const maybeOpenBrowser = Effect.fn("startupAccessLogging.maybeOpenBrowser")(function* (
+  target: string,
+) {
+  const serverConfig = yield* ServerConfig.ServerConfig;
+  if (serverConfig.noBrowser) {
+    return;
+  }
+  const externalLauncher = yield* ExternalLauncher.ExternalLauncher;
 
-    yield* externalLauncher.launchBrowser(target).pipe(
-      // Nested launcher failures retain the credential-bearing target before the catch runs.
-      Effect.withTracerEnabled(false),
-      Effect.catch(() =>
-        Effect.logInfo("browser auto-open unavailable", {
-          hint: pairingHint,
-        }),
-      ),
-    );
-  });
+  yield* externalLauncher.launchBrowser(target).pipe(
+    // Nested launcher failures retain the credential-bearing target before the catch runs.
+    Effect.withTracerEnabled(false),
+    Effect.catch(() =>
+      Effect.logInfo("browser auto-open unavailable", {
+        hint: pairingHint,
+      }),
+    ),
+  );
+});

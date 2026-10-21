@@ -249,17 +249,20 @@ export const startsThreads = <P, A, E, R>(
   handle: (params: P, modes: StartedModes) => Effect.Effect<A, E, R>,
   linked: "stamped" | { readonly refused: string },
 ) => {
-  const started = Effect.fn("McpToolAccess.startsThreads.started")(function*(caller: Caller, params: P) {
-      const requested = modes(params);
-      return {
-        runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
-        interactionMode: yield* resolveInteractionMode(
-          caller.limits.interactionMode,
-          requested.interactionMode,
-        ),
-        linkOrigin: callerLinkOrigin(caller),
-      } satisfies StartedModes;
-    });
+  const started = Effect.fn("McpToolAccess.startsThreads.started")(function* (
+    caller: Caller,
+    params: P,
+  ) {
+    const requested = modes(params);
+    return {
+      runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
+      interactionMode: yield* resolveInteractionMode(
+        caller.limits.interactionMode,
+        requested.interactionMode,
+      ),
+      linkOrigin: callerLinkOrigin(caller),
+    } satisfies StartedModes;
+  });
   return declare(
     (params: P) =>
       Effect.gen(function* () {
@@ -291,17 +294,20 @@ export const startsOrContinuesThreads = <P, A, E, R>(
   handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
   linked: "stamped" | { readonly refused: string },
 ) => {
-  const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function*(caller: Caller, params: P) {
-      const requested = modes(params);
-      return {
-        runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
-        interactionMode: yield* resolveInteractionMode(
-          caller.limits.interactionMode,
-          requested.interactionMode,
-        ),
-        linkOrigin: callerLinkOrigin(caller),
-      } satisfies StartedModes;
-    });
+  const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function* (
+    caller: Caller,
+    params: P,
+  ) {
+    const requested = modes(params);
+    return {
+      runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
+      interactionMode: yield* resolveInteractionMode(
+        caller.limits.interactionMode,
+        requested.interactionMode,
+      ),
+      linkOrigin: callerLinkOrigin(caller),
+    } satisfies StartedModes;
+  });
   return declare(
     (params: P) =>
       Effect.gen(function* () {
@@ -310,18 +316,18 @@ export const startsOrContinuesThreads = <P, A, E, R>(
         if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
         const gate: ThreadStartGate = {
           start: started(caller, params),
-          continueWithin: Effect.fn("McpToolAccess.continueWithin")(function*(target, effect) {
-              yield* assertTargetWithinLimits(limits, target);
-              const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
-              return yield* effect.pipe(
-                Effect.provideService(DispatchModeLimit, { ...limits, refused }),
-                Effect.catch((error) =>
-                  Effect.flatMap(Ref.get(refused), (refusal) =>
-                    Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
-                  ),
+          continueWithin: Effect.fn("McpToolAccess.continueWithin")(function* (target, effect) {
+            yield* assertTargetWithinLimits(limits, target);
+            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+            return yield* effect.pipe(
+              Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+              Effect.catch((error) =>
+                Effect.flatMap(Ref.get(refused), (refusal) =>
+                  Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
                 ),
-              );
-            }),
+              ),
+            );
+          }),
         };
         return yield* handle(params, gate);
       }),
@@ -426,38 +432,42 @@ const linksUnavailable = new OrchestratorMcpFailure({
  * environment, which checks the rest. The handler here never sees
  * `environmentId`, so it cannot leak into what it writes.
  */
-const routed = Effect.fn("McpToolAccess.routed")(function*<Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>, declarations: Handlers<Tools>, checked: Toolkit.HandlersFrom<Tools>) {
-    // Optional so toolkits that never leave this environment build without it.
-    const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
-    const handlers: Record<string, unknown> = { ...checked };
-    for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
-      const tool = toolkit.tools[name];
-      if (tool === undefined) continue;
-      handlers[name] = yield* RemoteAdmissionMcp.wrap(
-        tool,
-        handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record<string, Tool.Any>>(
+  toolkit: Toolkit.Toolkit<Tools>,
+  declarations: Handlers<Tools>,
+  checked: Toolkit.HandlersFrom<Tools>,
+) {
+  // Optional so toolkits that never leave this environment build without it.
+  const forwarding = yield* Effect.serviceOption(PeerForwarding.PeerForwarding);
+  const handlers: Record<string, unknown> = { ...checked };
+  for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
+    const tool = toolkit.tools[name];
+    if (tool === undefined) continue;
+    handlers[name] = yield* RemoteAdmissionMcp.wrap(
+      tool,
+      handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+    );
+    if (!takesLinkedEnvironment(tool)) continue;
+    const remote = remoteCheckOf(declaration);
+    if (remote === undefined)
+      return yield* Effect.die(
+        `${name} takes a linked environment, but it acts as its calling thread, which is here.`,
       );
-      if (!takesLinkedEnvironment(tool)) continue;
-      const remote = remoteCheckOf(declaration);
-      if (remote === undefined)
-        return yield* Effect.die(
-          `${name} takes a linked environment, but it acts as its calling thread, which is here.`,
-        );
-      const here = handlers[name] as (
-        params: object,
-      ) => Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]>>;
-      handlers[name] = ({ environmentId, ...params }: { readonly environmentId?: EnvironmentId }) =>
-        Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.McpInvocationContext;
-          const target = PeerForwarding.remoteTarget(scope, environmentId);
-          if (target === undefined) return yield* here(params);
-          yield* (remote as RemoteCheck<typeof params>)(params);
-          if (Option.isNone(forwarding)) return yield* linksUnavailable;
-          return yield* forwarding.value.call(scope, tool, target, { ...params, environmentId });
-        });
-    }
-    return handlers as Toolkit.HandlersFrom<Tools>;
-  });
+    const here = handlers[name] as (
+      params: object,
+    ) => Effect.Effect<unknown, Tool.Failure<Tools[keyof Tools]>>;
+    handlers[name] = ({ environmentId, ...params }: { readonly environmentId?: EnvironmentId }) =>
+      Effect.gen(function* () {
+        const scope = yield* McpInvocationContext.McpInvocationContext;
+        const target = PeerForwarding.remoteTarget(scope, environmentId);
+        if (target === undefined) return yield* here(params);
+        yield* (remote as RemoteCheck<typeof params>)(params);
+        if (Option.isNone(forwarding)) return yield* linksUnavailable;
+        return yield* forwarding.value.call(scope, tool, target, { ...params, environmentId });
+      });
+  }
+  return handlers as Toolkit.HandlersFrom<Tools>;
+});
 
 export const toLayer = <Tools extends Record<string, Tool.Any>, EX = never, RX = never>(
   toolkit: Toolkit.Toolkit<Tools>,

@@ -19,8 +19,8 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => toastManager.close());
-  await act(async () => screen?.unmount());
+      await act(async () => toastManager.close());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -31,11 +31,11 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
-  await act(async () => await root.rerender(<ToastProvider />));
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    await act(async () => await root.rerender(<ToastProvider />));
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -43,8 +43,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
-
 
 function closeButton() {
   return document.querySelector<HTMLButtonElement>('[aria-label="Dismiss notification"]')!;
@@ -66,7 +64,7 @@ async function addToast(explicitDismissOnly = false) {
 }
 
 it("keeps default Escape dismissal", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await addToast();
   closeButton().focus();
   await userEvent.keyboard("{Escape}");
@@ -74,7 +72,7 @@ it("keeps default Escape dismissal", async () => {
 });
 
 it("keeps an explicit-only toast through navigation and Escape until X closes it once", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const { onClose, navigate } = await addToast(true);
   const title = document.querySelector<HTMLButtonElement>('[data-slot="toast-title"] button')!;
   await userEvent.click(title);
@@ -126,14 +124,14 @@ async function swipeRight() {
 }
 
 it("keeps default swipe dismissal", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await addToast();
   await swipeRight();
   await expect.poll(() => closeButton()).toBeNull();
 });
 
 it("ignores swipe dismissal for an explicit-only toast", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const { onClose } = await addToast(true);
   await swipeRight();
   expect(closeButton()).not.toBeNull();
@@ -144,7 +142,7 @@ it("ignores swipe dismissal for an explicit-only toast", async () => {
 });
 
 it("keeps ordinary expandable toasts at their original width", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => {
     toastManager.add({
       title: "Ordinary notice",

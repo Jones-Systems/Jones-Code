@@ -227,12 +227,12 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     );
 
   const retire = Effect.fn("SshDeviceHost.retire")(function* (scope: Scope.Closeable) {
-      if (connectionScope === scope) {
-        connectionScope = null;
-        ready = null;
-      }
-      yield* Scope.close(scope, Exit.void);
-    });
+    if (connectionScope === scope) {
+      connectionScope = null;
+      ready = null;
+    }
+    yield* Scope.close(scope, Exit.void);
+  });
   const connectOnce = Effect.fn("SshDeviceHost.connectOnce")(function* (
     direct: boolean,
   ): Effect.fn.Return<SshDeviceHostReady, DeviceHost.DeviceHostError> {

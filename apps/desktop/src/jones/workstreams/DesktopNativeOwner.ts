@@ -31,46 +31,48 @@ export const makeDesktopNativeOwnerChannel = Effect.fn("makeDesktopNativeOwnerCh
   return {
     input: Stream.fromQueue(replies),
     close,
-    bind: Effect.fn("DesktopNativeOwner.bind")(function* (pid: number,
-output: Stream.Stream<Uint8Array, PlatformError.PlatformError>) {
-        if (!active || childPid !== undefined || !Number.isSafeInteger(pid) || pid < 1)
-          return yield* Effect.die(new Error("Desktop owner channel cannot adopt another child."));
-        childPid = pid;
-        yield* output.pipe(
-          Stream.decodeText(),
-          Stream.runForEach((chunk) =>
-            Effect.gen(function* () {
-              buffer += chunk;
-              yield* Effect.try(() => {
-                if (new TextEncoder().encode(buffer).byteLength > DESKTOP_NATIVE_OWNER_MAX_BYTES)
-                  throw new Error("Desktop owner challenge exceeds the channel bound.");
+    bind: Effect.fn("DesktopNativeOwner.bind")(function* (
+      pid: number,
+      output: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
+    ) {
+      if (!active || childPid !== undefined || !Number.isSafeInteger(pid) || pid < 1)
+        return yield* Effect.die(new Error("Desktop owner channel cannot adopt another child."));
+      childPid = pid;
+      yield* output.pipe(
+        Stream.decodeText(),
+        Stream.runForEach((chunk) =>
+          Effect.gen(function* () {
+            buffer += chunk;
+            yield* Effect.try(() => {
+              if (new TextEncoder().encode(buffer).byteLength > DESKTOP_NATIVE_OWNER_MAX_BYTES)
+                throw new Error("Desktop owner challenge exceeds the channel bound.");
+            });
+            let newline: number;
+            while ((newline = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, newline);
+              buffer = buffer.slice(newline + 1);
+              const response = yield* Effect.try(() => {
+                if (!active) throw new Error("Desktop owner channel is closed.");
+                const owner = resolveOwner();
+                owner.assertCurrent();
+                const request = decodeDesktopNativeOwnerMessage(line, false);
+                if (
+                  request.childPid !== childPid ||
+                  request.sequence !== sequence + 1 ||
+                  !sameDesktopNativeOwnerBinding(request.binding, owner.binding)
+                )
+                  throw new Error("Desktop owner challenge differs from the captured child.");
+                sequence = request.sequence;
+                return { ...request, runId, parentPid: process.pid };
               });
-              let newline: number;
-              while ((newline = buffer.indexOf("\n")) >= 0) {
-                const line = buffer.slice(0, newline);
-                buffer = buffer.slice(newline + 1);
-                const response = yield* Effect.try(() => {
-                  if (!active) throw new Error("Desktop owner channel is closed.");
-                  const owner = resolveOwner();
-                  owner.assertCurrent();
-                  const request = decodeDesktopNativeOwnerMessage(line, false);
-                  if (
-                    request.childPid !== childPid ||
-                    request.sequence !== sequence + 1 ||
-                    !sameDesktopNativeOwnerBinding(request.binding, owner.binding)
-                  )
-                    throw new Error("Desktop owner challenge differs from the captured child.");
-                  sequence = request.sequence;
-                  return { ...request, runId, parentPid: process.pid };
-                });
-                yield* Queue.offer(replies, encodeDesktopNativeOwnerMessage(response));
-              }
-            }),
-          ),
-          Effect.ensuring(close),
-          Effect.ignore,
-          Effect.forkScoped,
-        );
-      }),
+              yield* Queue.offer(replies, encodeDesktopNativeOwnerMessage(response));
+            }
+          }),
+        ),
+        Effect.ensuring(close),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
+    }),
   };
 });

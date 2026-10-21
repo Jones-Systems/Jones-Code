@@ -176,16 +176,18 @@ const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffect
   onExcessProperty: "error",
 });
 // An invalid native envelope must never fall back to ordinary provider execution.
-export const decodeOrchestrationEffectPayloadV2 = Effect.fn("EffectOutbox.decodeOrchestrationEffectPayloadV2")(function*(payload: string) {
-    const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
-    if (
-      typeof raw === "object" &&
-      raw !== null &&
-      (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
-    )
-      return yield* decodeNativePayload(raw);
-    return { request: yield* decodeRequest(payload) };
-  });
+export const decodeOrchestrationEffectPayloadV2 = Effect.fn(
+  "EffectOutbox.decodeOrchestrationEffectPayloadV2",
+)(function* (payload: string) {
+  const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+  if (
+    typeof raw === "object" &&
+    raw !== null &&
+    (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"))
+  )
+    return yield* decodeNativePayload(raw);
+  return { request: yield* decodeRequest(payload) };
+});
 
 const rowToEffect = (row: EffectRow) =>
   decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(

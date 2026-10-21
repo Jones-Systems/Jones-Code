@@ -252,12 +252,12 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
-  for (const id of ["approach", "second"])
-    clearQuestionAttachmentDraft(
-      questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
-    );
-  useAttachmentUploadStore.setState({ uploadsByImageId: {} });
+      await act(async () => screen?.unmount());
+      for (const id of ["approach", "second"])
+        clearQuestionAttachmentDraft(
+          questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
+        );
+      useAttachmentUploadStore.setState({ uploadsByImageId: {} });
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -270,18 +270,18 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  vi.mocked(readPreparedConnection).mockReturnValue({
-    httpBaseUrl: "http://synthetic.invalid",
-  } as never);
-  excerptRequest.mockReset();
-  excerptRequest.mockImplementation(async ({ input }: { input: { threadId: string } }) => ({
-    _tag: "Success",
-    value: { threadId: input.threadId, excerpt: capturedExcerpt },
-  }));
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    vi.mocked(readPreparedConnection).mockReturnValue({
+      httpBaseUrl: "http://synthetic.invalid",
+    } as never);
+    excerptRequest.mockReset();
+    excerptRequest.mockImplementation(async ({ input }: { input: { threadId: string } }) => ({
+      _tag: "Success",
+      value: { threadId: input.threadId, excerpt: capturedExcerpt },
+    }));
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -289,7 +289,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -325,7 +324,7 @@ async function key(init: KeyboardEventInit) {
 }
 
 it("ignores digits, Shift+Enter and IME while typing, then submits once with Enter", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("1 custom answer");
   await key({ key: "1" });
@@ -339,9 +338,12 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
 });
 
 it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter", async (value) => {
-    await using _fixture = await setupTest();
-  await act(async () =>
-    await root.rerender(<Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />),
+  await using _fixture = await setupTest();
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />,
+      ),
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
@@ -353,11 +355,12 @@ it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter",
 });
 
 it("keeps each answer across Next, Back, minimize and restore", async () => {
-    await using _fixture = await setupTest();
-  await act(async () =>
-    await root.rerender(
-      <Harness questions={[question, { ...question, id: "second", header: "Second" }]} />,
-    ),
+  await using _fixture = await setupTest();
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness questions={[question, { ...question, id: "second", header: "Second" }]} />,
+      ),
   );
   await typeAnswer("First answer");
   await act(async () => button("Next").click());
@@ -383,7 +386,7 @@ it("keeps each answer across Next, Back, minimize and restore", async () => {
 });
 
 it("choosing an option replaces the custom answer and auto-submits without sending a message", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
@@ -401,7 +404,7 @@ it("choosing an option replaces the custom answer and auto-submits without sendi
 });
 
 it("typing cancels a pending option auto-advance", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
   await act(async () =>
@@ -421,8 +424,11 @@ it.each([false, true])(
   async (multiSelect) => {
     await using _fixture = await setupTest();
     using _timers = fakeTimers();
-    await act(async () =>
-      await root.rerender(<Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />),
+    await act(
+      async () =>
+        await root.rerender(
+          <Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />,
+        ),
     );
     expect(container.querySelector('[aria-label="Your answer"]')).toBeNull();
     await act(async () =>
@@ -443,7 +449,7 @@ it.each([false, true])(
 );
 
 it("omits Skip and dismisses only through the question header without a thread submit", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<Harness />));
   expect(button("Skip")).toBeUndefined();
   await act(async () => await root.rerender(<Harness dismissible capability="message" />));
@@ -473,7 +479,7 @@ it.each([{ disabled: true }, { responding: true }, { capability: "not_resumable"
 );
 
 it("does not steal focus when a question arrives", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const focused = document.createElement("textarea");
   document.body.append(focused);
   focused.focus();
@@ -493,15 +499,18 @@ const capabilities = {
 };
 
 it("pastes files into the answer draft only, blocks until ready, then submits them with the answer", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
     "request",
     "approach",
   );
-  await act(async () =>
-    await root.rerender(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />,
+      ),
   );
   await typeAnswer("Read this file");
   const clipboardData = new DataTransfer();
@@ -534,7 +543,7 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
 });
 
 it("uses the inline paperclip picker for the question while preserving normal attachments", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const normalFile = {
     type: "file" as const,
     id: "normal-file",
@@ -546,8 +555,11 @@ it("uses the inline paperclip picker for the question while preserving normal at
   const store = useComposerDraftStore.getState();
   store.addFiles(threadRef, [normalFile], { appendReference: false });
   try {
-    await act(async () =>
-      await root.rerender(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+    await act(
+      async () =>
+        await root.rerender(
+          <Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />,
+        ),
     );
     await typeAnswer("Question response");
     const picker = container.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -607,7 +619,7 @@ it("uses the inline paperclip picker for the question while preserving normal at
 });
 
 it("releases a failed image preparation so the written answer can still be sent", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -647,7 +659,7 @@ it("releases a failed image preparation so the written answer can still be sent"
 });
 
 it("shows legacy unavailable attachments and removes them without changing the thread draft", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -763,9 +775,11 @@ function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: 
 }
 
 it("clears the workspace overlay after a stopped reply drop and attaches only to the reply", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const onWorkspaceFiles = vi.fn();
-  await act(async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />));
+  await act(
+    async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />),
+  );
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(
     new File(["screenshot contents"], "screenshot.txt", { type: "text/plain" }),
@@ -825,7 +839,7 @@ it("clears the workspace overlay after a stopped reply drop and attaches only to
 });
 
 it("clears the workspace overlay on dragend and disposes global listeners", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(new File(["file"], "answer.txt", { type: "text/plain" }));
@@ -887,7 +901,7 @@ it.each(["question-test", "foreign-environment"])(
 );
 
 it("blocks question submission while thread context is captured, then submits the snapshot", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   let resolve!: (value: unknown) => void;
   excerptRequest.mockImplementation(
     () =>
@@ -917,7 +931,7 @@ it("blocks question submission while thread context is captured, then submits th
 });
 
 it("copies a captured question reference without requesting a newer snapshot", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const record = {
     ...threadContextRecord(
       {
@@ -950,7 +964,7 @@ it("copies a captured question reference without requesting a newer snapshot", a
 });
 
 it("keeps disconnected source identity without trying the current environment", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   vi.mocked(readPreparedConnection).mockReturnValue(null);
   const ref = {
     environmentId: EnvironmentId.make("disconnected-source"),
@@ -972,7 +986,7 @@ it("keeps disconnected source identity without trying the current environment", 
 });
 
 it("does not apply a capture after its question component unmounts", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   let resolve!: (value: unknown) => void;
   excerptRequest.mockImplementation(
     () =>

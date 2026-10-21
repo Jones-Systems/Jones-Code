@@ -15,7 +15,7 @@ function deferred<T>() {
 
 describe("submitted work metadata", () => {
   let root: Screen;
-let renderDisposables: AsyncDisposableStack;
+  let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
   const sample = (): WorkQueueMetadata => ({
     schema: "codex.t3-work-queue-metadata/v1",
@@ -72,27 +72,26 @@ let renderDisposables: AsyncDisposableStack;
     ],
   });
   async function setupFixture1() {
-  const stack = new AsyncDisposableStack();
-  renderDisposables = stack;
-  stack.defer(async () => {
-    await act(() => root.unmount());
-    container.remove();
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
+    const stack = new AsyncDisposableStack();
+    renderDisposables = stack;
+    stack.defer(async () => {
+      await act(() => root.unmount());
+      container.remove();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+    try {
+      stack.use(fakeTimers({ now: TEST_NOW }));
+      container = document.createElement("div");
+      document.body.append(container);
+      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-  });
-  try {
-    stack.use(fakeTimers({ now: TEST_NOW }));
-    container = document.createElement("div");
-    document.body.append(container);
-    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-
-    return stack;
-  } catch (error) {
-    await stack.disposeAsync();
-    throw error;
+      return stack;
+    } catch (error) {
+      await stack.disposeAsync();
+      throw error;
+    }
   }
-}
 
   async function render(load: WorkQueueMetadataLoader, key = "environment-a") {
     await act(() => root.rerender(<WorkQueueMetadataPanel key={key} load={load} />));
@@ -144,7 +143,7 @@ let renderDisposables: AsyncDisposableStack;
   it.each(["partial", "stale"] as const)(
     "keeps %s rows visible with their sample status",
     async (status) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       await render(async () => ({
         status,
         snapshot: { ...sample(), coverage: "partial" },
@@ -164,7 +163,7 @@ let renderDisposables: AsyncDisposableStack;
   ] satisfies WorkQueueMetadataResult[])(
     "does not turn $reason into an empty queue",
     async (result) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       await render(async () => result);
       expect(container.textContent).toContain(
         result.status === "unconfigured"
@@ -237,7 +236,7 @@ let renderDisposables: AsyncDisposableStack;
   it.each(["partial", "stale"] as const)(
     "never describes an empty %s sample as an empty queue",
     async (status) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       await render(async () => ({
         status,
         snapshot: {

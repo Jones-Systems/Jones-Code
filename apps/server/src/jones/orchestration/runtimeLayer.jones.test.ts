@@ -1043,174 +1043,167 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
     "maintenance",
     "restart-only",
     "live-restart-only",
-  ] as const)(
-    "keeps the FIFO queue intact at a %s boundary",
-    (condition) =>
-      Effect.gen(function* () {
-        const f = yield* queuedToolFixture(`queue-boundary-${condition}`);
-        yield* f.queue(
-          condition === "maintenance" ? "/compact" : "First",
-          condition === "incompatible-model"
-            ? { ...modelSelection, model: "different-model" }
-            : modelSelection,
-        );
-        yield* f.queue("Second");
-        let node = f.tool("boundary");
-        const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
-        const first = projection.runs.find((run) => run.status === "queued")!;
-        if (condition === "subagent") {
-          const child = { ...f.tool("subagent-root", "running"), kind: "subagent" as const };
-          yield* f.writeTool(child);
-          node = { ...node, parentNodeId: child.id };
-        } else if (condition === "old-turn") {
-          node = { ...node, providerTurnId: ProviderTurnId.make("previous-turn") };
-        } else if (condition === "old-run") {
-          node = { ...node, runId: RunId.make("previous-run") };
-        } else if (condition === "held") {
-          yield* f.sink.write({
-            events: projection.runs
-              .filter((run) => run.status === "queued")
-              .map((run) => ({
-                id: EventId.make(`queue-boundary-held-event:${run.id}`),
-                type: "run.updated" as const,
-                threadId: f.threadId,
-                runId: run.id,
-                occurredAt: f.now,
-                payload: { ...run, queueHeld: true },
-              })),
-          });
-        } else if (condition === "approval") {
-          yield* f.sink.write({
-            events: [
-              {
-                id: EventId.make("queue-boundary-approval-event"),
-                type: "runtime-request.updated",
-                threadId: f.threadId,
-                runId: f.run.id,
-                occurredAt: f.now,
-                payload: {
-                  id: RuntimeRequestId.make("queue-boundary-approval-request"),
-                  nodeId: f.run.rootNodeId!,
-                  providerTurnId: f.turnId,
-                  nativeRequestRef: null,
-                  kind: "permission",
-                  status: "pending",
-                  responseCapability: { type: "live", providerSessionId: f.providerSession.id },
-                  createdAt: f.now,
-                  resolvedAt: null,
-                },
-              },
-            ],
-          });
-        } else if (condition === "runtime-mode" || condition === "interaction-mode") {
-          yield* f.orchestrator.dispatch(
-            condition === "runtime-mode"
-              ? {
-                  type: "thread.runtime-mode.set",
-                  threadId: f.threadId,
-                  commandId: CommandId.make(`${f.threadId}-mode`),
-                  runtimeMode: "approval-required",
-                }
-              : {
-                  type: "thread.interaction-mode.set",
-                  threadId: f.threadId,
-                  commandId: CommandId.make(`${f.threadId}-mode`),
-                  interactionMode: "plan",
-                },
-          );
-        } else if (condition === "restart-only" || condition === "live-restart-only") {
-          const providerSession = {
-            ...f.providerSession,
-            capabilities: {
-              ...f.providerSession.capabilities,
-              turns: {
-                ...f.providerSession.capabilities.turns,
-                supportsActiveSteering: false,
-                supportsSteeringByInterruptRestart: true,
-              },
-            },
-          };
-          if (condition === "restart-only")
-            yield* f.sink.write({
-              events: [
-                {
-                  id: EventId.make(`${f.threadId}-capabilities`),
-                  type: "provider-session.updated",
-                  threadId: f.threadId,
-                  occurredAt: f.now,
-                  payload: providerSession,
-                },
-              ],
-            });
-          f.sessionSpy.mockReturnValue(
-            Effect.succeed(
-              Option.some({
-                ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
-                providerSession,
-              }),
-            ),
-          );
-        }
-        const stored = yield* f.react(node);
-        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
-        assert.equal(after.runs.filter((run) => run.status === "queued").length, 2);
-        assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
-        assert.isFalse(
-          after.turnItems.some(
-            (item) =>
-              item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
-          ),
-        );
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        assert.deepEqual(
-          yield* outbox.listByCommandId(
-            CommandId.make(
-              `command:queue-tool-boundary:${first.id}:${f.turnId}:${stored.sequence}`,
-            ),
-          ),
-          [],
-        );
-      }),
-  );
-
-  it.effect(
-    "preserves terminal fallback for an incompatible FIFO head",
-    () =>
-      Effect.gen(function* () {
-        const f = yield* queuedToolFixture("queue-boundary-terminal-fallback");
-        yield* f.queue("Different", { ...modelSelection, model: "different-model" });
-        yield* f.queue("Second");
-        yield* f.react(f.tool("tool"));
-        const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
-          (run) => run.status === "queued",
-        );
-        const started = yield* Queue.unbounded<RunId>();
-        yield* f.sink
-          .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
-          .pipe(
-            Stream.runForEach((stored) =>
-              stored.event.type === "run.updated" && stored.event.payload.status === "starting"
-                ? Queue.offer(started, stored.event.payload.id)
-                : Effect.void,
-            ),
-            Effect.forkScoped,
-          );
+  ] as const)("keeps the FIFO queue intact at a %s boundary", (condition) =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture(`queue-boundary-${condition}`);
+      yield* f.queue(
+        condition === "maintenance" ? "/compact" : "First",
+        condition === "incompatible-model"
+          ? { ...modelSelection, model: "different-model" }
+          : modelSelection,
+      );
+      yield* f.queue("Second");
+      let node = f.tool("boundary");
+      const projection = yield* f.orchestrator.getThreadProjection(f.threadId);
+      const first = projection.runs.find((run) => run.status === "queued")!;
+      if (condition === "subagent") {
+        const child = { ...f.tool("subagent-root", "running"), kind: "subagent" as const };
+        yield* f.writeTool(child);
+        node = { ...node, parentNodeId: child.id };
+      } else if (condition === "old-turn") {
+        node = { ...node, providerTurnId: ProviderTurnId.make("previous-turn") };
+      } else if (condition === "old-run") {
+        node = { ...node, runId: RunId.make("previous-run") };
+      } else if (condition === "held") {
+        yield* f.sink.write({
+          events: projection.runs
+            .filter((run) => run.status === "queued")
+            .map((run) => ({
+              id: EventId.make(`queue-boundary-held-event:${run.id}`),
+              type: "run.updated" as const,
+              threadId: f.threadId,
+              runId: run.id,
+              occurredAt: f.now,
+              payload: { ...run, queueHeld: true },
+            })),
+        });
+      } else if (condition === "approval") {
         yield* f.sink.write({
           events: [
             {
-              id: EventId.make(`${f.threadId}-terminal`),
-              type: "run.updated",
+              id: EventId.make("queue-boundary-approval-event"),
+              type: "runtime-request.updated",
               threadId: f.threadId,
               runId: f.run.id,
               occurredAt: f.now,
-              payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+              payload: {
+                id: RuntimeRequestId.make("queue-boundary-approval-request"),
+                nodeId: f.run.rootNodeId!,
+                providerTurnId: f.turnId,
+                nativeRequestRef: null,
+                kind: "permission",
+                status: "pending",
+                responseCapability: { type: "live", providerSessionId: f.providerSession.id },
+                createdAt: f.now,
+                resolvedAt: null,
+              },
             },
           ],
         });
-        assert.equal(yield* Queue.take(started), queued[0]!.id);
-        const after = yield* f.orchestrator.getThreadProjection(f.threadId);
-        assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
-      }),
+      } else if (condition === "runtime-mode" || condition === "interaction-mode") {
+        yield* f.orchestrator.dispatch(
+          condition === "runtime-mode"
+            ? {
+                type: "thread.runtime-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                runtimeMode: "approval-required",
+              }
+            : {
+                type: "thread.interaction-mode.set",
+                threadId: f.threadId,
+                commandId: CommandId.make(`${f.threadId}-mode`),
+                interactionMode: "plan",
+              },
+        );
+      } else if (condition === "restart-only" || condition === "live-restart-only") {
+        const providerSession = {
+          ...f.providerSession,
+          capabilities: {
+            ...f.providerSession.capabilities,
+            turns: {
+              ...f.providerSession.capabilities.turns,
+              supportsActiveSteering: false,
+              supportsSteeringByInterruptRestart: true,
+            },
+          },
+        };
+        if (condition === "restart-only")
+          yield* f.sink.write({
+            events: [
+              {
+                id: EventId.make(`${f.threadId}-capabilities`),
+                type: "provider-session.updated",
+                threadId: f.threadId,
+                occurredAt: f.now,
+                payload: providerSession,
+              },
+            ],
+          });
+        f.sessionSpy.mockReturnValue(
+          Effect.succeed(
+            Option.some({
+              ...Option.getOrThrow(yield* f.sessions.get(f.providerSession.id)),
+              providerSession,
+            }),
+          ),
+        );
+      }
+      const stored = yield* f.react(node);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.filter((run) => run.status === "queued").length, 2);
+      assert.equal(after.runs.find((run) => run.id === f.run.id)?.status, "running");
+      assert.isFalse(
+        after.turnItems.some(
+          (item) => item.type === "user_message" && item.inputIntent === "promoted_queued_to_steer",
+        ),
+      );
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      assert.deepEqual(
+        yield* outbox.listByCommandId(
+          CommandId.make(`command:queue-tool-boundary:${first.id}:${f.turnId}:${stored.sequence}`),
+        ),
+        [],
+      );
+    }),
+  );
+
+  it.effect("preserves terminal fallback for an incompatible FIFO head", () =>
+    Effect.gen(function* () {
+      const f = yield* queuedToolFixture("queue-boundary-terminal-fallback");
+      yield* f.queue("Different", { ...modelSelection, model: "different-model" });
+      yield* f.queue("Second");
+      yield* f.react(f.tool("tool"));
+      const queued = (yield* f.orchestrator.getThreadProjection(f.threadId)).runs.filter(
+        (run) => run.status === "queued",
+      );
+      const started = yield* Queue.unbounded<RunId>();
+      yield* f.sink
+        .stream({ threadId: f.threadId, afterSequence: yield* f.sink.latestSequence() })
+        .pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "run.updated" && stored.event.payload.status === "starting"
+              ? Queue.offer(started, stored.event.payload.id)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+      yield* f.sink.write({
+        events: [
+          {
+            id: EventId.make(`${f.threadId}-terminal`),
+            type: "run.updated",
+            threadId: f.threadId,
+            runId: f.run.id,
+            occurredAt: f.now,
+            payload: { ...f.run, status: "completed", startedAt: f.now, completedAt: f.now },
+          },
+        ],
+      });
+      assert.equal(yield* Queue.take(started), queued[0]!.id);
+      const after = yield* f.orchestrator.getThreadProjection(f.threadId);
+      assert.equal(after.runs.find((run) => run.id === queued[1]!.id)?.status, "queued");
+    }),
   );
 
   it.effect(

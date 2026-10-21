@@ -212,53 +212,52 @@ it.each(["channel", "session"] as const)(
   `;
     const { observations, lateWrites, requestCount, childAliveAfterLate, stderr, child } =
       await observeLateOwnerReplies(script);
-      const evidence = JSON.stringify({
-        observations,
-        lateWrites,
-        requestCount,
-        childAliveAfterLate,
-      });
-      expect(observations[0], evidence).toEqual({ phase: "qualified" });
+    const evidence = JSON.stringify({
+      observations,
+      lateWrites,
+      requestCount,
+      childAliveAfterLate,
+    });
+    expect(observations[0], evidence).toEqual({ phase: "qualified" });
+    expect(
+      observations.find((value) => value.phase === "gap"),
+      evidence,
+    ).toMatchObject({
+      refused: true,
+      timeout: { code: "launcher_upgrade_required" },
+      repeatedRefusals: true,
+    });
+    expect(lateWrites[0]!.elapsedMs, evidence).toBeGreaterThanOrEqual(3000);
+    expect(
+      observations.find((value) => value.phase === "after-late"),
+      evidence,
+    ).toMatchObject({
+      refused: true,
+      parentCurrent: true,
+      childPid: child.pid,
+    });
+    expect(childAliveAfterLate, evidence).toBe(true);
+    expect(
+      observations.filter((value) => value.phase === "recovered"),
+      evidence,
+    ).toHaveLength(2);
+    expect(lateWrites, evidence).toHaveLength(2);
+    expect(
+      lateWrites.every((value) => value.error === null),
+      evidence,
+    ).toBe(true);
+    expect(requestCount, evidence).toBe(5);
+    expect(stderr.match(/\[jones\/desktop-native-owner\] suspended/g)).toHaveLength(2);
+    expect(stderr.match(/\[jones\/desktop-native-owner\] resumed/g)).toHaveLength(2);
+    expect(stderr.match(/\[jones\/desktop-native-owner\] closed/g)).toHaveLength(1);
+    if (surface === "session") {
       expect(
-        observations.find((value) => value.phase === "gap"),
-        evidence,
-      ).toMatchObject({
-        refused: true,
-        timeout: { code: "launcher_upgrade_required" },
-        repeatedRefusals: true,
-      });
-      expect(lateWrites[0]!.elapsedMs, evidence).toBeGreaterThanOrEqual(3000);
-      expect(
-        observations.find((value) => value.phase === "after-late"),
-        evidence,
-      ).toMatchObject({
-        refused: true,
-        parentCurrent: true,
-        childPid: child.pid,
-      });
-      expect(childAliveAfterLate, evidence).toBe(true);
-      expect(
-        observations.filter((value) => value.phase === "recovered"),
-        evidence,
-      ).toHaveLength(2);
-      expect(lateWrites, evidence).toHaveLength(2);
-      expect(
-        lateWrites.every((value) => value.error === null),
+        observations
+          .filter((value) => value.phase === "gap")
+          .every((value) => value.available === false),
         evidence,
       ).toBe(true);
-      expect(requestCount, evidence).toBe(5);
-      expect(stderr.match(/\[jones\/desktop-native-owner\] suspended/g)).toHaveLength(2);
-      expect(stderr.match(/\[jones\/desktop-native-owner\] resumed/g)).toHaveLength(2);
-      expect(stderr.match(/\[jones\/desktop-native-owner\] closed/g)).toHaveLength(1);
-      if (surface === "session") {
-        expect(
-          observations
-            .filter((value) => value.phase === "gap")
-            .every((value) => value.available === false),
-          evidence,
-        ).toBe(true);
-      }
-
+    }
   },
 );
 

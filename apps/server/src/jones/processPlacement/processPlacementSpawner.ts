@@ -50,36 +50,48 @@ export function placeCommand(
   return ChildProcess.make(placed.command, placed.args, { ...command.options, shell: false });
 }
 
-const placeScopedCommand: (command: ChildProcess.Command, binding: ProcessPlacementBinding, scope: AgentScopeShape, platform: NodeJS.Platform) => Effect.Effect<ChildProcess.Command, never, Scope.Scope> = Effect.fn("processPlacementSpawner.placeScopedCommand")(function* (command: ChildProcess.Command, binding: ProcessPlacementBinding, scope: AgentScopeShape, platform: NodeJS.Platform): Effect.fn.Return<ChildProcess.Command, never, Scope.Scope> {
-    if (command._tag === "PipedCommand") {
-      return ChildProcess.pipeTo(
-        yield* placeScopedCommand(command.left, binding, scope, platform),
-        yield* placeScopedCommand(command.right, binding, scope, platform),
-        command.options,
-      );
-    }
-    if (roles.get(command) === "control")
-      return yield* Effect.sync(() => placeCommand(command, binding, platform));
-    const retained = yield* Effect.sync(() => claimScopedCommand(command, scope));
-    if (retained !== undefined) {
-      if (retained.stop === undefined)
-        return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
-      yield* Effect.addFinalizer(() => retained.stop!.pipe(Effect.ignoreCause({ log: true })));
-      return command;
-    }
-    const shell = command.options.shell;
-    const payload = shell
-      ? {
-          command: typeof shell === "string" ? shell : "/bin/sh",
-          args: ["-c", [command.command, ...command.args].join(" ")],
-        }
-      : { command: command.command, args: command.args };
-    const placed = yield* scope.wrap({ ...payload, name: "workload", env: command.options.env });
-    if (placed.stop === undefined)
+const placeScopedCommand: (
+  command: ChildProcess.Command,
+  binding: ProcessPlacementBinding,
+  scope: AgentScopeShape,
+  platform: NodeJS.Platform,
+) => Effect.Effect<ChildProcess.Command, never, Scope.Scope> = Effect.fn(
+  "processPlacementSpawner.placeScopedCommand",
+)(function* (
+  command: ChildProcess.Command,
+  binding: ProcessPlacementBinding,
+  scope: AgentScopeShape,
+  platform: NodeJS.Platform,
+): Effect.fn.Return<ChildProcess.Command, never, Scope.Scope> {
+  if (command._tag === "PipedCommand") {
+    return ChildProcess.pipeTo(
+      yield* placeScopedCommand(command.left, binding, scope, platform),
+      yield* placeScopedCommand(command.right, binding, scope, platform),
+      command.options,
+    );
+  }
+  if (roles.get(command) === "control")
+    return yield* Effect.sync(() => placeCommand(command, binding, platform));
+  const retained = yield* Effect.sync(() => claimScopedCommand(command, scope));
+  if (retained !== undefined) {
+    if (retained.stop === undefined)
       return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
-    yield* Effect.addFinalizer(() => placed.stop!.pipe(Effect.ignoreCause({ log: true })));
-    return ChildProcess.make(placed.command, placed.args, { ...command.options, shell: false });
-  });
+    yield* Effect.addFinalizer(() => retained.stop!.pipe(Effect.ignoreCause({ log: true })));
+    return command;
+  }
+  const shell = command.options.shell;
+  const payload = shell
+    ? {
+        command: typeof shell === "string" ? shell : "/bin/sh",
+        args: ["-c", [command.command, ...command.args].join(" ")],
+      }
+    : { command: command.command, args: command.args };
+  const placed = yield* scope.wrap({ ...payload, name: "workload", env: command.options.env });
+  if (placed.stop === undefined)
+    return yield* Effect.die(new ProcessPlacementError("scoped workload lifetime is required"));
+  yield* Effect.addFinalizer(() => placed.stop!.pipe(Effect.ignoreCause({ log: true })));
+  return ChildProcess.make(placed.command, placed.args, { ...command.options, shell: false });
+});
 
 export const layer = (binding: ProcessPlacementBinding | undefined) =>
   Layer.effect(

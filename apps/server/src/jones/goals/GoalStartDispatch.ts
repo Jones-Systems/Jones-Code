@@ -41,37 +41,40 @@ export class GoalStartDispatch extends Context.Service<
 const make = Effect.gen(function* () {
   const query = yield* makeCommandObservationQuery();
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const observe = Effect.fn("GoalStartDispatch.observe")(function*(threadId: ThreadId, requestId: string) {
-      const readback = yield* query
-        .observe({
-          threadId,
-          commandId: CommandId.make(`goal:${requestId}`),
-          messageId: MessageId.make(`goal:${requestId}`),
-        })
-        .pipe(Effect.result);
-      if (
-        readback._tag === "Success" &&
-        readback.success.commandStatus === "accepted" &&
-        (readback.success.correlation === "exact" || readback.success.correlation === "pending")
-      ) {
-        const records = yield* threads.getThreadRecords(threadId, ["runs"]).pipe(Effect.result);
-        const runs =
-          records._tag === "Success"
-            ? records.success.runs.filter(
-                (run) => run.userMessageId === MessageId.make(`goal:${requestId}`),
-              )
-            : [];
-        if (runs.length === 1)
-          return {
-            outcome: "accepted" as const,
-            runId: runs[0]!.id,
-            reason: "durable_start_accepted_native_state_pending",
-          };
-      }
-      return readback._tag === "Success" && readback.success.commandStatus === "rejected"
-        ? { outcome: "busy" as const, reason: "dispatch_rejected" }
-        : { outcome: "unknown" as const, reason: "dispatch_readback_unresolved" };
-    });
+  const observe = Effect.fn("GoalStartDispatch.observe")(function* (
+    threadId: ThreadId,
+    requestId: string,
+  ) {
+    const readback = yield* query
+      .observe({
+        threadId,
+        commandId: CommandId.make(`goal:${requestId}`),
+        messageId: MessageId.make(`goal:${requestId}`),
+      })
+      .pipe(Effect.result);
+    if (
+      readback._tag === "Success" &&
+      readback.success.commandStatus === "accepted" &&
+      (readback.success.correlation === "exact" || readback.success.correlation === "pending")
+    ) {
+      const records = yield* threads.getThreadRecords(threadId, ["runs"]).pipe(Effect.result);
+      const runs =
+        records._tag === "Success"
+          ? records.success.runs.filter(
+              (run) => run.userMessageId === MessageId.make(`goal:${requestId}`),
+            )
+          : [];
+      if (runs.length === 1)
+        return {
+          outcome: "accepted" as const,
+          runId: runs[0]!.id,
+          reason: "durable_start_accepted_native_state_pending",
+        };
+    }
+    return readback._tag === "Success" && readback.success.commandStatus === "rejected"
+      ? { outcome: "busy" as const, reason: "dispatch_rejected" }
+      : { outcome: "unknown" as const, reason: "dispatch_readback_unresolved" };
+  });
   return GoalStartDispatch.of({
     observe,
     capture: (threadId) =>
@@ -90,27 +93,27 @@ const make = Effect.gen(function* () {
         ),
         Effect.mapError(unavailable),
       ),
-    start: Effect.fn("GoalStartDispatch.start")(function*(input) {
-        const commandId = CommandId.make(`goal:${input.requestId}`);
-        const messageId = MessageId.make(`goal:${input.requestId}`);
-        yield* threads
-          .dispatch({
-            type: "message.dispatch",
-            createdBy: "agent",
-            creationSource: "mcp",
-            commandId,
-            messageId,
-            threadId: input.thread.id,
-            ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
-            text: input.text,
-            attachments: [],
-            modelSelection: input.thread.modelSelection,
-            dispatchMode: { type: "start_immediately" },
-            dispatchGuard: input.guard,
-          })
-          .pipe(Effect.result);
-        return yield* observe(input.thread.id, input.requestId);
-      }),
+    start: Effect.fn("GoalStartDispatch.start")(function* (input) {
+      const commandId = CommandId.make(`goal:${input.requestId}`);
+      const messageId = MessageId.make(`goal:${input.requestId}`);
+      yield* threads
+        .dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId,
+          messageId,
+          threadId: input.thread.id,
+          ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
+          text: input.text,
+          attachments: [],
+          modelSelection: input.thread.modelSelection,
+          dispatchMode: { type: "start_immediately" },
+          dispatchGuard: input.guard,
+        })
+        .pipe(Effect.result);
+      return yield* observe(input.thread.id, input.requestId);
+    }),
   });
 });
 export const layer = Layer.effect(GoalStartDispatch, make).pipe(

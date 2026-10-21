@@ -316,7 +316,10 @@ describe("source timestamp expiry", () => {
   });
   it("expires each host from its own source time and rejects already stale samples", async () => {
     const receive = vi.fn();
-    const older = { ...available, sampledAt: new Date(vi.getMockedSystemTime()!.getTime() - 25_000).toISOString() };
+    const older = {
+      ...available,
+      sampledAt: new Date(vi.getMockedSystemTime()!.getTime() - 25_000).toISOString(),
+    };
     const mini = { ...available, id: "mini" as const };
     const stop = observeHostStatus(
       new Visibility(),
@@ -483,7 +486,10 @@ describe("retained host-status cache", () => {
   });
 
   it("ignores a canceled late result without changing the retained sample or cadence", async () => {
-    const cache: HostStatusCache = { snapshot, settledAt: vi.getMockedSystemTime()!.getTime() - 10_000 };
+    const cache: HostStatusCache = {
+      snapshot,
+      settledAt: vi.getMockedSystemTime()!.getTime() - 10_000,
+    };
     const original = { ...cache };
     let resolve!: (value: HostStatusSnapshot) => void;
     const stop = observeHostStatus(

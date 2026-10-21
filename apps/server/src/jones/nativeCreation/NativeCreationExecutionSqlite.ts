@@ -170,56 +170,56 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
   const recordExecutionAcceptance: NonNullable<
     Repository.NativeCreationRepository["Service"]["recordExecutionAcceptance"]
   > = Effect.fn("NativeCreationExecutionSqlite.recordExecutionAcceptance")(function* (input) {
-      yield* eligible;
-      if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
-        return yield* unresolved("Native acceptance must share the event and receipt transaction");
-      const history = yield* requireHistory(input.claimId);
-      yield* assertIdentity(input.claimId, input.command.commandId, history.intent.threadId);
-      const reservation = yield* owner.getReservedCommand(input.command.commandId);
-      const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(input.command, {
-        onExcessProperty: "error",
-      });
-      const canonical = nativeCreationCanonicalJson(command);
-      if (
-        !("threadId" in command) ||
-        command.threadId !== history.intent.threadId ||
-        !["thread.create", "message.dispatch", "prepared-run.release"].includes(command.type) ||
-        Option.isNone(reservation) ||
-        reservation.value.claimId !== input.claimId ||
-        reservation.value.canonicalCommand !== canonical
-      )
-        return yield* unresolved("Native acceptance has no matching reserved command");
-      const rows =
-        yield* sql`SELECT event.event_id FROM orchestration_events event JOIN orchestration_command_receipts receipt ON receipt.command_id=event.command_id
+    yield* eligible;
+    if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
+      return yield* unresolved("Native acceptance must share the event and receipt transaction");
+    const history = yield* requireHistory(input.claimId);
+    yield* assertIdentity(input.claimId, input.command.commandId, history.intent.threadId);
+    const reservation = yield* owner.getReservedCommand(input.command.commandId);
+    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)(input.command, {
+      onExcessProperty: "error",
+    });
+    const canonical = nativeCreationCanonicalJson(command);
+    if (
+      !("threadId" in command) ||
+      command.threadId !== history.intent.threadId ||
+      !["thread.create", "message.dispatch", "prepared-run.release"].includes(command.type) ||
+      Option.isNone(reservation) ||
+      reservation.value.claimId !== input.claimId ||
+      reservation.value.canonicalCommand !== canonical
+    )
+      return yield* unresolved("Native acceptance has no matching reserved command");
+    const rows =
+      yield* sql`SELECT event.event_id FROM orchestration_events event JOIN orchestration_command_receipts receipt ON receipt.command_id=event.command_id
       WHERE event.event_id=${input.eventId} AND event.sequence=${input.sequence} AND event.command_id=${command.commandId}
       AND event.aggregate_kind='thread' AND event.stream_id=${command.threadId} AND receipt.status='accepted'
       AND receipt.aggregate_id=${command.threadId} AND receipt.command_type=${command.type} AND receipt.result_sequence=${input.sequence}`;
-      if (rows.length !== 1)
-        return yield* unresolved("Native acceptance has no exact committed event and receipt");
-      const prior = yield* sql<{
-        claim_id: string;
-        command_digest: string;
-        binding_digest: string;
-        event_id: string;
-        event_sequence: number;
-      }>`SELECT claim_id,command_digest,binding_digest,event_id,event_sequence FROM jones_native_creation_execution_acceptances WHERE command_id=${command.commandId}`;
-      const digest = nativeCreationSha256(canonical);
-      if (prior.length > 0) {
-        const value = prior[0]!;
-        if (
-          prior.length !== 1 ||
-          value.claim_id !== input.claimId ||
-          value.command_digest !== digest ||
-          value.binding_digest !== history.intent.bindingDigest ||
-          value.event_id !== input.eventId ||
-          value.event_sequence !== input.sequence
-        )
-          return yield* unresolved("Native acceptance is immutable");
-        return;
-      }
-      yield* sql`INSERT INTO jones_native_creation_execution_acceptances(command_id,claim_id,thread_id,command_digest,binding_digest,event_id,event_sequence)
+    if (rows.length !== 1)
+      return yield* unresolved("Native acceptance has no exact committed event and receipt");
+    const prior = yield* sql<{
+      claim_id: string;
+      command_digest: string;
+      binding_digest: string;
+      event_id: string;
+      event_sequence: number;
+    }>`SELECT claim_id,command_digest,binding_digest,event_id,event_sequence FROM jones_native_creation_execution_acceptances WHERE command_id=${command.commandId}`;
+    const digest = nativeCreationSha256(canonical);
+    if (prior.length > 0) {
+      const value = prior[0]!;
+      if (
+        prior.length !== 1 ||
+        value.claim_id !== input.claimId ||
+        value.command_digest !== digest ||
+        value.binding_digest !== history.intent.bindingDigest ||
+        value.event_id !== input.eventId ||
+        value.event_sequence !== input.sequence
+      )
+        return yield* unresolved("Native acceptance is immutable");
+      return;
+    }
+    yield* sql`INSERT INTO jones_native_creation_execution_acceptances(command_id,claim_id,thread_id,command_digest,binding_digest,event_id,event_sequence)
       VALUES(${command.commandId},${input.claimId},${command.threadId},${digest},${history.intent.bindingDigest},${input.eventId},${input.sequence})`;
-    }, Effect.mapError(mapFailure));
+  }, Effect.mapError(mapFailure));
   const readExecutionReference: NonNullable<
     Repository.NativeCreationRepository["Service"]["readExecutionReference"]
   > = (reference) => sql.withTransaction(resolve(reference)).pipe(Effect.mapError(mapFailure));

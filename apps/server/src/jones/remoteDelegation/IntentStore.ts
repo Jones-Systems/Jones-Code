@@ -83,16 +83,19 @@ export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const read = (commandId: CommandId) =>
     sql<Row>`SELECT * FROM jones_remote_delegation_intents WHERE command_id = ${commandId}`;
-  const find = Effect.fn("RemoteDelegationIntentStore.find")(function*(commandId: CommandId, request: unknown) {
-      const row = (yield* read(commandId).pipe(Effect.mapError(storageFailure)))[0];
-      if (row === undefined) return undefined;
-      if (row.request_json !== canonicalRequest(request))
-        return yield* new OrchestratorMcpFailure({
-          code: "invalid_request",
-          message: "This remote delegation key was already used with a different request.",
-        });
-      return yield* Effect.try({ try: () => decode(row), catch: storageFailure });
-    });
+  const find = Effect.fn("RemoteDelegationIntentStore.find")(function* (
+    commandId: CommandId,
+    request: unknown,
+  ) {
+    const row = (yield* read(commandId).pipe(Effect.mapError(storageFailure)))[0];
+    if (row === undefined) return undefined;
+    if (row.request_json !== canonicalRequest(request))
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: "This remote delegation key was already used with a different request.",
+      });
+    return yield* Effect.try({ try: () => decode(row), catch: storageFailure });
+  });
   const prepare = (commandId: CommandId, request: unknown, envelope: IntentEnvelope) =>
     sql
       .withTransaction(

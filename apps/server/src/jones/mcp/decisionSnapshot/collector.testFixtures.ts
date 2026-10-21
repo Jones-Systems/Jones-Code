@@ -5,10 +5,21 @@ import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import { monotonicSeconds, runBoundCollector } from "./collector.ts";
 
-export async function closeOwnedFixtureGroups(owner: string, directory: string, assertions: {
-  verify: (fields: string[], startTicks: string, metadata: { uid: number }, command: string, directory: string, pgid: number) => void;
-  closed: (exists: (pgid: number) => boolean, pgid: number) => void;
-}) {
+export async function closeOwnedFixtureGroups(
+  owner: string,
+  directory: string,
+  assertions: {
+    verify: (
+      fields: string[],
+      startTicks: string,
+      metadata: { uid: number },
+      command: string,
+      directory: string,
+      pgid: number,
+    ) => void;
+    closed: (exists: (pgid: number) => boolean, pgid: number) => void;
+  },
+) {
   const trace = await NodeFSP.readFile(NodePath.join(owner, "trace.fixture"), "utf8").catch(
     (cause: unknown) => {
       if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") return "";
@@ -60,40 +71,45 @@ export async function closeOwnedFixtureGroups(owner: string, directory: string, 
   }
 }
 
-export async function observePublishedOperation(scratch: string, childPid: number, first: Promise<string>, nativeDeadline: number) {
+export async function observePublishedOperation(
+  scratch: string,
+  childPid: number,
+  first: Promise<string>,
+  nativeDeadline: number,
+) {
   const publicationWait = new AbortController();
   let publication: Promise<unknown> | undefined;
   try {
-          publication = (async () => {
-            while (!publicationWait.signal.aborted) {
-              const operation = JSON.parse(
-                await NodeFSP.readFile(NodePath.join(scratch, "state/malcolm.json"), "utf8"),
-              ).operation;
-              if (
-                operation?.pid === childPid &&
-                operation.pgid === childPid &&
-                operation.account === "malcolm"
-              )
-                return operation;
-              await NodeTimersPromises.setTimeout(20, undefined, {
-                signal: publicationWait.signal,
-              });
-            }
-            throw new Error("fixture operation publication wait cancelled");
-          })();
-          return await Promise.race([
-            publication,
-            first.then(() => {
-              throw new Error("collector finished before child operation was published");
-            }),
-            NodeTimersPromises.setTimeout(
-              Math.max(0, (nativeDeadline - monotonicSeconds()) * 1000),
-              undefined,
-              { signal: publicationWait.signal },
-            ).then(() => {
-              throw new Error("child operation was not published before the collector deadline");
-            }),
-          ]);
+    publication = (async () => {
+      while (!publicationWait.signal.aborted) {
+        const operation = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(scratch, "state/malcolm.json"), "utf8"),
+        ).operation;
+        if (
+          operation?.pid === childPid &&
+          operation.pgid === childPid &&
+          operation.account === "malcolm"
+        )
+          return operation;
+        await NodeTimersPromises.setTimeout(20, undefined, {
+          signal: publicationWait.signal,
+        });
+      }
+      throw new Error("fixture operation publication wait cancelled");
+    })();
+    return await Promise.race([
+      publication,
+      first.then(() => {
+        throw new Error("collector finished before child operation was published");
+      }),
+      NodeTimersPromises.setTimeout(
+        Math.max(0, (nativeDeadline - monotonicSeconds()) * 1000),
+        undefined,
+        { signal: publicationWait.signal },
+      ).then(() => {
+        throw new Error("child operation was not published before the collector deadline");
+      }),
+    ]);
   } finally {
     publicationWait.abort();
     await publication?.catch(() => {});
@@ -118,10 +134,14 @@ export function ownProbeReceipt(scratch: string) {
     });
   });
   return {
-    observe: () => Promise.race([
-      observed,
-      NodeTimersPromises.setTimeout(2_000, false, { signal: receiptWait.signal }),
-    ]),
-    close() { receiptWait.abort(); watcher?.close(); },
+    observe: () =>
+      Promise.race([
+        observed,
+        NodeTimersPromises.setTimeout(2_000, false, { signal: receiptWait.signal }),
+      ]),
+    close() {
+      receiptWait.abort();
+      watcher?.close();
+    },
   };
 }

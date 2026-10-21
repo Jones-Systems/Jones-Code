@@ -32,63 +32,62 @@ export class CompanionIpcPayloadError extends Schema.TaggedError<CompanionIpcPay
   }
 }
 
-const mainRenderer = Effect.fn("CompanionIpc.mainRenderer")(function* (event?: DesktopIpc.DesktopIpcInvokeEvent) {
-    const windows = yield* ElectronWindow.ElectronWindow;
-    const main = yield* windows.main;
-    if (
-      event === undefined ||
-      Option.isNone(main) ||
-      main.value.webContents.isDestroyed() ||
-      main.value.webContents.id !== event.sender.id
-    )
-      return yield* new CompanionIpcSenderError();
-    return main.value.webContents;
-  });
+const mainRenderer = Effect.fn("CompanionIpc.mainRenderer")(function* (
+  event?: DesktopIpc.DesktopIpcInvokeEvent,
+) {
+  const windows = yield* ElectronWindow.ElectronWindow;
+  const main = yield* windows.main;
+  if (
+    event === undefined ||
+    Option.isNone(main) ||
+    main.value.webContents.isDestroyed() ||
+    main.value.webContents.id !== event.sender.id
+  )
+    return yield* new CompanionIpcSenderError();
+  return main.value.webContents;
+});
 
 export const getState = DesktopIpc.makeIpcMethod({
   channel: Channels.GET_STATE,
   payload: Schema.Void,
   result: DesktopCompanionState,
-  handler: Effect.fn("CompanionIpc.getState")(function* (_,
-event) {
-      yield* mainRenderer(event);
-      return yield* (yield* CompanionUplink.CompanionUplink).getState;
-    }),
+  handler: Effect.fn("CompanionIpc.getState")(function* (_, event) {
+    yield* mainRenderer(event);
+    return yield* (yield* CompanionUplink.CompanionUplink).getState;
+  }),
 });
 
 const configure = DesktopIpc.makeIpcMethod({
   channel: Channels.CONFIGURE,
   payload: DesktopCompanionConfigureInput,
   result: DesktopCompanionState,
-  handler: Effect.fn("CompanionIpc.configure")(function* (input,
-event) {
-      yield* mainRenderer(event);
-      const store = yield* CompanionConfig.CompanionConfig;
-      const uplink = yield* CompanionUplink.CompanionUplink;
-      const settings = yield* DesktopAppSettings.DesktopAppSettings;
-      const config = yield* store.set(input);
-      const restartRequired =
-        CompanionConfig.browserOnlyStartup(config) && (yield* settings.get).localEnvironmentEnabled;
-      yield* uplink.configure(config, restartRequired);
-      if (restartRequired) {
-        // The next bootstrap disables the backend before its first spawn; never relabel a running server as browser-only.
-        yield* (yield* DesktopLifecycle.DesktopLifecycle).relaunch(
-          "previewCompanion.browserOnly=true",
-        );
-      }
-      return yield* uplink.getState;
-    }),
+  handler: Effect.fn("CompanionIpc.configure")(function* (input, event) {
+    yield* mainRenderer(event);
+    const store = yield* CompanionConfig.CompanionConfig;
+    const uplink = yield* CompanionUplink.CompanionUplink;
+    const settings = yield* DesktopAppSettings.DesktopAppSettings;
+    const config = yield* store.set(input);
+    const restartRequired =
+      CompanionConfig.browserOnlyStartup(config) && (yield* settings.get).localEnvironmentEnabled;
+    yield* uplink.configure(config, restartRequired);
+    if (restartRequired) {
+      // The next bootstrap disables the backend before its first spawn; never relabel a running server as browser-only.
+      yield* (yield* DesktopLifecycle.DesktopLifecycle).relaunch(
+        "previewCompanion.browserOnly=true",
+      );
+    }
+    return yield* uplink.getState;
+  }),
 });
 
 export const setTicketProviderReady = DesktopIpc.makeIpcMethod({
   channel: Channels.TICKET_PROVIDER_READY,
   payload: Schema.Boolean,
   result: Schema.Void,
-  handler: Effect.fn("CompanionIpc.setTicketProviderReady")(function* (ready,
-event) {
-      const renderer = yield* mainRenderer(event);
-      yield* (yield* CompanionUplink.CompanionUplink).setReady(ready, renderer);
-    }),
+  handler: Effect.fn("CompanionIpc.setTicketProviderReady")(function* (ready, event) {
+    const renderer = yield* mainRenderer(event);
+    yield* (yield* CompanionUplink.CompanionUplink).setReady(ready, renderer);
+  }),
 });
 
 export const completeTicket = DesktopIpc.makeIpcMethod({
@@ -96,25 +95,23 @@ export const completeTicket = DesktopIpc.makeIpcMethod({
   // Decode after sender validation, replacing schema errors that could contain a ticket URL.
   payload: Schema.Unknown,
   result: Schema.Void,
-  handler: Effect.fn("CompanionIpc.completeTicket")(function* (raw,
-event) {
-      yield* mainRenderer(event);
-      const response = yield* Schema.decodeUnknownEffect(DesktopCompanionTicketResponse)(raw).pipe(
-        Effect.mapError(() => new CompanionIpcPayloadError()),
-      );
-      yield* (yield* CompanionUplink.CompanionUplink).completeTicket(response);
-    }),
+  handler: Effect.fn("CompanionIpc.completeTicket")(function* (raw, event) {
+    yield* mainRenderer(event);
+    const response = yield* Schema.decodeUnknownEffect(DesktopCompanionTicketResponse)(raw).pipe(
+      Effect.mapError(() => new CompanionIpcPayloadError()),
+    );
+    yield* (yield* CompanionUplink.CompanionUplink).completeTicket(response);
+  }),
 });
 
 export const retry = DesktopIpc.makeIpcMethod({
   channel: Channels.RETRY,
   payload: Schema.Void,
   result: Schema.Void,
-  handler: Effect.fn("CompanionIpc.retry")(function* (_,
-event) {
-      yield* mainRenderer(event);
-      yield* (yield* CompanionUplink.CompanionUplink).retry;
-    }),
+  handler: Effect.fn("CompanionIpc.retry")(function* (_, event) {
+    yield* mainRenderer(event);
+    yield* (yield* CompanionUplink.CompanionUplink).retry;
+  }),
 });
 
 export const install = Effect.gen(function* () {

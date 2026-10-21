@@ -18,7 +18,10 @@ describe("image zoom interactions", () => {
       target.dispatchEvent(event);
     });
   const click = async (target: Element, detail = 1) =>
-    await dispatch(target, new MouseEvent("click", { bubbles: true, detail, clientX: 100, clientY: 50 }));
+    await dispatch(
+      target,
+      new MouseEvent("click", { bubbles: true, detail, clientX: 100, clientY: 50 }),
+    );
   const key = async (target: Element, key: string) =>
     await dispatch(target, new KeyboardEvent("keydown", { bubbles: true, key }));
   const edit = async (value: string, commit = "Enter") => {
@@ -33,19 +36,20 @@ describe("image zoom interactions", () => {
     else await key(input(), commit);
   };
   const render = async (layout: "dialog" | "panel" = "dialog", src = "fixture.png") => {
-    await act(async () =>
-      await root.rerender(
-        <div onKeyDown={gallery}>
-          <ZoomableImage
-            key={src}
-            ref={handle}
-            src={src}
-            name="Fixture"
-            layout={layout}
-            onError={() => {}}
-          />
-        </div>,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <div onKeyDown={gallery}>
+            <ZoomableImage
+              key={src}
+              ref={handle}
+              src={src}
+              name="Fixture"
+              layout={layout}
+              onError={() => {}}
+            />
+          </div>,
+        ),
     );
     Object.defineProperties(region(), {
       clientWidth: { configurable: true, value: 400 },
@@ -61,50 +65,49 @@ describe("image zoom interactions", () => {
   };
 
   async function setupTest(): Promise<AsyncDisposable> {
-  let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
-  async function cleanup() {
-    const screen = initialized ? root : undefined;
-    try {
-    await act(() => screen?.unmount());
-    } finally {
+    let initialized = false;
+    let ownedContainer: HTMLDivElement | undefined;
+    async function cleanup() {
+      const screen = initialized ? root : undefined;
       try {
-        await screen?.[Symbol.asyncDispose]();
+        await act(() => screen?.unmount());
       } finally {
-        ownedContainer?.remove();
-        vi.restoreAllMocks();
-        vi.unstubAllGlobals();
+        try {
+          await screen?.[Symbol.asyncDispose]();
+        } finally {
+          ownedContainer?.remove();
+          vi.restoreAllMocks();
+          vi.unstubAllGlobals();
+        }
       }
     }
-  }
-  try {
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(
-          private readonly callback: (
-            entries: { target: Element; contentRect: { width: number; height: number } }[],
-          ) => void,
-        ) {}
-        observe(target: Element) {
-          resize = (entries) => this.callback(entries.map((entry) => ({ ...entry, target })));
-        }
-        disconnect() {}
-      },
-    );
-    gallery = vi.fn<KeyboardEventHandler<HTMLDivElement>>();
-    ownedContainer = container = document.createElement("div");
-    document.body.append(container);
-    root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    try {
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          constructor(
+            private readonly callback: (
+              entries: { target: Element; contentRect: { width: number; height: number } }[],
+            ) => void,
+          ) {}
+          observe(target: Element) {
+            resize = (entries) => this.callback(entries.map((entry) => ({ ...entry, target })));
+          }
+          disconnect() {}
+        },
+      );
+      gallery = vi.fn<KeyboardEventHandler<HTMLDivElement>>();
+      ownedContainer = container = document.createElement("div");
+      document.body.append(container);
+      root = await renderTest(null, { container: container, router: false });
+      initialized = true;
 
-    return { [Symbol.asyncDispose]: cleanup };
-  } catch (error) {
-    await cleanup();
-    throw error;
+      return { [Symbol.asyncDispose]: cleanup };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
-}
-
 
   it("counts rapid clicks, changes cursor, cycles with Enter and space, and resets on a new image", async () => {
     await using _fixture = await setupTest();

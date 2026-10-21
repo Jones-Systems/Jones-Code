@@ -55,22 +55,21 @@ async function setupFixture1() {
   const stack = new AsyncDisposableStack();
   renderDisposables = stack;
   stack.defer(async () => {
-  await act(() => root.unmount());
-  container.remove();
-  __resetClientSettingsPersistenceForTests();
-  vi.unstubAllGlobals();
-
+    await act(() => root.unmount());
+    container.remove();
+    __resetClientSettingsPersistenceForTests();
+    vi.unstubAllGlobals();
   });
   try {
-  storage.saved = null;
-  storage.getClientSettings.mockReset().mockImplementation(async () => storage.saved);
-  storage.setClientSettings.mockReset().mockImplementation(async (settings) => {
-    storage.saved = settings;
-  });
-  __resetClientSettingsPersistenceForTests();
-  container = document.createElement("div");
-  document.body.append(container);
-  root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    storage.saved = null;
+    storage.getClientSettings.mockReset().mockImplementation(async () => storage.saved);
+    storage.setClientSettings.mockReset().mockImplementation(async (settings) => {
+      storage.saved = settings;
+    });
+    __resetClientSettingsPersistenceForTests();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
     return stack;
   } catch (error) {
@@ -79,12 +78,11 @@ async function setupFixture1() {
   }
 }
 
-
 describe("PromptsSettings persistence", () => {
   it.each(["queued", "sent"] as const)(
     "saves %s and restores it after client hydration",
     async (stage) => {
-    await using _fixture = await setupFixture1();
+      await using _fixture = await setupFixture1();
       storage.saved = { ...DEFAULT_CLIENT_SETTINGS, wordWrap: false };
       await act(async () => {
         await ensureClientSettingsHydrated();

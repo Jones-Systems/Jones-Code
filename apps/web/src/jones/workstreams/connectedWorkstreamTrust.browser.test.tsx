@@ -146,34 +146,31 @@ describe("Workstream grouping with connected-environment trust", () => {
 
 describe("Workstream sidebar with an environment trust conflict", () => {
   let root: Screen;
-let renderDisposables: AsyncDisposableStack;
+  let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
 
   async function setupFixture1() {
-  const stack = new AsyncDisposableStack();
-  renderDisposables = stack;
-  stack.defer(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    localStorage.clear();
-    vi.restoreAllMocks();
-    vi.unstubAllGlobals();
+    const stack = new AsyncDisposableStack();
+    renderDisposables = stack;
+    stack.defer(async () => {
+      await act(async () => root.unmount());
+      container.remove();
+      localStorage.clear();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+    try {
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      container = document.createElement("div");
+      document.body.append(container);
+      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
-  });
-  try {
-    vi.spyOn(Date, "now").mockReturnValue(now);
-    container = document.createElement("div");
-    document.body.append(container);
-    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
-
-    return stack;
-  } catch (error) {
-    await stack.disposeAsync();
-    throw error;
+      return stack;
+    } catch (error) {
+      await stack.disposeAsync();
+      throw error;
+    }
   }
-}
-
-
 
   it("warns and blocks every membership change for the conflicting environment", async () => {
     await using _fixture = await setupFixture1();

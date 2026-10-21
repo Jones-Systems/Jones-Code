@@ -14,7 +14,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -25,10 +25,10 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -37,9 +37,8 @@ async function setupTest(): Promise<AsyncDisposable> {
   }
 }
 
-
 it("cycles all statuses with only the selected number highlighted and no underline", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   function Fixture() {
     const [filter, setFilter] = useState<ThreadStatusFilter>("all");
     return (

@@ -119,63 +119,67 @@ const make = Effect.gen(function* () {
       return yield* new CheckoutError({ reason: "unavailable" });
   });
   const readTarget = Effect.fn("CheckoutIntent.readTarget")(function* (threadId: string) {
-      const rows = yield* sql<{
-        payload_json: string;
-      }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${threadId}`;
-      if (!rows[0]) return yield* new CheckoutError({ reason: "unavailable" });
-      const thread = yield* decodeThreadTarget(rows[0].payload_json);
-      const projects = yield* sql<{
-        workspace_root: string;
-        updated_at: string;
-        deleted_at: string | null;
-      }>`SELECT workspace_root,updated_at,deleted_at FROM projection_projects WHERE project_id=${thread.projectId}`;
-      const project = projects[0];
-      if (!project || project.deleted_at !== null || thread.deletedAt !== null)
-        return yield* new CheckoutError({ reason: "unavailable" });
-      return {
-        threadId,
-        projectId: thread.projectId,
-        projectRoot: project.workspace_root,
-        projectRevision: project.updated_at,
-        threadRevision: thread.updatedAt,
-        worktreePath: thread.worktreePath,
-        threadBranch: thread.branch,
-      };
-    });
-  const replay = Effect.fn("CheckoutIntent.replay")(function* (command: IntentCommand, threadId: string) {
-      const rows =
-        yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${command.commandId}`;
-      const identities =
-        rows.length === 0
-          ? [
-              {
-                subjectThreadId: threadId,
-                origin: { kind: "command" as const, parentThreadId: null, requestId: null },
-              },
-            ]
-          : rows.map((row) => ({
-              subjectThreadId: row.subject_thread_id,
-              origin: {
-                kind: row.origin_kind,
-                parentThreadId: row.origin_parent_thread_id,
-                requestId: row.request_id,
-              },
-            }));
-      let found = false;
-      for (const identity of identities) {
-        const result = yield* checkout.replay({
-          ...identity,
-          origin: yield* decodeOrigin(identity.origin),
-          command,
-          commandId: command.commandId,
-          commandType: command.type,
-          receiptThreadId: threadId,
-        });
-        found = result.kind !== "absent";
-      }
-      return found;
-    }, Effect.mapError(mapError));
-  const prepare = Effect.fn("CheckoutIntent.prepare")(function* (plan: IntentPlan) {
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${threadId}`;
+    if (!rows[0]) return yield* new CheckoutError({ reason: "unavailable" });
+    const thread = yield* decodeThreadTarget(rows[0].payload_json);
+    const projects = yield* sql<{
+      workspace_root: string;
+      updated_at: string;
+      deleted_at: string | null;
+    }>`SELECT workspace_root,updated_at,deleted_at FROM projection_projects WHERE project_id=${thread.projectId}`;
+    const project = projects[0];
+    if (!project || project.deleted_at !== null || thread.deletedAt !== null)
+      return yield* new CheckoutError({ reason: "unavailable" });
+    return {
+      threadId,
+      projectId: thread.projectId,
+      projectRoot: project.workspace_root,
+      projectRevision: project.updated_at,
+      threadRevision: thread.updatedAt,
+      worktreePath: thread.worktreePath,
+      threadBranch: thread.branch,
+    };
+  });
+  const replay = Effect.fn("CheckoutIntent.replay")(function* (
+    command: IntentCommand,
+    threadId: string,
+  ) {
+    const rows =
+      yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${command.commandId}`;
+    const identities =
+      rows.length === 0
+        ? [
+            {
+              subjectThreadId: threadId,
+              origin: { kind: "command" as const, parentThreadId: null, requestId: null },
+            },
+          ]
+        : rows.map((row) => ({
+            subjectThreadId: row.subject_thread_id,
+            origin: {
+              kind: row.origin_kind,
+              parentThreadId: row.origin_parent_thread_id,
+              requestId: row.request_id,
+            },
+          }));
+    let found = false;
+    for (const identity of identities) {
+      const result = yield* checkout.replay({
+        ...identity,
+        origin: yield* decodeOrigin(identity.origin),
+        command,
+        commandId: command.commandId,
+        commandType: command.type,
+        receiptThreadId: threadId,
+      });
+      found = result.kind !== "absent";
+    }
+    return found;
+  }, Effect.mapError(mapError));
+  const prepare = Effect.fn("CheckoutIntent.prepare")(
+    function* (plan: IntentPlan) {
       if (yield* replay(plan.command, plan.threadId))
         return { plan, candidates: [], preflight: [], commit: null };
       const subjects = new Set(plan.effects.filter((e) => role(e) !== null).map((e) => e.threadId));
@@ -327,135 +331,139 @@ const make = Effect.gen(function* () {
       }));
       const commit = preflight.length === 0 ? null : yield* conflicts.prepareOrdinary(preflight);
       return { plan, candidates, preflight, commit };
-    }, Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(mapError));
+    },
+    Effect.provideService(SqlClient.SqlClient, sql),
+    Effect.mapError(mapError),
+  );
   const validate = Effect.fn("CheckoutIntent.validate")(function* (intent: PreparedIntent) {
-      yield* transaction;
-      for (const candidate of intent.candidates) {
-        if (candidate.before === null) {
-          const existing =
-            yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE thread_id=${candidate.subjectThreadId}`;
-          if (existing.length !== 0) return yield* new CheckoutError({ reason: "stale" });
-        } else if (
-          digest(yield* readTarget(candidate.subjectThreadId)) !== digest(candidate.before)
-        )
-          return yield* new CheckoutError({ reason: "stale" });
-      }
-    }, Effect.mapError(mapError));
-  const accept = Effect.fn("CheckoutIntent.accept")(function* (intent: PreparedIntent, committed: CommittedEffects & { readonly receipt: CommandReceiptV2 }) {
-      yield* transaction;
-      const { plan } = intent;
-      if (
-        committed.receipt.commandId !== plan.command.commandId ||
-        committed.receipt.commandType !== plan.command.type ||
-        committed.receipt.threadId !== plan.threadId ||
-        committed.receipt.status !== "accepted" ||
-        digest(committed.effects) !== digest(plan.effects)
-      )
+    yield* transaction;
+    for (const candidate of intent.candidates) {
+      if (candidate.before === null) {
+        const existing =
+          yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE thread_id=${candidate.subjectThreadId}`;
+        if (existing.length !== 0) return yield* new CheckoutError({ reason: "stale" });
+      } else if (digest(yield* readTarget(candidate.subjectThreadId)) !== digest(candidate.before))
+        return yield* new CheckoutError({ reason: "stale" });
+    }
+  }, Effect.mapError(mapError));
+  const accept = Effect.fn("CheckoutIntent.accept")(function* (
+    intent: PreparedIntent,
+    committed: CommittedEffects & { readonly receipt: CommandReceiptV2 },
+  ) {
+    yield* transaction;
+    const { plan } = intent;
+    if (
+      committed.receipt.commandId !== plan.command.commandId ||
+      committed.receipt.commandType !== plan.command.type ||
+      committed.receipt.threadId !== plan.threadId ||
+      committed.receipt.status !== "accepted" ||
+      digest(committed.effects) !== digest(plan.effects)
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    const inputs: OrdinaryCheckout.Accept[] = [];
+    for (const candidate of intent.preflight) {
+      const basis = committed.storedEvents
+        .filter((e) => e.event.threadId === candidate.subjectThreadId)
+        .at(-1);
+      if (!basis || !plan.events.some((e) => e.id === basis.event.id))
         return yield* new CheckoutError({ reason: "identity" });
-      const inputs: OrdinaryCheckout.Accept[] = [];
-      for (const candidate of intent.preflight) {
-        const basis = committed.storedEvents
-          .filter((e) => e.event.threadId === candidate.subjectThreadId)
-          .at(-1);
-        if (!basis || !plan.events.some((e) => e.id === basis.event.id))
-          return yield* new CheckoutError({ reason: "identity" });
-        const created = committed.storedEvents.find(
+      const created = committed.storedEvents.find(
+        (e) =>
+          e.event.id === candidate.birthEventId &&
+          e.event.type === "thread.created" &&
+          e.event.threadId === candidate.subjectThreadId,
+      );
+      const birth =
+        candidate.birth ??
+        (created === undefined ? null : { eventId: created.event.id, sequence: created.sequence });
+      if (birth === null) return yield* new CheckoutError({ reason: "identity" });
+      const now = DateTime.formatIso(committed.receipt.acceptedAt);
+      const identity = {
+        commandId: plan.command.commandId,
+        subject: candidate.subjectThreadId,
+        checkout: candidate.target.checkoutKey,
+      };
+      inputs.push({
+        ...candidate,
+        birth,
+        leaseId: `ordinary-lease:${digest({ ...identity, birth })}`,
+        receiptSequence: committed.receipt.resultSequence,
+        basisEventId: basis.event.id,
+        basisSequence: basis.sequence,
+        now,
+        expiresAt: now,
+      });
+    }
+    if (inputs.length === 0) return;
+    if (intent.commit === null) return yield* new CheckoutError({ reason: "identity" });
+    yield* intent.commit(inputs).pipe(
+      Effect.provideService(OrdinaryCheckout.CheckoutAcceptanceAuthority, {
+        assertNewAcceptance: (input) =>
+          inputs.includes(input)
+            ? transaction
+            : Effect.fail(new CheckoutError({ reason: "identity" })),
+        assertDerivedLink: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+      }),
+    );
+  }, Effect.mapError(mapError));
+  const linkEffects = Effect.fn("CheckoutIntent.linkEffects")(function* (
+    committed: CommittedEffects,
+  ) {
+    yield* transaction;
+    for (const effect of committed.effects) {
+      const effectRole = role(effect);
+      if (effectRole === null) continue;
+      const request = effect.request;
+      const runId =
+        "runId" in request
+          ? request.runId
+          : request.type === "provider-runtime.continue"
+            ? request.sourceRunId
+            : null;
+      if (runId === null) return yield* new CheckoutError({ reason: "unavailable" });
+      const rows =
+        yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE subject_thread_id=${effect.threadId} AND run_id=${runId}`;
+      if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
+      const admission = rows[0]!;
+      const uses = yield* sql<{
+        operation_id: string;
+        revision: number;
+      }>`SELECT operation_id,revision FROM jones_ordinary_checkout_uses WHERE admission_id=${admission.admission_id} AND state IN ('reserved','started','draining')`;
+      const basis = committed.storedEvents
+        .filter(
           (e) =>
-            e.event.id === candidate.birthEventId &&
-            e.event.type === "thread.created" &&
-            e.event.threadId === candidate.subjectThreadId,
-        );
-        const birth =
-          candidate.birth ??
-          (created === undefined
-            ? null
-            : { eventId: created.event.id, sequence: created.sequence });
-        if (birth === null) return yield* new CheckoutError({ reason: "identity" });
-        const now = DateTime.formatIso(committed.receipt.acceptedAt);
-        const identity = {
-          commandId: plan.command.commandId,
-          subject: candidate.subjectThreadId,
-          checkout: candidate.target.checkoutKey,
-        };
-        inputs.push({
-          ...candidate,
-          birth,
-          leaseId: `ordinary-lease:${digest({ ...identity, birth })}`,
-          receiptSequence: committed.receipt.resultSequence,
-          basisEventId: basis.event.id,
-          basisSequence: basis.sequence,
-          now,
-          expiresAt: now,
-        });
-      }
-      if (inputs.length === 0) return;
-      if (intent.commit === null) return yield* new CheckoutError({ reason: "identity" });
-      yield* intent.commit(inputs).pipe(
+            e.event.threadId === effect.threadId &&
+            (e.event.type === "run.updated" || e.event.type === "run.created") &&
+            e.event.payload.id === runId,
+        )
+        .at(-1);
+      if (
+        uses.length !== 1 ||
+        !basis ||
+        ((basis.event.type === "run.updated" || basis.event.type === "run.created") &&
+          basis.event.payload.activeAttemptId !== admission.attempt_id)
+      )
+        return yield* new CheckoutError({ reason: "unavailable" });
+      const link: OrdinaryCheckout.DerivedLink = {
+        operationId: uses[0]!.operation_id,
+        expectedRevision: uses[0]!.revision,
+        admissionId: admission.admission_id,
+        basisEventId: basis.event.id,
+        basisSequence: basis.sequence,
+        link: { effectId: effect.id, request, role: effectRole },
+        now: DateTime.formatIso(basis.event.occurredAt),
+      };
+      yield* checkout.linkDerived(link).pipe(
         Effect.provideService(OrdinaryCheckout.CheckoutAcceptanceAuthority, {
-          assertNewAcceptance: (input) =>
-            inputs.includes(input)
+          assertNewAcceptance: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
+          assertDerivedLink: (input, current) =>
+            input === link && current.admission_id === admission.admission_id
               ? transaction
               : Effect.fail(new CheckoutError({ reason: "identity" })),
-          assertDerivedLink: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
         }),
       );
-    }, Effect.mapError(mapError));
-  const linkEffects = Effect.fn("CheckoutIntent.linkEffects")(function* (committed: CommittedEffects) {
-      yield* transaction;
-      for (const effect of committed.effects) {
-        const effectRole = role(effect);
-        if (effectRole === null) continue;
-        const request = effect.request;
-        const runId =
-          "runId" in request
-            ? request.runId
-            : request.type === "provider-runtime.continue"
-              ? request.sourceRunId
-              : null;
-        if (runId === null) return yield* new CheckoutError({ reason: "unavailable" });
-        const rows =
-          yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE subject_thread_id=${effect.threadId} AND run_id=${runId}`;
-        if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
-        const admission = rows[0]!;
-        const uses = yield* sql<{
-          operation_id: string;
-          revision: number;
-        }>`SELECT operation_id,revision FROM jones_ordinary_checkout_uses WHERE admission_id=${admission.admission_id} AND state IN ('reserved','started','draining')`;
-        const basis = committed.storedEvents
-          .filter(
-            (e) =>
-              e.event.threadId === effect.threadId &&
-              (e.event.type === "run.updated" || e.event.type === "run.created") &&
-              e.event.payload.id === runId,
-          )
-          .at(-1);
-        if (
-          uses.length !== 1 ||
-          !basis ||
-          ((basis.event.type === "run.updated" || basis.event.type === "run.created") &&
-            basis.event.payload.activeAttemptId !== admission.attempt_id)
-        )
-          return yield* new CheckoutError({ reason: "unavailable" });
-        const link: OrdinaryCheckout.DerivedLink = {
-          operationId: uses[0]!.operation_id,
-          expectedRevision: uses[0]!.revision,
-          admissionId: admission.admission_id,
-          basisEventId: basis.event.id,
-          basisSequence: basis.sequence,
-          link: { effectId: effect.id, request, role: effectRole },
-          now: DateTime.formatIso(basis.event.occurredAt),
-        };
-        yield* checkout.linkDerived(link).pipe(
-          Effect.provideService(OrdinaryCheckout.CheckoutAcceptanceAuthority, {
-            assertNewAcceptance: () => Effect.fail(new CheckoutError({ reason: "unavailable" })),
-            assertDerivedLink: (input, current) =>
-              input === link && current.admission_id === admission.admission_id
-                ? transaction
-                : Effect.fail(new CheckoutError({ reason: "identity" })),
-          }),
-        );
-      }
-    }, Effect.mapError(mapError));
+    }
+  }, Effect.mapError(mapError));
   return CheckoutIntent.of({ replay, prepare, validate, accept, linkEffects });
 });
 

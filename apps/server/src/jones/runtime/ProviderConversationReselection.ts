@@ -140,7 +140,8 @@ const make = Effect.gen(function* () {
   const locks = yield* ThreadCommands.ThreadCommandExecutor;
   const sql = yield* SqlClient.SqlClient;
   const receipts = yield* CommandReceipts.CommandReceiptStoreV2;
-  const authorize = Effect.fn("ProviderConversationReselection.authorize")(function* (principal: Principal) {
+  const authorize = Effect.fn("ProviderConversationReselection.authorize")(
+    function* (principal: Principal) {
       const session = yield* sessions.getById({ sessionId: principal.sessionId });
       const now = yield* DateTime.now;
       if (
@@ -160,10 +161,13 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* new ProviderConversationReselectionError({ reason: "actor_unavailable" });
-    }, Effect.mapError(
-        () => new ProviderConversationReselectionError({ reason: "actor_unavailable" }),
-      ));
-  const snapshot = Effect.fn("ProviderConversationReselection.snapshot")(function* (input: ProviderConversationReselectionInput) {
+    },
+    Effect.mapError(
+      () => new ProviderConversationReselectionError({ reason: "actor_unavailable" }),
+    ),
+  );
+  const snapshot = Effect.fn("ProviderConversationReselection.snapshot")(
+    function* (input: ProviderConversationReselectionInput) {
       const shell = yield* projections.getThreadShell(input.threadId);
       const attachment =
         manager.readCurrentThreadRuntimeAttachment === undefined
@@ -356,12 +360,15 @@ const make = Effect.gen(function* () {
         runtimeAttachment,
       };
       return { preview, target };
-    }, Effect.mapError((cause) =>
-        isReselectionError(cause)
-          ? cause
-          : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
-      ));
-  const preview = Effect.fn("ProviderConversationReselection.preview")(function* (candidate: ProviderConversationReselectionInput, principal: Principal) {
+    },
+    Effect.mapError((cause) =>
+      isReselectionError(cause)
+        ? cause
+        : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
+    ),
+  );
+  const preview = Effect.fn("ProviderConversationReselection.preview")(
+    function* (candidate: ProviderConversationReselectionInput, principal: Principal) {
       const input = yield* decodePreviewInput(candidate, { onExcessProperty: "error" }).pipe(
         Effect.mapError(
           () => new ProviderConversationReselectionError({ reason: "invalid_request" }),
@@ -374,153 +381,160 @@ const make = Effect.gen(function* () {
           .withTransaction(authorize(principal).pipe(Effect.andThen(snapshot(input))))
           .pipe(Effect.map((state) => state.preview)),
       );
-    }, Effect.mapError((cause) =>
-        isReselectionError(cause)
-          ? cause
-          : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
-      ));
-  const reselect = Effect.fn("ProviderConversationReselection.reselect")(function* (candidate: ReselectProviderConversationInput, principal: Principal) {
-      const input = yield* decodeCommitInput(candidate, { onExcessProperty: "error" }).pipe(
-        Effect.mapError(
-          () => new ProviderConversationReselectionError({ reason: "invalid_request" }),
-        ),
-      );
-      yield* authorize(principal);
-      return yield* locks.withLock(
-        input.threadId,
-        Effect.gen(function* () {
-          if (
-            Option.isSome(
-              yield* receipts
-                .getProjectByCommandId(input.commandId)
-                .pipe(
-                  Effect.mapError(
-                    () => new ProviderConversationReselectionError({ reason: "state_unavailable" }),
-                  ),
+    },
+    Effect.mapError((cause) =>
+      isReselectionError(cause)
+        ? cause
+        : new ProviderConversationReselectionError({ reason: "state_unavailable" }),
+    ),
+  );
+  const reselect = Effect.fn("ProviderConversationReselection.reselect")(function* (
+    candidate: ReselectProviderConversationInput,
+    principal: Principal,
+  ) {
+    const input = yield* decodeCommitInput(candidate, { onExcessProperty: "error" }).pipe(
+      Effect.mapError(
+        () => new ProviderConversationReselectionError({ reason: "invalid_request" }),
+      ),
+    );
+    yield* authorize(principal);
+    return yield* locks.withLock(
+      input.threadId,
+      Effect.gen(function* () {
+        if (
+          Option.isSome(
+            yield* receipts
+              .getProjectByCommandId(input.commandId)
+              .pipe(
+                Effect.mapError(
+                  () => new ProviderConversationReselectionError({ reason: "state_unavailable" }),
                 ),
-            )
+              ),
+          )
+        )
+          return yield* new ProviderConversationReselectionError({
+            reason: "command_identity_conflict",
+          });
+        const initial = yield* snapshot(input);
+        const now = yield* DateTime.now;
+        const eventId = providerConversationReselectionEventId(input);
+        const revalidate: ProviderConversationReselectionCommitContext["revalidate"] = Effect.fn(
+          "ProviderConversationReselection.revalidate",
+        )(function* (envelope, replay) {
+          yield* authorize(principal);
+          if (
+            envelope.commandId !== input.commandId ||
+            envelope.threadId !== input.threadId ||
+            envelope.commandType !== commandType ||
+            envelope.effects.length !== 0 ||
+            envelope.cancelUnsettledEffects !== undefined
           )
             return yield* new ProviderConversationReselectionError({
               reason: "command_identity_conflict",
             });
-          const initial = yield* snapshot(input);
-          const now = yield* DateTime.now;
-          const eventId = providerConversationReselectionEventId(input);
-          const revalidate: ProviderConversationReselectionCommitContext["revalidate"] = Effect.fn("ProviderConversationReselection.revalidate")(function* (envelope, replay) {
-              yield* authorize(principal);
-              if (
-                envelope.commandId !== input.commandId ||
-                envelope.threadId !== input.threadId ||
-                envelope.commandType !== commandType ||
-                envelope.effects.length !== 0 ||
-                envelope.cancelUnsettledEffects !== undefined
-              )
-                return yield* new ProviderConversationReselectionError({
-                  reason: "command_identity_conflict",
-                });
-              if (replay !== undefined) {
-                const event = replay.storedEvents[0]?.event;
-                if (
-                  replay.receipt.threadId !== input.threadId ||
-                  replay.receipt.commandType !== commandType ||
-                  replay.receipt.status !== "accepted" ||
-                  replay.storedEvents.length !== 1 ||
-                  event?.id !== eventId ||
-                  event.type !== "provider-thread.updated" ||
-                  event.payload.id !== input.targetProviderThreadId ||
-                  event.payload.nativeThreadRef?.nativeId !== input.expectedTargetNativeThreadId
-                )
-                  return yield* new ProviderConversationReselectionError({
-                    reason: "command_identity_conflict",
-                  });
-                return;
-              }
-              const event = envelope.events[0];
-              if (
-                envelope.events.length !== 1 ||
-                event?.id !== eventId ||
-                event.type !== "provider-thread.updated" ||
-                event.threadId !== input.threadId ||
-                event.payload.id !== input.targetProviderThreadId ||
-                nativeCreationCanonicalJson(event.payload) !==
-                  nativeCreationCanonicalJson({ ...initial.target, updatedAt: now })
-              )
-                return yield* new ProviderConversationReselectionError({
-                  reason: "command_identity_conflict",
-                });
-              const current = yield* snapshot(input);
-              if (
-                current.preview.preimageDigest !== input.expectedPreimageDigest ||
-                initial.preview.preimageDigest !== input.expectedPreimageDigest
-              )
-                return yield* new ProviderConversationReselectionError({
-                  reason: "preimage_changed",
-                });
-              const refusal = current.preview.refusalCodes[0];
-              if (refusal !== undefined)
-                return yield* new ProviderConversationReselectionError({ reason: refusal });
+          if (replay !== undefined) {
+            const event = replay.storedEvents[0]?.event;
+            if (
+              replay.receipt.threadId !== input.threadId ||
+              replay.receipt.commandType !== commandType ||
+              replay.receipt.status !== "accepted" ||
+              replay.storedEvents.length !== 1 ||
+              event?.id !== eventId ||
+              event.type !== "provider-thread.updated" ||
+              event.payload.id !== input.targetProviderThreadId ||
+              event.payload.nativeThreadRef?.nativeId !== input.expectedTargetNativeThreadId
+            )
+              return yield* new ProviderConversationReselectionError({
+                reason: "command_identity_conflict",
+              });
+            return;
+          }
+          const event = envelope.events[0];
+          if (
+            envelope.events.length !== 1 ||
+            event?.id !== eventId ||
+            event.type !== "provider-thread.updated" ||
+            event.threadId !== input.threadId ||
+            event.payload.id !== input.targetProviderThreadId ||
+            nativeCreationCanonicalJson(event.payload) !==
+              nativeCreationCanonicalJson({ ...initial.target, updatedAt: now })
+          )
+            return yield* new ProviderConversationReselectionError({
+              reason: "command_identity_conflict",
             });
-          let rejection: ProviderConversationReselectionError | undefined;
-          const context: ProviderConversationReselectionCommitContext = {
-            revalidate: (envelope, replay) =>
-              revalidate(envelope, replay).pipe(
-                Effect.tapError((error) =>
-                  Effect.sync(() => {
-                    rejection = error;
-                  }),
-                ),
+          const current = yield* snapshot(input);
+          if (
+            current.preview.preimageDigest !== input.expectedPreimageDigest ||
+            initial.preview.preimageDigest !== input.expectedPreimageDigest
+          )
+            return yield* new ProviderConversationReselectionError({
+              reason: "preimage_changed",
+            });
+          const refusal = current.preview.refusalCodes[0];
+          if (refusal !== undefined)
+            return yield* new ProviderConversationReselectionError({ reason: refusal });
+        });
+        let rejection: ProviderConversationReselectionError | undefined;
+        const context: ProviderConversationReselectionCommitContext = {
+          revalidate: (envelope, replay) =>
+            revalidate(envelope, replay).pipe(
+              Effect.tapError((error) =>
+                Effect.sync(() => {
+                  rejection = error;
+                }),
               ),
-          };
-          // A missing target can only reach replay verification; a new reservation is rejected in revalidate.
-          const events =
-            initial.target === undefined
-              ? []
-              : [
-                  {
-                    id: eventId,
-                    type: "provider-thread.updated" as const,
-                    threadId: input.threadId,
-                    driver: initial.target.driver,
-                    providerInstanceId: initial.target.providerInstanceId,
-                    occurredAt: now,
-                    payload: { ...initial.target, updatedAt: now },
-                  },
-                ];
-          const result = yield* sink
-            .commitCommand({
-              commandId: input.commandId,
-              threadId: input.threadId,
-              commandType,
-              acceptedAt: now,
-              events,
-              effects: [],
-              providerConversationReselection: context,
-            })
-            .pipe(
-              Effect.mapError(
-                () =>
-                  rejection ??
-                  new ProviderConversationReselectionError({ reason: "commit_unconfirmed" }),
-              ),
-            );
-          const thread = yield* projections
-            .getThread(input.threadId)
-            .pipe(
-              Effect.mapError(
-                () => new ProviderConversationReselectionError({ reason: "commit_unconfirmed" }),
-              ),
-            );
-          return {
+            ),
+        };
+        // A missing target can only reach replay verification; a new reservation is rejected in revalidate.
+        const events =
+          initial.target === undefined
+            ? []
+            : [
+                {
+                  id: eventId,
+                  type: "provider-thread.updated" as const,
+                  threadId: input.threadId,
+                  driver: initial.target.driver,
+                  providerInstanceId: initial.target.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...initial.target, updatedAt: now },
+                },
+              ];
+        const result = yield* sink
+          .commitCommand({
             commandId: input.commandId,
             threadId: input.threadId,
-            status: result.committed ? ("committed" as const) : ("already_committed" as const),
-            resultSequence: result.receipt.resultSequence,
-            previousActiveProviderThreadId: input.expectedActiveProviderThreadId,
-            activeProviderThreadId: thread.activeProviderThreadId,
-          };
-        }),
-      );
-    });
+            commandType,
+            acceptedAt: now,
+            events,
+            effects: [],
+            providerConversationReselection: context,
+          })
+          .pipe(
+            Effect.mapError(
+              () =>
+                rejection ??
+                new ProviderConversationReselectionError({ reason: "commit_unconfirmed" }),
+            ),
+          );
+        const thread = yield* projections
+          .getThread(input.threadId)
+          .pipe(
+            Effect.mapError(
+              () => new ProviderConversationReselectionError({ reason: "commit_unconfirmed" }),
+            ),
+          );
+        return {
+          commandId: input.commandId,
+          threadId: input.threadId,
+          status: result.committed ? ("committed" as const) : ("already_committed" as const),
+          resultSequence: result.receipt.resultSequence,
+          previousActiveProviderThreadId: input.expectedActiveProviderThreadId,
+          activeProviderThreadId: thread.activeProviderThreadId,
+        };
+      }),
+    );
+  });
   return ProviderConversationReselection.of({ preview, reselect });
 });
 export const layer = Layer.effect(ProviderConversationReselection, make);

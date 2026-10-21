@@ -76,11 +76,11 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows[0] ?? null),
     );
   const use = Effect.fn("OrdinaryCheckoutSqlite.use")(function* (id: string) {
-      const rows =
-        yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE operation_id=${id}`;
-      if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
-      return rows[0]!;
-    });
+    const rows =
+      yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE operation_id=${id}`;
+    if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
+    return rows[0]!;
+  });
   const receipt = (id: string) =>
     sql<{
       readonly aggregate_id: string;
@@ -93,84 +93,90 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows[0] ?? null),
     );
   const accepted = Effect.fn("OrdinaryCheckoutSqlite.accepted")(function* (row: Admission) {
-      const current = yield* receipt(row.command_id);
-      if (current === null) return false;
-      if (
-        current.aggregate_kind !== "thread" ||
-        current.aggregate_id !== row.receipt_thread_id ||
-        current.command_type !== row.command_type ||
-        current.result_sequence !== row.receipt_sequence ||
-        current.status !== "accepted"
-      )
-        return yield* new CheckoutError({ reason: "identity" });
-      const basis =
-        yield* sql`SELECT event_id FROM orchestration_events WHERE event_id=${row.basis_event_id}
+    const current = yield* receipt(row.command_id);
+    if (current === null) return false;
+    if (
+      current.aggregate_kind !== "thread" ||
+      current.aggregate_id !== row.receipt_thread_id ||
+      current.command_type !== row.command_type ||
+      current.result_sequence !== row.receipt_sequence ||
+      current.status !== "accepted"
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    const basis =
+      yield* sql`SELECT event_id FROM orchestration_events WHERE event_id=${row.basis_event_id}
       AND sequence=${row.basis_sequence} AND stream_id=${row.subject_thread_id} AND application_event_version=2`;
-      if (basis.length !== 1) return false;
-      for (const [table, column, id] of [
-        ["orchestration_v2_projection_runs", "run_id", row.run_id],
-        ["orchestration_v2_projection_run_attempts", "attempt_id", row.attempt_id],
-        ["orchestration_v2_projection_nodes", "node_id", row.node_id],
-        ["orchestration_v2_projection_checkpoint_scopes", "scope_id", row.checkpoint_scope_id],
-      ] as const) {
-        if (id === null) continue;
-        const found =
-          yield* sql`SELECT thread_id FROM ${sql(table)} WHERE ${sql(column)}=${id} AND thread_id=${row.subject_thread_id}`;
-        if (found.length !== 1) return false;
-      }
-      return true;
-    });
-  const currentBirth = Effect.fn("OrdinaryCheckoutSqlite.currentBirth")(function* (threadId: string, eventId: string, sequence: number) {
-      const birth = yield* readApplicationBirthRecord(ThreadId.make(threadId)).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      if (birth === null || birth.eventId !== eventId || birth.sequence !== sequence)
-        return yield* new CheckoutError({ reason: "identity" });
-    });
-  const currentTarget = Effect.fn("OrdinaryCheckoutSqlite.currentTarget")(function* (target: Target) {
-      yield* decode(Target, target);
-      const threads = yield* sql<{
-        readonly project_id: string;
-        readonly worktree_path: string | null;
-        readonly branch: string | null;
-        readonly revision: string;
-        readonly deleted: string | null;
-      }>`SELECT project_id, json_extract(payload_json,'$.worktreePath') AS worktree_path,
+    if (basis.length !== 1) return false;
+    for (const [table, column, id] of [
+      ["orchestration_v2_projection_runs", "run_id", row.run_id],
+      ["orchestration_v2_projection_run_attempts", "attempt_id", row.attempt_id],
+      ["orchestration_v2_projection_nodes", "node_id", row.node_id],
+      ["orchestration_v2_projection_checkpoint_scopes", "scope_id", row.checkpoint_scope_id],
+    ] as const) {
+      if (id === null) continue;
+      const found =
+        yield* sql`SELECT thread_id FROM ${sql(table)} WHERE ${sql(column)}=${id} AND thread_id=${row.subject_thread_id}`;
+      if (found.length !== 1) return false;
+    }
+    return true;
+  });
+  const currentBirth = Effect.fn("OrdinaryCheckoutSqlite.currentBirth")(function* (
+    threadId: string,
+    eventId: string,
+    sequence: number,
+  ) {
+    const birth = yield* readApplicationBirthRecord(ThreadId.make(threadId)).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (birth === null || birth.eventId !== eventId || birth.sequence !== sequence)
+      return yield* new CheckoutError({ reason: "identity" });
+  });
+  const currentTarget = Effect.fn("OrdinaryCheckoutSqlite.currentTarget")(function* (
+    target: Target,
+  ) {
+    yield* decode(Target, target);
+    const threads = yield* sql<{
+      readonly project_id: string;
+      readonly worktree_path: string | null;
+      readonly branch: string | null;
+      readonly revision: string;
+      readonly deleted: string | null;
+    }>`SELECT project_id, json_extract(payload_json,'$.worktreePath') AS worktree_path,
       json_extract(payload_json,'$.branch') AS branch, json_extract(payload_json,'$.updatedAt') AS revision,
       json_extract(payload_json,'$.deletedAt') AS deleted
       FROM orchestration_v2_projection_threads WHERE thread_id=${target.threadId}`;
-      const projects = yield* sql<{
-        readonly workspace_root: string;
-        readonly updated_at: string;
-        readonly deleted_at: string | null;
-      }>`
+    const projects = yield* sql<{
+      readonly workspace_root: string;
+      readonly updated_at: string;
+      readonly deleted_at: string | null;
+    }>`
       SELECT workspace_root,updated_at,deleted_at FROM projection_projects WHERE project_id=${target.projectId}`;
-      const thread = threads[0];
-      const project = projects[0];
-      if (
-        !thread ||
-        !project ||
-        thread.deleted !== null ||
-        project.deleted_at !== null ||
-        thread.project_id !== target.projectId ||
-        thread.worktree_path !== target.worktreePath ||
-        thread.revision !== target.threadRevision ||
-        project.updated_at !== target.projectRevision ||
-        project.workspace_root !== target.projectRoot ||
-        thread.branch !== target.threadBranch ||
-        (thread.branch !== null &&
-          (thread.branch.startsWith("refs/") ? thread.branch : `refs/heads/${thread.branch}`) !==
-            target.branch)
-      )
-        return yield* new CheckoutError({ reason: "stale" });
-    });
+    const thread = threads[0];
+    const project = projects[0];
+    if (
+      !thread ||
+      !project ||
+      thread.deleted !== null ||
+      project.deleted_at !== null ||
+      thread.project_id !== target.projectId ||
+      thread.worktree_path !== target.worktreePath ||
+      thread.revision !== target.threadRevision ||
+      project.updated_at !== target.projectRevision ||
+      project.workspace_root !== target.projectRoot ||
+      thread.branch !== target.threadBranch ||
+      (thread.branch !== null &&
+        (thread.branch.startsWith("refs/") ? thread.branch : `refs/heads/${thread.branch}`) !==
+          target.branch)
+    )
+      return yield* new CheckoutError({ reason: "stale" });
+  });
   const matchesTarget = (row: Owner, target: Target) =>
     row.checkout_key === target.checkoutKey &&
     row.directory_identity_json === directoryWitness(target) &&
     row.git_common_directory === target.gitCommonDirectory &&
     row.branch === target.branch;
-  const currentOwner = (row: Admission, allowUnknown = false) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentOwner")(function* () {
+  const currentOwner = (row: Admission, allowUnknown = false) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentOwner")(function* () {
       const lease = yield* owner(row.checkout_key);
       if (
         lease === null ||
@@ -184,18 +190,22 @@ const make = Effect.gen(function* () {
       )
         return yield* new CheckoutError({ reason: "stale" });
       return lease;
-    }); return runCaptured(); };
-  const liveAdmission = (id: string, allowUnknown = false) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.liveAdmission")(function* () {
+    });
+    return runCaptured();
+  };
+  const liveAdmission = (id: string, allowUnknown = false) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.liveAdmission")(function* () {
       const row = yield* admission(id);
       if (row === null || !(yield* accepted(row)))
         return yield* new CheckoutError({ reason: "unavailable" });
       yield* currentBirth(row.subject_thread_id, row.birth_event_id, row.birth_sequence);
       yield* currentOwner(row, allowUnknown);
       return row;
-    }); return runCaptured(); };
-  const replay = (input: CommandIdentity, allowNewSubject = false) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.replay")(function* () {
+    });
+    return runCaptured();
+  };
+  const replay = (input: CommandIdentity, allowNewSubject = false) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.replay")(function* () {
       const rows =
         yield* sql<Admission>`SELECT * FROM jones_ordinary_checkout_admissions WHERE command_id=${input.commandId}`;
       const r = yield* receipt(input.commandId);
@@ -235,83 +245,91 @@ const make = Effect.gen(function* () {
         return yield* new CheckoutError({ reason: "replay" });
       // Deliberately no current-target, expiry, renewal or executor check on exact replay.
       return { kind: "accepted" as const, admissions: selected };
-    }); return runCaptured(); };
+    });
+    return runCaptured();
+  };
   const conflicts = Effect.fn("OrdinaryCheckoutSqlite.conflicts")(function* (key: string) {
-      if (!path.isAbsolute(key) || path.normalize(key) !== key)
-        return yield* new CheckoutError({ reason: "identity" });
-      const result: Conflict[] = [];
-      // Ancestor primary-key probes and a bounded lexical descendant range avoid LIKE wildcard aliases.
-      const ancestors: string[] = [];
-      for (let ancestor = key; ; ancestor = path.dirname(ancestor)) {
-        ancestors.push(ancestor);
-        if (path.dirname(ancestor) === ancestor) break;
-      }
-      const prefix = key.endsWith(path.sep) ? key : `${key}${path.sep}`;
-      // The prefix ends in an ASCII separator, so incrementing that separator is
-      // its exclusive BINARY successor, including every Unicode descendant suffix.
-      const successor = `${prefix.slice(0, -1)}${String.fromCharCode(path.sep.charCodeAt(0) + 1)}`;
-      const rows = yield* sql<Owner>`SELECT * FROM jones_ordinary_checkout_owners
+    if (!path.isAbsolute(key) || path.normalize(key) !== key)
+      return yield* new CheckoutError({ reason: "identity" });
+    const result: Conflict[] = [];
+    // Ancestor primary-key probes and a bounded lexical descendant range avoid LIKE wildcard aliases.
+    const ancestors: string[] = [];
+    for (let ancestor = key; ; ancestor = path.dirname(ancestor)) {
+      ancestors.push(ancestor);
+      if (path.dirname(ancestor) === ancestor) break;
+    }
+    const prefix = key.endsWith(path.sep) ? key : `${key}${path.sep}`;
+    // The prefix ends in an ASCII separator, so incrementing that separator is
+    // its exclusive BINARY successor, including every Unicode descendant suffix.
+    const successor = `${prefix.slice(0, -1)}${String.fromCharCode(path.sep.charCodeAt(0) + 1)}`;
+    const rows = yield* sql<Owner>`SELECT * FROM jones_ordinary_checkout_owners
       WHERE ${sql.in("checkout_key", ancestors)} OR (checkout_key>=${prefix} AND checkout_key<${successor})`;
-      for (const row of rows)
-        if (row.state !== "released" && overlaps(key, row.checkout_key, path.sep))
-          result.push({ kind: "ordinary", checkoutKey: row.checkout_key, owner: row });
-      // These old Jones tables have no shared canonical index. Their original-owner fences remain conservative.
-      const native = yield* sql<{
-        readonly worktree_path: string | null;
-      }>`SELECT worktree_path FROM native_creation_intents
+    for (const row of rows)
+      if (row.state !== "released" && overlaps(key, row.checkout_key, path.sep))
+        result.push({ kind: "ordinary", checkoutKey: row.checkout_key, owner: row });
+    // These old Jones tables have no shared canonical index. Their original-owner fences remain conservative.
+    const native = yield* sql<{
+      readonly worktree_path: string | null;
+    }>`SELECT worktree_path FROM native_creation_intents
       UNION SELECT worktree_path FROM jones_native_workspace_admissions`;
-      for (const row of native)
-        if (row.worktree_path !== null && overlaps(key, row.worktree_path, path.sep))
-          result.push({ kind: "native", checkoutKey: row.worktree_path, owner: null });
-      const deletion = yield* sql<{
-        readonly worktree_path: string;
-      }>`SELECT worktree_path FROM jones_deletion_worktree_admissions WHERE state!='completed'`;
-      for (const row of deletion)
-        if (overlaps(key, row.worktree_path, path.sep))
-          result.push({ kind: "deletion", checkoutKey: row.worktree_path, owner: null });
-      const legacy = yield* sql<{
-        readonly resource_path: string;
-      }>`SELECT resource_path FROM worktree_ownership_leases`;
-      for (const row of legacy)
-        if (overlaps(key, row.resource_path, path.sep))
-          result.push({ kind: "legacy", checkoutKey: row.resource_path, owner: null });
-      // No schema adoption or interpretation of copied foreign admission JSON.
-      const foreign =
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id IN (9,11)`;
-      if (foreign.length > 0) result.push({ kind: "legacy", checkoutKey: key, owner: null });
-      return result;
-    });
-  const effectRequest = Effect.fn("OrdinaryCheckoutSqlite.effectRequest")(function* (effectId: string) {
-      const rows = yield* sql<{
-        readonly command_id: string;
-        readonly thread_id: string;
-        readonly payload_json: string;
-      }>`
+    for (const row of native)
+      if (row.worktree_path !== null && overlaps(key, row.worktree_path, path.sep))
+        result.push({ kind: "native", checkoutKey: row.worktree_path, owner: null });
+    const deletion = yield* sql<{
+      readonly worktree_path: string;
+    }>`SELECT worktree_path FROM jones_deletion_worktree_admissions WHERE state!='completed'`;
+    for (const row of deletion)
+      if (overlaps(key, row.worktree_path, path.sep))
+        result.push({ kind: "deletion", checkoutKey: row.worktree_path, owner: null });
+    const legacy = yield* sql<{
+      readonly resource_path: string;
+    }>`SELECT resource_path FROM worktree_ownership_leases`;
+    for (const row of legacy)
+      if (overlaps(key, row.resource_path, path.sep))
+        result.push({ kind: "legacy", checkoutKey: row.resource_path, owner: null });
+    // No schema adoption or interpretation of copied foreign admission JSON.
+    const foreign =
+      yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id IN (9,11)`;
+    if (foreign.length > 0) result.push({ kind: "legacy", checkoutKey: key, owner: null });
+    return result;
+  });
+  const effectRequest = Effect.fn("OrdinaryCheckoutSqlite.effectRequest")(function* (
+    effectId: string,
+  ) {
+    const rows = yield* sql<{
+      readonly command_id: string;
+      readonly thread_id: string;
+      readonly payload_json: string;
+    }>`
       SELECT command_id,thread_id,payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
-      const row = rows[0];
-      if (!row) return null;
-      const request = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-        row.payload_json,
-      );
-      return { ...row, request };
-    });
-  const link = Effect.fn("OrdinaryCheckoutSqlite.link")(function* (row: Admission, input: Link, now: string) {
-      const actual = yield* effectRequest(input.effectId);
-      if (
-        actual === null ||
-        actual.command_id !== row.command_id ||
-        actual.thread_id !== row.subject_thread_id ||
-        digest(actual.request) !== digest(input.request)
-      )
-        return yield* new CheckoutError({ reason: "identity" });
-      yield* sql`INSERT INTO jones_ordinary_checkout_effect_links ${sql.insert({
-        effect_id: input.effectId,
-        admission_id: row.admission_id,
-        request_digest: digest(actual.request),
-        role: input.role,
-        recorded_at: now,
-      })}`;
-    });
+    const row = rows[0];
+    if (!row) return null;
+    const request = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+      row.payload_json,
+    );
+    return { ...row, request };
+  });
+  const link = Effect.fn("OrdinaryCheckoutSqlite.link")(function* (
+    row: Admission,
+    input: Link,
+    now: string,
+  ) {
+    const actual = yield* effectRequest(input.effectId);
+    if (
+      actual === null ||
+      actual.command_id !== row.command_id ||
+      actual.thread_id !== row.subject_thread_id ||
+      digest(actual.request) !== digest(input.request)
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    yield* sql`INSERT INTO jones_ordinary_checkout_effect_links ${sql.insert({
+      effect_id: input.effectId,
+      admission_id: row.admission_id,
+      request_digest: digest(actual.request),
+      role: input.role,
+      recorded_at: now,
+    })}`;
+  });
   const pendingAdmissions = (key: string) => sql<{ readonly admission_id: string }>`
     SELECT a.admission_id FROM jones_ordinary_checkout_admissions a WHERE a.checkout_key=${key}
       AND (NOT EXISTS(SELECT 1 FROM jones_ordinary_checkout_uses u WHERE u.admission_id=a.admission_id)
@@ -463,23 +481,26 @@ const make = Effect.gen(function* () {
     SELECT e.* FROM jones_ordinary_checkout_lifecycle_events e WHERE e.operation_id=${id}
       AND e.ordinal=(SELECT MAX(last.ordinal) FROM jones_ordinary_checkout_lifecycle_events last
         WHERE last.operation_id=e.operation_id AND last.association_id=e.association_id)`;
-  const assertCoveredLinks = Effect.fn("OrdinaryCheckoutSqlite.assertCoveredLinks")(function* (a: Admission, participants: readonly LifecycleEvent[]) {
-      const coveredEffects = new Set<string>();
-      for (const participant of participants) {
-        const bound = yield* decode(Schema.fromJsonString(Binding), participant.binding_json);
-        if (bound.source.kind === "outbox") coveredEffects.add(bound.source.effectId);
-      }
-      const links = yield* sql<{
-        readonly effect_id: string;
-      }>`SELECT effect_id FROM jones_ordinary_checkout_effect_links WHERE admission_id=${a.admission_id}`;
-      for (const link of links) {
-        if (coveredEffects.has(link.effect_id)) continue;
-        const settled =
-          yield* sql`SELECT operation_id FROM jones_ordinary_checkout_uses WHERE admission_id=${a.admission_id}
+  const assertCoveredLinks = Effect.fn("OrdinaryCheckoutSqlite.assertCoveredLinks")(function* (
+    a: Admission,
+    participants: readonly LifecycleEvent[],
+  ) {
+    const coveredEffects = new Set<string>();
+    for (const participant of participants) {
+      const bound = yield* decode(Schema.fromJsonString(Binding), participant.binding_json);
+      if (bound.source.kind === "outbox") coveredEffects.add(bound.source.effectId);
+    }
+    const links = yield* sql<{
+      readonly effect_id: string;
+    }>`SELECT effect_id FROM jones_ordinary_checkout_effect_links WHERE admission_id=${a.admission_id}`;
+    for (const link of links) {
+      if (coveredEffects.has(link.effect_id)) continue;
+      const settled =
+        yield* sql`SELECT operation_id FROM jones_ordinary_checkout_uses WHERE admission_id=${a.admission_id}
         AND effect_id=${link.effect_id} AND state IN ('completed','no_effect') LIMIT 1`;
-        if (settled.length === 0) return yield* new CheckoutError({ reason: "unknown" });
-      }
-    });
+      if (settled.length === 0) return yield* new CheckoutError({ reason: "unknown" });
+    }
+  });
   const sourceMatches = (row: Use, source: Source) =>
     row.source_kind === source.kind &&
     (source.kind === "outbox"
@@ -488,8 +509,8 @@ const make = Effect.gen(function* () {
         row.attempt_count === source.attempt &&
         row.claim_expires_at === source.claimExpiresAt
       : row.producer_id === source.producerId);
-  const verifyBinding = (row: Use, binding: Binding, a: Admission, joining = false) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
+  const verifyBinding = (row: Use, binding: Binding, a: Admission, joining = false) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
       yield* decode(Binding, binding);
       if (
         binding.operationId !== row.operation_id ||
@@ -514,38 +535,47 @@ const make = Effect.gen(function* () {
           binding.relation.messageId !== a.message_id)
       )
         return yield* new CheckoutError({ reason: "identity" });
-    }); return runCaptured(); };
-  const verifyLinkedSource = Effect.fn("OrdinaryCheckoutSqlite.verifyLinkedSource")(function* (a: Admission, source: Source) {
-      if (source.kind !== "outbox") return;
-      const actual = yield* effectRequest(source.effectId);
-      const links = yield* sql<{
-        readonly request_digest: string;
-      }>`SELECT request_digest FROM jones_ordinary_checkout_effect_links
-      WHERE effect_id=${source.effectId} AND admission_id=${a.admission_id}`;
-      if (
-        actual === null ||
-        actual.thread_id !== a.subject_thread_id ||
-        links.length !== 1 ||
-        links[0]!.request_digest !== digest(actual.request)
-      )
-        return yield* new CheckoutError({ reason: "identity" });
     });
-  const verifyClaim = Effect.fn("OrdinaryCheckoutSqlite.verifyClaim")(function* (a: Admission, source: Source, now: string) {
-      yield* verifyLinkedSource(a, source);
-      if (source.kind !== "outbox") return;
-      const claims =
-        yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_id=${source.effectId}
+    return runCaptured();
+  };
+  const verifyLinkedSource = Effect.fn("OrdinaryCheckoutSqlite.verifyLinkedSource")(function* (
+    a: Admission,
+    source: Source,
+  ) {
+    if (source.kind !== "outbox") return;
+    const actual = yield* effectRequest(source.effectId);
+    const links = yield* sql<{
+      readonly request_digest: string;
+    }>`SELECT request_digest FROM jones_ordinary_checkout_effect_links
+      WHERE effect_id=${source.effectId} AND admission_id=${a.admission_id}`;
+    if (
+      actual === null ||
+      actual.thread_id !== a.subject_thread_id ||
+      links.length !== 1 ||
+      links[0]!.request_digest !== digest(actual.request)
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+  });
+  const verifyClaim = Effect.fn("OrdinaryCheckoutSqlite.verifyClaim")(function* (
+    a: Admission,
+    source: Source,
+    now: string,
+  ) {
+    yield* verifyLinkedSource(a, source);
+    if (source.kind !== "outbox") return;
+    const claims =
+      yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_id=${source.effectId}
       AND status='running' AND lease_owner=${source.workerId} AND attempt_count=${source.attempt}
       AND lease_expires_at=${source.claimExpiresAt} AND lease_expires_at>${now}`;
-      if (claims.length !== 1) return yield* new CheckoutError({ reason: "stale" });
-    });
+    if (claims.length !== 1) return yield* new CheckoutError({ reason: "stale" });
+  });
   const append = (
     row: Use,
     input: EventInput,
     kind: LifecycleEvent["event_kind"],
     state: Use["state"] = row.state,
-  ) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.append")(function* () {
+  ) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.append")(function* () {
       yield* decode(Binding, input.binding);
       yield* decode(Evidence, input.evidence);
       if (
@@ -578,7 +608,9 @@ const make = Effect.gen(function* () {
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} AND owner_epoch=${row.owner_epoch} RETURNING *`;
       if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
       return updated[0]!;
-    }); return runCaptured(); };
+    });
+    return runCaptured();
+  };
   // Authorization admits an invocation; it is not an observation of physical work.
   const admitsInvocation = (evidence: Evidence) =>
     evidence.outcome === "active" ||
@@ -637,8 +669,8 @@ const make = Effect.gen(function* () {
         return yield* append(row, { ...input, expectedRevision: 0 }, "bind");
       }),
     );
-  const currentEvent = (input: EventInput, allowUnknown = false, joining = false) =>
-    { const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentEvent")(function* () {
+  const currentEvent = (input: EventInput, allowUnknown = false, joining = false) => {
+    const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.currentEvent")(function* () {
       const row = yield* use(input.binding.operationId);
       if (
         row.revision !== input.expectedRevision ||
@@ -657,7 +689,9 @@ const make = Effect.gen(function* () {
       yield* verifyBinding(row, input.binding, a, joining);
       yield* decode(Evidence, input.evidence);
       return { row, admission: a };
-    }); return runCaptured(); };
+    });
+    return runCaptured();
+  };
   const start: OrdinaryCheckout["Service"]["start"] = (input) =>
     transaction(
       Effect.gen(function* () {
@@ -870,20 +904,21 @@ const make = Effect.gen(function* () {
         return rows[0]!;
       }),
     );
-  const transitionOperation = Effect.fn("OrdinaryCheckoutSqlite.transitionOperation")(function* (row: Use) {
-      const history = yield* events(row.operation_id);
-      if (history.length === 0) return yield* new CheckoutError({ reason: "identity" });
-      const original = yield* decode(Schema.fromJsonString(Binding), history[0]!.binding_json);
-      if (original.executor !== "transition")
-        return yield* new CheckoutError({ reason: "identity" });
-      const participants = yield* latestAssociations(row.operation_id);
-      if (
-        participants.some(
-          (event) => !["retire", "release", "target_transition"].includes(event.event_kind),
-        )
+  const transitionOperation = Effect.fn("OrdinaryCheckoutSqlite.transitionOperation")(function* (
+    row: Use,
+  ) {
+    const history = yield* events(row.operation_id);
+    if (history.length === 0) return yield* new CheckoutError({ reason: "identity" });
+    const original = yield* decode(Schema.fromJsonString(Binding), history[0]!.binding_json);
+    if (original.executor !== "transition") return yield* new CheckoutError({ reason: "identity" });
+    const participants = yield* latestAssociations(row.operation_id);
+    if (
+      participants.some(
+        (event) => !["retire", "release", "target_transition"].includes(event.event_kind),
       )
-        return yield* new CheckoutError({ reason: "unknown" });
-    });
+    )
+      return yield* new CheckoutError({ reason: "unknown" });
+  });
   const transition = (input: TransitionInput, after: Target | null) =>
     transaction(
       Effect.gen(function* () {

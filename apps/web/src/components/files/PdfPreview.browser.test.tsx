@@ -132,65 +132,64 @@ describe("PDF zoom and lifetime", () => {
     await key(input(), "Enter");
   };
   async function setupTest(): Promise<AsyncDisposable> {
-  let initialized = false;
-  let ownedContainer: HTMLDivElement | undefined;
-  async function cleanup() {
-    const screen = initialized ? root : undefined;
-    try {
-    await act(() => screen?.unmount());
-    } finally {
+    let initialized = false;
+    let ownedContainer: HTMLDivElement | undefined;
+    async function cleanup() {
+      const screen = initialized ? root : undefined;
       try {
-        await screen?.[Symbol.asyncDispose]();
+        await act(() => screen?.unmount());
       } finally {
-        ownedContainer?.remove();
-        vi.unstubAllGlobals();
+        try {
+          await screen?.[Symbol.asyncDispose]();
+        } finally {
+          ownedContainer?.remove();
+          vi.unstubAllGlobals();
+        }
       }
     }
-  }
-  try {
-    engine.viewers.length = 0;
-    engine.tasks.length = 0;
-    engine.failed = false;
-    engine.fitScale = 0.5;
-    engine.scales.mockClear();
-    engine.loads.mockClear();
-    engine.finds.mockClear();
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        targets = new Set<Element>();
-        constructor(callback: (entries: { target: Element; contentRect: DOMRect }[]) => void) {
-          notifyResize = () =>
-            callback(
-              [...this.targets].map((target) => ({
-                target,
-                contentRect: target.getBoundingClientRect(),
-              })),
-            );
-        }
-        observe(target: Element) {
-          this.targets.add(target);
-        }
-        unobserve(target: Element) {
-          this.targets.delete(target);
-        }
-        disconnect() {
-          this.targets.clear();
-        }
-      },
-    );
-    ownedContainer = container = document.createElement("div");
-    document.body.append(container);
-    root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    try {
+      engine.viewers.length = 0;
+      engine.tasks.length = 0;
+      engine.failed = false;
+      engine.fitScale = 0.5;
+      engine.scales.mockClear();
+      engine.loads.mockClear();
+      engine.finds.mockClear();
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          targets = new Set<Element>();
+          constructor(callback: (entries: { target: Element; contentRect: DOMRect }[]) => void) {
+            notifyResize = () =>
+              callback(
+                [...this.targets].map((target) => ({
+                  target,
+                  contentRect: target.getBoundingClientRect(),
+                })),
+              );
+          }
+          observe(target: Element) {
+            this.targets.add(target);
+          }
+          unobserve(target: Element) {
+            this.targets.delete(target);
+          }
+          disconnect() {
+            this.targets.clear();
+          }
+        },
+      );
+      ownedContainer = container = document.createElement("div");
+      document.body.append(container);
+      root = await renderTest(null, { container: container, router: false });
+      initialized = true;
 
-    return { [Symbol.asyncDispose]: cleanup };
-  } catch (error) {
-    await cleanup();
-    throw error;
+      return { [Symbol.asyncDispose]: cleanup };
+    } catch (error) {
+      await cleanup();
+      throw error;
+    }
   }
-}
-
 
   it("zooms from fitted width through the click cycle and keyboard steps", async () => {
     await using _fixture = await setupTest();
@@ -391,8 +390,9 @@ describe("PDF zoom and lifetime", () => {
           reject = no;
         }),
     );
-    await act(async () =>
-      await root.rerender(<PdfPreview src="/expired.pdf" title="Fixture" onRetry={onRetry} />),
+    await act(
+      async () =>
+        await root.rerender(<PdfPreview src="/expired.pdf" title="Fixture" onRetry={onRetry} />),
     );
     const retry = Array.from(container.querySelectorAll("button")).find(
       (button) => button.textContent === "Retry",

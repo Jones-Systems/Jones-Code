@@ -48,11 +48,23 @@ for (const clients of [1, 2, 8, 32]) {
         let activeLive = 0;
         let liveStarts = 0;
         const boundedPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
-          withNativeWatchdog(effect, "5 seconds", () => new Error(
-            `Shell fanout ${phase} timed out: ${JSON.stringify({
-              clients, ending, snapshots, shellReads, projectReads, liveStarts, activeLive, activeEnrichment,
-            })}`,
-          ));
+          withNativeWatchdog(
+            effect,
+            "5 seconds",
+            () =>
+              new Error(
+                `Shell fanout ${phase} timed out: ${JSON.stringify({
+                  clients,
+                  ending,
+                  snapshots,
+                  shellReads,
+                  projectReads,
+                  liveStarts,
+                  activeLive,
+                  activeEnrichment,
+                })}`,
+              ),
+          );
         const threadId = ThreadId.make("fanout-deleted-thread");
         // A full 512-event batch flushes coalescing without sleeps. Every client
         // subscribes to the same publisher before a single shared publication.

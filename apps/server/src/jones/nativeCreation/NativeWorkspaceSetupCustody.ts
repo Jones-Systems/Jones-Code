@@ -31,18 +31,22 @@ export const issue = (
   });
   return handle;
 };
-export const consume = Effect.fn("NativeWorkspaceSetupCustody.consume")(function* (handle: NativeWorkspaceSetupCustody | undefined, claim: Repository.NativeCreationStoredIntent, basis: NativeWorkspaceBasis) {
-    const value = handle === undefined ? undefined : issued.get(handle);
-    if (
-      value === undefined ||
-      value.consumed ||
-      value.claim !== canonical(claim) ||
-      value.basis !== canonical(basis)
-    )
-      return yield* new Workspace.NativeWorkspaceError({
-        code: "unknown",
-        message: "Native setup has no fresh original-start custody",
-      });
-    value.consumed = true;
-    return value.start;
-  });
+export const consume = Effect.fn("NativeWorkspaceSetupCustody.consume")(function* (
+  handle: NativeWorkspaceSetupCustody | undefined,
+  claim: Repository.NativeCreationStoredIntent,
+  basis: NativeWorkspaceBasis,
+) {
+  const value = handle === undefined ? undefined : issued.get(handle);
+  if (
+    value === undefined ||
+    value.consumed ||
+    value.claim !== canonical(claim) ||
+    value.basis !== canonical(basis)
+  )
+    return yield* new Workspace.NativeWorkspaceError({
+      code: "unknown",
+      message: "Native setup has no fresh original-start custody",
+    });
+  value.consumed = true;
+  return value.start;
+});

@@ -4334,74 +4334,71 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const runtimeContext = yield* Effect.context<never>();
         const runPromise = Effect.runPromiseWith(runtimeContext);
 
-        const emitProviderEvent = Effect.fn("ClaudeAdapterV2.emitProviderEvent")(function*(event: ProviderAdapter.ProviderAdapterV2Event) {
-            const producer = yield* ClaudeProducerContext;
-            if (producer !== undefined && !producer.acceptingEvidence) return;
-            const eventProducer =
-              producer?.eventProducer ??
-              (yield* ClaudeEventProducerContext) ??
-              sessionEventProducer;
-            if (!eventProducer.accepting) return;
-            const binding =
-              producer === undefined
-                ? undefined
-                : ProviderAdapter.runtimeBinding(
-                    producer.providerThread,
-                    producer.runtimeGeneration,
-                  );
-            const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
-              binding === undefined || event.type === "runtime_identity.observed"
-                ? event
-                : {
-                    ...event,
-                    runtimeEvidence: {
-                      ...binding,
-                      evidenceRevision: producer!.providerThread.runtimeIdentity?.evidenceRevision,
-                    },
-                  };
-            const currentTurn = yield* Ref.get(activeTurn);
-            const providerTurnId =
-              event.type === "turn.terminal"
-                ? event.providerTurnId
-                : event.type === "provider_turn.updated"
-                  ? event.providerTurn.id
-                  : event.type === "turn_item.updated"
-                    ? event.turnItem.providerTurnId
-                    : undefined;
-            const eventRunId =
-              event.type === "message.updated"
-                ? event.message.runId
-                : event.type === "node.updated"
-                  ? event.node.runId
+        const emitProviderEvent = Effect.fn("ClaudeAdapterV2.emitProviderEvent")(function* (
+          event: ProviderAdapter.ProviderAdapterV2Event,
+        ) {
+          const producer = yield* ClaudeProducerContext;
+          if (producer !== undefined && !producer.acceptingEvidence) return;
+          const eventProducer =
+            producer?.eventProducer ?? (yield* ClaudeEventProducerContext) ?? sessionEventProducer;
+          if (!eventProducer.accepting) return;
+          const binding =
+            producer === undefined
+              ? undefined
+              : ProviderAdapter.runtimeBinding(producer.providerThread, producer.runtimeGeneration);
+          const queuedEvent: ProviderAdapter.ProviderAdapterV2Event =
+            binding === undefined || event.type === "runtime_identity.observed"
+              ? event
+              : {
+                  ...event,
+                  runtimeEvidence: {
+                    ...binding,
+                    evidenceRevision: producer!.providerThread.runtimeIdentity?.evidenceRevision,
+                  },
+                };
+          const currentTurn = yield* Ref.get(activeTurn);
+          const providerTurnId =
+            event.type === "turn.terminal"
+              ? event.providerTurnId
+              : event.type === "provider_turn.updated"
+                ? event.providerTurn.id
+                : event.type === "turn_item.updated"
+                  ? event.turnItem.providerTurnId
                   : undefined;
-            const ownsTurn =
-              currentTurn !== null &&
-              ((providerTurnId != null && currentTurn.providerTurnId === providerTurnId) ||
-                (eventRunId != null && currentTurn.input.runId === eventRunId));
-            const turnBinding =
-              currentTurn === null ||
-              !ownsTurn ||
-              eventProducer.origin.runtimeGeneration === undefined
-                ? undefined
-                : ProviderAdapter.runtimeBinding(
-                    currentTurn.input.providerThread,
-                    eventProducer.origin.runtimeGeneration,
-                  );
-            ProviderEventOrigin.stampProviderEvent(queuedEvent, {
-              producer: eventProducer.origin,
-              ...(currentTurn === null || turnBinding === undefined
-                ? {}
-                : {
-                    turn: {
-                      binding: turnBinding,
-                      runId: currentTurn.input.runId,
-                      attemptId: currentTurn.input.attemptId,
-                      providerTurnId: currentTurn.providerTurnId,
-                    },
-                  }),
-            });
-            yield* Queue.offer(events, queuedEvent);
-          },Effect.asVoid);
+          const eventRunId =
+            event.type === "message.updated"
+              ? event.message.runId
+              : event.type === "node.updated"
+                ? event.node.runId
+                : undefined;
+          const ownsTurn =
+            currentTurn !== null &&
+            ((providerTurnId != null && currentTurn.providerTurnId === providerTurnId) ||
+              (eventRunId != null && currentTurn.input.runId === eventRunId));
+          const turnBinding =
+            currentTurn === null ||
+            !ownsTurn ||
+            eventProducer.origin.runtimeGeneration === undefined
+              ? undefined
+              : ProviderAdapter.runtimeBinding(
+                  currentTurn.input.providerThread,
+                  eventProducer.origin.runtimeGeneration,
+                );
+          ProviderEventOrigin.stampProviderEvent(queuedEvent, {
+            producer: eventProducer.origin,
+            ...(currentTurn === null || turnBinding === undefined
+              ? {}
+              : {
+                  turn: {
+                    binding: turnBinding,
+                    runId: currentTurn.input.runId,
+                    attemptId: currentTurn.input.attemptId,
+                    providerTurnId: currentTurn.providerTurnId,
+                  },
+                }),
+          });
+          yield* Queue.offer(events, queuedEvent);
+        }, Effect.asVoid);
 
         // Reports one root request's usage as the current context. Usage
         // without input is a placeholder, never a measurement.
@@ -8747,30 +8744,30 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }
         });
 
-        const handleSdkMessageFrame = Effect.fn("ClaudeAdapterV2.handleSdkMessageFrame")(function*(frame: Parameters<typeof handleSdkMessageFrameWithSource>[0]) {
-            const acceptedProducer =
-              frame.acceptedWakeReplay === true
-                ? acceptedWakeProducers.get(frame.message)
-                : undefined;
-            if (acceptedProducer !== undefined) {
-              const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
-              if (current._tag === "Failure") return;
-              yield* handleSdkMessageFrameWithSource(frame).pipe(
-                Effect.provideService(ClaudeProducerContext, undefined),
-                Effect.provideService(ClaudeEventProducerContext, acceptedProducer),
-              );
-              return;
-            }
-            const source = messageSources.get(frame.message);
-            if (source === undefined) return;
-            const current = yield* source.eventProducer.origin.revalidateCurrent.pipe(
-              Effect.result,
-            );
+        const handleSdkMessageFrame = Effect.fn("ClaudeAdapterV2.handleSdkMessageFrame")(function* (
+          frame: Parameters<typeof handleSdkMessageFrameWithSource>[0],
+        ) {
+          const acceptedProducer =
+            frame.acceptedWakeReplay === true
+              ? acceptedWakeProducers.get(frame.message)
+              : undefined;
+          if (acceptedProducer !== undefined) {
+            const current = yield* acceptedProducer.origin.revalidateCurrent.pipe(Effect.result);
             if (current._tag === "Failure") return;
-            yield* handleSdkMessageFrameWithSource({ ...frame, query: source.query }).pipe(
-              Effect.provideService(ClaudeProducerContext, source),
+            yield* handleSdkMessageFrameWithSource(frame).pipe(
+              Effect.provideService(ClaudeProducerContext, undefined),
+              Effect.provideService(ClaudeEventProducerContext, acceptedProducer),
             );
-          });
+            return;
+          }
+          const source = messageSources.get(frame.message);
+          if (source === undefined) return;
+          const current = yield* source.eventProducer.origin.revalidateCurrent.pipe(Effect.result);
+          if (current._tag === "Failure") return;
+          yield* handleSdkMessageFrameWithSource({ ...frame, query: source.query }).pipe(
+            Effect.provideService(ClaudeProducerContext, source),
+          );
+        });
 
         // Held subagent frames whose owner this lifecycle frame resolves. The
         // frame's (task_id, tool_use_id) pair is authoritative, so it also
@@ -9621,55 +9618,55 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             const registration: SourceQueryRegistration = {
               binding,
               retired: false,
-              verify: Effect.fn("ClaudeAdapterV2.verify")(function*(source) {
-                  if (queryBindingUnknown)
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: CLAUDE_PROVIDER,
-                      detail:
-                        "The source query binding or retirement is unconfirmed; it must not be replayed.",
-                    });
-                  const claimed = ProviderAdapter.runtimeBinding(
-                    source,
-                    source.runtimeIdentity?.runtimeGeneration ?? binding.runtimeGeneration,
-                  );
-                  if (
-                    sourceOwnerClosed ||
-                    sourceRegistration !== registration ||
-                    sourceQueries.get(binding.providerThreadId) !== registration ||
-                    claimed === undefined ||
-                    source.nativeThreadRef?.driver !== CLAUDE_PROVIDER ||
-                    claimed.threadId !== binding.threadId ||
-                    claimed.providerThreadId !== binding.providerThreadId ||
-                    claimed.providerSessionId !== binding.providerSessionId ||
-                    claimed.providerInstanceId !== binding.providerInstanceId ||
-                    claimed.driver !== binding.driver ||
-                    claimed.nativeThreadId !== binding.nativeThreadId ||
-                    claimed.runtimeGeneration !== binding.runtimeGeneration
-                  ) {
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: CLAUDE_PROVIDER,
-                      detail:
-                        "The source query ownership or generation changed; native fork must not run.",
-                    });
-                  }
-                  const sourceTurn = yield* Ref.get(activeTurn);
-                  if (sourceTurn !== null)
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: CLAUDE_PROVIDER,
-                      detail: `Cannot fork an active source Claude turn ${sourceTurn.providerTurnId}.`,
-                    });
-                }),
-              retire: Effect.fn("ClaudeAdapterV2.retire")(function*(source) {
-                  yield* registration.verify(source);
-                  yield* closeCapturedQuery(context, registration.verify(source));
-                  yield* registration.verify(source);
-                  if (!registration.retired)
-                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                      driver: CLAUDE_PROVIDER,
-                      detail:
-                        "The source query retirement was not confirmed; native fork must not run.",
-                    });
-                }),
+              verify: Effect.fn("ClaudeAdapterV2.verify")(function* (source) {
+                if (queryBindingUnknown)
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail:
+                      "The source query binding or retirement is unconfirmed; it must not be replayed.",
+                  });
+                const claimed = ProviderAdapter.runtimeBinding(
+                  source,
+                  source.runtimeIdentity?.runtimeGeneration ?? binding.runtimeGeneration,
+                );
+                if (
+                  sourceOwnerClosed ||
+                  sourceRegistration !== registration ||
+                  sourceQueries.get(binding.providerThreadId) !== registration ||
+                  claimed === undefined ||
+                  source.nativeThreadRef?.driver !== CLAUDE_PROVIDER ||
+                  claimed.threadId !== binding.threadId ||
+                  claimed.providerThreadId !== binding.providerThreadId ||
+                  claimed.providerSessionId !== binding.providerSessionId ||
+                  claimed.providerInstanceId !== binding.providerInstanceId ||
+                  claimed.driver !== binding.driver ||
+                  claimed.nativeThreadId !== binding.nativeThreadId ||
+                  claimed.runtimeGeneration !== binding.runtimeGeneration
+                ) {
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail:
+                      "The source query ownership or generation changed; native fork must not run.",
+                  });
+                }
+                const sourceTurn = yield* Ref.get(activeTurn);
+                if (sourceTurn !== null)
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: `Cannot fork an active source Claude turn ${sourceTurn.providerTurnId}.`,
+                  });
+              }),
+              retire: Effect.fn("ClaudeAdapterV2.retire")(function* (source) {
+                yield* registration.verify(source);
+                yield* closeCapturedQuery(context, registration.verify(source));
+                yield* registration.verify(source);
+                if (!registration.retired)
+                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail:
+                      "The source query retirement was not confirmed; native fork must not run.",
+                  });
+              }),
             };
             sourceRegistration = registration;
             sourceQueries.set(binding.providerThreadId, registration);
@@ -10488,7 +10485,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ).size > 0
             );
           }),
-          captureRuntimeStop: Effect.fn("ClaudeAdapterV2.captureRuntimeStop")(function*(providerThread) {
+          captureRuntimeStop: Effect.fn("ClaudeAdapterV2.captureRuntimeStop")(
+            function* (providerThread) {
               const captured = yield* Ref.get(queryContext);
               const revision = providerThread.runtimeIdentity?.evidenceRevision;
               if (
@@ -10547,7 +10545,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ),
                 ),
               };
-            }),
+            },
+          ),
           ensureThread: Effect.fn("ClaudeAdapterV2.ensureThread")(
             function* (threadInput: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) {
               const createdAt = yield* DateTime.now;

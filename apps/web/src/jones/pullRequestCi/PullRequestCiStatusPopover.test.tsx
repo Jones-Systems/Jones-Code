@@ -101,7 +101,9 @@ it("reads only while open and visible, and stops refreshing after closing", asyn
   });
   expect(host.read).not.toHaveBeenCalled();
   const changeOpen = async (open: boolean) =>
-    await act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(open));
+    await act(() =>
+      renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(open),
+    );
   await changeOpen(true);
   expect(host.read).toHaveBeenCalled();
   await act(() => vi.advanceTimersByTime(60_000));
@@ -167,7 +169,9 @@ it("summarizes online capacity separately from offline inventory and workflow ru
       />,
     );
   });
-  await act(() => renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(true));
+  await act(() =>
+    renderer!.root.findByProps({ "data-popover-root": true }).props.onOpenChange(true),
+  );
   const text = (node: import("react-test-renderer").ReactTestInstance): string =>
     node.children.map((child) => (typeof child === "string" ? child : text(child))).join("");
   const summary = renderer!.root.findByProps({ "aria-label": "CI summary" });

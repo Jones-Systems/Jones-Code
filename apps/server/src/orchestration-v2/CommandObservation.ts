@@ -20,60 +20,60 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
   const sql = yield* SqlClient.SqlClient;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSinkV2;
-  const readTarget = Effect.fn("CommandObservation.readTarget")(function*(threadId: ThreadId) {
-      const [row] = yield* sql<{ snapshotSequence: number; lastEventSequence: number }>`SELECT
+  const readTarget = Effect.fn("CommandObservation.readTarget")(function* (threadId: ThreadId) {
+    const [row] = yield* sql<{ snapshotSequence: number; lastEventSequence: number }>`SELECT
       COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS snapshotSequence,
       COALESCE((SELECT MAX(sequence) FROM orchestration_events WHERE aggregate_kind = 'thread'
         AND stream_id = ${threadId} AND event_type NOT IN ('legacy-bootstrap.preflight-intent', 'legacy-bootstrap.preflight-outcome')), 0) AS lastEventSequence`;
-      const shell = yield* projections.getThreadShell(threadId);
-      if (shell === null) return { ...row!, target: null };
-      const records = yield* projections.getThreadRecords(threadId, [
-        "runs",
-        "providerSessions",
-        "runtimeRequests",
-      ]);
-      const session = records.providerSessions
-        .filter((s) => s.providerInstanceId === shell.providerInstanceId)
-        .toSorted(
-          (a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
-        )[0];
-      const blockers: Array<OrchestrationDispatchTarget["blockers"][number]> = [];
-      if (shell.archivedAt !== null) blockers.push("archived");
-      if (shell.settledOverride === "settled") blockers.push("settled");
-      if (records.runs.some((r) => ["preparing", "queued", "starting"].includes(r.status)))
-        blockers.push("pending_turn");
-      if (records.runs.some((r) => ["running", "waiting"].includes(r.status)))
-        blockers.push("running_turn");
-      if (session?.status === "starting") blockers.push("session_starting");
-      if (session?.status === "running" || session?.status === "waiting")
-        blockers.push("session_running");
-      if (shell.activeRunId !== null) blockers.push("active_turn");
-      if (
-        records.runtimeRequests.some(
-          (request) => request.status === "pending" && request.kind !== "user_input",
-        )
+    const shell = yield* projections.getThreadShell(threadId);
+    if (shell === null) return { ...row!, target: null };
+    const records = yield* projections.getThreadRecords(threadId, [
+      "runs",
+      "providerSessions",
+      "runtimeRequests",
+    ]);
+    const session = records.providerSessions
+      .filter((s) => s.providerInstanceId === shell.providerInstanceId)
+      .toSorted(
+        (a, b) => DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
+      )[0];
+    const blockers: Array<OrchestrationDispatchTarget["blockers"][number]> = [];
+    if (shell.archivedAt !== null) blockers.push("archived");
+    if (shell.settledOverride === "settled") blockers.push("settled");
+    if (records.runs.some((r) => ["preparing", "queued", "starting"].includes(r.status)))
+      blockers.push("pending_turn");
+    if (records.runs.some((r) => ["running", "waiting"].includes(r.status)))
+      blockers.push("running_turn");
+    if (session?.status === "starting") blockers.push("session_starting");
+    if (session?.status === "running" || session?.status === "waiting")
+      blockers.push("session_running");
+    if (shell.activeRunId !== null) blockers.push("active_turn");
+    if (
+      records.runtimeRequests.some(
+        (request) => request.status === "pending" && request.kind !== "user_input",
       )
-        blockers.push("pending_approval");
-      if (
-        records.runtimeRequests.some(
-          (request) => request.status === "pending" && request.kind === "user_input",
-        )
+    )
+      blockers.push("pending_approval");
+    if (
+      records.runtimeRequests.some(
+        (request) => request.status === "pending" && request.kind === "user_input",
       )
-        blockers.push("pending_user_input");
-      if (shell.hasActionableProposedPlan) blockers.push("actionable_plan");
-      if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) blockers.push("background_work");
-      const target: OrchestrationDispatchTarget = {
-        modelSelection: shell.modelSelection,
-        sessionStatus:
-          session === undefined ? null : session.status === "waiting" ? "running" : session.status,
-        activeTurnId: shell.activeRunId === null ? null : TurnId.make(shell.activeRunId),
-        latestTurnId: shell.latestRunId === null ? null : TurnId.make(shell.latestRunId),
-        requireIdle: true,
-        idle: blockers.length === 0,
-        blockers,
-      };
-      return { ...row!, target };
-    });
+    )
+      blockers.push("pending_user_input");
+    if (shell.hasActionableProposedPlan) blockers.push("actionable_plan");
+    if ((shell.pendingBackgroundTasks?.length ?? 0) > 0) blockers.push("background_work");
+    const target: OrchestrationDispatchTarget = {
+      modelSelection: shell.modelSelection,
+      sessionStatus:
+        session === undefined ? null : session.status === "waiting" ? "running" : session.status,
+      activeTurnId: shell.activeRunId === null ? null : TurnId.make(shell.activeRunId),
+      latestTurnId: shell.latestRunId === null ? null : TurnId.make(shell.latestRunId),
+      requireIdle: true,
+      idle: blockers.length === 0,
+      blockers,
+    };
+    return { ...row!, target };
+  });
   const getTarget = (threadId: ThreadId) => sql.withTransaction(readTarget(threadId));
   const observe = (input: { threadId: ThreadId; commandId: CommandId; messageId: MessageId }) =>
     sql.withTransaction(

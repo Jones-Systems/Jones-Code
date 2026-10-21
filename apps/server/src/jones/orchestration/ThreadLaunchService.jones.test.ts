@@ -275,17 +275,15 @@ function launchInput(input: {
   };
 }
 
-function waitUntil<E, R>(
-  threadId: ThreadId,
-  predicate: () => Effect.Effect<boolean, E, R>,
-) {
+function waitUntil<E, R>(threadId: ThreadId, predicate: () => Effect.Effect<boolean, E, R>) {
   return Effect.gen(function* () {
     const threads = yield* ThreadManagement.ThreadManagementService;
     const reached = yield* threads.streamStoredEventsFrom({ threadId }).pipe(
       Stream.filterEffect(() => predicate()),
       Stream.runHead,
     );
-    if (Option.isNone(reached)) assert.fail("Thread events ended before the condition was reached.");
+    if (Option.isNone(reached))
+      assert.fail("Thread events ended before the condition was reached.");
   });
 }
 

@@ -84,7 +84,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
+      await act(async () => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -97,17 +97,17 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  testTimers = fakeTimers();
-  vi.setSystemTime(new Date(updatedAt));
-  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  vi.spyOn(document, "hasFocus").mockReturnValue(true);
-  state.supportsVisits = true;
-  state.visit.mockClear();
-  state.unread.mockClear();
-  useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  ownedContainer = container = document.createElement("div");
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    testTimers = fakeTimers();
+    vi.setSystemTime(new Date(updatedAt));
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    vi.spyOn(document, "hasFocus").mockReturnValue(true);
+    state.supportsVisits = true;
+    state.visit.mockClear();
+    state.unread.mockClear();
+    useUiStateStore.setState({ threadLastVisitedAtById: {} });
+    ownedContainer = container = document.createElement("div");
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -141,7 +141,7 @@ it.each([1000, 3000])(
   },
 );
 it("keeps an older server's explicit unread watermark during pending dwell and later activity", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   state.supportsVisits = false;
   const legacy = { ...thread };
   delete legacy.lastVisitedAt;
@@ -158,7 +158,7 @@ it("keeps an older server's explicit unread watermark during pending dwell and l
   expect(state.unread).not.toHaveBeenCalled();
 });
 it("cancels on unmount without leaving an automatic visit queued", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await render();
   await advance(2000);
   await act(async () => await root.rerender(null));

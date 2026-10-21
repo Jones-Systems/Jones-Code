@@ -148,16 +148,16 @@ export const make = Effect.fn("mobile.connectionStorage.makeCatalogStore")(funct
         ),
       ),
     ),
-    set: Effect.fn("MobileConnectionCatalogStore.set")(function* (environmentId,
-routeBinding,
-kind) {
+    set: Effect.fn("MobileConnectionCatalogStore.set")(
+      function* (environmentId, routeBinding, kind) {
         if (
           kind !== null &&
           catalogCompatibilityRouteBinding(yield* snapshot, environmentId) !== routeBinding
         )
           return;
         yield* hints.set(environmentId, routeBinding, kind);
-      }),
+      },
+    ),
   };
   const state = yield* Ref.make<Option.Option<ConnectionCatalogDocumentType>>(Option.none());
   const lock = yield* Semaphore.make(1);

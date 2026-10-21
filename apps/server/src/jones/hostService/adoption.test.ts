@@ -812,32 +812,30 @@ it("archives authenticated private setup evidence before qualification and retai
     },
     { privateSetup: true },
   ));
-it(
-  "enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077",
-  () =>
-    fixture(
-      async (f) => {
-        const active = NodePath.join(f.runtime, "versions", oldVersion);
-        for (const directory of [
-          f.base,
-          f.runtime,
-          NodePath.dirname(active),
-          active,
-          ...["client", "node_modules", "resource-monitor"].map((name) =>
-            NodePath.join(active, name),
-          ),
-        ])
-          await NodeFSP.chmod(directory, 0o700);
-        await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
-        for (const name of [".install-complete", ".jones-provenance.json"])
-          await NodeFSP.chmod(NodePath.join(active, name), 0o600);
-        const verified = await verifyAdoptionArtifact(
-          f.input.activeArtifactDir,
-          privateSetupSource,
-          f.host,
-        );
-        const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
-        const script = `
+it("enrolls genuine private modes with authenticated 0755 archive extraction under isolated umask 0077", () =>
+  fixture(
+    async (f) => {
+      const active = NodePath.join(f.runtime, "versions", oldVersion);
+      for (const directory of [
+        f.base,
+        f.runtime,
+        NodePath.dirname(active),
+        active,
+        ...["client", "node_modules", "resource-monitor"].map((name) =>
+          NodePath.join(active, name),
+        ),
+      ])
+        await NodeFSP.chmod(directory, 0o700);
+      await NodeFSP.chmod(NodePath.join(active, "t3"), 0o700);
+      for (const name of [".install-complete", ".jones-provenance.json"])
+        await NodeFSP.chmod(NodePath.join(active, name), 0o600);
+      const verified = await verifyAdoptionArtifact(
+        f.input.activeArtifactDir,
+        privateSetupSource,
+        f.host,
+      );
+      const scratch = await NodeFSP.mkdtemp(NodePath.join(f.root, "private-mode-proof-"));
+      const script = `
         process.umask(0o077);
         const assert = (await import("node:assert/strict")).default;
         const fs = await import("node:fs/promises");
@@ -869,34 +867,33 @@ it(
         assert.equal(await fs.readFile(path.join(archive, ".jones-provenance.json"), "utf8"), preimage.text);
         process.stdout.write(JSON.stringify({ source: receipt.sourceSha, mode: 0o700 }));
       `;
-        const input = JSON.stringify({
-          scratch,
-          archive: verified.archive,
-          baseDir: f.base,
-          artifact: verified.artifact,
-          privateSetup: {
-            directory: active,
-            uid: f.host.uid,
-            artifact: verified.metadata,
-            entrySha256: sha(runtimeExecutable(oldVersion)),
-          },
-        });
-        const stdout = await new Promise<string>((resolve, reject) =>
-          NodeChildProcess.execFile(
-            NodeProcess.execPath,
-            ["--experimental-strip-types", "--input-type=module", "-e", script, input],
-            { timeout: 30_000, maxBuffer: 64 * 1024 },
-            (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
-          ),
-        );
-        expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
-        await expect(
-          NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-      },
-      { privateSetup: true },
-    ),
-);
+      const input = JSON.stringify({
+        scratch,
+        archive: verified.archive,
+        baseDir: f.base,
+        artifact: verified.artifact,
+        privateSetup: {
+          directory: active,
+          uid: f.host.uid,
+          artifact: verified.metadata,
+          entrySha256: sha(runtimeExecutable(oldVersion)),
+        },
+      });
+      const stdout = await new Promise<string>((resolve, reject) =>
+        NodeChildProcess.execFile(
+          NodeProcess.execPath,
+          ["--experimental-strip-types", "--input-type=module", "-e", script, input],
+          { timeout: 30_000, maxBuffer: 64 * 1024 },
+          (error, stdout) => (error === null ? resolve(stdout) : reject(error)),
+        ),
+      );
+      expect(JSON.parse(stdout)).toEqual({ source: privateSetupSource, mode: 0o700 });
+      await expect(
+        NodeFSP.lstat(NodePath.join(active, ".jones-provenance.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+    { privateSetup: true },
+  ));
 it.each(["missing-acceptance", "current-child-receipt", "stale-child-receipt"])(
   "refuses private setup %s before pending intent or service stop",
   (kind) =>

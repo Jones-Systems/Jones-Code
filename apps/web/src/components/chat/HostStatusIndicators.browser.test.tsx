@@ -26,8 +26,8 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(async () => screen?.unmount());
-  expect(observerDisconnected).toBe(true);
+      await act(async () => screen?.unmount());
+      expect(observerDisconnected).toBe(true);
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -41,69 +41,69 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  vi.setSystemTime(new Date("2026-10-21T12:00:00.000Z"));
-  clearRetainedHostStatus(EnvironmentId.make("remote-a"));
-  clearRetainedHostStatus(EnvironmentId.make("remote-b"));
-  availableWidth = 1000;
-  bubbleWidths = [100, 110, 120, 130];
-  observerDisconnected = false;
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      targets = new Set<Element>();
-      constructor(callback: (entries: { target: Element; contentRect: DOMRect }[]) => void) {
-        resize = () =>
-          callback(
-            [...this.targets].map((target) => ({
-              target,
-              contentRect: target.getBoundingClientRect(),
-            })),
-          );
-      }
-      observe(target: Element) {
-        this.targets.add(target);
-      }
-      unobserve(target: Element) {
-        this.targets.delete(target);
-      }
-      disconnect() {
-        this.targets.clear();
-        observerDisconnected = true;
-      }
-    },
-  );
-  const originalRect = HTMLElement.prototype.getBoundingClientRect;
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement,
-  ) {
-    if (this.getAttribute("aria-label") === "Host status") {
-      return new DOMRect(0, 0, availableWidth, 32);
-    }
-    if (this.parentElement?.hasAttribute("data-host-status-measurement")) {
-      const index = Array.from(this.parentElement.children).indexOf(this);
-      const left = bubbleWidths.slice(0, index).reduce((sum, width) => sum + width + 8, 0);
-      return new DOMRect(left, 0, bubbleWidths[index] ?? 0, 32);
-    }
-    return originalRect.call(this);
-  });
-  vi.mocked(observeHostStatus).mockImplementation((_visibility, listener, _request, cache) => {
-    receive = (snapshot) => {
-      if (cache) cache.snapshot = snapshot;
-      listener(snapshot);
-    };
-    return () => {};
-  });
-  ownedContainer = container = document.createElement("div");
-  document.body.appendChild(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
-  await act(async () => {
-    await root.rerender(
-      <TooltipProvider>
-        <HostStatusIndicators environmentId={EnvironmentId.make("remote-a")} />
-      </TooltipProvider>,
+    vi.setSystemTime(new Date("2026-10-21T12:00:00.000Z"));
+    clearRetainedHostStatus(EnvironmentId.make("remote-a"));
+    clearRetainedHostStatus(EnvironmentId.make("remote-b"));
+    availableWidth = 1000;
+    bubbleWidths = [100, 110, 120, 130];
+    observerDisconnected = false;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        targets = new Set<Element>();
+        constructor(callback: (entries: { target: Element; contentRect: DOMRect }[]) => void) {
+          resize = () =>
+            callback(
+              [...this.targets].map((target) => ({
+                target,
+                contentRect: target.getBoundingClientRect(),
+              })),
+            );
+        }
+        observe(target: Element) {
+          this.targets.add(target);
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target);
+        }
+        disconnect() {
+          this.targets.clear();
+          observerDisconnected = true;
+        }
+      },
     );
-  });
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("aria-label") === "Host status") {
+        return new DOMRect(0, 0, availableWidth, 32);
+      }
+      if (this.parentElement?.hasAttribute("data-host-status-measurement")) {
+        const index = Array.from(this.parentElement.children).indexOf(this);
+        const left = bubbleWidths.slice(0, index).reduce((sum, width) => sum + width + 8, 0);
+        return new DOMRect(left, 0, bubbleWidths[index] ?? 0, 32);
+      }
+      return originalRect.call(this);
+    });
+    vi.mocked(observeHostStatus).mockImplementation((_visibility, listener, _request, cache) => {
+      receive = (snapshot) => {
+        if (cache) cache.snapshot = snapshot;
+        listener(snapshot);
+      };
+      return () => {};
+    });
+    ownedContainer = container = document.createElement("div");
+    document.body.appendChild(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    await act(async () => {
+      await root.rerender(
+        <TooltipProvider>
+          <HostStatusIndicators environmentId={EnvironmentId.make("remote-a")} />
+        </TooltipProvider>,
+      );
+    });
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -112,10 +112,8 @@ async function setupTest(): Promise<AsyncDisposable> {
   }
 }
 
-
-
 it("keeps one bubble per host while live samples update both metric colors and accessible detail", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const bubbles = () => Array.from(container.querySelectorAll('[role="img"]'));
   expect(bubbles().map((bubble) => bubble.textContent)).toEqual([
     "VPS · — · —",
@@ -159,7 +157,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
 });
 
 it("shows Mac swap activity without a low available-RAM alarm", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   await act(async () =>
     receive({
       hosts: [
@@ -185,7 +183,7 @@ it("shows Mac swap activity without a low available-RAM alarm", async () => {
 });
 
 it("colors CPU and RAM separately while either can raise the host background", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   for (const [cpuUsagePercent, availablePercent, cpuColor, ramColor, background] of [
     [49, 60, "emerald", "emerald", "emerald"],
     [50, 24, "yellow", "orange", "orange"],
@@ -218,7 +216,7 @@ it("colors CPU and RAM separately while either can raise the host background", a
 });
 
 it("removes complete bubbles from the right as available header space shrinks and restores them", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const names = () =>
     Array.from(container.querySelectorAll('[role="img"]')).map(
       (bubble) => bubble.textContent?.split(" · ")[0],
@@ -247,7 +245,7 @@ it("removes complete bubbles from the right as available header space shrinks an
 });
 
 it("recalculates fitting bubbles when live metric text changes width without a viewport resize", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const names = () =>
     Array.from(container.querySelectorAll('[role="img"]')).map(
       (bubble) => bubble.textContent?.split(" · ")[0],
@@ -292,7 +290,7 @@ it("recalculates fitting bubbles when live metric text changes width without a v
 });
 
 it("clears the previous environment immediately and ignores its late sample after switching", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const sample: HostStatusSnapshot = {
     hosts: [
       {
@@ -310,12 +308,13 @@ it("clears the previous environment immediately and ignores its late sample afte
   const oldReceive = receive;
   await act(async () => oldReceive(sample));
   expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · 23% · 4");
-  await act(async () =>
-    await root.rerender(
-      <TooltipProvider>
-        <HostStatusIndicators environmentId={EnvironmentId.make("remote-b")} />
-      </TooltipProvider>,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <TooltipProvider>
+          <HostStatusIndicators environmentId={EnvironmentId.make("remote-b")} />
+        </TooltipProvider>,
+      ),
   );
   expect(container.querySelector('[role="img"]')?.textContent).toBe("VPS · — · —");
   await act(async () => oldReceive(sample));

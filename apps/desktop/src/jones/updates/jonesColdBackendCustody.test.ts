@@ -199,33 +199,29 @@ assert.throws(()=>coldHardenFixedDescriptors(()=>0,()=>-1));
     "exit-signal",
     "external-cancel",
     "external-cancel-escalation",
-  ])(
-    "retains real child and pipe custody for %s",
-    async (scenario, { signal }) => {
-      await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
-        const entry = NodePath.join(root, "custody.mjs");
-        const source = await NodeFSP.readFile(
-          new URL("./jonesColdBackendCustody.ts", import.meta.url),
-          "utf8",
-        );
-        const layout = await NodeFSP.readFile(
-          new URL("./jonesColdDarwinLayout.ts", import.meta.url),
-          "utf8",
-        );
-        await NodeFSP.writeFile(
-          NodePath.join(root, "jonesColdDarwinLayout.mjs"),
-          NodeModule.stripTypeScriptTypes(layout),
-        );
-        await NodeFSP.writeFile(
-          entry,
-          NodeModule.stripTypeScriptTypes(
-            source.replace('"./jonesColdDarwinLayout.ts"', '"./jonesColdDarwinLayout.mjs"') +
-              harness,
-          ),
-        );
-        await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), child);
-        await runOwnedFixture(root, scenario, signal);
-      });
-    },
-  );
+  ])("retains real child and pipe custody for %s", async (scenario, { signal }) => {
+    await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
+      const entry = NodePath.join(root, "custody.mjs");
+      const source = await NodeFSP.readFile(
+        new URL("./jonesColdBackendCustody.ts", import.meta.url),
+        "utf8",
+      );
+      const layout = await NodeFSP.readFile(
+        new URL("./jonesColdDarwinLayout.ts", import.meta.url),
+        "utf8",
+      );
+      await NodeFSP.writeFile(
+        NodePath.join(root, "jonesColdDarwinLayout.mjs"),
+        NodeModule.stripTypeScriptTypes(layout),
+      );
+      await NodeFSP.writeFile(
+        entry,
+        NodeModule.stripTypeScriptTypes(
+          source.replace('"./jonesColdDarwinLayout.ts"', '"./jonesColdDarwinLayout.mjs"') + harness,
+        ),
+      );
+      await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), child);
+      await runOwnedFixture(root, scenario, signal);
+    });
+  });
 });

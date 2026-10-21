@@ -196,8 +196,8 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  if (mounted) await act(async () => screen?.unmount());
-  registry.dispose();
+      if (mounted) await act(async () => screen?.unmount());
+      registry.dispose();
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -209,21 +209,21 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  registry = AtomRegistry.make();
-  storage = new MemoryStorage();
-  events = new EventTarget();
-  state.navigate.mockReset();
-  state.environmentIds = [];
-  state.shellAtom = null;
-  state.resolveOrigins.mockReset();
-  const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
-  await store.saveInbox(inbox([entry("a")]));
-  state.controller = createSettlementNotificationController({ store });
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
-  mounted = false;
+    registry = AtomRegistry.make();
+    storage = new MemoryStorage();
+    events = new EventTarget();
+    state.navigate.mockReset();
+    state.environmentIds = [];
+    state.shellAtom = null;
+    state.resolveOrigins.mockReset();
+    const store = createLocalStorageSettlementStore(() => storage, events as unknown as Window);
+    await store.saveInbox(inbox([entry("a")]));
+    state.controller = createSettlementNotificationController({ store });
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+    mounted = false;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -231,7 +231,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
 
 describe("persistent settlement notification", () => {
   it("removes saved child notices and only shows parent and fork settlements after reload", async () => {
@@ -439,7 +438,7 @@ describe("persistent settlement notification", () => {
   it.each([375, 1280])(
     "fits aggregate width and truncates full remaining text at %ipx",
     async (width) => {
-    await using _fixture = await setupTest();
+      await using _fixture = await setupTest();
       await page.viewport(width, 800);
       storage.clear();
       await publish([entry("a"), entry("b")]);

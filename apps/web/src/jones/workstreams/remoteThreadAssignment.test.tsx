@@ -468,7 +468,10 @@ describe("assigning a thread from another environment", () => {
       "denied",
     ],
   ])("releases only a primary known pre-effect rejection", async (failure, reason) => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     shared.state.intercept = (call) => {
       if (call.route === "submit") throw failure;
@@ -496,7 +499,10 @@ describe("assigning a thread from another environment", () => {
   ])(
     "keeps primary ambiguous submissions fenced and reconciles before metadata",
     async (failure) => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       shared.state.intercept = (call) => {
         if (call.route === "submit") throw failure;
@@ -548,7 +554,10 @@ describe("assigning a thread from another environment", () => {
   it.each([false, true])(
     "classifies a loading error by actual submission phase (%s)",
     async (submitted) => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       shared.state.intercept = (call) =>
         call.route === "submit"
@@ -592,7 +601,10 @@ describe("assigning a thread from another environment", () => {
       reason: "source generation differs",
     })),
   ])("retains primary body eligibility with optional diagnostics: %j", async (testCase) => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     const environment = remoteEnvironment(shared);
     const context = {
       ...shared.registration(),
@@ -623,7 +635,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("a remote scope denial before submission retains the primary snapshot", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     environment.state.intercept = () => {
@@ -641,7 +656,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("explicit Refresh rechecks relevant prepared sessions without waiting on metadata", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     shared.state.intercept = (call) => {
       if (call.route === "list") throw new Error("metadata offline");
@@ -653,7 +671,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("retains a sanitized remote refusal until explicit Refresh", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     const sources = environment.state.sources;
@@ -697,7 +718,10 @@ describe("assigning a thread from another environment", () => {
       "denied",
     ],
   ])("clears a remote known pre-effect rejection without resubmitting", async (failure, reason) => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     environment.state.intercept = (call) => {
@@ -714,7 +738,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("reconciles a remote lost response before failing metadata reads", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     let accepted: WorkstreamReceipt | undefined;
@@ -749,7 +776,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("registers, verifies and attaches through the thread's own server", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     const primaryCallsBefore = shared.state.calls.length;
@@ -796,7 +826,10 @@ describe("assigning a thread from another environment", () => {
   ])(
     "refuses before submitting when the environment's registry belongs to %s",
     async (_label, override) => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       const environment = remoteEnvironment(shared);
       environment.state.binding = { ...environment.state.binding, ...override };
@@ -827,7 +860,10 @@ describe("assigning a thread from another environment", () => {
       "unavailable",
     ],
   ])("refuses before submitting when the environment is %s", async (_label, error, refusal) => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     environment.state.intercept = () => {
@@ -845,7 +881,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("refuses before submitting when the environment cannot register its own thread", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     environment.state.sources = [];
@@ -858,7 +897,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("refuses before submitting when the environment's access is read-only", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     environment.state.binding = { ...environment.state.binding, permissions: ["workstreams:read"] };
@@ -870,7 +912,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("refuses without contacting the environment while the primary snapshot is stale", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     shared.state.intercept = (call) => {
@@ -900,7 +945,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("reconciles a lost submit response only through the environment that accepted it", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     let lost: WorkstreamCommand | undefined;
@@ -967,7 +1015,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("holds primary writes until an unresolved remote command is reconciled", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     let lost: WorkstreamCommand | undefined;
@@ -1094,7 +1145,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("keeps the primary read-only when the caller cancels after a remote submit", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     const environment = remoteEnvironment(shared);
     const controller = new AbortController();
@@ -1241,7 +1295,10 @@ describe("assigning a thread from another environment", () => {
       }) as unknown;
 
     it("refuses a gated primary submit while a remote command is unknown", async () => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       const environment = remoteEnvironment(shared);
       shared.state.intercept = (call) =>
@@ -1273,7 +1330,10 @@ describe("assigning a thread from another environment", () => {
     });
 
     it("refuses a gated remote submit while a primary command is unknown", async () => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       const environment = remoteEnvironment(shared);
       const remoteAssignment = startGated(remote, "remote");
@@ -1305,7 +1365,10 @@ describe("assigning a thread from another environment", () => {
     });
 
     it("refuses a second gated remote submit while the first remote command is unknown", async () => {
-      const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+      const shared = syntheticWorkstreams({
+        now: () => vi.getMockedSystemTime()!.getTime(),
+        assignments: [],
+      });
       await mountWith(shared);
       const environment = remoteEnvironment(shared);
       const held = deferred<WorkstreamReceipt>();
@@ -1504,7 +1567,10 @@ describe("assigning a thread from another environment", () => {
   });
 
   it("keeps primary-environment assignment on the primary server", async () => {
-    const shared = syntheticWorkstreams({ now: () => vi.getMockedSystemTime()!.getTime(), assignments: [] });
+    const shared = syntheticWorkstreams({
+      now: () => vi.getMockedSystemTime()!.getTime(),
+      assignments: [],
+    });
     await mountWith(shared);
     remoteEnvironment(shared);
 

@@ -39,22 +39,23 @@ let root: Screen;
 let onSelect = vi.fn<(instanceId: ProviderInstanceId, model: string) => void>();
 
 async function render(overrides: Partial<ComponentProps<typeof FavoriteModelShortcuts>> = {}) {
-  await act(async () =>
-    await root.rerender(
-      <FavoriteModelShortcuts
-        instanceEntries={entries}
-        settings={DEFAULT_UNIFIED_SETTINGS}
-        activeInstanceId={instanceId}
-        model="first"
-        selectedModels={null}
-        lockedProvider={null}
-        lockedContinuationGroupKey={null}
-        disabled={false}
-        getModelDisabledReason={() => null}
-        onSelect={onSelect}
-        {...overrides}
-      />,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <FavoriteModelShortcuts
+          instanceEntries={entries}
+          settings={DEFAULT_UNIFIED_SETTINGS}
+          activeInstanceId={instanceId}
+          model="first"
+          selectedModels={null}
+          lockedProvider={null}
+          lockedContinuationGroupKey={null}
+          disabled={false}
+          getModelDisabledReason={() => null}
+          onSelect={onSelect}
+          {...overrides}
+        />,
+      ),
   );
 }
 
@@ -64,7 +65,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(() => screen?.unmount());
+      await act(() => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -76,12 +77,15 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  onSelect = vi.fn();
-  client.favorites = ["first", "second", "third"].map((model) => ({ provider: instanceId, model }));
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    onSelect = vi.fn();
+    client.favorites = ["first", "second", "third"].map((model) => ({
+      provider: instanceId,
+      model,
+    }));
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -89,8 +93,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
-
 
 describe("provider account shortcuts", () => {
   it("keeps an enabled provider account reachable without favorite models", async () => {
@@ -193,7 +195,11 @@ describe("provider account shortcuts", () => {
     )!;
     await act(() => button.click());
     expect(onSelect).toHaveBeenCalledWith(otherId, "second");
-    await render({ instanceEntries: [...entries, other], activeInstanceId: otherId, model: "second" });
+    await render({
+      instanceEntries: [...entries, other],
+      activeInstanceId: otherId,
+      model: "second",
+    });
     expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 

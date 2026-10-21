@@ -39,7 +39,13 @@ const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "synthetic-shell-cost" };
 const runId = (id: ThreadId, index: number) => RunId.make(`${id}:run:${index}`);
 
-import { measure, NativeTimeline, withNativeWatchdog, type Query, type Measurement } from "./shellCost.testFixtures.ts";
+import {
+  measure,
+  NativeTimeline,
+  withNativeWatchdog,
+  type Query,
+  type Measurement,
+} from "./shellCost.testFixtures.ts";
 
 function boundedService<T extends object>(methods: Partial<T>): T {
   return new Proxy(methods, {
@@ -229,9 +235,14 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
       firstLiveAfterPublishMilliseconds: null as number | null,
     }));
     const bounded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      withNativeWatchdog(effect, "15 seconds", () => new Error(
-        `shell cost milestone stalled: ${JSON.stringify({ clients, ending, activeLive, activeEnrichment, markerCount })}`,
-      ));
+      withNativeWatchdog(
+        effect,
+        "15 seconds",
+        () =>
+          new Error(
+            `shell cost milestone stalled: ${JSON.stringify({ clients, ending, activeLive, activeEnrichment, markerCount })}`,
+          ),
+      );
     const applicationEvents = boundedService<
       OrchestrationEventStore.OrchestrationEventStore["Service"]
     >({
@@ -352,8 +363,7 @@ function scenario(clients: number, ending: "complete" | "cancel" | "failure", hi
                         0,
                       );
                       if (observation.firstLiveAfterPublishMilliseconds === null)
-                        observation.firstLiveAfterPublishMilliseconds =
-                          timeline.elapsed("publish");
+                        observation.firstLiveAfterPublishMilliseconds = timeline.elapsed("publish");
                       assert.strictEqual(
                         item.thread.id,
                         item.sequence === 511 ? targetId : otherId,

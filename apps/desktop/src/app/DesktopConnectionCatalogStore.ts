@@ -478,21 +478,23 @@ export const make = Effect.gen(function* () {
     return Option.some(encoded);
   });
 
-  const decryptDocument = Effect.fn("DesktopConnectionCatalogStore.decryptDocument")(function* (document: EncryptedConnectionCatalogDocument) {
-      if (!(yield* encryptionAvailable)) return Option.none<string>();
-      const encrypted = yield* decodeSecretBytes(catalogPath, document.encryptedCatalog);
-      const decrypted = yield* safeStorage.decryptString(encrypted).pipe(
-        Effect.mapError(
-          (cause) =>
-            new DesktopConnectionCatalogStoreProtectionError({
-              operation: "decrypt-catalog",
-              catalogPath,
-              cause,
-            }),
-        ),
-      );
-      return Option.some(decrypted);
-    });
+  const decryptDocument = Effect.fn("DesktopConnectionCatalogStore.decryptDocument")(function* (
+    document: EncryptedConnectionCatalogDocument,
+  ) {
+    if (!(yield* encryptionAvailable)) return Option.none<string>();
+    const encrypted = yield* decodeSecretBytes(catalogPath, document.encryptedCatalog);
+    const decrypted = yield* safeStorage.decryptString(encrypted).pipe(
+      Effect.mapError(
+        (cause) =>
+          new DesktopConnectionCatalogStoreProtectionError({
+            operation: "decrypt-catalog",
+            catalogPath,
+            cause,
+          }),
+      ),
+    );
+    return Option.some(decrypted);
+  });
   const snapshot = readDocument(fileSystem, catalogPath).pipe(
     Effect.flatMap((document) =>
       Option.isNone(document)

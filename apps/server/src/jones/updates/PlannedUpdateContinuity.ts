@@ -90,43 +90,45 @@ export const make = Effect.gen(function* () {
           );
 
   const read = Effect.fn("PlannedUpdateContinuity.read")(function* (threadId: ThreadId) {
-      const current = yield* Ref.get(active);
-      if (current === undefined || !current.threadIds.includes(threadId)) return undefined;
-      const rows = yield* sql<{ snapshot_json: string; queue_done: number; work_done: number }>`
+    const current = yield* Ref.get(active);
+    if (current === undefined || !current.threadIds.includes(threadId)) return undefined;
+    const rows = yield* sql<{ snapshot_json: string; queue_done: number; work_done: number }>`
       SELECT snapshot_json,queue_done,work_done FROM jones_planned_update_threads
       WHERE operation_id=${current.operationId} AND thread_id=${threadId}`;
-      const row = rows[0];
-      if (row === undefined) return undefined;
-      const snapshot = yield* Effect.try(() => decodeSnapshot(row.snapshot_json));
-      return { ...row, snapshot, operationId: current.operationId };
-    });
+    const row = rows[0];
+    if (row === undefined) return undefined;
+    const snapshot = yield* Effect.try(() => decodeSnapshot(row.snapshot_json));
+    return { ...row, snapshot, operationId: current.operationId };
+  });
 
-  const controlsUnchanged = Effect.fn("PlannedUpdateContinuity.controlsUnchanged")(function* (snapshot: PlannedThreadSnapshot,
-projection: OrchestrationV2ThreadProjection) {
-      if (snapshot.receiptRowId !== 0) {
-        const anchor = yield* sql<{
-          command_id: string;
-        }>`SELECT command_id FROM orchestration_command_receipts WHERE rowid=${snapshot.receiptRowId}`;
-        // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
-        if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
-      }
-      const receipts = yield* sql<{
+  const controlsUnchanged = Effect.fn("PlannedUpdateContinuity.controlsUnchanged")(function* (
+    snapshot: PlannedThreadSnapshot,
+    projection: OrchestrationV2ThreadProjection,
+  ) {
+    if (snapshot.receiptRowId !== 0) {
+      const anchor = yield* sql<{
         command_id: string;
-        command_type: string;
-        accepted_at: string;
-      }>`
+      }>`SELECT command_id FROM orchestration_command_receipts WHERE rowid=${snapshot.receiptRowId}`;
+      // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
+      if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
+    }
+    const receipts = yield* sql<{
+      command_id: string;
+      command_type: string;
+      accepted_at: string;
+    }>`
       SELECT command_id,command_type,accepted_at FROM orchestration_command_receipts
       WHERE aggregate_kind='thread' AND aggregate_id=${snapshot.threadId}
         AND rowid>${snapshot.receiptRowId} AND status='accepted'`;
-      const ids = continuationRunIds(snapshot, projection);
-      if (receipts.some((receipt) => changesPlannedControl(receipt, snapshot, ids))) return false;
-      const preferences = yield* settings.getSettings;
-      return (
-        snapshot.explicitContinuation ||
-        resolveProjectSettings(preferences, projection.thread.projectId).settings
-          .continueThreadsAfterServerUpdate
-      );
-    });
+    const ids = continuationRunIds(snapshot, projection);
+    if (receipts.some((receipt) => changesPlannedControl(receipt, snapshot, ids))) return false;
+    const preferences = yield* settings.getSettings;
+    return (
+      snapshot.explicitContinuation ||
+      resolveProjectSettings(preferences, projection.thread.projectId).settings
+        .continueThreadsAfterServerUpdate
+    );
+  });
 
   const finish = (threadId: ThreadId, column: "queue_done" | "work_done") =>
     safe(

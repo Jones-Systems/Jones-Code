@@ -63,20 +63,21 @@ async function render(
     visible: true,
     ...overrides,
   };
-  await act(async () =>
-    await root.rerender(
-      <>
-        <ReasoningEffortShortcuts {...props} />
-        {withMenu ? (
-          <Menu open>
-            <MenuTrigger>Traits</MenuTrigger>
-            <MenuPopup>
-              <TraitsMenuContent {...props} />
-            </MenuPopup>
-          </Menu>
-        ) : null}
-      </>,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <>
+          <ReasoningEffortShortcuts {...props} />
+          {withMenu ? (
+            <Menu open>
+              <MenuTrigger>Traits</MenuTrigger>
+              <MenuPopup>
+                <TraitsMenuContent {...props} />
+              </MenuPopup>
+            </Menu>
+          ) : null}
+        </>,
+      ),
   );
 }
 
@@ -104,7 +105,7 @@ async function setupTest(): Promise<AsyncDisposable> {
   async function cleanup() {
     const screen = initialized ? root : undefined;
     try {
-  await act(() => screen?.unmount());
+      await act(() => screen?.unmount());
     } finally {
       try {
         await screen?.[Symbol.asyncDispose]();
@@ -116,24 +117,24 @@ async function setupTest(): Promise<AsyncDisposable> {
     }
   }
   try {
-  onPromptChange = vi.fn();
-  useComposerDraftStore.setState({
-    draftsByThreadKey: {},
-    stickyModelSelectionByProvider: {},
-    stickyActiveProvider: null,
-  });
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
-  ownedContainer = container = document.createElement("div");
-  document.body.append(container);
-  root = await renderTest(null, { container: container, router: false });
-  initialized = true;
+    onPromptChange = vi.fn();
+    useComposerDraftStore.setState({
+      draftsByThreadKey: {},
+      stickyModelSelectionByProvider: {},
+      stickyActiveProvider: null,
+    });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
 
     return { [Symbol.asyncDispose]: cleanup };
   } catch (error) {
@@ -141,8 +142,6 @@ async function setupTest(): Promise<AsyncDisposable> {
     throw error;
   }
 }
-
-
 
 describe("reasoning effort shortcuts", () => {
   it("uses current model defaults and preserves other saved options in draft and sticky selection", async () => {
@@ -178,7 +177,7 @@ describe("reasoning effort shortcuts", () => {
   it.each(["effort", "variant", "reasoning"])(
     "selects the %s descriptor without exposing unrelated selectors",
     async (id) => {
-    await using _fixture = await setupTest();
+      await using _fixture = await setupTest();
       await render({}, [
         { ...effort, id },
         { id: "agent", label: "Agent", type: "select", options: [{ id: "build", label: "Build" }] },
@@ -443,7 +442,7 @@ function familyButton(name: string) {
 }
 
 it("selects a model and effort together on the current account, retaining same-model traits", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const onProviderModelSelect = vi.fn();
   const props = {
     provider: ProviderDriverKind.make("codex"),
@@ -487,7 +486,7 @@ it("selects a model and effort together on the current account, retaining same-m
 });
 
 it("keeps missing families and unsupported efforts disabled, and enforces model locks and rail hiding", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const onProviderModelSelect = vi.fn();
   const props = {
     provider: ProviderDriverKind.make("codex"),
@@ -511,7 +510,7 @@ it("keeps missing families and unsupported efforts disabled, and enforces model 
 });
 
 it("preserves Claude body locks and strips the prefix on same- and cross-model effort choices", async () => {
-    await using _fixture = await setupTest();
+  await using _fixture = await setupTest();
   const descriptor = { ...familyEffort, id: "effort", promptInjectedValues: ["ultrathink"] };
   const models = ["opus", "sonnet"].map((family) => ({
     slug: `claude-${family}-5-5`,

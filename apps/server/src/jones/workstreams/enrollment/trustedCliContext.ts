@@ -294,52 +294,52 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
     });
     const bindAuthorityToSqlClient: TrustedNativeEnrollmentCliContext["bindAuthorityToSqlClient"] =
       Effect.fn("TrustedNativeEnrollmentCliContext.bindAuthorityToSqlClient")(function* (client) {
-          yield* verifyUnchanged;
-          if (
-            access !== "apply" ||
-            Option.isSome(yield* Effect.serviceOption(client.transactionService))
-          )
-            return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
-          const connection = yield* Effect.gen(function* () {
-            const connection = yield* client.reserve;
-            const databases = yield* connection.execute("PRAGMA database_list", [], undefined).pipe(
-              Effect.flatMap(
-                Schema.decodeUnknownEffect(
-                  Schema.Array(
-                    Schema.Struct({
-                      seq: Schema.Number,
-                      name: Schema.String,
-                      file: Schema.String,
-                    }),
-                  ),
+        yield* verifyUnchanged;
+        if (
+          access !== "apply" ||
+          Option.isSome(yield* Effect.serviceOption(client.transactionService))
+        )
+          return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
+        const connection = yield* Effect.gen(function* () {
+          const connection = yield* client.reserve;
+          const databases = yield* connection.execute("PRAGMA database_list", [], undefined).pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.Array(
+                  Schema.Struct({
+                    seq: Schema.Number,
+                    name: Schema.String,
+                    file: Schema.String,
+                  }),
                 ),
               ),
-            );
-            const main = databases.filter((database) => database.name === "main");
-            if (main.length !== 1 || main[0]?.seq !== 0 || main[0]?.file !== initial.dbPath)
-              return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
-            yield* verifyUnchanged;
-            return connection;
-          }).pipe(
-            Effect.scoped,
-            Effect.mapError((error) =>
-              Schema.is(NativeEnrollmentCliContextError)(error)
-                ? error
-                : new NativeEnrollmentCliContextError({ code: "database_unavailable" }),
             ),
           );
-          // Only this verified client's active transaction may account for its rollback journal.
-          // The same inode and all persisted authority/build metadata are still compared each time.
-          return authorityFor(
-            Effect.serviceOption(client.transactionService).pipe(
-              Effect.flatMap((transaction) =>
-                Option.isSome(transaction) && transaction.value[0] === connection
-                  ? verify("owned_transaction")
-                  : verifyUnchanged,
-              ),
+          const main = databases.filter((database) => database.name === "main");
+          if (main.length !== 1 || main[0]?.seq !== 0 || main[0]?.file !== initial.dbPath)
+            return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
+          yield* verifyUnchanged;
+          return connection;
+        }).pipe(
+          Effect.scoped,
+          Effect.mapError((error) =>
+            Schema.is(NativeEnrollmentCliContextError)(error)
+              ? error
+              : new NativeEnrollmentCliContextError({ code: "database_unavailable" }),
+          ),
+        );
+        // Only this verified client's active transaction may account for its rollback journal.
+        // The same inode and all persisted authority/build metadata are still compared each time.
+        return authorityFor(
+          Effect.serviceOption(client.transactionService).pipe(
+            Effect.flatMap((transaction) =>
+              Option.isSome(transaction) && transaction.value[0] === connection
+                ? verify("owned_transaction")
+                : verifyUnchanged,
             ),
-          );
-        });
+          ),
+        );
+      });
     return {
       baseDir: location.baseDir,
       dbPath: initial.dbPath,

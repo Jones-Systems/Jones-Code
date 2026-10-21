@@ -125,7 +125,8 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const resolve: SettlementOrigins["Service"]["resolve"] = Effect.fn("SettlementOrigins.resolve")(function*(input) {
+  const resolve: SettlementOrigins["Service"]["resolve"] = Effect.fn("SettlementOrigins.resolve")(
+    function* (input) {
       if (!(yield* tablePresent)) {
         return { items: input.items.map((item) => ({ ...item, origin: "unknown" as const })) };
       }
@@ -133,7 +134,9 @@ const make = Effect.gen(function* () {
         resolveOne(item).pipe(Effect.map((resolved) => ({ ...item, ...resolved }))),
       );
       return { items };
-    },Effect.mapError((cause) => new SettlementOriginsReadError({ cause })));
+    },
+    Effect.mapError((cause) => new SettlementOriginsReadError({ cause })),
+  );
 
   return SettlementOrigins.of({ recordClientSettle, resolve });
 });

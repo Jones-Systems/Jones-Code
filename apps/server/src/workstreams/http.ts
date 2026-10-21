@@ -191,9 +191,9 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
     const gateway = yield* WorkstreamGateway;
     const registrationContext = yield* WorkstreamsRegistrationContext;
     const read = Effect.fn("WorkstreamHttp.read")(function* (name: string) {
-        yield* annotateEnvironmentRequest(name);
-        yield* requireEnvironmentScope(AuthOrchestrationReadScope);
-      });
+      yield* annotateEnvironmentRequest(name);
+      yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+    });
     return handlers
       .handle("registrationContext", createRegistrationContextHandler(registrationContext))
       .handle("appearanceRead", (args) =>

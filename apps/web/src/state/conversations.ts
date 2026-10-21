@@ -24,26 +24,30 @@ class ConversationLibraryConnectionNotReadyError extends Data.TaggedError(
  */
 export const requestConversationLibrary = createEnvironmentCommand(connectionAtomRuntime, {
   label: "web-conversation-library:request",
-  execute: Effect.fn("web-conversation-library:request")(function* (request: LibraryRequest, _registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) {
-      const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
-      const prepared = yield* SubscriptionRef.get(supervisor.prepared);
-      if (Option.isNone(prepared)) {
-        return yield* new ConversationLibraryConnectionNotReadyError({
-          message: "The environment HTTP connection is not ready.",
-        });
-      }
-      if (prepared.value.environmentId !== EnvironmentId.make(environmentId)) {
-        return yield* new ConversationLibraryConnectionNotReadyError({
-          message: "The environment connection changed. Refresh before trying again.",
-        });
-      }
-      const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelay.ManagedRelayDpopSigner);
-      return yield* fetchEnvironmentConversationLibraryRequest({
-        prepared: prepared.value,
-        request,
-        signer,
+  execute: Effect.fn("web-conversation-library:request")(function* (
+    request: LibraryRequest,
+    _registry: AtomRegistry.AtomRegistry,
+    environmentId: EnvironmentId,
+  ) {
+    const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+    const prepared = yield* SubscriptionRef.get(supervisor.prepared);
+    if (Option.isNone(prepared)) {
+      return yield* new ConversationLibraryConnectionNotReadyError({
+        message: "The environment HTTP connection is not ready.",
       });
-    }),
+    }
+    if (prepared.value.environmentId !== EnvironmentId.make(environmentId)) {
+      return yield* new ConversationLibraryConnectionNotReadyError({
+        message: "The environment connection changed. Refresh before trying again.",
+      });
+    }
+    const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelay.ManagedRelayDpopSigner);
+    return yield* fetchEnvironmentConversationLibraryRequest({
+      prepared: prepared.value,
+      request,
+      signer,
+    });
+  }),
 });
 
 export function conversationLibraryReplyMatchesRequest(

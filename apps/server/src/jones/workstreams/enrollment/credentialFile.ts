@@ -122,8 +122,8 @@ export const makeNativeCredentialWriter = (
   location: CredentialLocation,
 ): NativeCredentialWriter => ({
   observe: () => Effect.tryPromise({ try: () => readCredential(location), catch: mapFileError }),
-  publish: Effect.fn("NativeEnrollmentCredentialFile.publish")(function* (token,
-expectedBeforeSha256) {
+  publish: Effect.fn("NativeEnrollmentCredentialFile.publish")(
+    function* (token, expectedBeforeSha256) {
       if (
         !/^[A-Za-z0-9._~-]+$/.test(token) ||
         (expectedBeforeSha256 !== null && !/^[a-f0-9]{64}$/.test(expectedBeforeSha256))
@@ -209,5 +209,7 @@ expectedBeforeSha256) {
         },
         catch: mapFileError,
       });
-    }, (effect) => effect.pipe(Effect.uninterruptible)),
+    },
+    (effect) => effect.pipe(Effect.uninterruptible),
+  ),
 });

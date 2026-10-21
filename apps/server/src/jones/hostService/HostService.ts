@@ -238,16 +238,16 @@ const make = Effect.gen(function* () {
       ),
     );
   const readRuntime = Effect.fn("HostService.readRuntime")(function* (baseDir: string) {
-      let stopped = false;
-      for (const stateDir of ["userdata", "dev"]) {
-        const text = yield* readOptional(path.join(baseDir, stateDir, "server-runtime.json"));
-        if (Option.isNone(text)) continue;
-        const state = yield* decodeRuntimeState(text.value);
-        if (alive(state.pid)) return { state: Option.some(state), stopped: false };
-        stopped = true;
-      }
-      return { state: Option.none<PersistedServerRuntimeState>(), stopped };
-    });
+    let stopped = false;
+    for (const stateDir of ["userdata", "dev"]) {
+      const text = yield* readOptional(path.join(baseDir, stateDir, "server-runtime.json"));
+      if (Option.isNone(text)) continue;
+      const state = yield* decodeRuntimeState(text.value);
+      if (alive(state.pid)) return { state: Option.some(state), stopped: false };
+      stopped = true;
+    }
+    return { state: Option.none<PersistedServerRuntimeState>(), stopped };
+  });
   const descriptor = (baseUrl: string) =>
     client
       .execute(HttpClientRequest.get(new URL("/.well-known/t3/environment", baseUrl).toString()))
@@ -286,70 +286,70 @@ const make = Effect.gen(function* () {
     });
 
   const adoptionHost = Effect.fn("HostService.adoptionHost")(function* () {
-      if (
-        (platform !== "linux" && platform !== "darwin") ||
-        (arch !== "x64" && arch !== "arm64") ||
-        uid === undefined
-      )
-        return yield* new HostServiceError({
-          operation: "adopt",
-          reason: "Native host platform or service-user identity is unavailable.",
-        });
-      const runtimeContext = yield* Effect.context<never>();
-      const runPromise = Effect.runPromiseWith(runtimeContext);
-      return {
-        platform,
-        architecture: arch,
-        home,
-        uid,
-        environmentPath: yield* Config.String("PATH").pipe(Config.withDefault("/usr/bin:/bin")),
-        run: async (command: HostAdoption.AdoptionCommand) => {
-          const result = await runPromise(
-            runner.run({ ...command, timeout: "5 minutes", maxOutputBytes: 128 * 1024 }),
+    if (
+      (platform !== "linux" && platform !== "darwin") ||
+      (arch !== "x64" && arch !== "arm64") ||
+      uid === undefined
+    )
+      return yield* new HostServiceError({
+        operation: "adopt",
+        reason: "Native host platform or service-user identity is unavailable.",
+      });
+    const runtimeContext = yield* Effect.context<never>();
+    const runPromise = Effect.runPromiseWith(runtimeContext);
+    return {
+      platform,
+      architecture: arch,
+      home,
+      uid,
+      environmentPath: yield* Config.String("PATH").pipe(Config.withDefault("/usr/bin:/bin")),
+      run: async (command: HostAdoption.AdoptionCommand) => {
+        const result = await runPromise(
+          runner.run({ ...command, timeout: "5 minutes", maxOutputBytes: 128 * 1024 }),
+        );
+        if (
+          result.code !== 0 ||
+          result.timedOut ||
+          result.stdoutTruncated ||
+          result.stdoutInvalidUtf8
+        )
+          throw new HostAdoption.HostAdoptionError(
+            "A bounded host command failed or has an unknown effect; inspect before retry.",
           );
-          if (
-            result.code !== 0 ||
-            result.timedOut ||
-            result.stdoutTruncated ||
-            result.stdoutInvalidUtf8
-          )
-            throw new HostAdoption.HostAdoptionError(
-              "A bounded host command failed or has an unknown effect; inspect before retry.",
-            );
-          return result.stdout;
-        },
-        readback: async (expected: {
-          readonly baseDir: string;
-          readonly activeVersion: string;
-          readonly environmentId: string;
-        }) => {
-          return await runPromise(
-            Effect.gen(function* () {
-              const observed = yield* readRuntime(expected.baseDir);
-              if (Option.isNone(observed.state))
-                return yield* new HostServiceError({
-                  operation: "adopt-readback",
-                  reason: "New service-managed runtime has not produced readback.",
-                });
-              const state = observed.state.value;
-              const environment = yield* descriptor(`http://127.0.0.1:${state.port}`);
-              if (Option.isNone(environment))
-                return yield* new HostServiceError({
-                  operation: "adopt-readback",
-                  reason: "Native environment descriptor is unavailable.",
-                });
-              return {
-                processId: state.pid,
-                serviceManaged: state.serviceManaged === true,
-                port: state.port,
-                serverVersion: environment.value.serverVersion,
-                environmentId: environment.value.environmentId,
-              };
-            }),
-          );
-        },
-      } satisfies HostAdoption.AdoptionHost;
-    });
+        return result.stdout;
+      },
+      readback: async (expected: {
+        readonly baseDir: string;
+        readonly activeVersion: string;
+        readonly environmentId: string;
+      }) => {
+        return await runPromise(
+          Effect.gen(function* () {
+            const observed = yield* readRuntime(expected.baseDir);
+            if (Option.isNone(observed.state))
+              return yield* new HostServiceError({
+                operation: "adopt-readback",
+                reason: "New service-managed runtime has not produced readback.",
+              });
+            const state = observed.state.value;
+            const environment = yield* descriptor(`http://127.0.0.1:${state.port}`);
+            if (Option.isNone(environment))
+              return yield* new HostServiceError({
+                operation: "adopt-readback",
+                reason: "Native environment descriptor is unavailable.",
+              });
+            return {
+              processId: state.pid,
+              serviceManaged: state.serviceManaged === true,
+              port: state.port,
+              serverVersion: environment.value.serverVersion,
+              environmentId: environment.value.environmentId,
+            };
+          }),
+        );
+      },
+    } satisfies HostAdoption.AdoptionHost;
+  });
   const planAdoption: HostService["Service"]["planAdoption"] = (input) =>
     wrap(
       "adopt-plan",
@@ -387,27 +387,27 @@ const make = Effect.gen(function* () {
     );
 
   const systemAdoptionHost = Effect.fn("HostService.systemAdoptionHost")(function* () {
-      const host = yield* adoptionHost();
-      if (host.platform !== "linux")
-        return yield* new HostServiceError({
-          operation: "adopt-system",
-          reason: "System-unit adoption supports Linux only.",
-        });
-      const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
-      return SystemAdoption.nativeSystemAdoptionHost({
-        architecture: host.architecture,
-        run: host.run,
-        descriptor: async (port) => {
-          const observed = await runPromise(descriptor(`http://127.0.0.1:${port}`));
-          return Option.isSome(observed)
-            ? {
-                serverVersion: observed.value.serverVersion,
-                environmentId: observed.value.environmentId,
-              }
-            : undefined;
-        },
+    const host = yield* adoptionHost();
+    if (host.platform !== "linux")
+      return yield* new HostServiceError({
+        operation: "adopt-system",
+        reason: "System-unit adoption supports Linux only.",
       });
+    const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+    return SystemAdoption.nativeSystemAdoptionHost({
+      architecture: host.architecture,
+      run: host.run,
+      descriptor: async (port) => {
+        const observed = await runPromise(descriptor(`http://127.0.0.1:${port}`));
+        return Option.isSome(observed)
+          ? {
+              serverVersion: observed.value.serverVersion,
+              environmentId: observed.value.environmentId,
+            }
+          : undefined;
+      },
     });
+  });
   const systemAdoption = <A>(
     operation: string,
     run: (host: SystemAdoption.SystemAdoptionHost) => Promise<A>,

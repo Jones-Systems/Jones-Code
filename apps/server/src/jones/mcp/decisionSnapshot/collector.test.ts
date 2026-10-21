@@ -1,6 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off - Fixtures inspect exact process cleanup and filesystem change receipts.
 import * as NodeURL from "node:url";
-import { closeOwnedFixtureGroups, startDelayedCollector, observePublishedOperation, ownProbeReceipt } from "./collector.testFixtures.ts";
+import {
+  closeOwnedFixtureGroups,
+  startDelayedCollector,
+  observePublishedOperation,
+  ownProbeReceipt,
+} from "./collector.testFixtures.ts";
 import * as Schema from "effect/Schema";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -45,7 +50,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
   };
 });
-
 
 async function release(
   script: string,
@@ -116,12 +120,12 @@ async function release(
   } finally {
     await closeOwnedFixtureGroups(owner, directory, {
       verify: (fields, startTicks, metadata, command, directory, pgid) => {
-      expect(Number(fields[2])).toBe(pgid);
-      expect(fields[19]).toBe(startTicks);
-      expect(metadata.uid).toBe(process.getuid!());
-      expect(command.split("\0").some((argument) => argument.startsWith(`${directory}/`))).toBe(
-        true,
-      );
+        expect(Number(fields[2])).toBe(pgid);
+        expect(fields[19]).toBe(startTicks);
+        expect(metadata.uid).toBe(process.getuid!());
+        expect(command.split("\0").some((argument) => argument.startsWith(`${directory}/`))).toBe(
+          true,
+        );
       },
       closed: (exists, pgid) => {
         expect(exists(pgid), "owned fixture group must close before scratch removal").toBe(false);

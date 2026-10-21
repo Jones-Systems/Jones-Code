@@ -69,96 +69,100 @@ export const makeNativeEnrollmentOperations = (ports: NativeEnrollmentOperationP
     if (code === "record_unavailable") return { state: "unknown", reason: "records_unavailable" };
     return { state: "conflict", reason: "qualification_failed" };
   };
-  const plan = Effect.fn("NativeEnrollmentOperations.plan")(function* (request: NativeEnrollmentRequest) {
-      const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
-      if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
-      const file = yield* ports.credential.observe().pipe(Effect.result);
-      if (file._tag === "Failure")
-        return receipt(request, { state: "unknown", reason: "credential_unavailable" });
-      return receipt(request, {
-        state: "planned",
-        reason: "ready",
-        completed_phases: records.success.state === "reserved" ? ["native_records_reserved"] : [],
-        file_pre_sha256: file.success.sha256,
-        file_post_sha256: file.success.sha256,
-      });
+  const plan = Effect.fn("NativeEnrollmentOperations.plan")(function* (
+    request: NativeEnrollmentRequest,
+  ) {
+    const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
+    if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
+    const file = yield* ports.credential.observe().pipe(Effect.result);
+    if (file._tag === "Failure")
+      return receipt(request, { state: "unknown", reason: "credential_unavailable" });
+    return receipt(request, {
+      state: "planned",
+      reason: "ready",
+      completed_phases: records.success.state === "reserved" ? ["native_records_reserved"] : [],
+      file_pre_sha256: file.success.sha256,
+      file_post_sha256: file.success.sha256,
     });
-  const readback = Effect.fn("NativeEnrollmentOperations.readback")(function* (request: NativeEnrollmentRequest,
-expectedCredentialSha256: string) {
-      const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
-      if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
-      if (records.success.state !== "reserved")
-        return receipt(request, { state: "unknown", reason: "records_absent" });
-      const file = yield* ports.credential.observe().pipe(Effect.result);
-      if (file._tag === "Failure")
-        return receipt(request, {
-          state: "unknown",
-          reason: "credential_unavailable",
-          completed_phases: ["native_records_reserved"],
-        });
-      const matches =
-        /^[a-f0-9]{64}$/.test(expectedCredentialSha256) &&
-        file.success.sha256 === expectedCredentialSha256;
+  });
+  const readback = Effect.fn("NativeEnrollmentOperations.readback")(function* (
+    request: NativeEnrollmentRequest,
+    expectedCredentialSha256: string,
+  ) {
+    const records = yield* ports.enrollments.inspect(request).pipe(Effect.result);
+    if (records._tag === "Failure") return receipt(request, recordFailure(records.failure.code));
+    if (records.success.state !== "reserved")
+      return receipt(request, { state: "unknown", reason: "records_absent" });
+    const file = yield* ports.credential.observe().pipe(Effect.result);
+    if (file._tag === "Failure")
       return receipt(request, {
-        state: matches ? "unchanged" : file.success.sha256 === null ? "unknown" : "conflict",
-        reason: matches
+        state: "unknown",
+        reason: "credential_unavailable",
+        completed_phases: ["native_records_reserved"],
+      });
+    const matches =
+      /^[a-f0-9]{64}$/.test(expectedCredentialSha256) &&
+      file.success.sha256 === expectedCredentialSha256;
+    return receipt(request, {
+      state: matches ? "unchanged" : file.success.sha256 === null ? "unknown" : "conflict",
+      reason: matches
+        ? "complete"
+        : file.success.sha256 === null
+          ? "credential_absent"
+          : "credential_conflict",
+      completed_phases: matches
+        ? ["native_records_reserved", "native_credential_published"]
+        : ["native_records_reserved"],
+      file_pre_sha256: file.success.sha256,
+      file_post_sha256: file.success.sha256,
+    });
+  });
+  const apply = Effect.fn("NativeEnrollmentOperations.apply")(function* (
+    request: NativeEnrollmentRequest,
+    expectedBeforeSha256: string | null,
+  ) {
+    const observed = yield* ports.enrollments.inspect(request).pipe(Effect.result);
+    if (observed._tag === "Failure") return receipt(request, recordFailure(observed.failure.code));
+    const reserved =
+      observed.success.state === "reserved"
+        ? observed
+        : yield* ports.enrollments.reserve(request).pipe(Effect.result);
+    if (reserved._tag === "Failure") return receipt(request, recordFailure(reserved.failure.code));
+    const issued = yield* ports
+      .materialize(deriveNativeEnrollmentSession(request))
+      .pipe(Effect.result);
+    if (issued._tag === "Failure")
+      return receipt(request, {
+        state: "unknown",
+        reason: "credential_issue_failed",
+        completed_phases: ["native_records_reserved"],
+      });
+    // The bearer crosses only this private writer port and never enters a public receipt.
+    const published = yield* ports.credential
+      .publish(issued.success.token, expectedBeforeSha256)
+      .pipe(Effect.result);
+    if (published._tag === "Failure")
+      return receipt(request, {
+        state: "unknown",
+        reason: "credential_unavailable",
+        completed_phases: ["native_records_reserved"],
+      });
+    const result = published.success;
+    return receipt(request, {
+      state: result.state === "published" ? "applied" : result.state,
+      reason:
+        result.state === "published" || result.state === "unchanged"
           ? "complete"
-          : file.success.sha256 === null
-            ? "credential_absent"
-            : "credential_conflict",
-        completed_phases: matches
+          : result.state === "conflict"
+            ? "credential_conflict"
+            : "publication_unresolved",
+      completed_phases:
+        result.state === "published" || result.state === "unchanged"
           ? ["native_records_reserved", "native_credential_published"]
           : ["native_records_reserved"],
-        file_pre_sha256: file.success.sha256,
-        file_post_sha256: file.success.sha256,
-      });
+      file_pre_sha256: result.beforeSha256,
+      file_post_sha256: result.afterSha256,
     });
-  const apply = Effect.fn("NativeEnrollmentOperations.apply")(function* (request: NativeEnrollmentRequest,
-expectedBeforeSha256: string | null) {
-      const observed = yield* ports.enrollments.inspect(request).pipe(Effect.result);
-      if (observed._tag === "Failure")
-        return receipt(request, recordFailure(observed.failure.code));
-      const reserved =
-        observed.success.state === "reserved"
-          ? observed
-          : yield* ports.enrollments.reserve(request).pipe(Effect.result);
-      if (reserved._tag === "Failure")
-        return receipt(request, recordFailure(reserved.failure.code));
-      const issued = yield* ports
-        .materialize(deriveNativeEnrollmentSession(request))
-        .pipe(Effect.result);
-      if (issued._tag === "Failure")
-        return receipt(request, {
-          state: "unknown",
-          reason: "credential_issue_failed",
-          completed_phases: ["native_records_reserved"],
-        });
-      // The bearer crosses only this private writer port and never enters a public receipt.
-      const published = yield* ports.credential
-        .publish(issued.success.token, expectedBeforeSha256)
-        .pipe(Effect.result);
-      if (published._tag === "Failure")
-        return receipt(request, {
-          state: "unknown",
-          reason: "credential_unavailable",
-          completed_phases: ["native_records_reserved"],
-        });
-      const result = published.success;
-      return receipt(request, {
-        state: result.state === "published" ? "applied" : result.state,
-        reason:
-          result.state === "published" || result.state === "unchanged"
-            ? "complete"
-            : result.state === "conflict"
-              ? "credential_conflict"
-              : "publication_unresolved",
-        completed_phases:
-          result.state === "published" || result.state === "unchanged"
-            ? ["native_records_reserved", "native_credential_published"]
-            : ["native_records_reserved"],
-        file_pre_sha256: result.beforeSha256,
-        file_post_sha256: result.afterSha256,
-      });
-    });
+  });
   return { plan, apply, readback };
 };

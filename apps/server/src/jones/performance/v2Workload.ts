@@ -65,209 +65,208 @@ function summarize(values: readonly number[]) {
 }
 
 export const runV2Workload = Effect.fn("V2Workload.runV2Workload")(function* (options: V2Workload) {
-    validateV2Workload(options);
-    const sink = yield* EventSink.EventSinkV2;
-    const eventStore = yield* EventStore.EventStoreV2;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
-    const sql = yield* SqlClient.SqlClient;
-    const now = yield* DateTime.now;
-    const threadId = ThreadId.make("benchmark:v2:thread");
-    const instanceId = ProviderInstanceId.make("benchmark-synthetic");
-    const thread: OrchestrationV2AppThread = {
-      createdBy: "user",
-      creationSource: "web",
-      id: threadId,
-      projectId: ProjectId.make("benchmark:v2:project"),
-      title: "Seed",
-      providerInstanceId: instanceId,
-      modelSelection: { instanceId, model: "synthetic" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      branch: null,
-      worktreePath: null,
-      activeProviderThreadId: null,
-      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-      forkedFrom: null,
-      createdAt: now,
-      updatedAt: now,
-      archivedAt: null,
-      settledOverride: null,
-      settledAt: null,
-      lastVisitedAt: null,
-      deletedAt: null,
-    };
-    yield* sink.write({
-      events: [
-        {
-          id: EventId.make("benchmark:v2:birth"),
-          threadId,
-          type: "thread.created",
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: thread,
-        },
-      ],
-    });
-    const input = (id: string, title: string) => ({
-      commandId: CommandId.make(id),
-      threadId,
-      commandType: "thread.metadata.update",
-      acceptedAt: now,
-      events: [
-        {
-          id: EventId.make(`${id}:event`),
-          threadId,
-          type: "thread.metadata-updated" as const,
-          providerInstanceId: instanceId,
-          occurredAt: now,
-          payload: { ...thread, title },
-        },
-      ],
-      effects: [],
-    });
-    const capture = Effect.fn("V2Workload.capture")(function* () {
-        const sequence = yield* sink.latestSequence({ threadId });
-        const projection = yield* projections.getThreadProjection(threadId);
-        const receipts =
-          yield* sql`SELECT command_id, status, result_sequence, error FROM orchestration_command_receipts ORDER BY command_id`;
-        const events = yield* eventStore.read({ threadId }).pipe(Stream.runCollect);
-        const effects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
-        return encodeSnapshotJson({ sequence, projection, receipts, events, effects });
-      });
-    const timerLag: number[] = [],
-      queueWait: number[] = [],
-      dispatch: number[] = [],
-      completion: number[] = [];
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    const started = NodePerfHooks.performance.now();
-    const offers = Array.from(
-      { length: options.commands },
-      (_, index) =>
-        new Promise<{ planned: number; offered: number }>((resolve) => {
-          const planned = started + index * options.intervalMs;
-          timers.push(
-            setTimeout(
-              () => resolve({ planned, offered: NodePerfHooks.performance.now() }),
-              Math.max(0, planned - NodePerfHooks.performance.now()),
-            ),
-          );
-        }),
-    );
-    const commands = Array.from({ length: options.commands }, (_, index) =>
-      input(`benchmark:v2:traffic:${index}`, `${index}:${"x".repeat(options.payloadBytes)}`),
-    );
-    yield* Effect.gen(function* () {
-      for (const [index, command] of commands.entries()) {
-        const arrival = yield* Effect.promise(() => offers[index]!);
-        const start = NodePerfHooks.performance.now();
-        const result = yield* sink.commitCommand(command);
-        const end = NodePerfHooks.performance.now();
-        NodeAssert.equal(result.committed, true);
-        timerLag.push(arrival.offered - arrival.planned);
-        queueWait.push(start - arrival.offered);
-        dispatch.push(end - start);
-        completion.push(end - arrival.offered);
-      }
-    }).pipe(Effect.ensuring(Effect.sync(() => timers.forEach(clearTimeout))));
-
-    const protocol: number[] = [];
-    const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  validateV2Workload(options);
+  const sink = yield* EventSink.EventSinkV2;
+  const eventStore = yield* EventStore.EventStoreV2;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const sql = yield* SqlClient.SqlClient;
+  const now = yield* DateTime.now;
+  const threadId = ThreadId.make("benchmark:v2:thread");
+  const instanceId = ProviderInstanceId.make("benchmark-synthetic");
+  const thread: OrchestrationV2AppThread = {
+    createdBy: "user",
+    creationSource: "web",
+    id: threadId,
+    projectId: ProjectId.make("benchmark:v2:project"),
+    title: "Seed",
+    providerInstanceId: instanceId,
+    modelSelection: { instanceId, model: "synthetic" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+  yield* sink.write({
+    events: [
       {
-const runEffect = Effect.fn("V2Workload.timed")(function* () {
-        const start = NodePerfHooks.performance.now();
-        const value = yield* effect;
-        protocol.push(NodePerfHooks.performance.now() - start);
-        return value;
-      });
-return runEffect();
-};
-    const beforeReplay = yield* capture();
-    const replay = yield* timed(sink.commitCommand(commands[0]!));
-    NodeAssert.equal(replay.committed, false);
-    NodeAssert.equal(yield* capture(), beforeReplay);
-
-    const rejectedInput = {
-      commandId: CommandId.make("benchmark:v2:rejected"),
-      threadId,
-      commandType: "thread.metadata.update",
-      rejectedAt: now,
-      error: "synthetic rejection",
-    };
-    const rejected = yield* timed(sink.commitRejectedCommand(rejectedInput));
-    NodeAssert.equal(rejected.status, "rejected");
-    const beforeRejectedReplay = yield* capture();
-    NodeAssert.deepEqual(yield* timed(sink.commitRejectedCommand(rejectedInput)), rejected);
-    NodeAssert.equal(yield* capture(), beforeRejectedReplay);
-
-    const retryInput = input("benchmark:v2:retry", "rollback-target");
-    const beforeRollback = yield* capture();
-    yield* sql`CREATE TEMP TRIGGER benchmark_v2_fail_projection BEFORE UPDATE ON orchestration_v2_projection_threads WHEN NEW.title = 'rollback-target' BEGIN SELECT RAISE(ABORT, 'synthetic benchmark rollback'); END`;
-    const failed = yield* timed(sink.commitCommand(retryInput).pipe(Effect.result)).pipe(
-      Effect.ensuring(sql`DROP TRIGGER benchmark_v2_fail_projection`.pipe(Effect.orDie)),
-    );
-    NodeAssert.equal(failed._tag, "Failure");
-    NodeAssert.equal(yield* capture(), beforeRollback);
-    const rollbackReceipts =
-      yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${retryInput.commandId}`;
-    NodeAssert.deepEqual(rollbackReceipts, []);
-    const rollbackEvents = yield* eventStore
-      .readByCommandId({ commandId: retryInput.commandId })
-      .pipe(Stream.runCollect);
-    NodeAssert.deepEqual(rollbackEvents, []);
-    NodeAssert.equal((yield* timed(sink.commitCommand(retryInput))).committed, true);
-    const finalProjection = yield* projections.getThreadProjection(threadId);
-    NodeAssert.equal(finalProjection.thread.title, "rollback-target");
-    const finalSequence = yield* sink.latestSequence({ threadId });
-    NodeAssert.equal(finalSequence, options.commands + 2);
-    const integrity = yield* sql`PRAGMA integrity_check`;
-    NodeAssert.deepEqual(
-      integrity.map((row) => row.integrity_check),
-      ["ok"],
-    );
-    const receiptCounts =
-      yield* sql`SELECT status, COUNT(*) AS count FROM orchestration_command_receipts GROUP BY status ORDER BY status`;
-    NodeAssert.deepEqual(
-      receiptCounts.map((row) => [row.status, Number(row.count)]),
-      [
-        ["accepted", options.commands + 1],
-        ["rejected", 1],
-      ],
-    );
-    NodeAssert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
-    const engine = yield* sql`SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId`;
-    const journal = yield* sql`PRAGMA journal_mode`;
-    return {
-      schema: "jones-sqlite-v2-workload/v1",
-      workload: "single-thread-metadata-acceptance",
-      options,
-      traffic: {
-        timerLag: summarize(timerLag),
-        harnessQueueWait: summarize(queueWait),
-        eventSinkCompletion: summarize(dispatch),
-        arrivalToCompletion: summarize(completion),
+        id: EventId.make("benchmark:v2:birth"),
+        threadId,
+        type: "thread.created",
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: thread,
       },
-      protocol: {
-        eventSinkCompletion: summarize(protocol),
-        acceptedReplay: true,
-        rejectedReplay: true,
-        rollbackUnchanged: true,
-        retryCommitted: true,
-      },
-      consistency: {
-        finalSequence,
-        integrity: "ok",
-        foreignKeyViolations: 0,
-        projectedTitleMatches: true,
-      },
-      engine,
-      journal,
-      unavailable: [
-        "individual SQL timing",
-        "pure lock wait",
-        "ThreadManagementService dispatch timing",
-        "writer contention",
-        "capacity",
-        "provider execution",
-      ],
-    };
+    ],
   });
+  const input = (id: string, title: string) => ({
+    commandId: CommandId.make(id),
+    threadId,
+    commandType: "thread.metadata.update",
+    acceptedAt: now,
+    events: [
+      {
+        id: EventId.make(`${id}:event`),
+        threadId,
+        type: "thread.metadata-updated" as const,
+        providerInstanceId: instanceId,
+        occurredAt: now,
+        payload: { ...thread, title },
+      },
+    ],
+    effects: [],
+  });
+  const capture = Effect.fn("V2Workload.capture")(function* () {
+    const sequence = yield* sink.latestSequence({ threadId });
+    const projection = yield* projections.getThreadProjection(threadId);
+    const receipts =
+      yield* sql`SELECT command_id, status, result_sequence, error FROM orchestration_command_receipts ORDER BY command_id`;
+    const events = yield* eventStore.read({ threadId }).pipe(Stream.runCollect);
+    const effects = yield* sql`SELECT * FROM orchestration_v2_effect_outbox ORDER BY effect_id`;
+    return encodeSnapshotJson({ sequence, projection, receipts, events, effects });
+  });
+  const timerLag: number[] = [],
+    queueWait: number[] = [],
+    dispatch: number[] = [],
+    completion: number[] = [];
+  const timers: ReturnType<typeof setTimeout>[] = [];
+  const started = NodePerfHooks.performance.now();
+  const offers = Array.from(
+    { length: options.commands },
+    (_, index) =>
+      new Promise<{ planned: number; offered: number }>((resolve) => {
+        const planned = started + index * options.intervalMs;
+        timers.push(
+          setTimeout(
+            () => resolve({ planned, offered: NodePerfHooks.performance.now() }),
+            Math.max(0, planned - NodePerfHooks.performance.now()),
+          ),
+        );
+      }),
+  );
+  const commands = Array.from({ length: options.commands }, (_, index) =>
+    input(`benchmark:v2:traffic:${index}`, `${index}:${"x".repeat(options.payloadBytes)}`),
+  );
+  yield* Effect.gen(function* () {
+    for (const [index, command] of commands.entries()) {
+      const arrival = yield* Effect.promise(() => offers[index]!);
+      const start = NodePerfHooks.performance.now();
+      const result = yield* sink.commitCommand(command);
+      const end = NodePerfHooks.performance.now();
+      NodeAssert.equal(result.committed, true);
+      timerLag.push(arrival.offered - arrival.planned);
+      queueWait.push(start - arrival.offered);
+      dispatch.push(end - start);
+      completion.push(end - arrival.offered);
+    }
+  }).pipe(Effect.ensuring(Effect.sync(() => timers.forEach(clearTimeout))));
+
+  const protocol: number[] = [];
+  const timed = <A, E, R>(effect: Effect.Effect<A, E, R>) => {
+    const runEffect = Effect.fn("V2Workload.timed")(function* () {
+      const start = NodePerfHooks.performance.now();
+      const value = yield* effect;
+      protocol.push(NodePerfHooks.performance.now() - start);
+      return value;
+    });
+    return runEffect();
+  };
+  const beforeReplay = yield* capture();
+  const replay = yield* timed(sink.commitCommand(commands[0]!));
+  NodeAssert.equal(replay.committed, false);
+  NodeAssert.equal(yield* capture(), beforeReplay);
+
+  const rejectedInput = {
+    commandId: CommandId.make("benchmark:v2:rejected"),
+    threadId,
+    commandType: "thread.metadata.update",
+    rejectedAt: now,
+    error: "synthetic rejection",
+  };
+  const rejected = yield* timed(sink.commitRejectedCommand(rejectedInput));
+  NodeAssert.equal(rejected.status, "rejected");
+  const beforeRejectedReplay = yield* capture();
+  NodeAssert.deepEqual(yield* timed(sink.commitRejectedCommand(rejectedInput)), rejected);
+  NodeAssert.equal(yield* capture(), beforeRejectedReplay);
+
+  const retryInput = input("benchmark:v2:retry", "rollback-target");
+  const beforeRollback = yield* capture();
+  yield* sql`CREATE TEMP TRIGGER benchmark_v2_fail_projection BEFORE UPDATE ON orchestration_v2_projection_threads WHEN NEW.title = 'rollback-target' BEGIN SELECT RAISE(ABORT, 'synthetic benchmark rollback'); END`;
+  const failed = yield* timed(sink.commitCommand(retryInput).pipe(Effect.result)).pipe(
+    Effect.ensuring(sql`DROP TRIGGER benchmark_v2_fail_projection`.pipe(Effect.orDie)),
+  );
+  NodeAssert.equal(failed._tag, "Failure");
+  NodeAssert.equal(yield* capture(), beforeRollback);
+  const rollbackReceipts =
+    yield* sql`SELECT command_id FROM orchestration_command_receipts WHERE command_id = ${retryInput.commandId}`;
+  NodeAssert.deepEqual(rollbackReceipts, []);
+  const rollbackEvents = yield* eventStore
+    .readByCommandId({ commandId: retryInput.commandId })
+    .pipe(Stream.runCollect);
+  NodeAssert.deepEqual(rollbackEvents, []);
+  NodeAssert.equal((yield* timed(sink.commitCommand(retryInput))).committed, true);
+  const finalProjection = yield* projections.getThreadProjection(threadId);
+  NodeAssert.equal(finalProjection.thread.title, "rollback-target");
+  const finalSequence = yield* sink.latestSequence({ threadId });
+  NodeAssert.equal(finalSequence, options.commands + 2);
+  const integrity = yield* sql`PRAGMA integrity_check`;
+  NodeAssert.deepEqual(
+    integrity.map((row) => row.integrity_check),
+    ["ok"],
+  );
+  const receiptCounts =
+    yield* sql`SELECT status, COUNT(*) AS count FROM orchestration_command_receipts GROUP BY status ORDER BY status`;
+  NodeAssert.deepEqual(
+    receiptCounts.map((row) => [row.status, Number(row.count)]),
+    [
+      ["accepted", options.commands + 1],
+      ["rejected", 1],
+    ],
+  );
+  NodeAssert.deepEqual(yield* sql`PRAGMA foreign_key_check`, []);
+  const engine = yield* sql`SELECT sqlite_version() AS version, sqlite_source_id() AS sourceId`;
+  const journal = yield* sql`PRAGMA journal_mode`;
+  return {
+    schema: "jones-sqlite-v2-workload/v1",
+    workload: "single-thread-metadata-acceptance",
+    options,
+    traffic: {
+      timerLag: summarize(timerLag),
+      harnessQueueWait: summarize(queueWait),
+      eventSinkCompletion: summarize(dispatch),
+      arrivalToCompletion: summarize(completion),
+    },
+    protocol: {
+      eventSinkCompletion: summarize(protocol),
+      acceptedReplay: true,
+      rejectedReplay: true,
+      rollbackUnchanged: true,
+      retryCommitted: true,
+    },
+    consistency: {
+      finalSequence,
+      integrity: "ok",
+      foreignKeyViolations: 0,
+      projectedTitleMatches: true,
+    },
+    engine,
+    journal,
+    unavailable: [
+      "individual SQL timing",
+      "pure lock wait",
+      "ThreadManagementService dispatch timing",
+      "writer contention",
+      "capacity",
+      "provider execution",
+    ],
+  };
+});

@@ -73,14 +73,15 @@ const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const environment = yield* ServerEnvironment.ServerEnvironment;
 
-  const readThread = Effect.fn("SettlementRestore.readThread")(function*(threadId: ThreadId) {
-      const shell = yield* projections.getThreadShell(threadId);
-      return shell === null || shell.deletedAt !== null
-        ? null
-        : yield* projections.getThread(threadId);
-    });
+  const readThread = Effect.fn("SettlementRestore.readThread")(function* (threadId: ThreadId) {
+    const shell = yield* projections.getThreadShell(threadId);
+    return shell === null || shell.deletedAt !== null
+      ? null
+      : yield* projections.getThread(threadId);
+  });
 
-  const inspect: SettlementRestore["Service"]["inspect"] = Effect.fn("SettlementRestore.inspect")(function*(input) {
+  const inspect: SettlementRestore["Service"]["inspect"] = Effect.fn("SettlementRestore.inspect")(
+    function* (input) {
       const environmentId = yield* environment.getEnvironmentId;
       const now = yield* DateTime.now;
       const items = yield* Effect.forEach(input.items, (query) =>
@@ -103,9 +104,12 @@ const make = Effect.gen(function* () {
         }),
       );
       return { environmentId, items };
-    },Effect.mapError((cause) => new SettlementRestoreReadError({ cause })));
+    },
+    Effect.mapError((cause) => new SettlementRestoreReadError({ cause })),
+  );
 
-  const restore: SettlementRestore["Service"]["restore"] = Effect.fn("SettlementRestore.restore")(function*(input) {
+  const restore: SettlementRestore["Service"]["restore"] = Effect.fn("SettlementRestore.restore")(
+    function* (input) {
       const environmentId = yield* environment.getEnvironmentId;
       const base = {
         environmentId,
@@ -181,7 +185,8 @@ const make = Effect.gen(function* () {
             sequence: marker.sequence,
           }
         : { ...base, outcome: "restored" as const, sequence: result.sequence };
-    });
+    },
+  );
 
   return SettlementRestore.of({ inspect, restore });
 });
