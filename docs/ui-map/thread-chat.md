@@ -122,3 +122,25 @@ journey. Native desktop/mobile, text enlargement, real provider delivery and
 other navigation entries remain unverified here. Serialized request creation,
 completion/recovery persistence, answer acceptance and dismissal use separate
 command integration tests; this projection fixture does not qualify them.
+
+### Settled-thread notification details
+
+Use the isolated development origin and its local-storage settlement inbox to
+seed synthetic entries with short titles, a long unbroken title, short notes,
+a long continuation note and one entry without notes. Never reuse live notices.
+The shared renderer's settlement coordinator and toast provider own this overlay;
+the native mobile overlay is a separate consumer.
+
+Expand **Show settled threads**. The toast fits its longest natural line between
+its initial width and twice that width, capped by the viewport gutters. With
+short content it stays at its initial width. Click a note-bearing row outside
+its title to hide or show that row's notes; use its chevron button for keyboard
+access. The title opens the thread independently. Close and reopen the list and
+publish another synthetic entry to check that row choices survive. Check the
+single-thread description and an ordinary expandable toast as shared-component
+regressions, then dismiss only the synthetic notification to reset.
+
+Record the candidate, viewport, theme, text stress, measured widths and interaction
+captures in the change's PR evidence. This local-storage fixture proves renderer
+behavior; it does not prove settlement detection, backend persistence, native
+notification delivery, or the separate React Native overlay.

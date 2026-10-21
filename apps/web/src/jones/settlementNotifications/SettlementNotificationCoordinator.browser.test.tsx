@@ -1,5 +1,5 @@
 import "~/index.css";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -349,7 +349,7 @@ describe("persistent settlement notification", () => {
     expect(list.scrollHeight).toBeGreaterThan(list.clientHeight);
     expect(list.textContent).toContain("Remaining work 63");
     for (const node of [description, ...description.querySelectorAll<HTMLElement>("*")]) {
-      if (node.clientWidth > 0) {
+      if (node.clientWidth > 0 && node.getAttribute("data-slot") !== "settlement-remaining-item") {
         expect(node.scrollWidth).toBeLessThanOrEqual(node.clientWidth + 1);
       }
     }
@@ -357,6 +357,102 @@ describe("persistent settlement notification", () => {
       Number.parseFloat(getComputedStyle(title).lineHeight),
     );
   });
+
+  it("keeps row collapse through navigation, aggregate updates and panel reopening", async () => {
+    storage.clear();
+    await publish([{ ...entry("a"), projectRemaining: ["First task"] }]);
+    await render();
+    const row = () => button("Thread a").closest<HTMLElement>('[data-slot="settlement-row"]')!;
+    await act(async () => button("Thread a").click());
+    expect(row().textContent).toContain("First task");
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(row().querySelector('[data-slot="settlement-remaining-item"]')!);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => row().click());
+    expect(row().textContent).toContain("First task");
+    selection.removeAllRanges();
+    await act(async () => row().click());
+    expect(row().textContent).not.toContain("First task");
+    await publish([{ ...entry("b"), projectRemaining: ["Second task"] }]);
+    await act(async () => button("Show settled threads").click());
+    expect(row().textContent).not.toContain("First task");
+    expect(document.body.textContent).toContain("Second task");
+    await act(async () => button("Hide settled threads").click());
+    await act(async () => button("Show settled threads").click());
+    expect(row().textContent).not.toContain("First task");
+    button("Show remaining work for Thread a").focus();
+    await userEvent.keyboard("{Enter}");
+    expect(row().textContent).toContain("First task");
+    await userEvent.keyboard(" ");
+    expect(row().textContent).not.toContain("First task");
+    await publish([entry("c")]);
+    expect(row().textContent).not.toContain("First task");
+    expect(
+      button("Thread c").closest('[data-slot="settlement-row"]')!.querySelector("[aria-expanded]"),
+    ).toBeNull();
+  });
+
+  it("retains a row collapsed in the aggregate when reopened without an inbox update", async () => {
+    storage.clear();
+    await publish([
+      { ...entry("a"), projectRemaining: ["First task"] },
+      { ...entry("b"), projectRemaining: ["Second task"] },
+    ]);
+    await render();
+    await act(async () => button("Show settled threads").click());
+    const row = () => button("Thread a").closest<HTMLElement>('[data-slot="settlement-row"]')!;
+    await act(async () => row().click());
+    expect(row().textContent).not.toContain("First task");
+    expect(document.body.textContent).toContain("Second task");
+    await act(async () => button("Hide settled threads").click());
+    await act(async () => button("Show settled threads").click());
+    expect(row().textContent).not.toContain("First task");
+    expect(button("Show remaining work for Thread a").getAttribute("aria-expanded")).toBe("false");
+    expect(document.body.textContent).toContain("Second task");
+  });
+
+  it.each([375, 1280])(
+    "fits aggregate width and truncates full remaining text at %ipx",
+    async (width) => {
+      await page.viewport(width, 800);
+      storage.clear();
+      await publish([entry("a"), entry("b")]);
+      await render();
+      const toast = () =>
+        document.querySelector<HTMLElement>('[data-slot="toast-close"]')!.parentElement!
+          .parentElement!;
+      const initialWidth = toast().getBoundingClientRect().width;
+      await act(async () => button("Show settled threads").click());
+      expect(toast().getBoundingClientRect().width).toBeCloseTo(initialWidth, 0);
+      await publish([
+        { ...entry("medium"), title: "Medium length settled thread title with several words here" },
+      ]);
+      const mediumWidth = toast().getBoundingClientRect().width;
+      if (width === 1280) {
+        expect(mediumWidth).toBeGreaterThan(initialWidth);
+        expect(mediumWidth).toBeLessThan(720);
+      }
+      const note = "Full remaining work detail ".repeat(60);
+      await publish([{ ...entry("long"), title: "x".repeat(200), projectRemaining: [note] }]);
+      const span = document.querySelector<HTMLElement>('[data-slot="settlement-remaining-item"]')!;
+      expect(span.textContent).toBe(note);
+      await act(async () => userEvent.hover(span));
+      await expect
+        .poll(() => document.querySelector('[data-slot="tooltip-popup"]')?.textContent)
+        .toBe(note);
+      await act(async () => userEvent.unhover(span));
+      expect(span.scrollWidth).toBeGreaterThan(span.clientWidth);
+      expect(span.getBoundingClientRect().height).toBeCloseTo(
+        Number.parseFloat(getComputedStyle(span).lineHeight),
+        0,
+      );
+      expect(toast().getBoundingClientRect().width).toBeCloseTo(width === 1280 ? 720 : 343, 0);
+      await act(async () => button("Hide settled threads").click());
+      expect(toast().getBoundingClientRect().width).toBeCloseTo(initialWidth, 0);
+    },
+  );
 
   it("keeps one toast through StrictMode, title navigation and an expanded aggregate update", async () => {
     const add = vi.spyOn(toastManager, "add");
