@@ -280,18 +280,19 @@ describe("a host that follows its laptop", () => {
     }) as JonesUpdateState;
 
   it("offers Install only for the laptop's installed build", async () => {
-    await render({ state: staged(offeredSha, offeredSha) });
-    expect(buttonNamed("Install").disabled).toBe(false);
+    await using screen = await renderStatus({ state: staged(offeredSha, offeredSha) });
+    const { container } = screen;
+    expect(buttonNamed(container, "Install").disabled).toBe(false);
     expect(container.textContent).toContain("Follows its laptop · takes only source 0368cbb");
 
-    await render({ state: staged(offeredSha, installedSha) });
-    expect(buttonNamed("Install").disabled).toBe(true);
+    await screen.rerender(statusUi({ state: staged(offeredSha, installedSha) }));
+    expect(buttonNamed(container, "Install").disabled).toBe(true);
     expect(container.textContent).toContain(
       "Downloaded build is not the laptop's, so it will not install",
     );
 
-    await render({ state: staged(offeredSha, null) });
-    expect(buttonNamed("Install").disabled).toBe(true);
+    await screen.rerender(statusUi({ state: staged(offeredSha, null) }));
+    expect(buttonNamed(container, "Install").disabled).toBe(true);
     expect(container.textContent).toContain("waiting for the laptop's installed build");
   });
 });
