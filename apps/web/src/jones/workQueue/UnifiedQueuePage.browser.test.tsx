@@ -201,7 +201,7 @@ describe("Prompts environment composition", () => {
     );
     if (!option) throw new Error(`Missing environment: ${label}`);
     await act(async () => option.click());
-    expect(document.querySelector('[role="menu"]')).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector('[role="menu"]')).toBeNull());
   }
   function groups() {
     return [...container.querySelectorAll('section[aria-label$=" prompts"]')].map((element) =>

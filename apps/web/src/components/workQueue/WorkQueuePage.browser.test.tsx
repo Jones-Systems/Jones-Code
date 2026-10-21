@@ -12,6 +12,48 @@ import {
   type WorkQueueSource,
 } from "./mockWorkQueue";
 
+const integration = vi.hoisted(() => ({
+  useClientSettings: vi.fn(),
+  useClientSettingsHydrationStatus: vi.fn(),
+  ensureClientSettingsHydrated: vi.fn(),
+  useEnvironments: vi.fn(),
+  usePrimaryEnvironmentId: vi.fn(),
+  useWorkQueueMetadata: vi.fn(),
+  useVoiceReview: vi.fn(),
+}));
+
+vi.mock("../../hooks/useSettings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useSettings")>()),
+  useClientSettings: integration.useClientSettings,
+  useClientSettingsHydrationStatus: integration.useClientSettingsHydrationStatus,
+  ensureClientSettingsHydrated: integration.ensureClientSettingsHydrated,
+}));
+vi.mock("../../state/environments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/environments")>()),
+  useEnvironments: integration.useEnvironments,
+  usePrimaryEnvironmentId: integration.usePrimaryEnvironmentId,
+}));
+vi.mock("../../jones/workQueue/useWorkQueueMetadata", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../jones/workQueue/useWorkQueueMetadata")>()),
+  useWorkQueueMetadata: integration.useWorkQueueMetadata,
+}));
+vi.mock("../voiceReview/useVoiceReview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../voiceReview/useVoiceReview")>()),
+  useVoiceReview: integration.useVoiceReview,
+}));
+vi.mock("../WorkspacePageHeader", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../WorkspacePageHeader")>()),
+  WorkspacePageHeader: ({ children }: { children: import("react").ReactNode }) => <div>{children}</div>,
+}));
+vi.mock("../WorkspacePageContainer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../WorkspacePageContainer")>()),
+  WorkspacePageContainer: ({ children }: { children: import("react").ReactNode }) => <div>{children}</div>,
+}));
+vi.mock("../ui/sidebar", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/sidebar")>()),
+  SidebarInset: ({ children }: { children: import("react").ReactNode }) => <div>{children}</div>,
+}));
+
 const first: WorkQueueItem = {
   id: "one",
   snapshotToken: "v1",
@@ -515,15 +557,6 @@ describe("mock pause clock", () => {
 });
 
 describe("submitted work page integration", () => {
-  const mockedModules = [
-    "../../state/environments",
-    "../../hooks/useSettings",
-    "../../jones/workQueue/useWorkQueueMetadata",
-    "../voiceReview/useVoiceReview",
-    "../WorkspacePageHeader",
-    "../WorkspacePageContainer",
-    "../ui/sidebar",
-  ];
   let root: Screen;
   let renderDisposables: AsyncDisposableStack;
   let container: HTMLDivElement;
@@ -533,10 +566,10 @@ describe("submitted work page integration", () => {
     stack.defer(async () => {
       await act(() => root.unmount());
       container.remove();
-      for (const path of mockedModules) vi.doUnmock(path);
       vi.unstubAllGlobals();
     });
     try {
+      for (const mock of Object.values(integration)) mock.mockReset();
       container = document.createElement("div");
       document.body.append(container);
       root = renderDisposables.use(await renderScreen(null, { container }));
@@ -557,7 +590,6 @@ describe("submitted work page integration", () => {
     "negotiates metadata capability=%s and hydrates initial stage=%s without synthetic controls",
     async (supported, initialStage) => {
       await using _fixture = await setupFixture2();
-      vi.resetModules();
       const load = vi.fn<WorkQueueMetadataLoader>(async () => ({
         status: "unconfigured",
         reason: "not_configured",
@@ -575,27 +607,24 @@ describe("submitted work page integration", () => {
       const environmentListeners = new Set<() => void>();
       let hydrationStatus = "pending";
       const retryPreferences = vi.fn(async () => undefined);
-      vi.doMock("../../hooks/useSettings", () => ({
-        useClientSettings: () => ({ promptsDefaultStage: initialStage }),
-        useClientSettingsHydrationStatus: () => hydrationStatus,
-        ensureClientSettingsHydrated: retryPreferences,
+      integration.useClientSettings.mockImplementation(() => ({
+        promptsDefaultStage: initialStage,
       }));
-      vi.doMock("../../state/environments", () => ({
-        useEnvironments: () =>
-          useSyncExternalStore(
-            (listener) => {
-              environmentListeners.add(listener);
-              return () => {
-                environmentListeners.delete(listener);
-              };
-            },
-            () => environmentSnapshot,
-          ),
-        usePrimaryEnvironmentId: () => environment.environmentId,
-      }));
-      vi.doMock("../../jones/workQueue/useWorkQueueMetadata", () => ({
-        useWorkQueueMetadata: () => load,
-      }));
+      integration.useClientSettingsHydrationStatus.mockImplementation(() => hydrationStatus);
+      integration.ensureClientSettingsHydrated.mockImplementation(retryPreferences);
+      integration.useEnvironments.mockImplementation(function useFixtureEnvironments() {
+        return useSyncExternalStore(
+          (listener) => {
+            environmentListeners.add(listener);
+            return () => {
+              environmentListeners.delete(listener);
+            };
+          },
+          () => environmentSnapshot,
+        );
+      });
+      integration.usePrimaryEnvironmentId.mockImplementation(() => environment.environmentId);
+      integration.useWorkQueueMetadata.mockImplementation(() => load);
       const draft = voiceReviewRecentFixture.entries[1]!.draft;
       const mutate = vi.fn(async () => ({
         draft: { ...draft, state: "editing", revision: 2 },
@@ -620,13 +649,7 @@ describe("submitted work page integration", () => {
           correctAssociation: vi.fn(),
         },
       };
-      vi.doMock("../voiceReview/useVoiceReview", () => ({ useVoiceReview: () => voiceReview }));
-      const wrapper = ({ children }: { children: import("react").ReactNode }) => (
-        <div>{children}</div>
-      );
-      vi.doMock("../WorkspacePageHeader", () => ({ WorkspacePageHeader: wrapper }));
-      vi.doMock("../WorkspacePageContainer", () => ({ WorkspacePageContainer: wrapper }));
-      vi.doMock("../ui/sidebar", () => ({ SidebarInset: wrapper }));
+      integration.useVoiceReview.mockImplementation(() => voiceReview);
       const { WorkQueuePage } = await import("./WorkQueuePage");
       await act(() => root.rerender(<WorkQueuePage />));
       expect(container.textContent).toContain("Loading Prompts preferences");
