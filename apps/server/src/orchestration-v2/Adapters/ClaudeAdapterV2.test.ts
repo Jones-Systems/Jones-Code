@@ -11786,12 +11786,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         readonly releaseClose: Deferred.Deferred<void>;
         closeCount: number;
       }> = [];
-      const forks: Array<{
-        readonly sessionId: string;
-        readonly options: unknown;
-        readonly threadId: ThreadId;
-        readonly providerSessionId: ProviderSessionId;
-      }> = [];
+      const forks: Array<ClaudeAdapterV2.ClaudeAgentSdkSessionForkInput> = [];
       let nextGeneration = 0;
       let nextNativeThread = 0;
       const lifecycleCalls: Array<{
