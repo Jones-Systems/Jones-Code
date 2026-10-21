@@ -34,24 +34,35 @@ const fixture = vi.hoisted(() => ({
   load: vi.fn<() => Promise<WorkQueueMetadataResult>>(),
 }));
 
-vi.mock("../../state/environments", () => ({
+vi.mock("../../state/environments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../state/environments")>()),
   useEnvironments: () => ({ environments: fixture.environments }),
 }));
-vi.mock("@tanstack/react-router", () => ({
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
   useBlocker: (options: NonNullable<typeof fixture.blockerOptions>) => {
     fixture.blockerOptions = options;
     return { status: fixture.blockerStatus, reset: fixture.reset, proceed: fixture.proceed };
   },
 }));
-vi.mock("../../env", () => ({ isElectron: false }));
-vi.mock("../../components/ui/sidebar", () => ({
+vi.mock("../../env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../env")>()),
+  isElectron: false,
+}));
+vi.mock("../../components/ui/sidebar", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/ui/sidebar")>()),
   SidebarInset: ({ children }: { children: ReactNode }) => <main>{children}</main>,
 }));
-vi.mock("./useWorkQueueMetadata", () => ({ useWorkQueueMetadata: () => fixture.load }));
-vi.mock("../../components/voiceReview/useVoiceReview", () => ({
+vi.mock("./useWorkQueueMetadata", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./useWorkQueueMetadata")>()),
+  useWorkQueueMetadata: () => fixture.load,
+}));
+vi.mock("../../components/voiceReview/useVoiceReview", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/voiceReview/useVoiceReview")>()),
   useVoiceReview: () => ({ fetchList: fixture.voiceList, fetchSelfIdentity: fixture.selfIdentity }),
 }));
-vi.mock("../../components/voiceReview/VoiceReviewPage", () => ({
+vi.mock("../../components/voiceReview/VoiceReviewPage", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/voiceReview/VoiceReviewPage")>()),
   EnvironmentVoiceReview: ({
     environmentId,
     pane,

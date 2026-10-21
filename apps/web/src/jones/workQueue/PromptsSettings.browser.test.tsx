@@ -8,8 +8,12 @@ const storage = vi.hoisted(() => ({
   getClientSettings: vi.fn<() => Promise<ClientSettings | null>>(),
   setClientSettings: vi.fn<(settings: ClientSettings) => Promise<void>>(),
 }));
-vi.mock("~/localApi", () => ({ ensureLocalApi: () => ({ persistence: storage }) }));
-vi.mock("../../components/settings/settingsLayout", () => ({
+vi.mock("~/localApi", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/localApi")>()),
+  ensureLocalApi: () => ({ persistence: storage }),
+}));
+vi.mock("../../components/settings/settingsLayout", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/settings/settingsLayout")>()),
   SETTINGS_PICKER_TRIGGER_CLASSNAME: "",
   SettingsPageContainer: ({ children }: { children: ReactNode }) => children,
   SettingsSection: ({ children, title }: { children: ReactNode; title: string }) => (
@@ -20,7 +24,8 @@ vi.mock("../../components/settings/settingsLayout", () => ({
   ),
   SettingsRow: ({ control }: { control: ReactNode }) => control,
 }));
-vi.mock("../../components/ui/select", () => ({
+vi.mock("../../components/ui/select", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/ui/select")>()),
   Select: ({
     value,
     onValueChange,

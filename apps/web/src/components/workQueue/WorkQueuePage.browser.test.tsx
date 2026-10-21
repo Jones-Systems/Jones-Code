@@ -520,7 +520,6 @@ describe("submitted work page integration", () => {
     "../../hooks/useSettings",
     "../../jones/workQueue/useWorkQueueMetadata",
     "../voiceReview/useVoiceReview",
-    "@tanstack/react-router",
     "../WorkspacePageHeader",
     "../WorkspacePageContainer",
     "../ui/sidebar",
@@ -540,7 +539,7 @@ describe("submitted work page integration", () => {
     try {
       container = document.createElement("div");
       document.body.append(container);
-      root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+      root = renderDisposables.use(await renderScreen(null, { container }));
 
       return stack;
     } catch (error) {
@@ -622,9 +621,6 @@ describe("submitted work page integration", () => {
         },
       };
       vi.doMock("../voiceReview/useVoiceReview", () => ({ useVoiceReview: () => voiceReview }));
-      vi.doMock("@tanstack/react-router", () => ({
-        useBlocker: () => ({ status: "idle" }),
-      }));
       const wrapper = ({ children }: { children: import("react").ReactNode }) => (
         <div>{children}</div>
       );

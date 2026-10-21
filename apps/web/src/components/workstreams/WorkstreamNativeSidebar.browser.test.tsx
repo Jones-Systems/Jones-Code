@@ -2,6 +2,7 @@ import { act, render as renderScreen, type Screen } from "../../../test/render";
 
 import { useState, useRef } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import {
   buildWorkstreamAssignmentIndex,
@@ -55,6 +56,7 @@ const registrationContext: WorkstreamsRegistrationContextAcceptedResponse = {
 let root: Screen;
 let renderDisposables: AsyncDisposableStack;
 let container: HTMLDivElement;
+let pointerY = 0;
 const threads = [
   { ...thread, title: "First native conversation" },
   {
@@ -94,6 +96,7 @@ async function setupFixture1() {
   try {
     vi.spyOn(Date, "now").mockReturnValue(now);
     localStorage.clear();
+    pointerY = 0;
     container = document.createElement("div");
     document.body.append(container);
     root = renderDisposables.use(await renderScreen(null, { container, router: false }));
@@ -248,7 +251,9 @@ async function clickLabel(label: string) {
 async function openAssignment(index = 0) {
   await act(async () => {
     const row = nativeRow(index);
-    row.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 2 }));
+    row.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, button: 2, pointerType: "mouse" }),
+    );
     row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
   });
   await vi.waitFor(() => {
@@ -265,39 +270,45 @@ async function clickMenu(text: string) {
     (entry) => !container.contains(entry) && entry.textContent?.trim() === text,
   );
   expect(item, text).not.toBeUndefined();
-  await act(async () => item!.click());
+  await page.elementLocator(item!).click();
 }
 
 async function pointerEvent(element: EventTarget, type: string, clientY = 0, buttons = 1) {
-  const event = new MouseEvent(type, {
+  const event = new PointerEvent(type, {
     bubbles: true,
     cancelable: true,
     clientX: 10,
     clientY,
     buttons,
     button: 0,
+    pointerId: 1,
+    pointerType: "mouse",
+    isPrimary: true,
   });
-  Object.defineProperties(event, { pointerId: { value: 1 }, isPrimary: { value: true } });
   await act(async () => {
     element.dispatchEvent(event);
   });
   return event;
 }
 
-async function pointAt(target: Element, clientY = 10) {
-  Object.defineProperty(document, "elementFromPoint", { configurable: true, value: () => target });
-  await pointerEvent(document, "pointermove", clientY);
+async function pointAt(target: Element, clientY?: number) {
+  const bounds = target.getBoundingClientRect();
+  pointerY = clientY ?? bounds.top + bounds.height * 0.75;
+  vi.spyOn(document, "elementFromPoint").mockReturnValue(target);
+  await pointerEvent(document, "pointermove", pointerY);
 }
 
-async function release(clientY = 10) {
+async function release(clientY = pointerY) {
   await pointerEvent(document, "pointerup", clientY, 0);
 }
 
-async function dragEvent(element: Element, type: string, clientY = 0) {
-  const event = new Event(type, { bubbles: true, cancelable: true });
-  Object.defineProperties(event, {
-    dataTransfer: { value: { effectAllowed: "none", dropEffect: "none", setData: vi.fn() } },
-    clientY: { value: clientY },
+async function dragEvent(element: Element, type: string, offsetY = 0) {
+  const bounds = element.getBoundingClientRect();
+  const event = new DragEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    dataTransfer: new DataTransfer(),
+    clientY: bounds.top + bounds.height / 2 + offsetY,
   });
   await act(async () => {
     element.dispatchEvent(event);
