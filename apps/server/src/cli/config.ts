@@ -329,8 +329,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
   const rawCwd = Option.getOrElse(normalizedFlags.cwd, () => process.cwd());
   const cwd = path.resolve(yield* expandHomePath(rawCwd.trim()));
+  const configuredAuthorityStateDir = env.nativeAuthorityStateDir?.trim();
+  const authorityStateDir =
+    configuredAuthorityStateDir === undefined || configuredAuthorityStateDir === ""
+      ? undefined
+      : path.resolve(yield* expandHomePath(configuredAuthorityStateDir));
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, devUrl, {
     baseDirIsExplicit: Option.isSome(explicitBaseDir),
+    ...(authorityStateDir === undefined ? {} : { authorityStateDir }),
   });
   // An interactive CLI must not start over a discovered server. Lifetime locking
   // and supervisor handoff are separate; this preflight cannot arbitrate two starts.
@@ -373,6 +379,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;
   const desktopBrowserControlFd = bootstrap?.desktopBrowserControlFd;
+  const desktopNativeOwnerInputFd = bootstrap?.desktopNativeOwnerInputFd;
+  const desktopNativeOwnerOutputFd = bootstrap?.desktopNativeOwnerOutputFd;
   const resourceMonitorPath = bootstrap?.resourceMonitorPath;
   const autoBootstrapProjectFromCwd = Option.getOrElse(
     resolveOptionPrecedence(
@@ -480,6 +488,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     desktopTelemetryControlFd,
     desktopBrowserFd,
     desktopBrowserControlFd,
+    desktopNativeOwnerInputFd,
+    desktopNativeOwnerOutputFd,
     resourceMonitorPath,
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,

@@ -257,6 +257,87 @@ export const withRunningThreadContinuation = Effect.fn(
 
   return ServerSelfUpdate.of({
     update,
+    ...(input.selfUpdate.stageQualified === undefined
+      ? {}
+      : { stageQualified: input.selfUpdate.stageQualified }),
+    ...(input.selfUpdate.installQualified === undefined
+      ? {}
+      : {
+          installQualified: (
+            request: {
+              readonly stagedHandle: string;
+              readonly continueRunningThreads?: boolean;
+              readonly operationId?: string;
+            },
+            onAccepted?: () => Effect.Effect<void>,
+            onPrepared?: (
+              staged: StagedQualifiedRuntime,
+            ) => Effect.Effect<void, ServerSelfUpdateError>,
+            reportStep?: (
+              step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
+            ) => Effect.Effect<void>,
+          ) => {
+            let handoffAccepted = false;
+            let continuationThreadIds: ReadonlyArray<ThreadId> = [];
+            return Effect.gen(function* () {
+              const inFlight = yield* Ref.get(qualifiedInstallInFlight);
+              if (
+                request.operationId !== undefined &&
+                inFlight?.operationId === request.operationId &&
+                inFlight.uncertain &&
+                input.reconcileQualifiedOperation !== undefined
+              ) {
+                const receipt = yield* input.reconcileQualifiedOperation(request.operationId);
+                if (receipt.operationId === request.operationId && receipt.state === "absent")
+                  yield* Ref.update(qualifiedInstallInFlight, (current) =>
+                    current === inFlight ? undefined : current,
+                  );
+              }
+              const attempt = { operationId: request.operationId, uncertain: false };
+              const claimed = yield* Ref.modify(qualifiedInstallInFlight, (current) =>
+                current === undefined ? ([true, attempt] as const) : ([false, current] as const),
+              );
+              if (!claimed)
+                return yield* new ServerSelfUpdateError({
+                  reason: "A qualified Install has already started or needs reconciliation.",
+                });
+              return yield* clearOnError(
+                Effect.gen(function* () {
+                  if (request.continueRunningThreads === true) {
+                    yield* reportStep?.("marking") ?? Effect.void;
+                    continuationThreadIds = yield* timedQualifiedStep(
+                      "marking",
+                      request.operationId,
+                      input.prepare,
+                    );
+                  }
+                  return yield* input.selfUpdate.installQualified!(
+                    request,
+                    () =>
+                      Effect.sync(() => {
+                        handoffAccepted = true;
+                      }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
+                    onPrepared,
+                    reportStep,
+                  );
+                }),
+                () => continuationThreadIds,
+                () => handoffAccepted,
+                true,
+              ).pipe(
+                Effect.catchCause((cause) =>
+                  Ref.update(qualifiedInstallInFlight, (current) =>
+                    current !== attempt
+                      ? current
+                      : handoffAccepted || uncertainQualifiedHandoff(cause)
+                        ? { ...attempt, uncertain: !handoffAccepted }
+                        : undefined,
+                  ).pipe(Effect.andThen(Effect.failCause(cause))),
+                ),
+              );
+            }).pipe((effect) => timedQualifiedStep("total", request.operationId, effect));
+          },
+        }),
     commitDesktopUpdate: Effect.fn("selfUpdate.commitDesktopUpdate")(function* (requestId) {
       const shouldContinue = yield* Ref.modify(desktopContinuationTokens, (tokens) => [
         HashSet.has(tokens, requestId),

@@ -34,6 +34,48 @@ import {
   serviceStateHasPendingUpdate,
 } from "./serviceProtocol.ts";
 
+const encodeJonesRuntimeProvenance = Schema.encodeEffect(
+  Schema.fromJsonString(JonesRuntimeProvenance),
+);
+
+const NativeFixtureJson = Schema.fromJsonString(Schema.Unknown);
+
+const encodeNativeFixtureJson = Schema.encodeSync(NativeFixtureJson);
+
+const decodeNativeFixtureJson = Schema.decodeUnknownSync(NativeFixtureJson);
+
+const linuxRuntime = "/home/theo/.t3/runtime/versions/1.2.3/t3";
+
+const linuxPlan = {
+  program: [linuxRuntime, "__service-launcher"],
+  baseDir: "/home/theo/.t3",
+  logPath: "/home/theo/.t3/userdata/logs/boot-service.log",
+  unitPath: "/home/theo/.config/systemd/user/t3code.service",
+};
+
+const macRuntime = "/Users/theo/.t3/runtime/versions/1.2.3/t3";
+
+const macPlan = {
+  program: [macRuntime, "__service-launcher"],
+  baseDir: "/Users/theo/.t3",
+  logPath: "/Users/theo/.t3/userdata/logs/boot-service.log",
+  unitPath: "/Users/theo/Library/LaunchAgents/com.t3tools.t3code.service.plist",
+};
+
+const macInstallerPath =
+  "/opt/homebrew/bin:/Users/theo/.npm-global/bin:/Users/theo/.nvm/versions/node/v22.16.0/bin:/usr/bin:/bin";
+
+const macRenderOptions = { homeDir: "/Users/theo", environmentPath: macInstallerPath };
+
+it("runs the pinned runtime's own executable as the systemd launcher", () => {
+  const unit = BootService.renderBootServiceUnit(linuxPlan);
+
+  expect(unit).toContain(`ExecStart=${linuxRuntime} __service-launcher`);
+  expect(unit).toContain("KillMode=mixed");
+  expect(unit).toContain("TimeoutStopSec=90");
+  expect(unit).not.toContain("node");
+});
+
 it("reads the served T3 home back out of a rendered unit or plist", () => {
   const plan = (baseDir: string) => ({
     program: [`${baseDir}/runtime/versions/1.2.3/t3`, "__service-launcher"],
@@ -77,9 +119,6 @@ it.each([
     ),
   ).toBe(program);
 });
-
-const macInstallerPath =
-  "/opt/homebrew/bin:/Users/theo/.npm-global/bin:/Users/theo/.nvm/versions/node/v22.16.0/bin:/usr/bin:/bin";
 
 const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
   platform: NodeJS.Platform = "linux",
@@ -234,7 +273,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
                 ...(environmentPath === undefined || environmentPath === ""
                   ? {}
                   : { PATH: environmentPath }),
-                ...(insideService ? { T3_BOOT_SERVICE_UNIT: "t3code.service" } : {}),
+                ...(insideService ? { T3_BOOT_SERVICE_UNIT: unitFile } : {}),
               },
             }),
           ),
@@ -253,6 +292,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     timeouts,
     control,
     runtime,
+    logModesAtStart,
   };
 });
 
@@ -1039,6 +1079,38 @@ it("renders Jones identity with a deterministic escaped service environment", ()
 });
 
 it.layer(NodeServices.layer)("Jones boot service identity", (it) => {
+  it.effect("queues an in-service Jones restart and repairs only its selected unit", () =>
+    Effect.gen(function* () {
+      const { service, commands, makeService, control } = yield* makeHarness(
+        "linux",
+        macInstallerPath,
+        {
+          identity: JONES_BOOT_SERVICE_IDENTITY,
+        },
+      );
+      yield* service.install();
+      commands.length = 0;
+      const inside = yield* makeService(undefined, "1.2.3", undefined, true);
+      expect(yield* inside.restart).toBe("queued");
+      expect(commands).toEqual([
+        "systemctl --user daemon-reload",
+        "systemctl --user enable jones-code.service",
+        "systemctl --user restart --no-block jones-code.service",
+      ]);
+      commands.length = 0;
+      control.active = true;
+      yield* service.withStopped(Effect.sync(() => commands.push("repair")));
+      expect(commands).toContain("systemctl --user is-enabled jones-code.service");
+      expect(commands).toContain("systemctl --user is-active jones-code.service");
+      expect(commands).toContain("systemctl --user stop jones-code.service");
+      expect(commands).toContain("systemctl --user restart jones-code.service");
+      expect(commands.indexOf("repair")).toBeGreaterThan(
+        commands.indexOf("systemctl --user stop jones-code.service"),
+      );
+      expect(commands.some((command) => command.includes("t3code.service"))).toBe(false);
+    }),
+  );
+
   it.effect.each(["linux", "darwin"] as const)(
     "controls only the Jones service and preserves upstream units on %s",
     (platform) =>

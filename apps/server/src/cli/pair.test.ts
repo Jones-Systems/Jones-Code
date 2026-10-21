@@ -33,6 +33,10 @@ import {
 import { DevServerNotProxiableError, resolveTailscaleLocalTarget } from "./pair.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { resolveTailscalePairingBase } from "./pair.ts";
 
 const layerCliRuntime = Layer.mergeAll(NodeServices.layer, NetService.layer);
 

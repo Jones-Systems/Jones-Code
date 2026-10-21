@@ -317,6 +317,8 @@ export const recoverServiceOnboardingOffer = <R>(
       BootServiceCommandError: reportServiceSetupFailure,
       BootServiceInstallError: reportServiceSetupFailure,
       BootServicePrerequisiteError: reportServiceSetupFailure,
+      BootServiceBootstrapRequiredError: (error) =>
+        Console.warn(error.message).pipe(Effect.as("skipped" as const)),
       BootServiceUpdatePendingError: reportServiceSetupFailure,
       BootServiceDowngradeRefusedError: reportServiceSetupFailure,
     }),

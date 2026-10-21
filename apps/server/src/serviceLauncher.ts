@@ -95,7 +95,7 @@ const HANDOFF_DELAY_MS = 2_000;
  * Migrations count toward it and can scale with the database: tens of GB on a cold page cache
  * take minutes. A missed window rolls back the database, so the next attempt pays the same cost.
  */
-const PREPARED_TIMEOUT_MS = 30 * 60_000;
+export const PREPARED_TIMEOUT_MS = 30 * 60_000;
 const TERMINATE_GRACE_MS = 5_000;
 // Matches SERVER_EXIT_CODE_STATE_DIR_OWNED in contracts. The standalone
 // launcher stays independent of the Effect-backed contracts package.
@@ -1084,7 +1084,11 @@ export class Launcher {
     };
     const spawnArguments = runtimeSpawnArguments(paths);
     const child = NodeChildProcess.spawn(spawnArguments.command, spawnArguments.args, {
-      env: { ...this.#environment, [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context) },
+      env: {
+        ...this.#environment,
+        T3CODE_HOME: this.#baseDir,
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify(context),
+      },
       stdio: ["inherit", "inherit", "inherit", "ipc"],
     });
     await new Promise<void>((resolve, reject) => {
@@ -1686,5 +1690,8 @@ export async function main(): Promise<void> {
   const environment = await readServiceEnvironment(baseDir);
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
-  await new Launcher(baseDir, state, { environment }).run();
+  await new Launcher(baseDir, state, {
+    environment,
+    startupGateProtocol: readJonesStartupGateProtocol(),
+  }).run();
 }

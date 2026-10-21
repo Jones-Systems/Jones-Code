@@ -1,3 +1,4 @@
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
@@ -306,6 +307,15 @@ it.layer(NodeServices.layer)("server self update", (it) => {
   );
 
   // regression: #5181 make remote updates rollback-safe
+  it.effect("refuses the implicit upstream origin with an actionable staging message", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({ releaseBaseUrl: null });
+      const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
+      expect(error.reason).toContain("t3 jones host stage-runtime");
+      expect(order).toEqual([]);
+    }),
+  );
+
   it.effect("rejects invalid versions and desktop-managed servers before staging", () =>
     Effect.gen(function* () {
       const web = yield* makeHarness();

@@ -39,6 +39,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 it.effect("parks automatic pull until activation without delaying command readiness", () =>
   Effect.scoped(

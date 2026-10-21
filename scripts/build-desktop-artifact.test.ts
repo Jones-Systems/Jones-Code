@@ -1,3 +1,5 @@
+import { resolveGitCommitHash, bundlesWslRuntime } from "./build-desktop-artifact.ts";
+import { statFile } from "@electron/asar";
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node path and crypto APIs for isolated packaged-artifact fixtures.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
@@ -600,6 +602,31 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     }),
   );
 
+  it.effect("preserves the Jones installer title and layout", () =>
+    Effect.gen(function* () {
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      assert.deepStrictEqual(mac.dmg, {
+        title: "Jones Code 1.2.3 Installer",
+        background: "dmg/dmg-background-latest.png",
+        window: { width: 640, height: 432 },
+        contents: [
+          { x: 166, y: 214, type: "file" },
+          { x: 474, y: 214, type: "link", path: "/Applications" },
+        ],
+        iconSize: 120,
+        iconTextSize: 12,
+      });
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect.skipIf(!symlinksSupported)(
     "canonicalizes an aliased staging parent while preserving cleanup and keep-stage behavior",
     () =>
@@ -806,6 +833,61 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         }
       }),
     ),
+  );
+
+  it.effect(
+    "unpacks native files beneath hidden source ancestors while keeping JavaScript archived",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({
+            prefix: "t3-windows-hidden-asar-test-",
+          });
+          const sourceDir = path.join(tempDir, ".hidden", "server-source");
+          const nativeFiles = [
+            "node_modules/native/addon.node",
+            "node_modules/native/helper.dll",
+            "node_modules/native/helper.exe",
+            "node_modules/native/library.so",
+            "node_modules/native/library.so.1",
+            "node_modules/native/library.dylib",
+          ];
+          const packedFiles = [
+            ["node_modules/native/foreign/addon.node", "\x7fELF"],
+            ["node_modules/native/index.js", "module.exports = true;"],
+            ["node_modules/native/package.json", '{"name":"native-fixture"}'],
+          ] as const;
+
+          for (const nativeFile of nativeFiles) {
+            const nativePath = path.join(sourceDir, nativeFile);
+            yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
+            yield* fs.writeFileString(nativePath, `MZnative:${nativeFile}`);
+          }
+          for (const [packedFile, contents] of packedFiles) {
+            const packedPath = path.join(sourceDir, packedFile);
+            yield* fs.makeDirectory(path.dirname(packedPath), { recursive: true });
+            yield* fs.writeFileString(packedPath, contents);
+          }
+
+          const asarPath = path.join(tempDir, "server.asar");
+          yield* packWindowsServerAsar({ sourceDir, asarPath, arch: "x64" });
+          const unpackedRoot = `${asarPath}.unpacked`;
+          for (const nativeFile of nativeFiles) {
+            assert.isTrue(statFile(asarPath, nativeFile).unpacked);
+            assert.equal(
+              yield* fs.readFileString(path.join(unpackedRoot, nativeFile)),
+              `MZnative:${nativeFile}`,
+            );
+          }
+          for (const [packedFile, contents] of packedFiles) {
+            assert.isFalse(statFile(asarPath, packedFile).unpacked ?? false);
+            assert.isFalse(yield* fs.exists(path.join(unpackedRoot, packedFile)));
+            assert.equal(extractFile(asarPath, packedFile).toString("utf8"), contents);
+          }
+        }),
+      ),
   );
 
   it.effect("unpacks target Windows natives while excluding the other architecture", () =>
@@ -1837,4 +1919,58 @@ it.effect.skipIf(!symlinksSupported)("rebases packaged links into the isolated t
       resolvedCopiedPackage,
     );
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  {
+    stdout: "  ABCDEF1234567890ABCDEF1234567890ABCDEF12\n",
+    exitCode: 0,
+    expected: "abcdef1234567890abcdef1234567890abcdef12",
+  },
+  { stdout: "abcdef123456", exitCode: 0, expected: "unknown" },
+  { stdout: "g".repeat(40), exitCode: 0, expected: "unknown" },
+  { stdout: "a".repeat(41), exitCode: 0, expected: "unknown" },
+  { stdout: "", exitCode: 0, expected: "unknown" },
+  { stdout: "a".repeat(40), exitCode: 1, expected: "unknown" },
+])("resolves only a successful full Git HEAD: %j", ({ stdout, exitCode, expected }) =>
+  Effect.gen(function* () {
+    const commands: ChildProcess.Command[] = [];
+    const hash = yield* resolveGitCommitHash("/synthetic/repository").pipe(
+      Effect.provide(
+        Layer.succeed(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => {
+            commands.push(command);
+            return Effect.succeed(mockProcess(exitCode, stdout));
+          }),
+        ),
+      ),
+    );
+    assert.equal(hash, expected);
+    assert.deepEqual(commands, [
+      ChildProcess.make("git", ["rev-parse", "HEAD"], { cwd: "/synthetic/repository" }),
+    ]);
+  }),
+);
+
+it.effect("reports unknown when resolving Git HEAD cannot spawn", () =>
+  resolveGitCommitHash("/synthetic/repository").pipe(
+    Effect.provide(
+      Layer.succeed(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          Effect.fail(
+            PlatformError.systemError({
+              _tag: "NotFound",
+              module: "ChildProcess",
+              method: "spawn",
+              pathOrDescriptor: "git",
+              description: "synthetic unavailable Git",
+            }),
+          ),
+        ),
+      ),
+    ),
+    Effect.tap((hash) => Effect.sync(() => assert.equal(hash, "unknown"))),
+  ),
 );

@@ -21,6 +21,7 @@ import {
   recoverServiceOnboardingOffer,
   serviceCommand,
 } from "./service.ts";
+import { jonesBootServiceLayer } from "./service.ts";
 
 afterEach(() => vi.restoreAllMocks());
 

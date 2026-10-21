@@ -10,6 +10,12 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { afterEach, vi } from "vite-plus/test";
 
 import { repointLauncher, resolveLauncherPath, resolveNewestVersion } from "./update.ts";
+import { describe } from "@effect/vitest";
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
+import * as Duration from "effect/Duration";
+import * as TestClock from "effect/testing/TestClock";
+import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
+import { isJonesBootServiceCgroup, assertReleaseUpdateAllowed } from "./update.ts";
 
 afterEach(() => vi.restoreAllMocks());
 

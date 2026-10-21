@@ -68,7 +68,8 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
   const environment = yield* HostProcess.Environment;
   const githubToken = environment.GH_TOKEN?.trim() || environment.GITHUB_TOKEN?.trim() || undefined;
   for (let page = 1; page <= RELEASE_INDEX_MAX_PAGES; page += 1) {
-    const request = HttpClientRequest.get(cliReleaseIndexPageUrl(page)).pipe(
+    const releaseIndexUrl = cliReleaseIndexPageUrl(page);
+    const request = HttpClientRequest.get(releaseIndexUrl).pipe(
       HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
     );
     const authenticatedRequest =
@@ -78,10 +79,17 @@ export const resolveNewestVersion = Effect.fn("cli.update.resolve_newest")(funct
     const body = yield* httpClient.execute(authenticatedRequest).pipe(
       Effect.flatMap(HttpClientResponse.filterStatusOk),
       Effect.flatMap((response) => response.text),
-      Effect.mapError(() => new CliUpdateError({ reason: "Could not list t3 releases." })),
+      Effect.mapError(
+        () => new CliUpdateError({ reason: `Could not list t3 releases from ${releaseIndexUrl}.` }),
+      ),
       Effect.timeoutOrElse({
         duration: RELEASE_INDEX_TIMEOUT,
-        orElse: () => Effect.fail(new CliUpdateError({ reason: "Timed out listing t3 releases." })),
+        orElse: () =>
+          Effect.fail(
+            new CliUpdateError({
+              reason: `Timed out listing t3 releases from ${releaseIndexUrl}.`,
+            }),
+          ),
       }),
     );
     const releases = yield* decodeReleaseIndex(body).pipe(

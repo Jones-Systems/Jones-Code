@@ -884,6 +884,20 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
   ) {
     return true;
   }
+  if (entries.includes(SERVICE_STATE_FILE)) {
+    const state = parseServiceState(
+      yield* fs.readFileString(path.join(runtimeDir, SERVICE_STATE_FILE)),
+    );
+    // Legacy homes may retain their only qualified or preview reference in service state.
+    if (
+      state === undefined ||
+      state.update?.qualified !== undefined ||
+      [state.activeVersion, state.update?.fromVersion, state.update?.targetVersion].some(
+        (version) => version?.includes("-preview.") === true,
+      )
+    )
+      return true;
+  }
   const versionsDir = pinnedRuntimeVersionsDir(path, baseDir);
   for (const version of yield* readDirectory(versionsDir)) {
     const directory = path.join(versionsDir, version);

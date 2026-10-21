@@ -26,6 +26,133 @@ import {
 } from "./serviceProtocol.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 
+// Frozen parent decoder from PR239 d3e6f8e843a0477542380a4ec0d9ae02a1084053.
+// Its grant validator remains shared and unchanged; retain this body to prove additive wire compatibility.
+function decodePr239ParentMessage(value: unknown): ServiceLauncherParentMessage | undefined {
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  if (!isRecord(value)) return undefined;
+  if (value.type === "update-rejected" && typeof value.reason === "string") {
+    return { type: value.type, reason: value.reason };
+  }
+  if (value.type === "update-accepted" && typeof value.updateId === "string") {
+    return { type: value.type, updateId: value.updateId };
+  }
+  if (value.type !== "committed" || typeof value.updateId !== "string") return undefined;
+  if (value.qualified !== undefined || value.startupGateProtocol !== undefined) {
+    const qualified = decodeQualifiedTrialGrant(value.qualified);
+    if (
+      value.startupGateProtocol !== 1 ||
+      qualified === undefined ||
+      qualified.updateId !== value.updateId
+    )
+      return undefined;
+    return { type: value.type, updateId: value.updateId, startupGateProtocol: 1, qualified };
+  }
+  return { type: value.type, updateId: value.updateId };
+}
+
+function qualifiedFixture(protocol: 3 | 4 = 4, startupGateProtocol?: 1) {
+  const fromVersion = "0.0.0-preview.20261002.100";
+  const targetVersion = "0.0.0-preview.20261002.101.1";
+  const receipt: QualifiedTrialReceipt = {
+    protocol: 4,
+    startupGateProtocol: 1,
+    updateId: "qualified-trial",
+    stagedHandle: "11111111-1111-4111-8111-111111111111",
+    home: "/fixture",
+    databasePath: "/fixture/userdata/statev2.sqlite",
+    serviceUserdata: "/fixture/userdata",
+    environmentId: "native-fixture",
+    version: targetVersion,
+    sourceSha: "a".repeat(40),
+    sourceTree: "b".repeat(40),
+    listener: { family: "IPv4", address: "127.0.0.1", port: 43123, scopeId: 0 },
+    processId: 123,
+    resumeHeld: true,
+  };
+  const qualified = {
+    protocol: 1,
+    stagedHandle: receipt.stagedHandle,
+    binding: {
+      baseDir: receipt.home,
+      dbPath: receipt.databasePath,
+      environmentId: receipt.environmentId,
+      activeVersion: fromVersion,
+      activeSourceSha: "c".repeat(40),
+    },
+    receipt: {
+      protocol: 1,
+      repository: "Jones-Systems/Jones-Code",
+      channel: "jones-main",
+      version: targetVersion,
+      sourceSha: receipt.sourceSha,
+      sourceTree: receipt.sourceTree,
+      installedSourceSha: "c".repeat(40),
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 102,
+      workflow: ".github/workflows/artifact-cli-linux.yml",
+      artifactDigest: `sha256:${"d".repeat(64)}`,
+      archiveSha256: "e".repeat(64),
+      payloadSha256: "f".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+    },
+  };
+  const pending = {
+    id: receipt.updateId,
+    fromVersion,
+    targetVersion,
+    dbPath: receipt.databasePath,
+    status: "pending",
+    phase: "trial-ready",
+    qualified,
+  };
+  const context = {
+    protocol,
+    childVersion: targetVersion,
+    qualifiedUpdatesProtocol: 1,
+    ...(startupGateProtocol === undefined ? {} : { startupGateProtocol }),
+    update: pending,
+  };
+  const host = new FakeLauncherProcess(context);
+  const events: string[] = [];
+  const operations = {
+    receipt: async () => {
+      events.push("receipt");
+      return receipt;
+    },
+    assertUnreserved: async () => {
+      events.push("unreserved");
+    },
+    reserve: async () => {
+      events.push("reserved");
+    },
+  };
+  const witness: QualifiedTrialRuntimeWitness = {
+    home: receipt.home,
+    databasePath: receipt.databasePath,
+    serviceUserdata: receipt.serviceUserdata,
+    environmentId: receipt.environmentId,
+    version: targetVersion,
+    processId: receipt.processId,
+    buildMetadata: {
+      jonesSource: {
+        repository: "Jones-Systems/Jones-Code",
+        sha: receipt.sourceSha,
+        tree: receipt.sourceTree,
+      },
+    },
+    listener: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+  };
+  const make = () =>
+    makeClient(host, targetVersion).pipe(
+      Effect.provideService(ServiceLauncherClient.QualifiedTrialOperations, operations),
+    );
+  return { host, context, pending, receipt, events, operations, witness, make };
+}
+
 const encodeContextFixture = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 class FakeLauncherProcess {
@@ -250,6 +377,417 @@ it.effect("rejects contradictory trial context instead of leaving activation clo
     const error = yield* makeClient(host, "1.1.0").pipe(Effect.flip);
     expect(error.message).toBe("The service launcher supplied invalid startup context.");
   }),
+);
+
+it.effect("does not send a qualified Install to a launcher without Jones capability", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+    });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.qualifiedUpdates).toBe(false);
+    const error = yield* client
+      .requestUpdate({
+        targetVersion: "0.0.0-preview.20261002.101.1",
+        dbPath: "/fixture/userdata/state.sqlite",
+        stagedHandle: "fixed-handle",
+      })
+      .pipe(Effect.flip);
+    expect(error.message).toContain("bootstrap-required");
+    expect(host.sent).toEqual([]);
+  }),
+);
+
+it.effect("permits qualified staging but sends no Install without the startup gate", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1,
+    });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.qualifiedStaging).toBe(true);
+    expect(client.qualifiedUpdates).toBe(false);
+    const error = yield* client
+      .requestUpdate({
+        targetVersion: "0.0.0-preview.20261002.101.1",
+        dbPath: "/fixture/userdata/state.sqlite",
+        stagedHandle: "11111111-1111-4111-8111-111111111111",
+      })
+      .pipe(Effect.flip);
+    expect(error.message).toContain("bootstrap-required");
+    expect(host.sent).toEqual([]);
+  }),
+);
+
+it.effect("keeps a qualified staged handle fixed through launcher acceptance", () =>
+  Effect.gen(function* () {
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1,
+      startupGateProtocol: 1,
+    });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.qualifiedUpdates).toBe(true);
+    const install = {
+      targetVersion: "0.0.0-preview.20261002.101.1",
+      dbPath: "/fixture/userdata/state.sqlite",
+      stagedHandle: "fixed-handle",
+    };
+    const requested = yield* Effect.forkChild(client.requestUpdate(install), {
+      startImmediately: true,
+    });
+    yield* Effect.yieldNow;
+    expect(host.sent).toEqual([{ type: "request-update", ...install }]);
+    host.emit({ type: "update-accepted", updateId: "qualified-id" });
+    expect(yield* Fiber.join(requested)).toBe("qualified-id");
+  }),
+);
+
+it.effect("excludes legacy release outcomes from readonly Jones terminal state", () =>
+  Effect.gen(function* () {
+    const outcome = {
+      id: "retained-transaction",
+      fromVersion: "1.0.0",
+      targetVersion: "1.1.0",
+      status: "rolled-back" as const,
+      reason: "candidate-exited",
+    };
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1,
+      startupGateProtocol: 1,
+      update: outcome,
+    });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.qualifiedStartupOutcome).toBeUndefined();
+    expect(client.qualifiedStartupOutcome).toBeUndefined();
+    expect(host.sent).toEqual([]);
+  }),
+);
+
+it("retains PR239 staged-handle requests and accepts additive migration plans in its parent decoder", () => {
+  const fixture = qualifiedFixture(4, 1);
+  const request = {
+    type: "request-update" as const,
+    targetVersion: fixture.pending.targetVersion,
+    dbPath: fixture.receipt.databasePath,
+    stagedHandle: fixture.receipt.stagedHandle,
+  };
+  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
+  const migrationPlan = { pendingUpstream: [103], pendingJones: [105] };
+  expect(
+    decodePr239ParentMessage({
+      type: "update-accepted",
+      updateId: fixture.pending.id,
+      migrationPlan,
+    }),
+  ).toEqual({ type: "update-accepted", updateId: fixture.pending.id });
+  const committed = {
+    type: "committed" as const,
+    updateId: fixture.pending.id,
+    startupGateProtocol: 1 as const,
+    qualified: { ...fixture.receipt, generation: fixture.pending.id },
+  };
+  expect(decodePr239ParentMessage({ ...committed, migrationPlan })).toEqual(committed);
+  expect(
+    decodePr239ParentMessage({ ...committed, migrationPlan, startupGateProtocol: 2 }),
+  ).toBeUndefined();
+});
+
+it.effect("establishes the qualified outcome only after exact grant and durable reservation", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(4, 1);
+    const client = yield* fixture.make();
+    expect(client.requiresQualifiedTrialGate).toBe(true);
+    yield* client.prepareTrial.pipe(Effect.flip);
+    expect(fixture.host.sent).toEqual([]);
+    const prepared = yield* Effect.forkChild(client.prepareQualifiedTrial(fixture.witness), {
+      startImmediately: true,
+    });
+    yield* Effect.promise(() => fixture.host.sentSignal.promise);
+    expect(fixture.host.sent).toEqual([
+      {
+        type: "prepared",
+        updateId: fixture.pending.id,
+        startupGateProtocol: 1,
+        qualified: fixture.receipt,
+      },
+    ]);
+    expect(fixture.events).toEqual(["receipt", "unreserved"]);
+    expect(client.qualifiedStartupOutcome).toBeUndefined();
+    fixture.host.emit({
+      type: "committed",
+      updateId: fixture.pending.id,
+      startupGateProtocol: 1,
+      qualified: { ...fixture.receipt, generation: fixture.pending.id },
+    });
+    const outcome = yield* Fiber.join(prepared);
+    expect(fixture.events).toEqual(["receipt", "unreserved", "reserved"]);
+    expect(client.qualifiedStartupOutcome).toEqual(outcome);
+    expect(yield* client.prepareTrial).toEqual(outcome);
+    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
+      "qualified-replay",
+    );
+    expect(fixture.host.sent).toHaveLength(1);
+    expect(fixture.host.listenerCount()).toBe(0);
+  }),
+);
+
+it.effect("holds qualified pending context without a startup gate before sending", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(4);
+    expect(
+      decodeServiceLauncherContext(encodeContextFixture(fixture.context))?.update,
+    ).toHaveProperty("qualified");
+    const client = yield* fixture.make();
+    expect(client.requiresQualifiedTrialGate).toBe(true);
+    expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
+    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
+      "qualified-proof",
+    );
+    expect(fixture.events).toEqual([]);
+    expect(fixture.host.sent).toEqual([]);
+  }),
+);
+
+it.effect("rejects legacy qualified context instead of stripping its identity", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(3);
+    expect(decodeServiceLauncherContext(encodeContextFixture(fixture.context))).toBeUndefined();
+    expect((yield* fixture.make().pipe(Effect.flip)).operation).toBe("decode-context");
+    expect(fixture.host.sent).toEqual([]);
+  }),
+);
+
+it.effect.each(["legacy", "mismatch", "malformed"] as const)(
+  "refuses %s committed proof and fences another exchange",
+  (mode) =>
+    Effect.gen(function* () {
+      const fixture = qualifiedFixture(4, 1);
+      const client = yield* fixture.make();
+      const prepared = yield* Effect.forkChild(
+        client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => fixture.host.sentSignal.promise);
+      const grant = { ...fixture.receipt, generation: fixture.pending.id };
+      fixture.host.emitUnknown({
+        type: "committed",
+        updateId: fixture.pending.id,
+        ...(mode === "legacy"
+          ? {}
+          : {
+              startupGateProtocol: 1,
+              qualified:
+                mode === "malformed"
+                  ? { ...grant, processId: undefined }
+                  : { ...grant, processId: 999 },
+            }),
+      });
+      expect((yield* Fiber.join(prepared)).operation).toBe("qualified-proof");
+      expect(fixture.events).toEqual(["receipt", "unreserved"]);
+      expect(
+        (yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation,
+      ).toBe("qualified-replay");
+      expect(fixture.host.sent).toHaveLength(1);
+      expect(fixture.host.listenerCount()).toBe(0);
+    }),
+);
+
+it.effect.each(["cancel", "timeout", "disconnect"] as const)(
+  "cleans listeners and never retries after %s",
+  (mode) =>
+    Effect.gen(function* () {
+      const fixture = qualifiedFixture(4, 1);
+      const client = yield* fixture.make();
+      const prepared = yield* Effect.forkChild(
+        client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => fixture.host.sentSignal.promise);
+      if (mode === "cancel") yield* Fiber.interrupt(prepared);
+      else {
+        if (mode === "timeout") yield* TestClock.adjust(Duration.seconds(30));
+        else fixture.host.disconnect();
+        expect((yield* Fiber.join(prepared)).operation).toBe(mode);
+      }
+      expect(fixture.host.listenerCount()).toBe(0);
+      expect(fixture.events).toEqual(["receipt", "unreserved"]);
+      expect(
+        (yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation,
+      ).toBe("qualified-replay");
+      expect(fixture.host.sent).toHaveLength(1);
+    }),
+);
+
+it.effect("keeps a grant uncommitted to startup if durable reservation fails", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(4, 1);
+    fixture.operations.reserve = async () => {
+      throw new Error("synthetic fsync uncertainty");
+    };
+    const client = yield* fixture.make();
+    const prepared = yield* Effect.forkChild(
+      client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip),
+      { startImmediately: true },
+    );
+    yield* Effect.promise(() => fixture.host.sentSignal.promise);
+    fixture.host.emit({
+      type: "committed",
+      updateId: fixture.pending.id,
+      startupGateProtocol: 1,
+      qualified: { ...fixture.receipt, generation: fixture.pending.id },
+    });
+    expect((yield* Fiber.join(prepared)).operation).toBe("qualified-reservation");
+    expect(client.qualifiedStartupOutcome).toBeUndefined();
+    expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
+  }),
+);
+
+it.effect("rejects an occupied resume marker before exchange and never replays it", () =>
+  Effect.gen(function* () {
+    const fixture = qualifiedFixture(4, 1);
+    fixture.operations.assertUnreserved = async () => {
+      throw new Error("occupied marker");
+    };
+    const client = yield* fixture.make();
+    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
+      "qualified-proof",
+    );
+    expect(fixture.host.sent).toEqual([]);
+    expect((yield* client.prepareQualifiedTrial(fixture.witness).pipe(Effect.flip)).operation).toBe(
+      "qualified-replay",
+    );
+  }),
+);
+
+it.effect(
+  "drains cancelled reservation I/O before startup finalization without opening recovery",
+  () =>
+    Effect.gen(function* () {
+      const fixture = qualifiedFixture(4, 1);
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      fixture.operations.reserve = async () => {
+        started.resolve();
+        await release.promise;
+        fixture.events.push("reservation-drained");
+      };
+      const client = yield* fixture.make();
+      const prepared = yield* Effect.forkChild(client.prepareQualifiedTrial(fixture.witness), {
+        startImmediately: true,
+      });
+      yield* Effect.promise(() => fixture.host.sentSignal.promise);
+      fixture.host.emit({
+        type: "committed",
+        updateId: fixture.pending.id,
+        startupGateProtocol: 1,
+        qualified: { ...fixture.receipt, generation: fixture.pending.id },
+      });
+      yield* Effect.promise(() => started.promise);
+      const cancelled = yield* Effect.forkChild(Fiber.interrupt(prepared), {
+        startImmediately: true,
+      });
+      expect(fixture.events).not.toContain("reservation-drained");
+      release.resolve();
+      yield* Fiber.join(cancelled);
+      expect(fixture.events).toContain("reservation-drained");
+      expect(client.qualifiedStartupOutcome).toBeUndefined();
+      expect(fixture.host.listenerCount()).toBe(0);
+      expect((yield* client.prepareTrial.pipe(Effect.flip)).operation).toBe("qualified-proof");
+    }),
+);
+
+it("rejects malformed supplied IPC proofs without converting them into ID-only messages", () => {
+  const fixture = qualifiedFixture(4, 1);
+  expect(
+    decodeServiceLauncherChildMessage({
+      type: "prepared",
+      updateId: fixture.pending.id,
+      qualified: fixture.receipt,
+    }),
+  ).toBeUndefined();
+  expect(
+    decodeServiceLauncherParentMessage({
+      type: "committed",
+      updateId: fixture.pending.id,
+      startupGateProtocol: 1,
+    }),
+  ).toBeUndefined();
+});
+
+it.effect(
+  "requires retirement capability and correlates a retirement after the install caller times out",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        updateOperationsProtocol: 1,
+      };
+      const input = {
+        operationId: "12345678-1234-4234-8234-123456789abc",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        environmentId: "synthetic",
+        currentVersion: "1.0.0",
+        expectedInstalledSource: "a".repeat(40),
+        targetSource: "b".repeat(40),
+      };
+      const oldHost = new FakeLauncherProcess(context);
+      const old = yield* makeClient(oldHost, "1.0.0");
+      expect(old.qualifiedRetirement).toBe(false);
+      expect((yield* old.retireUpdate!(input)).retired).toBe(false);
+      expect(oldHost.sent).toEqual([]);
+      const host = new FakeLauncherProcess({ ...context, updateRetirementProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      const install = yield* Effect.forkChild(
+        client
+          .requestUpdate({
+            operationId: input.operationId,
+            stagedHandle: input.stagedHandle,
+            targetVersion: "1.1.0",
+            dbPath: "/synthetic/statev2.sqlite",
+          })
+          .pipe(Effect.result),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => host.sentSignal.promise);
+      yield* TestClock.adjust(Duration.seconds(30));
+      expect((yield* Fiber.join(install))._tag).toBe("Failure");
+      const retire = yield* Effect.forkChild(client.retireUpdate!(input), {
+        startImmediately: true,
+      });
+      yield* Effect.yieldNow;
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      host.emit({
+        type: "update-retired",
+        operationId: input.operationId,
+        stagedHandle: "different",
+        retired: true,
+      });
+      expect(host.listenerCount()).toBe(2);
+      host.emit({
+        type: "update-retired",
+        operationId: input.operationId,
+        stagedHandle: input.stagedHandle,
+        retired: false,
+        reason: "The operation was accepted before retirement.",
+      });
+      expect(yield* Fiber.join(retire)).toEqual({
+        retired: false,
+        reason: "The operation was accepted before retirement.",
+      });
+      expect(host.listenerCount()).toBe(0);
+      expect(
+        decodeServiceLauncherChildMessage({ type: "request-retire-update", ...input }),
+      ).toEqual({ type: "request-retire-update", ...input });
+    }),
 );
 
 it.effect("ignores launcher context inherited without an IPC channel", () =>

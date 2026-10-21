@@ -280,7 +280,7 @@ function systemdManager(input: {
     {
       step: "enabling the service",
       command: "systemctl",
-      args: ["--user", "enable", BOOT_SERVICE_UNIT_FILE],
+      args: ["--user", "enable", input.identity.systemdUnitFile],
     },
   ];
   return {
@@ -315,7 +315,7 @@ function systemdManager(input: {
       {
         step: "restarting the service",
         command: "systemctl",
-        args: ["--user", "restart", "--no-block", BOOT_SERVICE_UNIT_FILE],
+        args: ["--user", "restart", "--no-block", input.identity.systemdUnitFile],
       },
     ],
     deactivate: [
@@ -624,14 +624,14 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
   );
   const homeDir = yield* Config.String("HOME").pipe(Config.withDefault(""));
   const installerPath = yield* Config.String("PATH").pipe(Config.withDefault(""));
+  const identity = input.identity ?? DEFAULT_BOOT_SERVICE_IDENTITY;
   const runningInsideService =
     (yield* Config.String(BOOT_SERVICE_UNIT_ENV).pipe(Config.withDefault(""))) ===
-    BOOT_SERVICE_UNIT_FILE;
+    identity.systemdUnitFile;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const runner = yield* ProcessRunner.ProcessRunner;
   const host = input.host ?? { execPath: hostExecPath };
-  const identity = input.identity ?? DEFAULT_BOOT_SERVICE_IDENTITY;
   const xmlSafeInstallerDirectories = installerPath.split(":").filter(
     (directory) =>
       directory.length > 0 &&
@@ -1120,16 +1120,14 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         ? yield* Effect.map(
             Effect.all(
               [
-                probe("systemctl", ["--user", "is-enabled", BOOT_SERVICE_UNIT_FILE]),
-                probe("systemctl", ["--user", "is-active", BOOT_SERVICE_UNIT_FILE]),
+                probe("systemctl", ["--user", "is-enabled", identity.systemdUnitFile]),
+                probe("systemctl", ["--user", "is-active", identity.systemdUnitFile]),
               ],
               { concurrency: "unbounded" },
             ),
             ([enabled, active]) => succeeded(active) || succeeded(enabled),
           )
-        : succeeded(
-            yield* probe("launchctl", ["print", `gui/${uid}/${BOOT_SERVICE_LAUNCHD_LABEL}`]),
-          );
+        : succeeded(yield* probe("launchctl", ["print", `gui/${uid}/${identity.launchdLabel}`]));
     return yield* Effect.acquireUseRelease(
       // Every stop step is required when the service is to be restored: a
       // step that was fine to skip during uninstall would leave the server

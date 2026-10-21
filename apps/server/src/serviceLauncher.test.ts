@@ -1,3 +1,4 @@
+import { PREPARED_TIMEOUT_MS } from "./serviceLauncher.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - observes the children the launcher spawns with Node built-ins.
 import * as NodeChildProcess from "node:child_process";
 
@@ -264,6 +265,80 @@ it.layer(NodeServices.layer)("service state persistence", (it) => {
     }),
   );
 
+  it.effect("passes service environment to the server child with its own launcher context", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-env-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const observedPath = path.join(root, "child-environment.json");
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.0.0"),
+        `require("node:fs").writeFileSync(${JSON.stringify(observedPath)}, JSON.stringify({
+  workstreamUrl: process.env.T3_WORKSTREAM_CONTROL_PLANE_URL,
+  home: process.env.T3CODE_HOME,
+  context: process.env.T3_SERVICE_LAUNCHER_CONTEXT,
+}));
+process.exit(0);
+`,
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+
+      // systemd EnvironmentFile values reach the launcher as process
+      // environment; a stale inherited launcher context must not.
+      const names = ["T3_WORKSTREAM_CONTROL_PLANE_URL", "T3_SERVICE_LAUNCHER_CONTEXT"] as const;
+      const previous = names.map((name) => [name, process.env[name]] as const);
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          process.env.T3_WORKSTREAM_CONTROL_PLANE_URL = "http://127.0.0.1:8787/";
+          process.env.T3_SERVICE_LAUNCHER_CONTEXT = "stale-inherited-context";
+        }),
+        () =>
+          Effect.sync(() => {
+            for (const [name, value] of previous) {
+              if (value === undefined) delete process.env[name];
+              else process.env[name] = value;
+            }
+          }),
+      );
+
+      const launcher = new Launcher(
+        root,
+        yield* Effect.promise(() => readServiceState(statePath)),
+        {
+          environment: { ...process.env, T3CODE_HOME: "/unrelated-inherited-home" },
+        },
+      );
+      // The fixture child exits after recording, so the active child exit
+      // ends the launcher with an error.
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const observed = JSON.parse(yield* fs.readFileString(observedPath)) as {
+        readonly workstreamUrl?: string;
+        readonly home?: string;
+        readonly context?: string;
+      };
+      assert.equal(observed.home, root);
+      assert.equal(observed.workstreamUrl, "http://127.0.0.1:8787/");
+      assert.notEqual(observed.context, "stale-inherited-context");
+      const context = decodeServiceLauncherContext(observed.context ?? "");
+      assert.equal(context?.protocol, SERVICE_LAUNCHER_PROTOCOL);
+      assert.equal(context?.childVersion, "1.0.0");
+    }),
+  );
+
   it.effect("commits only after the trial reports prepared", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -391,6 +466,137 @@ if (context.update?.status === "pending") {
       assert.equal(process.env.T3CODE_TEST_SERVICE_TOKEN, "inherited");
       assert.equal(yield* fs.readFileString(envPath), "T3CODE_TEST_SERVICE_TOKEN=changed\n");
     }),
+  );
+
+  it.effect("rolls back a trial that reports the wrong update ID", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-rollback-" });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+      yield* fs.writeFileString(databasePath, "before trial");
+      const encodedDatabasePath = JSON.stringify(databasePath);
+      const childSource = `
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+if (context.update?.status === "pending") {
+  process.send({ type: "prepared", updateId: "wrong-update" });
+} else if (context.update === undefined) {
+  process.send({ type: "request-update", targetVersion: "1.1.0", dbPath: ${encodedDatabasePath} });
+  setInterval(() => {}, 1_000);
+} else {
+  process.exit(0);
+}
+`;
+      for (const version of ["1.0.0", "1.1.0"]) {
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          childSource,
+        );
+      }
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "rolled-back");
+      assert.equal(
+        state.update?.status === "rolled-back" ? state.update.reason : undefined,
+        "invalid-prepared",
+      );
+    }),
+  );
+
+  it.effect.each([
+    { prepares: true, status: "committed", activeVersion: "1.1.0" },
+    { prepares: false, status: "rolled-back", activeVersion: "1.0.0" },
+  ] as const)(
+    "gives a trial the full prepared window (prepares: $prepares)",
+    ({ prepares, status, activeVersion }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-launcher-slow-" });
+        const statePath = path.join(root, "runtime", "service-state.json");
+        const databasePath = path.join(root, "userdata", "statev2.sqlite");
+        yield* fs.makeDirectory(path.dirname(databasePath), { recursive: true });
+        yield* fs.writeFileString(databasePath, "before trial");
+        const childSource = `
+const context = JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+if (context.update?.status !== "pending") process.exit(0);
+process.on("message", (message) => {
+  if (message.type === "test-prepare") process.send({ type: "prepared", updateId: context.update.id });
+  if (message.type === "committed") process.exit(0);
+});
+setInterval(() => {}, 1_000);
+`;
+        for (const version of ["1.0.0", "1.1.0"]) {
+          yield* writeFakeRuntime(
+            fs,
+            path,
+            path.join(root, "runtime", "versions", version),
+            childSource,
+          );
+        }
+        yield* Effect.promise(() =>
+          writeServiceState(statePath, {
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+            update: {
+              id: "update-1",
+              fromVersion: "1.0.0",
+              targetVersion: "1.1.0",
+              dbPath: databasePath,
+              status: "pending",
+              phase: "accepted",
+            },
+          }),
+        );
+
+        // Effect schedules on setImmediate, so faking only timeouts leaves it running.
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        yield* Effect.addFinalizer(() => Effect.sync(() => vi.useRealTimers()));
+        const launcher = new Launcher(
+          root,
+          yield* Effect.promise(() => readServiceState(statePath)),
+        );
+        const running = launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        );
+        yield* Effect.promise(() =>
+          vi.waitFor(() => assert.equal(vi.getTimerCount(), 1), { timeout: 10_000 }),
+        );
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(121_000));
+        if (prepares) spawnedChildren.at(-1)!.send({ type: "test-prepare" });
+        else yield* Effect.promise(() => vi.advanceTimersByTimeAsync(PREPARED_TIMEOUT_MS));
+        yield* Effect.promise(() => running);
+
+        const state = yield* Effect.promise(() => readServiceState(statePath));
+        assert.equal(state.activeVersion, activeVersion);
+        assert.equal(state.update?.status, status);
+        if (!prepares) {
+          assert.equal(
+            state.update?.status === "rolled-back" ? state.update.reason : undefined,
+            "prepared-timeout",
+          );
+        }
+      }),
   );
 
   it.effect.each(["file", "symlink", "dangling symlink"] as const)(
@@ -655,6 +861,227 @@ setInterval(() => {}, 1_000);
       assert.include(blocker ?? "", "Not enough free disk space");
       assert.include(blocker ?? "", "10.5 GB needed, 8.0 GB free");
       assert.include(blocker ?? "", "The server was not stopped");
+    }),
+  );
+
+  it.effect("returns to the previous executable when the pretrial backup fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-service-backup-failed-" });
+      for (const version of ["1.0.0", "1.1.0"]) {
+        yield* writeFakeRuntime(
+          fs,
+          path,
+          path.join(root, "runtime", "versions", version),
+          "process.exit(0);\n",
+        );
+      }
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const statePath = path.join(root, "runtime", "service-state.json");
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "backup-failure",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "accepted",
+          },
+        }),
+      );
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.activeVersion, "1.0.0");
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "db-backup-failed",
+      );
+      assert.isFalse(yield* fs.exists(path.join(root, "runtime", "db-backup", "backup-failure")));
+    }),
+  );
+
+  it.effect("fences authority without replacing a missing rollback baseline", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-service-launcher-missing-backup-",
+      });
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
+      yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-missing-backup\n",
+      );
+      initializeNativeStoreAuthority(
+        path.join(root, "native-store-authority"),
+        "environment-missing-backup",
+      );
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        path.join(root, "runtime", "versions", "1.1.0"),
+        "process.exit(0);\n",
+      );
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: "missing-backup-update",
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "trial-ready",
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const authority = readNativeStoreAuthorityState(path.join(root, "native-store-authority"));
+      assert.equal(authority.state, "fenced");
+      assert.equal(
+        yield* fs.readFileString(databasePath),
+        "SQLite format 3\0trial-modified database",
+      );
+      assert.equal(
+        (yield* Effect.promise(() => readServiceState(statePath))).update?.status,
+        "pending",
+      );
+      assert.isFalse(
+        yield* fs.exists(path.join(root, "runtime", "db-backup", "missing-backup-update")),
+      );
+    }),
+  );
+
+  it.effect("resumes a marked restore after abrupt authority writer death", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-service-launcher-restore-resume-",
+      });
+      const updateId = "restore-resume-update";
+      const statePath = path.join(root, "runtime", "service-state.json");
+      const databasePath = path.join(root, "userdata", "statev2.sqlite");
+      const backupDir = path.join(root, "runtime", "db-backup", updateId);
+      yield* fs.makeDirectory(path.join(root, "userdata"), { recursive: true });
+      yield* fs.makeDirectory(backupDir, { recursive: true });
+      yield* fs.writeFileString(databasePath, "SQLite format 3\0trial-modified database");
+      yield* fs.writeFileString(
+        path.join(root, "userdata", "environment-id"),
+        "environment-restore-resume\n",
+      );
+      yield* fs.writeFileString(path.join(backupDir, "database"), "SQLite format 3\0original");
+      yield* fs.writeFileString(path.join(backupDir, ".restore-pending"), "");
+      initializeNativeStoreAuthority(
+        path.join(root, "native-store-authority"),
+        "environment-restore-resume",
+      );
+
+      const authorityStateDir = path.join(root, "native-store-authority");
+      const crash = NodeChildProcess.spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `
+          import fs from "node:fs";
+          import {
+  syncBuiltinESMExports,
+} from "node:module";
+          const authority = await import(process.argv[1]);
+          const statePath = authority.nativeStoreAuthorityPaths(process.argv[2]).statePath;
+          const rename = fs.renameSync;
+          fs.renameSync = (...args) => {
+            rename(...args);
+            if (args[1] === statePath) process.kill(process.pid, "SIGKILL");
+          };
+          syncBuiltinESMExports();
+          authority.fenceNativeStoreAuthority(process.argv[2], "environment-restore-resume");
+          throw new Error("writer unexpectedly survived");
+        `,
+          new URL("./environment/nativeStoreAuthorityPersistence.ts", import.meta.url).href,
+          authorityStateDir,
+        ],
+        { timeout: 10_000, encoding: "utf8" },
+      );
+      assert.isUndefined(crash.error);
+      assert.equal(crash.signal, "SIGKILL");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).state, "fenced");
+      assert.equal(readNativeStoreAuthorityState(authorityStateDir).store_generation, 1);
+      assert.equal(
+        yield* fs.readFileString(databasePath),
+        "SQLite format 3\0trial-modified database",
+      );
+
+      const versionDir = path.join(root, "runtime", "versions", "1.0.0");
+      const previousStarted = path.join(root, "previous-runtime-started");
+      const previousStartedLiteral = JSON.stringify(previousStarted);
+      yield* writeFakeRuntime(
+        fs,
+        path,
+        versionDir,
+        `require("node:fs").writeFileSync(${previousStartedLiteral}, "started"); process.exit(0);\n`,
+      );
+
+      yield* Effect.promise(() =>
+        writeServiceState(statePath, {
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          activeVersion: "1.0.0",
+          update: {
+            id: updateId,
+            fromVersion: "1.0.0",
+            targetVersion: "1.1.0",
+            dbPath: databasePath,
+            status: "pending",
+            phase: "trial-ready",
+          },
+        }),
+      );
+
+      const launcher = new Launcher(root, yield* Effect.promise(() => readServiceState(statePath)));
+      yield* Effect.promise(() =>
+        launcher.run().then(
+          () => Promise.reject(new Error("launcher unexpectedly completed")),
+          () => Promise.resolve(),
+        ),
+      );
+
+      const state = yield* Effect.promise(() => readServiceState(statePath));
+      assert.equal(state.update?.status, "failed");
+      assert.equal(
+        state.update?.status === "failed" ? state.update.reason : undefined,
+        "rollback-interrupted",
+      );
+      assert.equal(yield* fs.readFileString(databasePath), "SQLite format 3\0original");
+      assert.equal(
+        readNativeStoreAuthorityState(path.join(root, "native-store-authority")).store_generation,
+        2,
+      );
+      assert.isFalse(yield* fs.exists(backupDir));
+      assert.equal(yield* fs.readFileString(previousStarted), "started");
     }),
   );
 });

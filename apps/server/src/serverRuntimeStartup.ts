@@ -52,7 +52,10 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
-import { logStartupPairingIssued, maybeOpenBrowser } from "./jones/startupAccessLogging.ts";
+import {
+  logStartupPairingIssued,
+  maybeOpenBrowser as maybeOpenJonesBrowser,
+} from "./jones/startupAccessLogging.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import {
   formatHeadlessServeOutput,
@@ -438,36 +441,56 @@ export const startEffectWorkerWithRelay = Effect.fn(
   );
 });
 
-const runOrderedV2StartupPhases = Effect.fn("serverRuntimeStartup.runOrderedV2StartupPhases")(
-  function* <
-    Import,
-    Recovery,
-    Bootstrap,
-    ImportError,
-    RecoveryError,
-    DelegationError,
-    WorkerError,
-    BootstrapError,
-    ImportContext,
-    RecoveryContext,
-    DelegationContext,
-    WorkerContext,
-    BootstrapContext,
-  >(input: {
-    readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
-    readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
-    readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
-    readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
-    readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
-  }) {
-    yield* input.importLegacyShells;
-    const recovery = yield* input.recover;
-    yield* input.recoverDelegatedTasks;
-    yield* input.startEffectWorker;
-    const bootstrap = yield* input.autoBootstrap;
-    return { recovery, bootstrap } as const;
-  },
-);
+export const runOrderedV2StartupPhases = Effect.fn(
+  "serverRuntimeStartup.runOrderedV2StartupPhases",
+)(function* <
+  Import,
+  Recovery,
+  Bootstrap,
+  ImportError,
+  RecoveryError,
+  DelegationError,
+  WorkerError,
+  BootstrapError,
+  ImportContext,
+  RecoveryContext,
+  DelegationContext,
+  WorkerContext,
+  BootstrapContext,
+  TrialError = never,
+  TrialContext = never,
+>(input: {
+  readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
+  readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
+  readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+  readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
+  readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
+  readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
+}) {
+  yield* input.awaitTrialCommit ?? Effect.void;
+  yield* input.importLegacyShells;
+  const recovery = yield* input.recover;
+  yield* input.recoverDelegatedTasks;
+  yield* input.startEffectWorker;
+  const bootstrap = yield* input.autoBootstrap;
+  return { recovery, bootstrap } as const;
+});
+
+export const runRuntimeShutdown = <PrepareError, ReconcileError, R>(input: {
+  readonly continuationWritesAllowed: boolean;
+  readonly prepareForShutdown: Effect.Effect<void, PrepareError, R>;
+  readonly shutdownSessions: Effect.Effect<void, never, R>;
+  readonly reconcile: Effect.Effect<void, ReconcileError, R>;
+}) =>
+  Effect.gen(function* () {
+    // An unactivated native trial owns local cleanup but must preserve paired continuation state.
+    if (!input.continuationWritesAllowed) {
+      yield* input.shutdownSessions;
+      return;
+    }
+    yield* input.prepareForShutdown.pipe(Effect.ensuring(input.shutdownSessions));
+    yield* input.reconcile;
+  });
 
 const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: StartupOptions) {
   const serverConfig = yield* ServerConfig.ServerConfig;
@@ -483,8 +506,28 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   const crypto = yield* Crypto.Crypto;
   const launcher = yield* ServiceLauncherClient.ServiceLauncherClient;
 
+  const plannedContinuity = yield* Effect.serviceOption(
+    PlannedUpdateContinuity.PlannedUpdateContinuity,
+  );
+
+  const continuationContext = yield* Effect.context<
+    | Effect.Services<typeof ServerUpdateContinuation.markRunningProviderSessionsForContinuation>
+    | Effect.Services<typeof ServerUpdateContinuation.markOptedInProviderSessionsForContinuation>
+    | Effect.Services<
+        ReturnType<typeof ServerUpdateContinuation.clearProviderSessionContinuationMarkers>
+      >
+  >();
+  const continuationError = (cause: unknown) =>
+    new ServerRuntimeStartupError({
+      mode: serverConfig.mode,
+      host: serverConfig.host ?? null,
+      port: serverConfig.port,
+      cause,
+    });
   const commandGate = yield* makeCommandGate;
-  const httpListening = yield* Deferred.make<void>();
+  const httpListening = yield* Deferred.make<NetAddress.SocketAddress>();
+  const nativeTrial = yield* JonesTrialStartup.hasJonesTrialAuthority;
+  const trialActivated = yield* Ref.make(false);
   const effectWorkerFiber = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 
   yield* Effect.addFinalizer(() =>
@@ -501,11 +544,18 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       if (workerFiber !== null) {
         yield* Fiber.interrupt(workerFiber).pipe(Effect.ignore);
       }
-      yield* providerRuntimeRecovery.prepareForShutdown.pipe(
-        Effect.ensuring(providerSessions.shutdown),
-      );
-      const reconciliation = yield* providerRuntimeRecovery.reconcile("shutdown");
-      yield* Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation);
+      yield* runRuntimeShutdown({
+        continuationWritesAllowed: !nativeTrial || (yield* Ref.get(trialActivated)),
+        prepareForShutdown: providerRuntimeRecovery.prepareForShutdown,
+        shutdownSessions: providerSessions.shutdown,
+        reconcile: providerRuntimeRecovery
+          .reconcile("shutdown")
+          .pipe(
+            Effect.flatMap((reconciliation) =>
+              Effect.logInfo("V2 orchestration shutdown reconciliation completed", reconciliation),
+            ),
+          ),
+      });
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("V2 orchestration shutdown reconciliation failed", {
@@ -549,20 +599,26 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     const welcomeBase = yield* resolveWelcomeBase;
     const environment = yield* serverEnvironment.getDescriptor;
     const legacyMigrationThreadCount = yield* legacyV1ThreadImporter.pendingThreadCount;
-    if (legacyMigrationThreadCount > 0) {
-      yield* lifecycleEvents.publish({
-        version: 1,
-        type: "legacyThreadMigration",
-        payload: {
-          status: "running",
-          totalThreadCount: legacyMigrationThreadCount,
-        },
-      });
-    }
     const { recovery, bootstrap: bootstrapTargets } = yield* runOrderedV2StartupPhases({
+      awaitTrialCommit: JonesTrialStartup.awaitSelectedJonesTrialStartup({
+        waitUntilParked: Deferred.await(httpListening).pipe(
+          Effect.andThen(options?.awaitAuxiliaryParked ?? Effect.void),
+          Effect.asVoid,
+        ),
+        observedListener: Deferred.await(httpListening),
+      }),
       importLegacyShells: runStartupPhase(
         "orchestration-v2.legacy-v1.import-shells",
-        legacyV1ThreadImporter.reconcileShells.pipe(
+        Effect.gen(function* () {
+          if (legacyMigrationThreadCount > 0) {
+            yield* lifecycleEvents.publish({
+              version: 1,
+              type: "legacyThreadMigration",
+              payload: { status: "running", totalThreadCount: legacyMigrationThreadCount },
+            });
+          }
+          return yield* legacyV1ThreadImporter.reconcileShells;
+        }).pipe(
           Effect.tap((summary) =>
             summary.importedThreadCount === 0
               ? Effect.void
@@ -570,10 +626,28 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           ),
         ),
       ),
-      recover: runStartupPhase("orchestration-v2.recovery", providerRuntimeRecovery.recover),
+      recover: runStartupPhase(
+        "orchestration-v2.recovery",
+        Effect.gen(function* () {
+          if (Option.isSome(plannedContinuity))
+            yield* activatePlannedUpdateContinuity({
+              baseDir: serverConfig.baseDir,
+              dbPath: serverConfig.dbPath,
+              launcher,
+              continuity: plannedContinuity.value,
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Planned update continuity remains held", { cause }),
+              ),
+            );
+          return yield* providerRuntimeRecovery.recover;
+        }),
+      ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
-        orchestrator.recoverDelegatedTasks,
+        orchestrator.recoverDelegatedTasks.pipe(
+          Effect.andThen(orchestrator.recoverPlannedUpdateQueues ?? Effect.void),
+        ),
       ),
       startEffectWorker: runStartupPhase(
         "orchestration-v2.effect-worker.start",
@@ -652,9 +726,9 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           yield* Effect.logDebug("startup phase: browser open check");
           const startupBrowserTarget = yield* resolveStartupBrowserTarget;
           if (serverConfig.mode !== "desktop") {
-            yield* announceStartupPairingUrl(startupBrowserTarget);
+            yield* logStartupPairingIssued;
           }
-          yield* runStartupPhase("browser.open", maybeOpenBrowser(startupBrowserTarget));
+          yield* runStartupPhase("browser.open", maybeOpenJonesBrowser(startupBrowserTarget));
         }
       }),
     );
@@ -685,7 +759,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
       }),
     );
 
-    yield* options?.activate ?? Effect.void;
+    yield* (options?.activate ?? Effect.void).pipe(
+      Effect.andThen(Ref.set(trialActivated, true)),
+      Effect.uninterruptible,
+    );
     yield* Effect.logDebug("Accepting commands");
     yield* commandGate.signalCommandReady;
     yield* Effect.logDebug("startup phase: publishing ready event");
@@ -736,8 +813,29 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
   );
 
   return {
+    capturePlannedUpdate: (
+      input: Parameters<PlannedUpdateContinuity.PlannedUpdateContinuity["Service"]["capture"]>[0],
+    ) =>
+      Option.isSome(plannedContinuity)
+        ? plannedContinuity.value.capture(input).pipe(Effect.mapError(continuationError))
+        : Effect.fail(continuationError("Planned update continuity is not configured.")),
+    markRunningProviderSessionsForContinuation:
+      ServerUpdateContinuation.markRunningProviderSessionsForContinuation.pipe(
+        Effect.provide(continuationContext),
+        Effect.mapError(continuationError),
+      ),
+    markOptedInProviderSessionsForContinuation:
+      ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+        Effect.provide(continuationContext),
+        Effect.mapError(continuationError),
+      ),
+    clearProviderSessionContinuationMarkers: (ids) =>
+      ServerUpdateContinuation.clearProviderSessionContinuationMarkers(ids).pipe(
+        Effect.provide(continuationContext),
+        Effect.mapError(continuationError),
+      ),
     awaitCommandReady: commandGate.awaitCommandReady,
-    markHttpListening: Deferred.succeed(httpListening, undefined),
+    markHttpListening: (address) => Deferred.succeed(httpListening, address).pipe(Effect.asVoid),
     enqueueCommand: commandGate.enqueueCommand,
   } satisfies ServerRuntimeStartup["Service"];
 });

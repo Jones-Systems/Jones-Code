@@ -1,3 +1,5 @@
+import * as PlatformError from "effect/PlatformError";
+import * as Cause from "effect/Cause";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
@@ -429,6 +431,74 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
     }),
   );
 
+  it.effect.each([true, false])(
+    "reports bytes before completion, then verifies and extracts (known size: %s)",
+    (knownSize) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-progress-" });
+        const firstChunk = yield* Deferred.make<void>();
+        let archiveController: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const checksums = yield* validChecksums;
+        const progress: PinnedRuntimeProgress[] = [];
+        const client = HttpClient.make((request) =>
+          Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              request.url.endsWith("/SHA256SUMS")
+                ? new Response(checksums)
+                : new Response(
+                    new ReadableStream({
+                      start(controller) {
+                        archiveController = controller;
+                        controller.enqueue(archiveBytes.slice(0, 4));
+                      },
+                    }),
+                    { headers: knownSize ? { "content-length": String(archiveBytes.length) } : {} },
+                  ),
+            ),
+          ),
+        );
+        const install = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          releaseBaseUrl: "https://releases.example/download",
+          httpClient: client,
+          runner: extractingRunner(fs, path),
+          validate: () => Effect.void,
+          onProgress: (event) => {
+            progress.push(event);
+            if (event.stage === "download" && event.received === 4) {
+              Deferred.doneUnsafe(firstChunk, Effect.void);
+            }
+          },
+        }).pipe(Effect.forkScoped);
+        yield* Deferred.await(firstChunk);
+        assert.deepEqual(progress.at(-1), {
+          stage: "download",
+          received: 4,
+          total: knownSize ? archiveBytes.length : undefined,
+        });
+        assert.isFalse(progress.some((event) => event.stage === "extract"));
+        assert.isDefined(archiveController);
+        archiveController!.enqueue(archiveBytes.slice(4));
+        archiveController!.close();
+        const installed = yield* Fiber.join(install);
+        assert.deepEqual(progress.slice(-4), [
+          { stage: "download", received: archiveBytes.length, total: archiveBytes.length },
+          { stage: "verify" },
+          { stage: "extract" },
+          { stage: "validate" },
+        ]);
+        assert.equal(yield* fs.readFileString(installed.sentinelPath), `${version}\n`);
+      }),
+  );
+
   it.effect("cleans up an interrupted download without reporting verification or extraction", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -639,6 +709,35 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       assert.equal(yield* fs.readFileString(finalPaths.entryPath), "broken\n");
     }),
   );
+
+  it.effect("removes staging when installation is interrupted", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-interrupt-" });
+      const started = yield* Deferred.make<void>();
+      const runner = ProcessRunner.ProcessRunner.of({
+        run: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+      });
+      const install = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        releaseBaseUrl: "https://releases.example/download",
+        httpClient: releaseHttpClient(yield* validChecksums),
+        runner,
+        validate: () => Effect.void,
+      }).pipe(Effect.forkScoped);
+
+      yield* Deferred.await(started);
+      yield* Fiber.interrupt(install);
+      const versionsDir = path.join(baseDir, "runtime", "versions");
+      assert.deepEqual(yield* fs.readDirectory(versionsDir), []);
+    }),
+  );
 });
 
 it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
@@ -685,6 +784,11 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
     { marker: "jones-active-install.json", kind: "file" },
     { marker: "versions/1.1.0/.jones-runtime-receipt.json", kind: "file" },
     { marker: "versions/1.1.0/.jones-provenance.json", kind: "file" },
+    { marker: "versions/.pruned-0.8.0/.jones-runtime-receipt.json", kind: "file" },
+    { marker: "service-state.json", kind: "previous-preview" },
+    { marker: "service-state.json", kind: "pending-preview" },
+    { marker: "service-state.json", kind: "malformed-qualified" },
+    { marker: "service-state.json", kind: "unreadable-state" },
     { marker: "staged-updates", kind: "directory" },
     { marker: "jones-updates", kind: "directory" },
     { marker: "unavailable runtime observation", kind: "error" },
@@ -697,14 +801,55 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
       const markerPath = path.join(runtimeDir, marker);
       if (kind === "directory") yield* fs.makeDirectory(markerPath);
       else if (kind === "file") yield* fs.writeFileString(markerPath, "{}");
+      else if (kind === "previous-preview" || kind === "pending-preview") {
+        yield* fs.writeFileString(
+          markerPath,
+          JSON.stringify({
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: kind === "pending-preview" ? "1.0.0-preview.20261021.1" : "1.1.0",
+            update: {
+              id: "legacy-preview",
+              fromVersion: "1.0.0-preview.20261021.1",
+              targetVersion: "1.1.0",
+              dbPath: path.join(baseDir, "userdata/state.sqlite"),
+              status: kind === "pending-preview" ? "pending" : "committed",
+              ...(kind === "pending-preview" ? { phase: "accepted" } : {}),
+            },
+          }),
+        );
+      } else if (kind === "malformed-qualified") {
+        yield* fs.writeFileString(
+          markerPath,
+          JSON.stringify({
+            protocol: SERVICE_LAUNCHER_PROTOCOL,
+            activeVersion: "1.0.0",
+            update: { status: "pending", qualified: {} },
+          }),
+        );
+      } else if (kind === "unreadable-state") yield* fs.makeDirectory(markerPath);
       const unreadableDirectory = path.join(baseDir, "not-a-directory");
       yield* fs.writeFileString(unreadableDirectory, "file");
       const binDir = path.join(baseDir, "bin");
       yield* fs.makeDirectory(binDir);
       yield* fs.symlink(path.join(versionsDir, "1.1.0", "t3"), path.join(binDir, "t3"));
       let processScans = 0;
+      let renames = 0;
+      let removals = 0;
+      let writes = 0;
       const observedFs = FileSystem.FileSystem.of({
         ...fs,
+        rename: (from, to) => {
+          renames++;
+          return fs.rename(from, to);
+        },
+        remove: (target, options) => {
+          removals++;
+          return fs.remove(target, options);
+        },
+        writeFileString: (target, data, options) => {
+          writes++;
+          return fs.writeFileString(target, data, options);
+        },
         readDirectory: (directory, options) => {
           if (directory === "/proc") {
             processScans += 1;
@@ -728,6 +873,9 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
 
       assert.deepEqual(removed, []);
       assert.equal(processScans, 0);
+      assert.equal(renames, 0);
+      assert.equal(removals, 0);
+      assert.equal(writes, 0);
       assert.isFalse(yield* fs.exists(path.join(runtimeDir, "launchers")));
       assert.deepEqual((yield* fs.readDirectory(versionsDir)).toSorted(), [
         ".pruned-0.8.0",
