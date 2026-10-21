@@ -23,6 +23,7 @@ import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   createStagePatchedDependencies,
   createStageWorkspaceConfig,
@@ -553,7 +554,7 @@ const command = Command.make(
       Flag.optional,
     ),
   },
-  (input) => buildCliArchive(input).pipe(Effect.scoped),
+  (input) => requireJonesBuildTarget(input).pipe(Effect.flatMap(buildCliArchive), Effect.scoped),
 ).pipe(Command.withDescription("Package the t3 single-executable into a per-platform archive."));
 
 if (import.meta.main) {

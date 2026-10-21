@@ -25,6 +25,7 @@ import desktopPackageJson from "../apps/desktop/package.json" with { type: "json
 import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
+import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   applyCompanionPackageVariant,
   companionPackageMetadata,
@@ -4109,7 +4110,12 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
   ),
 }).pipe(
   Command.withDescription("Build a desktop artifact for T3 Code."),
-  Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
+  Command.withHandler((input) =>
+    resolveBuildOptions(input).pipe(
+      Effect.flatMap(requireJonesBuildTarget),
+      Effect.flatMap(buildDesktopArtifact),
+    ),
+  ),
 );
 
 const cliRuntimeLayer = Layer.mergeAll(Logger.layer([Logger.consolePretty()]), NodeServices.layer);

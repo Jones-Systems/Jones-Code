@@ -263,12 +263,12 @@ Local artifact builds are unsigned by default and write to `release/`:
 ```sh
 vp run dist:desktop:dmg
 vp run dist:desktop:linux
-vp run dist:desktop:win
 ```
 
-DMGs default to the host architecture. Use `--arch` to choose another target and `--keep-stage`
-to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
-options.
+Jones Code builds macOS artifacts for Apple Silicon (`arm64`) only. Linux artifacts
+support `x64` and `arm64`. Windows and Intel or universal Mac builds are unsupported
+and are rejected before packaging starts. Use `--keep-stage` to retain packaging
+files for inspection. Run `vp run dist:desktop:artifact --help` for other options.
 
 ### Linux AppImage prerequisites
 
@@ -299,27 +299,11 @@ The C toolchain, pkg-config, and libsecret headers are also needed for Linux des
 ### macOS DMG prerequisites
 
 Install the Xcode Command Line Tools with `xcode-select --install` and install Rust.
-For a cross-architecture or universal build, add the requested Rust targets:
+Add the Apple Silicon Rust target if it is not already installed:
 
 ```sh
-rustup target add aarch64-apple-darwin x86_64-apple-darwin
+rustup target add aarch64-apple-darwin
 ```
-
-### Windows installer prerequisites
-
-Install Rust, Python 3, and Visual Studio Build Tools with **Desktop development with C++**.
-Include the Windows SDK and the MSVC build tools and Spectre-mitigated libraries for the target
-architecture. Add its Rust target:
-
-```powershell
-rustup target add x86_64-pc-windows-msvc
-# For an ARM64 installer:
-rustup target add aarch64-pc-windows-msvc
-```
-
-NSIS is downloaded by electron-builder. WSL support additionally needs the Linux CLI archive
-passed as `--wsl-runtime`; see the
-[release runbook](./release.md#windows-payload-topology-and-update-validation).
 
 ### Signing and passkeys
 

@@ -4,6 +4,16 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "apple-silicon-platforms",
+      "tests": [
+        "scripts/jones/platforms/supportedTargets.test.ts",
+        "scripts/build-desktop-artifact.test.ts",
+        "scripts/lib/build-target-arch.test.ts",
+        "scripts/jones/preview-companion/packageVariant.test.ts"
+      ],
+      "scope": "Jones packaging supports mac arm64 and Linux arm64/x64. Private builder entrypoints call one typed Jones target gate before staging or build side effects; shared builder hooks avoid duplicating upstream packaging machinery. Root package scripts remove Windows and Intel Mac shortcuts. Upstream platform helpers and tests remain intact. The removed Windows test workflow is tombstoned."
+    },
+    {
       "id": "agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
