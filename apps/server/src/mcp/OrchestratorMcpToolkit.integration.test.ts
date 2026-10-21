@@ -1007,6 +1007,35 @@ describe("orchestrator MCP toolkit", () => {
     () =>
       Effect.scoped(
         Effect.gen(function* () {
+          const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
+          // Initialize the epoch before building layers or registering worker sleeps.
+          yield* TestClock.setTime(acceptedAt);
+          const testClock = yield* Clock.Clock;
+          const wallTimeOffset = yield* Ref.make(0);
+          const fixtureClock: Clock.Clock = {
+            currentTimeMillisUnsafe: () =>
+              testClock.currentTimeMillisUnsafe() + Ref.getUnsafe(wallTimeOffset),
+            currentTimeMillis: Effect.sync(() => fixtureClock.currentTimeMillisUnsafe()),
+            currentTimeNanosUnsafe: () =>
+              testClock.currentTimeNanosUnsafe() + BigInt(Ref.getUnsafe(wallTimeOffset)) * 1_000_000n,
+            currentTimeNanos: Effect.sync(() => fixtureClock.currentTimeNanosUnsafe()),
+            monotonicTimeNanosUnsafe: () => testClock.monotonicTimeNanosUnsafe(),
+            monotonicTimeNanos: testClock.monotonicTimeNanos,
+            sleep: (duration) => testClock.sleep(duration),
+          };
+          // Registered MCP handlers capture their clock. Share the wall-time offset with
+          // them, while TestClock still owns tracked sleeps and monotonic deadlines.
+          // A day-later retry changes wall time only, not a day of worker timers.
+          const atWallTime =
+            (millis: number) =>
+            <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+              Effect.acquireUseRelease(
+                Effect.suspend(() =>
+                  Ref.getAndSet(wallTimeOffset, millis - testClock.currentTimeMillisUnsafe()),
+                ),
+                () => effect,
+                (previous) => Ref.set(wallTimeOffset, previous),
+              );
           const cwd = yield* checkpointWorkspace("orchestrator-mcp-toolkit");
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const parentTerminalGates = new Map<ThreadId, Deferred.Deferred<void>>();
@@ -2911,23 +2940,12 @@ describe("orchestrator MCP toolkit", () => {
               title: "MCP [sender] <one> & two",
               clientRequestId: "rename-before-ordinary-loop-send",
             });
-            const sendClock = yield* Clock.Clock;
-            const acceptedAt = Date.parse("2026-10-20T14:50:00Z");
-            const clockAt = (millis: number): Clock.Clock => ({
-              currentTimeMillisUnsafe: () => millis,
-              currentTimeMillis: Effect.succeed(millis),
-              currentTimeNanosUnsafe: () => BigInt(millis) * 1_000_000n,
-              currentTimeNanos: Effect.succeed(BigInt(millis) * 1_000_000n),
-              monotonicTimeNanosUnsafe: () => sendClock.monotonicTimeNanosUnsafe(),
-              monotonicTimeNanos: sendClock.monotonicTimeNanos,
-              sleep: (duration) => sendClock.sleep(duration),
-            });
             const ordinaryLoopPrompt = "Run an ordinary thread loop iteration.";
             const sendCall = yield* invoke("t3_thread_send", {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
-            }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt)));
+            }).pipe(atWallTime(acceptedAt));
             const sent = yield* decodeThreadSendResult(sendCall.structuredContent).pipe(
               Effect.orDie,
             );
@@ -2969,7 +2987,7 @@ describe("orchestrator MCP toolkit", () => {
               threadId: emptyThread.threadId,
               message: ordinaryLoopPrompt,
               clientRequestId: "ordinary-loop-send-1",
-            }).pipe(Effect.provideService(Clock.Clock, clockAt(acceptedAt + 86_400_000)));
+            }).pipe(atWallTime(acceptedAt + 86_400_000));
             const repeatedSend = yield* decodeThreadSendResult(
               repeatedSendCall.structuredContent,
             ).pipe(Effect.orDie);
@@ -4312,7 +4330,10 @@ describe("orchestrator MCP toolkit", () => {
                 thirdFanoutDelivery.messageId,
               ]),
             );
-          }).pipe(Effect.provide(layerTest));
+          }).pipe(
+            Effect.provide(layerTest),
+            Effect.provideService(Clock.Clock, fixtureClock),
+          );
         }),
       ),
   );
