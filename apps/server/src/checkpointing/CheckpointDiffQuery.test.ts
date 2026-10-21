@@ -206,21 +206,27 @@ it.effect("shares the turn and full-thread diff budget across real Git batches",
     const path = yield* Path.Path;
     const process = yield* VcsProcess.VcsProcess;
     const store = yield* CheckpointStore.CheckpointStore;
-    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-diff-aggregate-" });
-    const git = (args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-diff-aggregate-" });
+    const repository = path.join(root, "repository");
+    const cwd = path.join(root, "worktree");
+    yield* fs.makeDirectory(repository);
+    const runGit = (gitCwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
       process.run({
         operation: "CheckpointDiffQuery.test.git",
         command: "git",
-        cwd,
+        cwd: gitCwd,
         args,
         ...(env === undefined ? {} : { env }),
       });
-    yield* git(["init"]);
-    yield* git(["config", "user.email", "test@test.com"]);
-    yield* git(["config", "user.name", "Test"]);
-    yield* fs.writeFileString(path.join(cwd, "README.md"), "initial\n");
-    yield* git(["add", "."]);
-    yield* git(["commit", "-m", "initial"]);
+    const primaryGit = (args: ReadonlyArray<string>) => runGit(repository, args);
+    yield* primaryGit(["init"]);
+    yield* primaryGit(["config", "user.email", "test@test.com"]);
+    yield* primaryGit(["config", "user.name", "Test"]);
+    yield* fs.writeFileString(path.join(repository, "README.md"), "initial\n");
+    yield* primaryGit(["add", "."]);
+    yield* primaryGit(["commit", "-m", "initial"]);
+    yield* primaryGit(["worktree", "add", "-b", "checkpoint-test", cwd]);
+    const git = (args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) => runGit(cwd, args, env);
 
     const threadId = ThreadId.make("thread:aggregate-runtime");
     const runId = RunId.make("run:aggregate-runtime");

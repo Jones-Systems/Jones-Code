@@ -227,17 +227,16 @@ it.effect.skipIf(!symlinksSupported)(
       const sandbox = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-checkpoint-symlink-",
       });
-      const repo = path.join(sandbox, "repo");
-      const subdir = path.join(repo, "sub", "dir");
+      const { cwd, git, checkpointRef } = yield* makeCheckpointFixture(driver, sandbox);
+      const subdir = path.join(cwd, "sub", "dir");
       const link = path.join(sandbox, "nest", "link");
       yield* fileSystem.makeDirectory(subdir, { recursive: true });
       yield* fileSystem.makeDirectory(path.dirname(link), { recursive: true });
       yield* fileSystem.symlink(subdir, link);
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, repo);
-      // Git returns ../../.git from the target; resolving it against the link reaches the decoy.
+      // A decoy repository at the link's ancestor must not receive the checkpoint index.
       yield* git(["-C", sandbox, "init"]);
       yield* fileSystem.writeFileString(path.join(subdir, "nested.txt"), "from-link\n");
-      const realCommonDir = yield* fileSystem.realPath(path.join(repo, ".git"));
+      const realCommonDir = yield* fileSystem.realPath(path.join(sandbox, "repository", ".git"));
 
       yield* driver.checkpoints.captureCheckpoint({ cwd: link, checkpointRef });
 
@@ -257,8 +256,8 @@ it.effect("checkpoint capture keeps the shared index a split index still uses", 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const driver = yield* GitVcsDriver.makeVcsDriverShape();
-    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkpoint-split-" });
-    const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkpoint-split-" });
+    const { cwd, git, checkpointRef } = yield* makeCheckpointFixture(driver, root);
     yield* git(["config", "core.splitIndex", "true"]);
     yield* git(["config", "splitIndex.sharedIndexExpire", "now"]);
     yield* git(["update-index", "--split-index"]);

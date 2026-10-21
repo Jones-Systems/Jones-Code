@@ -598,8 +598,7 @@ it.effect("relay retries recover failed acceptance without releasing another req
           SELECT RAISE(FAIL, 'injected delivery log failure');
         END
       `;
-      const error = yield* service.triggerWebhook(request).pipe(Effect.flip);
-      assert.equal(error.message, "Could not record webhook delivery.");
+      assert.deepEqual(yield* service.triggerWebhook(request), { _tag: "unavailable" });
       assert.equal(yield* Queue.size(launches), 0);
       assert.isEmpty(
         (yield* service.listWebhookDeliveries({ id: task.id, acceptAnyOutcome: true })).deliveries,
@@ -623,8 +622,7 @@ it.effect("relay retries recover failed acceptance without releasing another req
           SELECT RAISE(FAIL, 'injected claim failure');
         END
       `;
-      const retryError = yield* service.triggerWebhook(request).pipe(Effect.flip);
-      assert.equal(retryError.message, "Could not record webhook delivery.");
+      assert.deepEqual(yield* service.triggerWebhook(request), { _tag: "unavailable" });
       yield* sql`DROP TRIGGER fail_webhook_claim`;
       const replayed = yield* service.triggerWebhook(request);
       assert.equal(replayed._tag === "accepted" ? replayed.outcome : replayed._tag, "duplicate");
@@ -989,7 +987,7 @@ it.effect("rolls back replay and pending state when recording a delivery fails",
           }),
         );
         yield* sql`CREATE TRIGGER fail_dedupe_log BEFORE INSERT ON scheduled_task_webhook_deliveries BEGIN SELECT RAISE(FAIL, 'injected'); END`;
-        yield* service.triggerWebhook(requestFor(task)).pipe(Effect.flip);
+        assert.deepEqual(yield* service.triggerWebhook(requestFor(task)), { _tag: "unavailable" });
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_pending`).length, 0);
         assert.equal((yield* sql`SELECT * FROM scheduled_task_webhook_replay_keys`).length, 0);
         yield* sql`DROP TRIGGER fail_dedupe_log`;
@@ -1220,12 +1218,33 @@ it.effect(
               .pipe(Effect.forkChild);
             yield* Deferred.await(started);
             yield* TestClock.adjust("30 seconds");
-            assert.equal(
-              (yield* service.triggerWebhook(requestFor(task)))._tag,
-              "rejected_signature",
+            const rejectionReadStarted = yield* Deferred.make<void>();
+            const rejectionReadFinished = yield* Deferred.make<void>();
+            const tracer = Tracer.make({
+              span: (options) => {
+                const span = new Tracer.NativeSpan(options);
+                if (options.kind === "client") {
+                  Deferred.doneUnsafe(rejectionReadStarted, Effect.void);
+                  const end = span.end.bind(span);
+                  span.end = (...args) => {
+                    end(...args);
+                    Deferred.doneUnsafe(rejectionReadFinished, Effect.void);
+                  };
+                }
+                return span;
+              },
+            });
+            const rejected = yield* service.triggerWebhook(requestFor(task)).pipe(
+              Effect.withTracer(tracer),
+              Effect.forkChild,
             );
+            yield* Deferred.await(rejectionReadStarted);
+            // Acceptance owns the SQL transaction until the valid request releases its gate.
+            assert.isFalse(yield* Deferred.isDone(rejectionReadFinished));
             yield* Deferred.succeed(release, undefined);
             assert.equal((yield* Fiber.join(valid))._tag, "accepted");
+            assert.equal((yield* Fiber.join(rejected))._tag, "rejected_signature");
+            assert.isTrue(yield* Deferred.isDone(rejectionReadFinished));
             yield* Queue.take(launches);
             // Only the valid reservation would have expired now; the rejection must still count.
             yield* TestClock.adjust("31 seconds");
@@ -1235,7 +1254,7 @@ it.effect(
                 "rejected_signature",
               );
             assert.equal((yield* service.triggerWebhook(requestFor(task)))._tag, "rate_limited");
-          }),
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined))),
         { frameGate: { started, release } },
       );
     }),

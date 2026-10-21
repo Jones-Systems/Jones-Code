@@ -137,7 +137,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       NO_COLOR: "1",
       FORCE_COLOR: "0",
     });
-    assert.equal(write.mock.calls[0]?.[0].data, "vp install\r");
+    assert.equal(write.mock.calls[0]?.[0].data, " vp install\r");
     const lines: string[] = [];
     const observed = yield* runner.runForThread({
       threadId: "thread-1",
@@ -169,7 +169,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     });
     const settleTerminalId = settle.status === "started" ? settle.terminalId : "";
     assert.match(settleTerminalId, /^settle-clean-/);
-    assert.equal(write.mock.calls.at(-1)?.[0].data, "cargo clean\r");
+    assert.equal(write.mock.calls.at(-1)?.[0].data, " cargo clean\r");
 
     const observedSettle = yield* runner.runForThread({
       threadId: "thread-1",
@@ -449,7 +449,7 @@ it.effect(
       assert.equal(definition.async, false);
       assert.equal(definition.command, script.command);
       assert.match(definition.commandLine, /^begin\rsynthetic-command\rend;/u);
-      assert.equal(writes[0], `${definition.commandLine}\r`);
+      assert.equal(writes[0], ` ${definition.commandLine}\r`);
       const capturedDefinition = definition;
       const refused = yield* runner
         .runForThread({

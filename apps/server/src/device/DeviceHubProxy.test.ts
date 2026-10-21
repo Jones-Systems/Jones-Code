@@ -33,7 +33,7 @@ const fixture = (
   upstreamOrDirect?: DeviceHost.DeviceHostReady["upstream"] | boolean,
 ) => {
   const direct = upstreamOrDirect === true;
-  const upstream = typeof upstreamOrDirect === "object" ? upstreamOrDirect : undefined;
+  const upstream = typeof upstreamOrDirect === "function" ? upstreamOrDirect : undefined;
   let finalized = 0;
   let revoked = false;
   let generation = "generation";

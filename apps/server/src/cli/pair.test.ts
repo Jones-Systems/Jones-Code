@@ -10,6 +10,7 @@ import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Sink from "effect/Sink";
@@ -130,18 +131,35 @@ describe("t3 pair", () => {
         Effect.gen(function* () {
           const fetch = yield* FetchHttpClient.Fetch;
           let serving = false;
+          let serveTarget: string | undefined;
           const spawner = ChildProcessSpawner.make((command) =>
             Effect.gen(function* () {
               if (!ChildProcess.isStandardCommand(command))
                 return yield* Effect.die("Unexpected pipeline");
-              if (command.args[0] === "serve") {
+              if (command.args[0] === "serve" && command.args[1] !== "status") {
                 const target = command.args.at(-1)!;
                 const descriptor = yield* Effect.promise(async () =>
                   (await fetch(new URL("/.well-known/t3/environment", target))).json(),
                 );
                 expect(descriptor).toEqual(testDescriptor);
                 serving = true;
+                serveTarget = target;
               }
+              const stdout =
+                command.args[0] === "serve"
+                  ? JSON.stringify(
+                      serveTarget === undefined
+                        ? {}
+                        : {
+                            TCP: { "443": { HTTPS: true } },
+                            Web: {
+                              "pair-test.tail.ts.net:443": {
+                                Handlers: { "/": { Proxy: serveTarget } },
+                              },
+                            },
+                          },
+                    )
+                  : '{"Self":{"DNSName":"pair-test.tail.ts.net."}}';
               return ChildProcessSpawner.makeHandle({
                 pid: ChildProcessSpawner.ProcessId(1),
                 exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(0)),
@@ -149,9 +167,7 @@ describe("t3 pair", () => {
                 kill: () => Effect.void,
                 unref: Effect.succeed(Effect.void),
                 stdin: Sink.drain,
-                stdout: Stream.make(
-                  new TextEncoder().encode('{"Self":{"DNSName":"pair-test.tail.ts.net."}}'),
-                ),
+                stdout: Stream.make(new TextEncoder().encode(stdout)),
                 stderr: Stream.empty,
                 all: Stream.empty,
                 getInputFd: () => Sink.drain,
@@ -160,7 +176,8 @@ describe("t3 pair", () => {
             }),
           );
 
-          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-ipv6-test-"));
+          const fs = yield* FileSystem.FileSystem;
+          const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pair-ipv6-test-" });
           yield* persistServerRuntimeState({
             path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
             state: yield* makePersistedServerRuntimeState({
@@ -189,7 +206,7 @@ describe("t3 pair", () => {
           assert.include(output, "Pairing URL: https://pair-test.tail.ts.net/pair#token=");
         }),
       "::1",
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("mints a token and prints a QR pairing URL for a live server", () =>
