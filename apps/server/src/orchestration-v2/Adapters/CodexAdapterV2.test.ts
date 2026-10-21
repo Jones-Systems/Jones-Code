@@ -6468,6 +6468,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             codexErrorInfo: "other",
             additionalDetails: null,
           };
+          const turnParams = yield* CodexAdapterV2.buildCodexTurnStartParams({
+            nativeThreadId,
+            codexInput: [{ type: "text", text: "Continue." }],
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            hasT3Mcp: false,
+          });
           const transcript = makeCodexReplayTranscript({
             scenario: `automatic-compaction-${outcome}`,
             entries: [
@@ -6478,26 +6485,53 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   { method: "item/completed", id: "completed-item", completedAtMs: 1782622442000 },
                   { method: "item/started", id: "unfinished-item", startedAtMs: 1782622443000 },
                 ] as const
-              ).map(({ method, id, ...timestamps }) => ({
-                type: "emit_inbound" as const,
-                label: `${method}/${id}`,
-                frame: {
-                  method,
-                  params: {
-                    threadId: nativeThreadId,
-                    turnId: nativeTurnId,
-                    item: { type: "contextCompaction", id },
-                    ...timestamps,
+              ).flatMap(({ method, id, ...timestamps }) => [
+                {
+                  type: "emit_inbound" as const,
+                  label: `${method}/${id}`,
+                  frame: {
+                    method,
+                    params: {
+                      threadId: nativeThreadId,
+                      turnId: nativeTurnId,
+                      item: { type: "contextCompaction", id },
+                      ...timestamps,
+                    },
                   },
                 },
-              })),
+                ...(method === "item/completed"
+                  ? [
+                      {
+                        type: "expect_outbound" as const,
+                        label: "restore identity after completed compaction",
+                        frame: {
+                          id: 4,
+                          method: "thread/inject_items",
+                          params: {
+                            threadId: nativeThreadId,
+                            items: Object.entries(turnParams.additionalContext ?? {}).map(
+                              ([key, entry]) => ({
+                                type: "message",
+                                role: "developer",
+                                content: [
+                                  { type: "input_text", text: `<${key}>${entry.value}</${key}>` },
+                                ],
+                              }),
+                            ),
+                          },
+                        },
+                      },
+                      { type: "emit_inbound" as const, frame: { id: 4, result: {} } },
+                    ]
+                  : []),
+              ]),
               ...(outcome === "Stop"
                 ? [
                     {
                       type: "expect_outbound" as const,
                       label: "turn/interrupt",
                       frame: {
-                        id: 4,
+                        id: 5,
                         method: "turn/interrupt",
                         params: { threadId: nativeThreadId, turnId: nativeTurnId },
                       },
@@ -6505,7 +6539,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                     {
                       type: "emit_inbound" as const,
                       label: "turn/interrupt/failed",
-                      frame: { id: 4, error: { code: -32_000, message: "Interrupt failed" } },
+                      frame: { id: 5, error: { code: -32_000, message: "Interrupt failed" } },
                     },
                     {
                       type: "emit_inbound" as const,
@@ -6564,31 +6598,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             const interrupt = yield* harness.runtime
               .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
               .pipe(Effect.exit);
-            if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1") {
-              // Temporary probe projects metadata only, never replay frame bodies.
-              const metadata = (value: unknown, depth = 0): unknown => {
-                if (depth > 10 || value === null || typeof value !== "object") return undefined;
-                if (Array.isArray(value)) return value.slice(0, 16).map((entry) => metadata(entry, depth + 1));
-                const result: Record<string, unknown> = {};
-                for (const key of ["_tag", "name", "code", "method", "id", "cursor", "label"]) {
-                  const field = Reflect.get(value, key);
-                  if (typeof field === "string" || typeof field === "number") result[key] = field;
-                }
-                for (const key of ["cause", "reasons", "error", "defect", "actual", "expected"])
-                  if (Reflect.has(value, key)) result[key] = metadata(Reflect.get(value, key), depth + 1);
-                return result;
-              };
-              console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({ adapter: "codex", stage: "interrupt-exit", detail: metadata(interrupt) }));
-            }
             assert.equal(interrupt._tag, "Failure");
           }
           yield* harness.firstTerminal;
-          if (process.env.JONES_ADAPTER_DIAGNOSTICS === "1")
-            console.error("ADAPTER_DIAGNOSTIC", JSON.stringify({
-              adapter: "codex", stage: "terminal",
-              terminals: harness.terminalEvents().map((event) => ({ status: event.status, failureCode: event.failure?.code })),
-              items: harness.events.flatMap((event) => event.type === "turn_item.updated" ? [{ type: event.turnItem.type, status: event.turnItem.status }] : []).slice(-32),
-            }));
           const items = harness.events.flatMap((event) =>
             event.type === "turn_item.updated" && event.turnItem.type === "compaction"
               ? [event.turnItem]
