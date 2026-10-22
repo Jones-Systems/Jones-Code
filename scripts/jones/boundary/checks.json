@@ -2330,6 +2330,14 @@
         "node scripts/mobile-showcase.ts --list",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-ci-dependency-setup",
+      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
+      "commands": [
+        "node --test scripts/jones/ci/chromium-setup.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }
