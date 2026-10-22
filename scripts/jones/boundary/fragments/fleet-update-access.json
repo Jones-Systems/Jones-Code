@@ -55,7 +55,8 @@
     "apps/server/src/jones/updates/preparation/stage.test.ts",
     "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
     "apps/server/src/jones/updates/preparation/Preparation.testkit.ts",
-    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts"
+    "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts",
+    "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
   ],
   "hookPaths": ["apps/web/vite.config.ts"],
   "tombstones": [],

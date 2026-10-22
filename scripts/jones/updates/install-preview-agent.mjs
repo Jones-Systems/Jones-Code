@@ -334,138 +334,8 @@ async function connectInjectedMcp(descriptor, source, onTransportCreated) {
   return { client, transport, injected };
 }
 
-function updateCheckFailureEvidence(expectedOrigin) {
-  const guards = {
-    origin: location.origin === expectedOrigin,
-    path: location.pathname === "/settings/connections",
-    queryEmpty: location.search === "",
-    hashEmpty: location.hash === "",
-  };
-  if (!Object.values(guards).every(Boolean)) return { guards, collected: false };
-  guards.syntheticHost =
-    document.querySelector(
-      '[role="switch"][aria-label="Switch on Synthetic incompatible Jones host"]',
-    ) !== null;
-  if (!guards.syntheticHost) return { guards, collected: false };
-  const normalize = (text) => (text ?? "").replace(/\s+/g, " ").trim();
-  const knownNames = ["Check for builds", "Switch on Synthetic incompatible Jones host"];
-  const allowed = (value, values) => (values.includes(value) ? value : "other");
-  const describe = (node) =>
-    node === null
-      ? null
-      : {
-          tag: allowed(node.tagName?.toLowerCase(), [
-            "html",
-            "body",
-            "div",
-            "span",
-            "button",
-            "input",
-            "label",
-            "section",
-            "main",
-            "nav",
-            "aside",
-            "header",
-            "footer",
-            "p",
-            "h1",
-            "h2",
-            "h3",
-            "h4",
-            "h5",
-            "svg",
-            "path",
-          ]),
-          role: allowed(node.getAttribute("role"), [
-            "button",
-            "switch",
-            "dialog",
-            "navigation",
-            "main",
-          ]),
-          name:
-            knownNames.find(
-              (name) =>
-                normalize(node.getAttribute("aria-label")) === name ||
-                normalize(node.textContent) === name,
-            ) ?? "other",
-        };
-  const rectOf = (node) => {
-    const rect = node.getBoundingClientRect();
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-  };
-  const layout = (node) => {
-    const style = getComputedStyle(node);
-    return {
-      ...describe(node),
-      rect: rectOf(node),
-      overflowX: allowed(style.overflowX, ["visible", "hidden", "clip", "scroll", "auto"]),
-      overflowY: allowed(style.overflowY, ["visible", "hidden", "clip", "scroll", "auto"]),
-      scrollLeft: node.scrollLeft,
-      scrollTop: node.scrollTop,
-      scrollWidth: node.scrollWidth,
-      scrollHeight: node.scrollHeight,
-      clientWidth: node.clientWidth,
-      clientHeight: node.clientHeight,
-      scrollingElement: node === document.scrollingElement,
-    };
-  };
-  const matches = Array.from(document.querySelectorAll("button")).filter(
-    (button) => normalize(button.textContent) === "Check for builds",
-  );
-  return {
-    guards,
-    collected: true,
-    readyState: allowed(document.readyState, ["loading", "interactive", "complete"]),
-    viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
-    matchCount: matches.length,
-    buttons: matches.slice(0, 4).map((button) => {
-      const rect = rectOf(button);
-      const style = getComputedStyle(button);
-      const center = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-      const hit = document.elementFromPoint(center.x, center.y);
-      const ancestors = [];
-      for (let node = button.parentElement; node && ancestors.length < 7; node = node.parentElement)
-        ancestors.push(node);
-      if (document.scrollingElement && !ancestors.includes(document.scrollingElement))
-        ancestors.push(document.scrollingElement);
-      return {
-        enabled: button.matches(":enabled"),
-        disabled: button.matches(":disabled"),
-        ariaDisabled: allowed(button.getAttribute("aria-disabled"), [null, "true", "false"]),
-        inertAncestor: button.closest("[inert]") !== null,
-        display: allowed(style.display, [
-          "none",
-          "block",
-          "inline",
-          "inline-block",
-          "flex",
-          "inline-flex",
-          "grid",
-          "contents",
-        ]),
-        visibility: allowed(style.visibility, ["visible", "hidden", "collapse"]),
-        opacity: Number.isFinite(Number(style.opacity)) ? Number(style.opacity) : null,
-        pointerEvents: allowed(style.pointerEvents, ["auto", "none"]),
-        rect,
-        viewportIntersection:
-          rect.width > 0 &&
-          rect.height > 0 &&
-          rect.x < innerWidth &&
-          rect.y < innerHeight &&
-          rect.x + rect.width > 0 &&
-          rect.y + rect.height > 0,
-        centerHitSelfOrDescendant: hit !== null && (hit === button || button.contains(hit)),
-        centerHit: describe(hit),
-        ancestors: ancestors.map(layout),
-      };
-    }),
-  };
-}
-
 export async function runScenario(client, scenario, report) {
-  const call = async (name, args = {}, omitError = false) => {
+  const call = async (name, args = {}) => {
     try {
       const result = await client.callTool({ name, arguments: args }, undefined, {
         timeout: 180_000,
@@ -475,11 +345,7 @@ export async function runScenario(client, scenario, report) {
       report.calls.push({ name, ok: true });
       return value;
     } catch (error) {
-      report.calls.push({
-        name,
-        ok: false,
-        error: omitError ? "Diagnostic unavailable" : String(error.message),
-      });
+      report.calls.push({ name, ok: false, error: String(error.message) });
       throw error;
     }
   };
@@ -536,26 +402,6 @@ export async function runScenario(client, scenario, report) {
   } catch (error) {
     scenarioError = error;
     report.failedAction = report.currentAction ?? { action: "initial-navigation" };
-    if (
-      report.failedAction.action === "click" &&
-      report.failedAction.locator === 'button:enabled:text-is("Check for builds")'
-    ) {
-      try {
-        const result = await call(
-          "preview_evaluate",
-          {
-            tabId,
-            expression: `(${updateCheckFailureEvidence.toString()})(${JSON.stringify(scenario.origin)})`,
-            returnByValue: true,
-            awaitPromise: false,
-          },
-          true,
-        );
-        report.updateCheckFailure = result.value;
-      } catch {
-        report.updateCheckFailure = { collected: false, unavailable: true };
-      }
-    }
     try {
       // A failed pairing dialog can still display a plain-text code. Never persist its pixels or text.
       const snapshot = await call("preview_snapshot", { tabId, save: false, includeImage: false });

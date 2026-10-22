@@ -97,8 +97,8 @@ export function EnvironmentRow({
           {line}
         </div>
       )}
-      {/* In a header, this box is the name's line height; taller controls center on that line. */}
-      <div className={cn("flex shrink-0 items-center gap-1", header && "h-5")}>{children}</div>
+      {/* Reserve at least the name's line height, and let taller controls push the subtitle below. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "min-h-5")}>{children}</div>
       {header ? (
         <div className={cn("col-span-2 col-start-2 min-w-0", dimmed && "opacity-60")}>
           {line}
