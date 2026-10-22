@@ -30,6 +30,7 @@ const CODEX_PID = SERVER_PID + 1;
 const SHORT_LIVED_CHILD_PID = SERVER_PID + 2;
 const ELECTRON_PID = SERVER_PID + 3;
 const MONITOR_PID = SERVER_PID + 4;
+const RESTARTED_MONITOR_PID = SERVER_PID + 5;
 
 function processSample(
   input: Partial<ResourceMonitorProcessSample> &
@@ -56,6 +57,7 @@ function nativeSnapshot(input: {
   readonly sampledAtUnixMs: number;
   readonly childCpuTimeMs: number;
   readonly childWriteBytes: number;
+  readonly monitorPid?: number;
   readonly externalProcesses?: ResourceMonitorSnapshotEvent["externalProcesses"];
 }): ResourceMonitorSnapshotEvent {
   const processes = [
@@ -83,7 +85,7 @@ function nativeSnapshot(input: {
       cpuTimeMs: input.sequence * 20,
     }),
     processSample({
-      pid: MONITOR_PID,
+      pid: input.monitorPid ?? MONITOR_PID,
       ppid: SERVER_PID,
       startTimeMs: 400,
       name: "t3-resource-monitor",
@@ -599,6 +601,7 @@ describe("ResourceTelemetry", () => {
           sampledAtUnixMs: startedAt + 2_000,
           childCpuTimeMs: 500,
           childWriteBytes: 7_000,
+          monitorPid: RESTARTED_MONITOR_PID,
         }),
       ] as const;
       const sampleIndex = yield* Ref.make(0);
@@ -612,7 +615,7 @@ describe("ResourceTelemetry", () => {
           version: 3,
           type: "hello",
           sidecarVersion: "0.1.0",
-          sidecarPid: 9_000,
+          sidecarPid: MONITOR_PID,
           platform: "test",
           arch: "test",
           capabilities: {
@@ -672,7 +675,9 @@ describe("ResourceTelemetry", () => {
         const telemetry = yield* ResourceTelemetry.ResourceTelemetry;
         const attribution = yield* ResourceAttribution.ResourceAttribution;
 
-        expect(yield* Ref.get(externalProcesses)).toEqual([{ pid: 5_000, startTimeMs: 300 }]);
+        expect(yield* Ref.get(externalProcesses)).toEqual([
+          { pid: ELECTRON_PID, startTimeMs: 300 },
+        ]);
 
         yield* attribution.record({
           component: "provider-event-log",
@@ -700,7 +705,7 @@ describe("ResourceTelemetry", () => {
 
         yield* TestClock.adjust(Duration.seconds(1));
         const second = yield* telemetry.refresh;
-        const codex = second.processes.find((entry) => entry.identity.pid === 4_242);
+        const codex = second.processes.find((entry) => entry.identity.pid === CODEX_PID);
         expect(codex?.cpuPercent).toBe(25);
         expect(codex?.ioWriteBytesPerSecond).toBe(4_000);
         expect(second.groups.backend.ioWriteBytes).toBe(4_000);
@@ -714,13 +719,13 @@ describe("ResourceTelemetry", () => {
         });
         expect(history.retainedSampleCount).toBeGreaterThan(0);
         expect(
-          history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.sampleCount,
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.sampleCount,
         ).toBe(2);
-        expect(history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.cpuTimeMs).toBe(
-          250,
-        );
         expect(
-          history.topProcesses.find((entry) => entry.identity.pid === 4_242)?.ioWriteBytes,
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.cpuTimeMs,
+        ).toBe(250);
+        expect(
+          history.topProcesses.find((entry) => entry.identity.pid === CODEX_PID)?.ioWriteBytes,
         ).toBe(4_000);
         expect(history.buckets.reduce((total, bucket) => total + bucket.ioWriteBytes, 0)).toBe(
           4_000,
@@ -734,14 +739,14 @@ describe("ResourceTelemetry", () => {
           ...current,
           hello: Option.map(current.hello, (hello) => ({
             ...hello,
-            sidecarPid: 9_001,
+            sidecarPid: RESTARTED_MONITOR_PID,
           })),
           restartCount: 3,
         }));
         yield* TestClock.adjust(Duration.seconds(1));
         const restarted = yield* telemetry.refresh;
         expect(DateTime.toEpochMillis(restarted.readAt)).toBe(startedAt + 2_000);
-        expect(Option.getOrNull(restarted.health.sidecarPid)).toBe(9_001);
+        expect(Option.getOrNull(restarted.health.sidecarPid)).toBe(RESTARTED_MONITOR_PID);
 
         yield* Ref.update(nativeHealth, (current) => ({
           ...current,

@@ -20,6 +20,7 @@ import {
   isProviderNativeSubagentThread,
   MessageId,
   type ModelSelection,
+  type OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpThreadInterruptResult,
   OrchestratorMcpThreadSendResult,
@@ -2028,12 +2029,27 @@ describe("orchestrator MCP toolkit", () => {
                   models: [
                     expect.objectContaining({
                       id: codexModel,
-                      options: [expect.objectContaining({ id: "reasoning", type: "select" })],
+                      options: [
+                        expect.objectContaining({
+                          id: "reasoning",
+                          values: ["low", "medium", "high"],
+                        }),
+                      ],
                     }),
                   ],
                 }),
               ]),
             });
+
+            const codexCapability = (
+              capabilities.structuredContent as OrchestratorMcpCapabilitiesResult
+            ).providers.find(({ providerInstanceId }) => providerInstanceId === codexInstanceId);
+            expect(codexCapability?.models).toEqual([
+              {
+                id: codexModel,
+                options: [{ id: "reasoning", values: ["low", "medium", "high"] }],
+              },
+            ]);
 
             const scheduleTool = server.tools.find(({ tool }) => tool.name === "schedule_task");
             expect(scheduleTool?.tool.annotations?.destructiveHint).toBe(true);
