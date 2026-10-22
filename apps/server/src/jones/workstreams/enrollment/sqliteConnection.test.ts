@@ -43,11 +43,10 @@ const decodeSqliteVersion = Schema.decodeUnknownEffect(
   Schema.Struct({ version: Schema.String, sourceId: Schema.String }),
 );
 
-const helperUrl = new URL("./sqliteConnection.ts", import.meta.url).href;
 const childSource = `
   import * as NodeFS from 'node:fs';
   import * as NodeSqlite from 'node:sqlite';
-  const [helperUrl, dbPath, action] = process.argv.slice(1);
+  const [configJson, dbPath, action] = process.argv.slice(1);
   const result = (value) => JSON.stringify({
     runtime: {
       node: process.versions.node, sqlite: process.versions.sqlite,
@@ -65,8 +64,7 @@ const childSource = `
     finally { db.close(); }
     process.stdout.write(result(observed));
   } else {
-    const { makeNativeEnrollmentSqliteConfig } = await import(helperUrl);
-    const config = makeNativeEnrollmentSqliteConfig(dbPath, action === 'wal' || action === 'missing' ? 'apply' : 'operational_inspection');
+    const config = JSON.parse(configJson);
     if (action === 'missing') {
       try { const db = new NodeSqlite.DatabaseSync(config.filename, { readOnly: config.readonly, allowExtension: config.allowExtension }); db.close();
         process.stdout.write(result({ failed: false, exists: NodeFS.existsSync(dbPath) })); }
@@ -91,9 +89,22 @@ const fixtureProcess = (
 ) =>
   Effect.acquireRelease(
     Effect.sync(() => {
+      // The parent qualifies the URI; every child receipt must match its actual runtime.
+      const config = makeNativeEnrollmentSqliteConfig(
+        dbPath,
+        action === "wal" || action === "missing" ? "apply" : "operational_inspection",
+      );
       const child = NodeChildProcess.spawn(
         process.execPath,
-        ["--no-warnings", "--input-type=module", "-e", childSource, helperUrl, dbPath, action],
+        [
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          childSource,
+          JSON.stringify(config),
+          dbPath,
+          action,
+        ],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
       let stdout = "";
@@ -183,6 +194,7 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.21.0", "3.53.4"],
     ["24.22.0", "3.53.4"],
     ["26.8.2", "3.53.4"],
+    ["26.12.1", "3.54.0"],
   ])
     assert.strictEqual(isQualifiedNativeEnrollmentSqliteRuntime(node, sqlite), true);
   for (const [node, sqlite] of [
@@ -203,6 +215,14 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["26.8.2", "3.53.3"],
     ["26.8.2", "3.53.5"],
     ["26.8.2", undefined],
+    ["26.12.0", "3.54.0"],
+    ["26.12.2", "3.54.0"],
+    ["26.12.1", "3.53.4"],
+    ["26.12.1", "3.54.1"],
+    ["26.8.2", "3.54.0"],
+    ["26.12.1", undefined],
+    [undefined, "3.54.0"],
+    [undefined, undefined],
     ["24.19.0", undefined],
     [undefined, "3.53.3"],
   ])

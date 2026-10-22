@@ -108,7 +108,7 @@ jobs:
       - name: Build CLI single-executable
         env:
           # Keep this aligned with SEA_NODE_VERSION in apps/server/vite.config.ts.
-          VP_NODE_VERSION: "26.8.2"
+          VP_NODE_VERSION: "26.12.1"
         run: node apps/server/scripts/cli.ts build-exe --target darwin-arm64 --verbose
 
       - name: Build and stage resource monitor
