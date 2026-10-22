@@ -1,0 +1,109 @@
+name: Native enrollment candidate
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/native-enrollment-candidate.yml
+      - apps/server/src/jones/workstreams/enrollment/**
+      - scripts/jones/native-enrollment/**
+      - packages/shared/src/nodeSqliteClient*
+      - apps/server/src/environment/NativeStoreAuthority*
+      - apps/server/src/environment/nativeStoreAuthorityPersistence*
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-enrollment-candidate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    name: Candidate Node 26.12.1 (${{ matrix.platform }}, ${{ matrix.architecture }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            architecture: x64
+          - os: macos-15
+            platform: darwin
+            architecture: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Install on the supported development runtime
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version: 24.22.1
+          cache: true
+          run-install: true
+
+      - name: Select the exact candidate runtime
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 26.12.1
+
+      - name: Allocate qualification scratch
+        id: scratch
+        run: |
+          set -euo pipefail
+          scratch=$(mktemp -d "$RUNNER_TEMP/jones-native-candidate-XXXXXX")
+          echo "path=$scratch" >> "$GITHUB_OUTPUT"
+          echo "TMPDIR=$scratch" >> "$GITHUB_ENV"
+
+      - name: Verify runtime identity
+        env:
+          QUALIFICATION_PLATFORM: ${{ matrix.platform }}
+          QUALIFICATION_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          assert.equal(process.versions.node, '26.12.1');
+          assert.equal(process.versions.sqlite, '3.54.0');
+          assert.equal(process.platform, process.env.QUALIFICATION_PLATFORM);
+          assert.equal(process.arch, process.env.QUALIFICATION_ARCHITECTURE);
+          NODE
+
+      - name: Exercise candidate SQLite and real transaction authority
+        run: |
+          qualification_runner=$(node -e 'const r = require("node:module").createRequire(require.resolve("vite-plus/package.json")); const p = r.resolve("vitest/package.json"); console.log(require("node:path").resolve(require("node:path").dirname(p), r(p).bin.vitest));')
+          node "$qualification_runner" run --config scripts/jones/native-enrollment/candidate.vite.config.ts
+
+      - name: Build disposable SEA fixture
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          fs.writeFileSync(path.join(process.env.TMPDIR, 'sea.json'), JSON.stringify({
+            main: path.resolve('scripts/jones/native-enrollment/sea-fixture.cjs'),
+            mainFormat: 'commonjs',
+            output: path.join(process.env.TMPDIR, 'sqlite-sea'),
+            useCodeCache: false,
+            useSnapshot: false,
+            disableExperimentalSEAWarning: true,
+          }));
+          NODE
+          node --build-sea "$TMPDIR/sea.json"
+          if [[ "$RUNNER_OS" == macOS ]]; then codesign --force --sign - "$TMPDIR/sqlite-sea"; fi
+
+      - name: Exercise SEA SQLite and fixture cleanup
+        run: JONES_SQLITE_SEA_FIXTURE="$TMPDIR/sqlite-sea" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs
+
+      - name: Remove exact qualification scratch
+        if: always() && steps.scratch.outcome == 'success'
+        env:
+          QUALIFICATION_SCRATCH: ${{ steps.scratch.outputs.path }}
+        run: rm -rf -- "$QUALIFICATION_SCRATCH"

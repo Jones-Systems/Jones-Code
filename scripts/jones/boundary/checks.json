@@ -2271,6 +2271,19 @@
         "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-native-enrollment-runtime",
+      "tests": [
+        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
+      ],
+      "commands": [
+        "node --input-type=module -e \"import { createRequire } from 'node:module'; import { dirname, resolve } from 'node:path'; const r = createRequire(import.meta.resolve('vite-plus/package.json')); const p = r.resolve('vitest/package.json'); process.argv = [process.execPath, resolve(dirname(p), r(p).bin.vitest), 'run', '--config', 'scripts/jones/native-enrollment/candidate.vite.config.ts']; await import(process.argv[1]);\"",
+        "JONES_SQLITE_SEA_FIXTURE=\"$TMPDIR/sqlite-sea\" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

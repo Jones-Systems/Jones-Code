@@ -1383,6 +1383,15 @@
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ],
       "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with injected synthetic authentication, HTTPS registry identity, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+    },
+    {
+      "id": "native-enrollment-runtime",
+      "tests": [
+        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
+      ],
+      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
     }
   ]
 }
