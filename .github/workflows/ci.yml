@@ -57,9 +57,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -108,9 +116,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -134,7 +150,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -178,9 +194,17 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
+
+      # electron's install.js (run by ensure:electron) reads this cache before it
+      # downloads from GitHub. The key changes only with the Electron version.
+      - name: Cache Electron download
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/.pnpm/electron@*/node_modules/electron/package.json') }}
 
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
@@ -190,6 +214,14 @@ jobs:
 
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
+
+      - name: Test Vercel deployment output for enabled workflows
+        run: |
+          if test -f .github/workflows/release.yml && test -f .github/workflows/web-preview.yml; then
+            node --test .github/scripts/vercel-deployment-output.test.cjs
+          else
+            echo "Vercel deployment integration: not applicable while Jones release and preview workflows are disabled."
+          fi
 
       - name: Test process placement build custody
         run: node --test native/process-placement/build.test.mjs
@@ -221,7 +253,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -283,7 +315,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -322,7 +354,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -420,9 +452,6 @@ jobs:
   transfer-report:
     name: Transfer report artifact
     needs: test_server
-    # On Blacksmith like every other job here: the GitHub-hosted queue is shared
-    # with the PR bots and can leave this job waiting until it is abandoned,
-    # which fails `Check` on an otherwise green run.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -454,7 +483,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: false
           run-install: false
 
@@ -624,7 +653,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:
@@ -676,7 +705,7 @@ jobs:
       - name: Install dependencies on the supported development runtime
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: true
 
@@ -737,7 +766,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24.22.0
+          node-version: 26.12.1
           cache: true
           run-install: |
             args:

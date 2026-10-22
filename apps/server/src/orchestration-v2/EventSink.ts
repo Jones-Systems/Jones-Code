@@ -73,6 +73,7 @@ import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapte
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { isPublicStoredOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
+import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -521,10 +522,23 @@ const layerBase: Layer.Layer<
           );
         }
       });
-    const publishStoredEvents = (events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
-      eventStore
-        .publishCommitted(events)
-        .pipe(Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))));
+    const runOutcomes = makeRunOutcomeRecorder((threadId) =>
+      // One payload row; unlike the shell, it still resolves a deleted child thread.
+      projectionStore
+        .getThread(threadId)
+        .pipe(Effect.map((thread) => thread.lineage.relationshipToParent === "subagent")),
+    );
+    // Recorded before publication, so an interrupted publish cannot lose a committed outcome.
+    const publishStoredEvents = (
+      events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+      outcomes: ReadonlyArray<RunOutcome>,
+    ) =>
+      runOutcomes
+        .record(outcomes)
+        .pipe(
+          Effect.andThen(eventStore.publishCommitted(events)),
+          Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))),
+        );
 
     // Transactions commit one at a time, but each writer publishes after its
     // commit. If a writer is descheduled in between, a later commit reaches
@@ -773,6 +787,8 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
+        // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
+        return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
 
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
@@ -784,7 +800,7 @@ const layerBase: Layer.Layer<
         "orchestration_v2.thread_id": input.events[0]?.threadId ?? null,
       });
 
-      return yield* commitThenPublish(
+      const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
           // Check ownership in the same transaction that claims the native session.
           const imported = input.unlessNativeThreadOwned;
@@ -798,7 +814,7 @@ const layerBase: Layer.Layer<
                 AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${imported.nativeThreadRef.nativeId}
               LIMIT 1
             `;
-            if (owners.length > 0) return [];
+            if (owners.length > 0) return { committed: [], outcomes: [] };
           }
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
@@ -837,7 +853,7 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(committed);
+          const outcomes = yield* applyStoredEvents(committed);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
@@ -845,16 +861,17 @@ const layerBase: Layer.Layer<
               storedEvents: committed,
               effects: input.effects,
             });
-          return committed;
+          return { committed, outcomes };
         }).pipe(Effect.withTracerEnabled(false)),
-        (storedEvents) =>
+        ({ committed, outcomes }) =>
           Effect.gen(function* () {
             if (input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
-            yield* publishStoredEvents(storedEvents);
+            yield* publishStoredEvents(committed, outcomes);
           }),
       );
+      return committed;
     });
 
     const writeIfRunCurrentEffect = Effect.fn("orchestrationV2.EventSink.writeIfRunCurrent")(
@@ -909,14 +926,14 @@ const layerBase: Layer.Layer<
                 events: normalized,
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-            yield* applyStoredEvents(storedEvents);
+            const outcomes = yield* applyStoredEvents(storedEvents);
             yield* effectOutbox.enqueue(input.effects ?? []);
             if (Option.isSome(checkoutIntent))
               yield* checkoutIntent.value.linkEffects({
                 storedEvents,
                 effects: input.effects ?? [],
               });
-            return { committed: true as const, storedEvents };
+            return { committed: true as const, storedEvents, outcomes };
           }),
           (result) =>
             Effect.gen(function* () {
@@ -924,7 +941,7 @@ const layerBase: Layer.Layer<
               if (input.effects !== undefined && input.effects.length > 0) {
                 yield* effectOutbox.notifyAvailable(input.effects.length);
               }
-              yield* publishStoredEvents(result.storedEvents);
+              yield* publishStoredEvents(result.storedEvents, result.outcomes);
             }),
         );
       },
@@ -967,6 +984,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
 
@@ -975,6 +993,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
@@ -987,10 +1006,13 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(storedEvents);
-          return { committed: true as const, storedEvents };
+          const outcomes = yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents, outcomes };
         }),
-        (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+        (result) =>
+          result.committed
+            ? publishStoredEvents(result.storedEvents, result.outcomes)
+            : Effect.void,
       );
     });
 
@@ -1015,6 +1037,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
 
@@ -1022,10 +1045,13 @@ const layerBase: Layer.Layer<
           const storedEvents = yield* eventStore
             .append({ events: normalized })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(storedEvents);
-          return { committed: true as const, storedEvents };
+          const outcomes = yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents, outcomes };
         }),
-        (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+        (result) =>
+          result.committed
+            ? publishStoredEvents(result.storedEvents, result.outcomes)
+            : Effect.void,
       );
     });
 
@@ -1235,7 +1261,7 @@ const layerBase: Layer.Layer<
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -1384,7 +1410,7 @@ const layerBase: Layer.Layer<
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
                 });
-          return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
+          return { receipt, storedEvents, outcomes, committed: true as const, cancelledEffectIds };
         }),
         (result) =>
           Effect.gen(function* () {
@@ -1396,7 +1422,7 @@ const layerBase: Layer.Layer<
             ) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
-            if (result.committed) yield* publishStoredEvents(result.storedEvents);
+            if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
       );
       return {
@@ -1504,6 +1530,7 @@ const layerBase: Layer.Layer<
                 receipt: existing.value,
                 committed: false,
                 storedEvents: [] as ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+                outcomes: [] as ReadonlyArray<RunOutcome>,
               };
             }
             if (
@@ -1583,7 +1610,7 @@ const layerBase: Layer.Layer<
               return yield* Effect.fail(
                 reject("Preflight journal binding was not committed exactly."),
               );
-            yield* applyStoredEvents(storedEvents);
+            const outcomes = yield* applyStoredEvents(storedEvents);
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
               commandId: input.commandId,
               threadId: policy.threadId,
@@ -1594,9 +1621,12 @@ const layerBase: Layer.Layer<
               error: null,
             };
             yield* commandReceipts.upsert(receipt);
-            return { receipt, committed: true, storedEvents };
+            return { receipt, committed: true, storedEvents, outcomes };
           }),
-          (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+          (result) =>
+            result.committed
+              ? publishStoredEvents(result.storedEvents, result.outcomes)
+              : Effect.void,
         );
         const readback = yield* readPreflight(input.commandId);
         if (
@@ -1619,6 +1649,7 @@ const layerBase: Layer.Layer<
             return {
               receipt: existing.value,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           const legacy = input.legacyGuardRejection;
           let events: ReadonlyArray<OrchestrationV2DomainEvent> = [];
@@ -1781,6 +1812,7 @@ const layerBase: Layer.Layer<
             return {
               receipt: (yield* existingCommandResult(input.commandId)).receipt,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
           const storedEvents =
@@ -1790,7 +1822,7 @@ const layerBase: Layer.Layer<
                   commandId: input.commandId,
                   events,
                 })).filter(isPublicStoredOrchestrationEvent);
-          yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents);
           const receipt = {
             ...reserved,
             resultSequence:
@@ -1799,9 +1831,9 @@ const layerBase: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           yield* captureSettlementProof(receipt, storedEvents);
-          return { receipt, storedEvents };
+          return { receipt, storedEvents, outcomes };
         }),
-        (committed) => publishStoredEvents(committed.storedEvents),
+        (committed) => publishStoredEvents(committed.storedEvents, committed.outcomes),
       );
       return result.receipt;
     });

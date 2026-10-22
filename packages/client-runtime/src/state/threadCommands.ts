@@ -19,7 +19,6 @@ import {
   createEnvironmentRpcCommand,
 } from "./runtime.ts";
 import {
-  type ThreadCommandInput,
   type ArchiveThreadInput,
   type CancelQueuedRunInput,
   type RetryWorkspacePreparationInput,
@@ -33,6 +32,7 @@ import {
   type PromoteQueuedRunInput,
   type PromoteQueuedBatchInput,
   type ReorderQueuedRunInput,
+  type ResumeThreadQueueInput,
   type LinkThreadPullRequestInput,
   type RespondToThreadApprovalInput,
   type RespondToThreadUserInputInput,
@@ -377,7 +377,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     }),
     resumeThreadQueue: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:resume-queue",
-      execute: (input: ThreadCommandInput) => resumeThreadQueue(input),
+      execute: (input: ResumeThreadQueueInput) => resumeThreadQueue(input),
       scheduler,
       concurrency,
     }),

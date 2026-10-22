@@ -224,6 +224,10 @@ export interface MergeThreadBackInput extends CommandMetadata {
   readonly runId: RunId;
 }
 
+export interface ResumeThreadQueueInput extends ThreadCommandInput {
+  readonly runId?: RunId;
+}
+
 export interface ReorderQueuedRunInput extends ThreadCommandInput {
   readonly runId: RunId;
   readonly beforeRunId: RunId | null;
@@ -808,7 +812,7 @@ export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThrea
     const projection = yield* getProjection(input.threadId);
     const subagent = projection.subagents.find((agent) => agent.id === input.subagentId);
     if (subagent?.origin === "app_owned" && subagent.childThreadId !== null) {
-      // The parent cancels the task if it is an orphan with an idle child (#19002). Older
+      // The parent ends the task even when its child lost track of it (#19002). Older
       // servers reject this for app-owned tasks, so the child stop below still runs.
       if (subagent.runId !== null) {
         yield* dispatch({
@@ -1028,10 +1032,12 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
 });
 
 export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueue")(function* (
-  input: ThreadCommandInput,
+  input: ResumeThreadQueueInput,
 ) {
   return yield* dispatch({
-    type: "queue.resume",
+    ...(input.runId === undefined
+      ? { type: "queue.resume" as const }
+      : { type: "queued-run.start" as const, runId: input.runId }),
     commandId: yield* allocateCommandId(input),
     threadId: input.threadId,
   });

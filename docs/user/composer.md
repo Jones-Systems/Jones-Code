@@ -200,10 +200,12 @@ transcription or cancellation; only the message text is sent when you submit.
 ## Queued messages
 
 On web and desktop, the composer shows **Interrupt** while the agent is working and the draft is
-empty. Adding text or attachments replaces it with a steer arrow. Click it to send a message into
-the active turn, or press `Enter` on desktop. Hold `Cmd` on macOS or `Ctrl` on Windows and Linux to
-switch the button to a queue icon. Click while holding that key, or press `Cmd+Enter` or
-`Ctrl+Enter` on desktop, to queue the message for the next safe tool boundary on supporting servers.
+empty. Adding text or attachments replaces it with a send button that shows your
+[Follow-up behavior](#send-while-the-agent-is-working): a queue icon for Queue or a steer arrow for
+Steer. Click it or press your send shortcut to use that action. Hold `Cmd` on macOS or `Ctrl` on
+Windows and Linux to switch the button to the opposite action, then click, or use the opposite-action
+shortcut described above.
+
 Older servers keep queued messages for the next turn.
 
 On supporting servers, Queue sends compatible messages after the current foreground tool calls finish,
@@ -270,11 +272,8 @@ Provider commands must start the message to run. T3 Code commands such as
 Send `/compact` in an existing conversation to reduce context usage when the
 provider supports it. Web and desktop also offer compaction from the context meter.
 
-Enable **Compact idle Claude threads (beta)** in **Settings > General** to compact
-an idle Claude thread with at least 200,000 tokens of context shortly before its
-prompt cache expires, so coming back does not reprocess the whole conversation.
-The cache lasts 1 hour on Claude subscriptions and 5 minutes with an API key. The
-compaction appears in the thread as a `/compact` turn sent by T3 Code.
+Claude instances can also compact idle threads for you. See
+[compact long conversations](./providers-claude.md#compact-long-conversations).
 
 ## Goals
 
