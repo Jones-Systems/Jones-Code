@@ -4,6 +4,9 @@ import {
   canonical,
   selectedSnapshot,
   rowSelector,
+  environmentRowSelector,
+  environmentRowCount,
+  assertRowCounts,
   assertPinSnapshot,
   inspectEncryptedCatalog,
 } from "./scenarios/two-servers-one-client.mjs";
@@ -133,3 +136,108 @@ NodeTest.test(
       );
   },
 );
+
+NodeTest.test(
+  "environment row counts use the complete environment namespace and attached rows",
+  async () => {
+    const a = environmentRowSelector("env-a");
+    const b = environmentRowSelector("env-ab");
+    NodeAssert.equal(a, 'li[data-thread-item^="env-a:"]');
+    NodeAssert.equal(b, 'li[data-thread-item^="env-ab:"]');
+    NodeAssert.notEqual(a, b);
+    const attachedCounts = new Map([
+      [a, 3],
+      [b, 2],
+    ]);
+    const observedSelectors = [];
+    const page = {
+      locator(selector) {
+        observedSelectors.push(selector);
+        return { count: async () => attachedCounts.get(selector) ?? 0 };
+      },
+    };
+    NodeAssert.equal(await environmentRowCount(page, "env-a"), 3);
+    NodeAssert.equal(await environmentRowCount(page, "env-ab"), 2);
+    attachedCounts.set(b, 0);
+    NodeAssert.equal(await environmentRowCount(page, "env-ab"), 0);
+    NodeAssert.deepEqual(observedSelectors, [a, b, b]);
+    for (const invalid of ["", "env:a", 'env"]', "env*", null, undefined, 1]) {
+      NodeAssert.throws(
+        () => environmentRowSelector(invalid),
+        /row-identity-not-environment-scoped/,
+      );
+      NodeAssert.throws(
+        () => environmentRowCount(page, invalid),
+        /row-identity-not-environment-scoped/,
+      );
+    }
+    NodeAssert.equal(observedSelectors.length, 3);
+  },
+);
+
+NodeTest.test(
+  "disabled-row predicates require a non-vacuous baseline, hidden B and unchanged A",
+  () => {
+    NodeAssert.deepEqual(assertRowCounts("preOff", { A: 3, B: 2 }), { A: 3, B: 2 });
+    for (const counts of [
+      { A: 0, B: 0 },
+      { A: 2, B: 2 },
+      { A: 3, B: 1 },
+    ])
+      NodeAssert.throws(() => assertRowCounts("preOff", counts), /pre-off-rows-missing/);
+    for (const phase of ["off", "offRecheck"]) {
+      NodeAssert.deepEqual(assertRowCounts(phase, { A: 4, B: 0 }, 4), { A: 4, B: 0 });
+      for (const A of [0, 3, 5])
+        NodeAssert.throws(() => assertRowCounts(phase, { A, B: 0 }, 4), /a-row-count-changed/);
+      NodeAssert.throws(
+        () => assertRowCounts(phase, { A: 4, B: 1 }, 4),
+        /b-rows-visible-while-disabled/,
+      );
+      for (const baseline of [undefined, NaN, 0, 2, 3.5])
+        NodeAssert.throws(
+          () => assertRowCounts(phase, { A: 4, B: 0 }, baseline),
+          /row-count-baseline-invalid/,
+        );
+    }
+  },
+);
+
+NodeTest.test("restart absence and re-enable presence are distinct gating states", () => {
+  NodeAssert.deepEqual(assertRowCounts("restart", { A: 3, B: 0 }), { A: 3, B: 0 });
+  NodeAssert.throws(
+    () => assertRowCounts("restart", { A: 3, B: 2 }),
+    /b-rows-visible-after-restart/,
+  );
+  for (const B of [0, 1])
+    NodeAssert.throws(() => assertRowCounts("reenable", { A: 3, B }), /b-rows-missing-on-reenable/);
+  NodeAssert.deepEqual(assertRowCounts("reenable", { A: 3, B: 2 }), { A: 3, B: 2 });
+  for (const invalid of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "3", true])
+    for (const field of ["A", "B"])
+      NodeAssert.throws(
+        () => assertRowCounts("preOff", { A: 3, B: 2, [field]: invalid }),
+        /row-count-invalid/,
+      );
+  NodeAssert.throws(() => assertRowCounts("unknown", { A: 3, B: 0 }), /row-count-phase-invalid/);
+});
+
+NodeTest.test("row-count evidence includes only integer counts for each lifecycle phase", () => {
+  const preOff = assertRowCounts("preOff", { A: 3, B: 2, title: "not evidence" });
+  const rowCounts = {
+    preOff,
+    off: assertRowCounts("off", { A: 3, B: 0 }, preOff.A),
+    offRecheck: assertRowCounts("offRecheck", { A: 3, B: 0 }, preOff.A),
+    restart: assertRowCounts("restart", { A: 3, B: 0 }),
+    reenable: assertRowCounts("reenable", { A: 3, B: 2 }),
+  };
+  NodeAssert.deepEqual(JSON.parse(JSON.stringify(rowCounts)), {
+    preOff: { A: 3, B: 2 },
+    off: { A: 3, B: 0 },
+    offRecheck: { A: 3, B: 0 },
+    restart: { A: 3, B: 0 },
+    reenable: { A: 3, B: 2 },
+  });
+  for (const counts of Object.values(rowCounts)) {
+    NodeAssert.deepEqual(Object.keys(counts), ["A", "B"]);
+    NodeAssert.ok(Object.values(counts).every(Number.isSafeInteger));
+  }
+});
