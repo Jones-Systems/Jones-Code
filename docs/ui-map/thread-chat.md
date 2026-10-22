@@ -81,7 +81,18 @@ plans, item inspection and pending user-input panels consume ChatMarkdown withou
 the project shell callback; their new destination blocks must remain disabled.
 These secondary consumer journeys remain runtime-unverified.
 
-Runtime journey (**unverified**, primary verification owner):
+Runtime evidence: primary verification on the repaired source in
+`e84312a33afe1d9ae932b26ad820bceb445bdd95` used two isolated server environments
+on one VPS. Play opened the destination-local PTY and cwd, accepted interactive
+input, reattached after reload without replay, and explicitly closed. An unknown
+destination stayed disabled. Screenshot and recording are published in
+[PR #521](https://github.com/Jones-Systems/Jones-Code/pull/521).
+This establishes the shared-renderer native terminal path; it does not establish
+physical multi-host behavior or packaged macOS behavior. Navigation, process
+restart, source-self behavior and the other disabled-state variations below have
+focused harness coverage where applicable and remain runtime-unverified.
+
+Runtime qualification recipe:
 
 1. Start two isolated synthetic environments using the common development recipe;
    connect the same browser client to both and retain their exact IDs and labels.

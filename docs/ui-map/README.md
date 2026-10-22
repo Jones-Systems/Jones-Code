@@ -28,7 +28,8 @@ across thread, draft, panel and Settings navigation, with focused runtime eviden
 
 The [destination shell journey](thread-chat.md#destination-shell-blocks) covers
 exact computer targeting, inline terminal lifetime, disabled states and shared
-Markdown toolbar consumers; two-environment runtime evidence remains required.
+Markdown toolbar consumers. PR #521 supplies two isolated-environment runtime
+evidence; physical multi-host and packaged macOS behavior remain unverified.
 
 Discovery checked on **2026-10-20** against Jones Code source
 `e7527d88ef438daa443e49a84d59e9891415918b`: routes, navigation callers, shared
