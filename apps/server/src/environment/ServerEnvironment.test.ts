@@ -94,7 +94,13 @@ const layerIsolatedServerConfig = (baseDir: string) =>
     }),
   );
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+// Descriptor tests do not inherit the launching service's managed-child context.
+const layerDescriptorHost = Layer.merge(
+  NodeServices.layer,
+  Layer.succeed(HostProcess.Environment, {}),
+);
+
+it.layer(layerDescriptorHost)("ServerEnvironmentLive", (it) => {
   it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
     "forwards only valid embedded build time %s with the descriptor version",
     (startedAt) =>
