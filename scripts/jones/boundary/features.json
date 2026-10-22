@@ -847,7 +847,8 @@
         "apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts",
         "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
         "packages/contracts/src/jones/ipcUpdateReports.test.ts",
-        "apps/server/src/environment/ServerEnvironment.test.ts"
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
       ]
     },
     {
