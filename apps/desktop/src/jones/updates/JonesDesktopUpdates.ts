@@ -4,6 +4,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import {
   JonesActionsClient,
   JonesActionsError,
@@ -122,13 +123,32 @@ const decodeNativePreparationResult = Schema.decodeUnknownSync(
 const decodePreparationFailure = Schema.decodeUnknownSync(
   Schema.Struct({ protocol: Schema.Literal(1), reason: Schema.String }),
 );
-const DISPATCHED_PREPARATION_RECORDS = new Set([
-  "prepare-dispatched.json",
-  "continuation.json",
-  "activation-request.json",
-  "intent.json",
-  "journal.json",
-]);
+const decodeNativeWithdrawalResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literal("withdraw-preparation"),
+    transactionId: Schema.String,
+    status: Schema.Literals(["withdrawn", "refused", "uncertain"]),
+    claimSha256: Schema.optionalKey(Schema.String),
+    proofPath: Schema.optionalKey(Schema.String),
+    proofSha256: Schema.optionalKey(Schema.String),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
+const decodeNativeRetirementResult = Schema.decodeUnknownSync(
+  Schema.Struct({
+    protocol: Schema.Literal(1),
+    operation: Schema.Literals(["inspect-retirement", "retire-transaction"]),
+    transactionId: Schema.String,
+    status: Schema.Literals(["ready", "retired", "refused", "uncertain"]),
+    planSha256: Schema.optionalKey(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+    activeBinding: Schema.optionalKey(JonesActiveInstall),
+    journalSha256: Schema.optionalKey(Schema.String),
+    targets: Schema.optionalKey(Schema.Array(Schema.Unknown)),
+    reconciliation: Schema.optionalKey(Schema.Boolean),
+    reason: Schema.optionalKey(Schema.String),
+  }),
+);
 
 const decodeBuildMetadata = Schema.decodeUnknownSync(BuildMetadata);
 const decodeActiveInstall = Schema.decodeUnknownSync(JonesActiveInstall);
@@ -828,8 +848,8 @@ export class JonesDesktopUpdateController {
         if (cause.code === "ENOENT") return [];
         throw cause;
       });
-      // A preparation-only claim cannot activate. Retire it once no dispatch can follow,
-      // so a failed preparation does not block Install until manual recovery.
+      // Withdraw protocol-3 preparations under the activation lock before retirement.
+      // Older claims still require the helper's original no-dispatch proof.
       const preparationHolds = new Map<string, string>();
       const released = new Set<string>();
       for (const entry of entries) {
@@ -839,7 +859,8 @@ export class JonesDesktopUpdateController {
         );
         if (
           !names.includes("prepare-intent.json") ||
-          names.some((name) => DISPATCHED_PREPARATION_RECORDS.has(name))
+          names.includes("intent.json") ||
+          names.includes("journal.json")
         )
           continue;
         const recovery = await this.#retirePreparation(entry);
@@ -893,19 +914,12 @@ export class JonesDesktopUpdateController {
             }
             try {
               await NodeFSP.lstat(NodePath.join(directory, "prepare-intent.json"));
-              try {
-                await NodeFSP.lstat(NodePath.join(directory, "continuation.json"));
-              } catch (preparationError) {
-                if ((preparationError as NodeJS.ErrnoException).code === "ENOENT") {
-                  this.#activationBlocked = true;
-                  const failure = await this.#preparationFailure(directory);
-                  throw new Error(
-                    `Update preparation ${entry} did not finish${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
-                    { cause: preparationError },
-                  );
-                }
-                throw preparationError;
-              }
+              this.#activationBlocked = true;
+              const failure = await this.#preparationFailure(directory);
+              throw new Error(
+                `Update preparation ${entry} was not activated${failure === undefined ? "" : ` (${failure})`} and could not be proved safe to retry (${preparationHolds.get(entry) ?? "unknown-state"}). Quit Jones Code, then run the native helper's --retire-preparation recovery.`,
+                { cause },
+              );
             } catch (preparationError) {
               if ((preparationError as NodeJS.ErrnoException).code !== "ENOENT")
                 throw preparationError;
@@ -952,6 +966,14 @@ export class JonesDesktopUpdateController {
           activeGeneration: active.generation,
           activeSource: active.sourceSha,
         });
+      }
+      if (!(await this.#retireSuccessfulTransactions(active, retained))) {
+        this.#activationMessage = [
+          this.#activationMessage,
+          "Older recovery data remains retained; cleanup is waiting for a safe recovery boundary.",
+        ]
+          .filter(Boolean)
+          .join(" ");
       }
     } catch (cause) {
       if (boundManifest) this.#activationBlocked = true;
@@ -1160,14 +1182,76 @@ export class JonesDesktopUpdateController {
     return helper;
   }
 
-  /**
-   * Retires a preparation-only claim when the helper proves no dispatch can follow: the
-   * backend refused it, or the desktop and backends that could receive its request exited.
-   * Unproved claims stay held for the quit-app operator recovery.
-   */
+  /** Keep current, recovery-parent and failure journals; native ownership guards decide every deletion. */
+  async #retireSuccessfulTransactions(
+    active: ActiveInstall,
+    entries: ReadonlyArray<string>,
+  ): Promise<boolean> {
+    let complete = true;
+    for (const transactionId of entries) {
+      if (transactionId === active.transactionId || transactionId === active.generation) continue;
+      const path = NodePath.join(this.updaterRoot, "transactions", transactionId, "journal.json");
+      try {
+        const info = await NodeFSP.lstat(path);
+        if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) continue;
+        const raw = await NodeFSP.readFile(path, "utf8");
+        const journal = decodeActivationJournal(JSON.parse(raw));
+        if (journal.phase !== "resumed" || journal.intent.transactionId !== transactionId) continue;
+        const helper = await this.#helperPath();
+        const run = async (
+          operation: "inspect-retirement" | "retire-transaction",
+          plan?: string,
+        ) => {
+          const result = decodeNativeRetirementResult(
+            JSON.parse(
+              await runNativeCommand("/usr/bin/python3", [
+                helper,
+                "--manifest",
+                this.manifestPath,
+                `--${operation}`,
+                transactionId,
+                ...(plan === undefined ? [] : ["--plan-sha256", plan]),
+              ]),
+            ),
+          );
+          if (result.operation !== operation || result.transactionId !== transactionId)
+            throw new Error("Native retirement identity changed.");
+          return result;
+        };
+        const inspection = await run("inspect-retirement");
+        if (
+          inspection.status === "retired" ||
+          (inspection.status === "refused" && inspection.reason === "protected-recovery-parent")
+        )
+          continue;
+        if (
+          inspection.status !== "ready" ||
+          inspection.planSha256 === undefined ||
+          !NodeUtil.isDeepStrictEqual(inspection.activeBinding, active) ||
+          inspection.journalSha256 !== NodeCrypto.createHash("sha256").update(raw).digest("hex") ||
+          inspection.targets === undefined
+        ) {
+          complete = false;
+          continue;
+        }
+        if (inspection.targets.length === 0 && inspection.reconciliation !== true) continue;
+        const result = await run("retire-transaction", inspection.planSha256);
+        if (result.status !== "retired" || result.planSha256 !== inspection.planSha256)
+          complete = false;
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") complete = false;
+      }
+    }
+    return complete;
+  }
+
+  /** Retires only a proven withdrawal or a legacy claim with no possible dispatch. */
   async #retirePreparation(transactionId: string): Promise<{ retired: boolean; reason: string }> {
     try {
       const helper = await this.#helperPath();
+      const withdrawal = await this.#withdrawPreparation(transactionId, helper);
+      if (withdrawal !== undefined && !withdrawal.withdrawn)
+        return { retired: false, reason: withdrawal.reason };
       const run = async (
         operation: "inspect-preparation" | "retire-preparation",
         plan?: string,
@@ -1197,6 +1281,78 @@ export class JonesDesktopUpdateController {
     } catch {
       return { retired: false, reason: "helper-unavailable" };
     }
+  }
+
+  async #withdrawPreparation(
+    transactionId: string,
+    helper: string,
+  ): Promise<{ withdrawn: boolean; reason: string } | undefined> {
+    const directory = NodePath.join(this.updaterRoot, "transactions", transactionId);
+    const read = async (path: string) => {
+      const info = await NodeFSP.lstat(path);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024)
+        throw new Error("Native preparation proof is not a bounded regular file.");
+      const raw = await NodeFSP.readFile(path, "utf8");
+      return { raw, value: JSON.parse(raw) as Record<string, unknown> };
+    };
+    const claim = await read(NodePath.join(directory, "prepare-intent.json")).catch(
+      () => undefined,
+    );
+    // A legacy or unreadable claim still goes through the native retirement guard.
+    if (claim?.value?.preparationClaimProtocol !== 3) return undefined;
+    const value = claim.value;
+    if (
+      value.transactionId !== transactionId ||
+      typeof value.stagedHandle !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.stagedHandle) ||
+      typeof value.selectionPath !== "string" ||
+      NodePath.dirname(value.selectionPath) !== NodePath.join(this.updaterRoot, "staging") ||
+      typeof value.selectionSha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(value.selectionSha256)
+    )
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    const claimSha256 = NodeCrypto.createHash("sha256").update(claim.raw).digest("hex");
+    const result = decodeNativeWithdrawalResult(
+      JSON.parse(
+        await runNativeCommand("/usr/bin/python3", [
+          helper,
+          "--manifest",
+          this.manifestPath,
+          "--withdraw-preparation",
+          transactionId,
+          "--staged-handle",
+          value.stagedHandle,
+          "--selection",
+          value.selectionPath,
+          "--selection-sha256",
+          value.selectionSha256,
+          "--claim-sha256",
+          claimSha256,
+        ]),
+      ),
+    );
+    if (result.transactionId !== transactionId)
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    if (result.status !== "withdrawn")
+      return { withdrawn: false, reason: result.reason ?? result.status };
+    const proofPath = NodePath.join(directory, "preparation-withdrawal.json");
+    if (result.claimSha256 !== claimSha256 || result.proofPath !== proofPath)
+      return { withdrawn: false, reason: "withdrawal-binding-invalid" };
+    const proof = await read(proofPath);
+    if (
+      NodeCrypto.createHash("sha256").update(proof.raw).digest("hex") !== result.proofSha256 ||
+      !NodeUtil.isDeepStrictEqual(proof.value, {
+        protocol: 1,
+        withdrawalProtocol: 1,
+        transactionId,
+        claimSha256,
+        claim: value,
+        expected: this.#bootstrap,
+        evidence: "withdrawal-protocol",
+      })
+    )
+      return { withdrawn: false, reason: "withdrawal-proof-invalid" };
+    return { withdrawn: true, reason: "withdrawn" };
   }
 
   async #preparationFailure(directory: string): Promise<string | undefined> {
@@ -1498,6 +1654,7 @@ export class JonesDesktopUpdateController {
             selectionPath,
             "--selection-sha256",
             NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex"),
+            "--withdrawable",
           ]),
         ),
       );
@@ -1549,11 +1706,15 @@ export class JonesDesktopUpdateController {
       }
       if (
         continuation.prepared !== true ||
-        continuation.preparationClaimProtocol !== 2 ||
+        continuation.preparationClaimProtocol !== 3 ||
         continuation.transactionId !== transactionId ||
         continuation.stagedHandle !== handle
       )
-        throw new Error("Native continuation preparation is required.");
+        return await this.#preparationFailed(
+          transactionId,
+          tx,
+          new Error("Native continuation preparation is required."),
+        );
       const intent = {
         protocol: 1,
         transactionId,
@@ -1676,7 +1837,7 @@ export class JonesDesktopUpdateController {
     }
   }
 
-  /** Keeps the original cause visible and releases the claim only when the helper proves no dispatch. */
+  /** Keeps the original cause visible and releases only a proven, inactive claim. */
   async #preparationFailed(
     transactionId: string,
     tx: string,
@@ -1700,7 +1861,7 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "staged",
         "downloaded",
-        `Update preparation stopped before any change: ${reason}. Install can be retried.`,
+        `Update preparation stopped safely: ${reason}. Install can be retried.`,
       );
     } else {
       await this.#publish(

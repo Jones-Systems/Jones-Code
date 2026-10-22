@@ -742,7 +742,8 @@
         "apps/server/src/jones/cloud/capturedProcess.test.ts",
         "apps/server/src/jones/cloud/stoppedServerOwnership.test.ts",
         "packages/contracts/src/jones/jonesSourceRelation.test.ts",
-        "apps/server/src/jones/updates/sourceRelation.test.ts"
+        "apps/server/src/jones/updates/sourceRelation.test.ts",
+        "scripts/jones/updates/desktop-worker-smoke.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/ServerSettingsPersistence.test.ts apps/server/src/serverSettings.test.ts",
@@ -758,7 +759,8 @@
         "node --test scripts/jones/updates/cold-darwin-native-fixture.node-test.mjs",
         "node --test --test-concurrency=1 scripts/jones/updates/native-fixture-support.node-test.mjs",
         "vp test run apps/server/src/jones/cloud/capturedProcess.test.ts apps/server/src/jones/cloud/stoppedServerOwnership.test.ts --maxWorkers=1",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/shared/src/jones/jonesActions.test.ts packages/contracts/src/jones/jonesSourceRelation.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts apps/server/src/jones/updates/sourceRelation.test.ts apps/server/src/jones/updates/http.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run scripts/jones/updates/desktop-worker-smoke.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -1489,13 +1491,14 @@
         "apps/server/src/jones/updates/preparation/sweep.test.ts",
         "apps/server/src/jones/updates/preparation/supervisor.test.ts",
         "apps/server/src/jones/updates/preparation/stage.test.ts",
-        "apps/server/src/jones/updates/preparation/responsiveness.test.ts"
+        "apps/server/src/jones/updates/preparation/responsiveness.test.ts",
+        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/jones/fleetUpdates/store.test.ts apps/server/src/jones/fleetUpdates/service.test.ts apps/server/src/jones/fleetUpdates/store.test.ts apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.test.tsx apps/web/src/jones/fleetUpdates/blockedHostCommand.test.ts apps/web/src/jones/fleetUpdates/sourceCurrency.test.ts packages/client-runtime/src/jones/fleetUpdates/campaignController.test.ts packages/client-runtime/src/jones/fleetUpdates/updateBridge.test.ts packages/contracts/src/jones/fleetUpdates/source.test.ts packages/client-runtime/src/jones/fleetUpdates/hostBridge.test.ts",
         "vp test run packages/client-runtime/src/platform/storageDocument.test.ts packages/client-runtime/src/connection/registry.test.ts apps/web/src/connection/storage.test.ts apps/mobile/src/connection/storage.test.ts apps/desktop/src/app/DesktopConnectionCatalogStore.test.ts apps/desktop/src/app/DesktopConnectionCompatibilityHintStore.test.ts apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.test.tsx packages/contracts/src/ipc.test.ts",
         "vp test run apps/server/src/jones/updates/followerPolicy.test.ts apps/server/src/jones/updates/hostWork.test.ts apps/server/src/jones/updates/UpdateAdmissionFence.test.ts apps/server/src/jones/updates/UpdateAdmissionFence.webhook.test.ts apps/web/src/jones/fleetUpdates/followerStatus.test.ts",
-        "vp test run apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/stage.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts"
+        "vp test run apps/server/src/jones/updates/preparation/protocol.test.ts apps/server/src/jones/updates/preparation/sweep.test.ts apps/server/src/jones/updates/preparation/supervisor.test.ts apps/server/src/jones/updates/preparation/stage.test.ts apps/server/src/jones/updates/preparation/responsiveness.test.ts apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {

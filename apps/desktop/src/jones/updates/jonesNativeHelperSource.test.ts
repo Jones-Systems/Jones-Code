@@ -288,8 +288,8 @@ else:
         assert read(manifest_path)['appPath'] == expected['appPath']
         assert pathlib.Path(read(manifest_path)['executablePath']).read_text() == 'candidate-executable'
         assert pathlib.Path(journal['previousBundle']).joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-        reserve = journal['recoveryReserves'][0]
-        assert pathlib.Path(reserve['path']).stat().st_blocks * 512 >= reserve['bytes']
+        assert journal['recoveryReserves']
+        assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
     if fault.startswith('missing-') or fault in ('legacy-receipt', 'gate-mismatch', 'gate-boolean', 'protocol-mismatch', 'tree-mismatch', 'version-mismatch', 'listener-mismatch', 'invalid-backend', 'dead-backend', 'changed-backend'):
         assert read(manifest_path) == expected
         assert not (tx / 'commit-grant.json').exists()
@@ -340,6 +340,378 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("releases reserves across successful generations while protecting the current recovery pair", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+      const scenario = String.raw`
+generations = []
+for generation in range(3):
+    if generation:
+        expected = read(manifest_path)
+        transaction_id = str(generation) * 64
+        tx = tx.parent / transaction_id
+        staged = dict(staged, handle=str(generation + 3) * 64, sourceSha=str(generation + 3) * 40, sourceTree=str(generation + 6) * 40)
+        candidate = dict(candidate, source=staged['sourceSha'], tree=staged['sourceTree'], installedSource=expected['sourceSha'])
+        durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+            'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}})
+        selection = dict(selection, currentVersion=expected['version'], installedSource=expected['sourceSha'], active=expected, app=staged)
+        selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
+        durable(selection_path, selection, True)
+        selection_digest = digest(selection_path)
+        attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
+        durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+        result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
+        assert result['status'] == 'preparation-claimed', result
+        claim = read(tx / 'prepare-intent.json')
+        durable(tx / 'prepare-dispatched.json', claim, True)
+        durable(tx / 'continuation.json', dict(claim, prepared=True), True)
+        intent = dict(intent, transactionId=transaction_id, expected=expected, staged=staged, continuationReceipt=str(tx / 'continuation.json'))
+        durable(tx / 'activation-request.json', intent, True)
+        result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
+        assert result['status'] == 'claimed', result
+        events.clear()
+    activate(tx / 'intent.json')
+    journal = read(tx / 'journal.json')
+    assert journal['phase'] == 'resumed', journal
+    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
+    assert (tx / 'previous-pair' / 'state.sqlite').exists()
+    assert pathlib.Path(journal['previousBundle']).is_dir()
+    generations.append(tx)
+    active = read(manifest_path)
+    assert retirement_command('inspect-retirement', active, transaction_id)['reason'] == 'protected-generation'
+    if generation:
+        assert retirement_command('inspect-retirement', active, generations[-2].name)['reason'] == 'protected-recovery-parent'
+        assert (generations[-2] / 'previous-pair' / 'state.sqlite').exists()
+acquire_writer_exclusion = native_exclusion
+oldest = generations[0]
+inspected = retirement_command('inspect-retirement', active, oldest.name)
+assert inspected['status'] == 'ready', inspected
+retired = retirement_command('retire-transaction', active, oldest.name, inspected['planSha256'])
+assert retired['status'] == 'retired', retired
+assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
+assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success"],
+        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "separate-app-volume",
+    "claim-protocol3",
+    "changed-reserve",
+    "cleanup-record-failed",
+    "resumed-sync-failed",
+  ])(
+    "releases successful reserves only after durable resume with exact ownership: %s",
+    async (boundary) => {
+      const f = await fixture();
+      try {
+        const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+        const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
+        const scenario = String.raw`
+boundary = sys.argv[3]
+if boundary == 'claim-protocol3':
+    claim = dict(claim, preparationClaimProtocol=3)
+    durable(tx / 'prepare-intent.json', claim)
+    durable(tx / 'prepare-dispatched.json', claim)
+    durable(tx / 'continuation.json', dict(claim, prepared=True))
+native_reserve = reserve_recovery_capacity
+def reserve_on_app_volume(active, transaction, storage):
+    original_stat = pathlib.Path.stat
+    def app_volume(path, *args, **kwargs):
+        info = original_stat(path, *args, **kwargs)
+        if path == pathlib.Path(active['appPath']).parent:
+            values = list(info); values[2] += 1
+            return os.stat_result(values)
+        return info
+    pathlib.Path.stat = app_volume
+    try: return native_reserve(active, transaction, storage)
+    finally: pathlib.Path.stat = original_stat
+reserve_recovery_capacity = reserve_on_app_volume
+recorded_durable = durable
+def durable(path, value, exclusive=False):
+    if pathlib.Path(path) == tx / 'journal.json' and value.get('phase') == 'resumed':
+        if boundary == 'cleanup-record-failed' and value.get('recoveryReserveCleanup') == 'held':
+            raise OSError('Cleanup evidence could not be recorded')
+        assert all(pathlib.Path(reserve['path']).exists() for reserve in value['recoveryReserves'])
+        if boundary in ('changed-reserve', 'cleanup-record-failed') and not (root / 'owned-reserve-retained').exists():
+            path_to_replace = pathlib.Path(value['recoveryReserves'][-1]['path'])
+            path_to_replace.rename(root / 'owned-reserve-retained')
+            path_to_replace.write_bytes(b'unowned reserve')
+        if boundary == 'resumed-sync-failed': raise OSError('Resume journal was not durably recorded')
+    return recorded_durable(path, value, exclusive)
+try: activate(tx / 'intent.json')
+except OSError as error:
+    assert boundary == 'cleanup-record-failed' and str(error) == 'Cleanup evidence could not be recorded'
+journal = read(tx / 'journal.json')
+assert len(journal['recoveryReserves']) == 3
+assert read(manifest_path)['transactionId'] == transaction_id
+assert (tx / 'previous-pair' / 'state.sqlite').exists()
+assert pathlib.Path(journal['previousBundle']).is_dir()
+assert 'restart-previous' not in events
+if boundary in ('separate-app-volume', 'claim-protocol3'):
+    assert journal['phase'] == 'resumed'
+    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'])
+else:
+    assert journal['phase'] == ('blocked' if boundary == 'resumed-sync-failed' else 'resumed'), journal
+    assert all(pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'] if reserve['purpose'] == 'recovery')
+    if boundary in ('changed-reserve', 'cleanup-record-failed'):
+        assert pathlib.Path(journal['recoveryReserves'][-1]['path']).read_bytes() == b'unowned reserve'
+        assert (root / 'owned-reserve-retained').exists()
+        if boundary == 'changed-reserve':
+            assert journal['recoveryReserveCleanup'] == 'held'
+            assert 'cleanup' in journal['message']
+        else: assert 'recoveryReserveCleanup' not in journal
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", `${definitions}\n${runtime}\n${scenario}`, f.directory, "success", boundary],
+          { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
+  it("withdraws a dispatched preparation through the actual helper lock and retires its exact proof", async () => {
+    const f = await fixture();
+    try {
+      const [definitions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      await NodeFSP.writeFile(
+        NodePath.join(f.directory, "withdraw-helper.py"),
+        `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
+      );
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
+for name in ('prepare-intent.json', 'prepare-dispatched.json', 'continuation.json'): (tx / name).unlink()
+command = [sys.executable, str(root / 'withdraw-helper.py'), '--manifest', str(manifest_path),
+    '--staged-handle', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest]
+def run(*arguments):
+    result = subprocess.run(command + list(arguments), capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+claimed = run('--claim-preparation', staged['handle'], '--transaction', transaction_id, '--withdrawable')
+assert claimed['status'] == 'preparation-claimed', claimed
+claim = read(tx / 'prepare-intent.json')
+assert claim['preparationClaimProtocol'] == 3
+claim_sha = digest(tx / 'prepare-intent.json')
+durable(tx / 'prepare-dispatched.json', claim, True)
+arguments = ('--withdraw-preparation', transaction_id, '--claim-sha256', claim_sha)
+with open(manifest_path.with_name('jones-activation.lock'), 'r+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    assert run(*arguments)['reason'] == 'busy'
+    assert not (tx / 'preparation-withdrawal.json').exists()
+withdrawn = run(*arguments)
+assert withdrawn['status'] == 'withdrawn', withdrawn
+assert withdrawn == run(*arguments)
+proof_path = tx / 'preparation-withdrawal.json'
+proof = read(proof_path)
+assert proof == {'protocol': 1, 'withdrawalProtocol': 1, 'transactionId': transaction_id, 'claimSha256': claim_sha, 'claim': claim, 'expected': expected, 'evidence': 'withdrawal-protocol'}
+assert withdrawn['proofPath'] == str(proof_path) and withdrawn['proofSha256'] == digest(proof_path)
+durable(tx / 'continuation.json', dict(claim, prepared=True), True)
+assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
+assert not (tx / 'intent.json').exists() and not (tx / 'journal.json').exists()
+inspected = run('--inspect-preparation', transaction_id)
+assert inspected['status'] == 'ready' and inspected['evidence'] == 'withdrawn', inspected
+retired = run('--retire-preparation', transaction_id, '--plan-sha256', inspected['planSha256'])
+assert retired['status'] == 'retired', retired
+assert not tx.exists()
+assert run('--claim-preparation', staged['handle'], '--transaction', transaction_id, '--withdrawable')['reason'] == 'preparation-withdrawn'
+assert run('--claim-activation', str(request))['reason'] == 'preparation-withdrawn'
+assert read(pathlib.Path(retired['retiredPath']) / 'preparation-withdrawal.json') == proof
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, "withdraw"],
+        { encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each([
+    "undispatched",
+    "dispatched",
+    "prepared",
+    "accepted-intent",
+    "accepted-journal",
+    "legacy",
+    "wrong-claim",
+    "wrong-selection",
+    "wrong-environment",
+    "unknown-record",
+    "dispatch-mismatch",
+    "request-mismatch",
+    "requester-mismatch",
+    "failure-mismatch",
+    "proof-mismatch",
+    "proof-boolean",
+    "lost-publication",
+    "lost-readback",
+    "failed-sync",
+  ])("keeps preparation withdrawal bound and fail-closed for %s", async (fault) => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const scenario = String.raw`
+os.rename(tx / 'intent.json', tx / 'activation-request.json')
+claim = dict(claim, preparationClaimProtocol=2 if fault == 'legacy' else 3)
+durable(tx / 'prepare-intent.json', claim)
+durable(tx / 'prepare-dispatched.json', claim)
+durable(tx / 'continuation.json', dict(claim, prepared=True))
+claim_sha = digest(tx / 'prepare-intent.json')
+supplied_sha, supplied_selection, supplied_active = claim_sha, selection_digest, expected
+if fault in ('undispatched', 'dispatched'): (tx / 'continuation.json').unlink()
+if fault == 'undispatched': (tx / 'prepare-dispatched.json').unlink()
+if fault == 'accepted-intent': durable(tx / 'intent.json', intent, True)
+if fault == 'accepted-journal': durable(tx / 'journal.json', {'intent': intent, 'phase': 'intent'}, True)
+if fault == 'wrong-claim': supplied_sha = '0' * 64
+if fault == 'wrong-selection': supplied_selection = '0' * 64
+if fault == 'wrong-environment': supplied_active = dict(expected, environmentId='unbound-environment')
+if fault == 'unknown-record': durable(tx / 'unknown.json', {}, True)
+if fault == 'dispatch-mismatch': durable(tx / 'prepare-dispatched.json', dict(claim, home='unbound-home'))
+if fault == 'request-mismatch': durable(tx / 'activation-request.json', dict(intent, transactionId='0' * 64))
+if fault == 'requester-mismatch': durable(tx / 'prepare-request.json', {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'claimSha256': '0' * 64, 'processes': intent['processes']}, True)
+if fault == 'failure-mismatch': durable(tx / 'prepare-failure.json', {'protocol': True, 'reason': 'unbound'}, True)
+proof_path = tx / 'preparation-withdrawal.json'
+if fault in ('proof-mismatch', 'proof-boolean'):
+    proof = preparation_withdrawal_record(expected, transaction_id, claim, claim_sha)
+    if fault == 'proof-mismatch': proof['claimSha256'] = '0' * 64
+    else: proof['claim'] = dict(claim, protocol=True)
+    durable(proof_path, proof, True)
+before = {path.name: path.read_bytes() for path in tx.iterdir()}
+original_durable, original_read, original_sync = durable, bounded_native_json, sync_parent
+def interrupted_durable(path, value, exclusive=False):
+    original_durable(path, value, exclusive)
+    if pathlib.Path(path) == proof_path: raise OSError('Withdrawal publication response lost')
+def interrupted_read(path, *args):
+    if pathlib.Path(path) == proof_path: raise OSError('Withdrawal readback unavailable')
+    return original_read(path, *args)
+def interrupted_sync(path):
+    if pathlib.Path(path) == proof_path: raise OSError('Withdrawal sync unavailable')
+    return original_sync(path)
+if fault == 'lost-publication': durable = interrupted_durable
+if fault == 'lost-readback': bounded_native_json = interrupted_read
+if fault == 'failed-sync': sync_parent = interrupted_sync
+def withdraw(): return withdrawal_command(supplied_active, transaction_id, staged['handle'], str(selection_path), supplied_selection, supplied_sha)
+outcome = withdraw()
+durable, bounded_native_json, sync_parent = original_durable, original_read, original_sync
+if fault in ('lost-publication', 'lost-readback', 'failed-sync'):
+    assert outcome['status'] == 'uncertain', outcome
+    assert proof_path.exists() and not (tx / 'intent.json').exists()
+    assert selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)['reason'] == 'preparation-withdrawn'
+    outcome = withdraw()
+if fault in ('undispatched', 'dispatched', 'prepared', 'lost-publication', 'lost-readback', 'failed-sync'):
+    assert outcome['status'] == 'withdrawn', outcome
+    assert outcome == withdraw()
+    assert digest(proof_path) == outcome['proofSha256']
+    assert not (tx / 'intent.json').exists() and not (tx / 'journal.json').exists()
+else:
+    assert outcome['status'] == 'refused', outcome
+    if fault == 'legacy': assert outcome['reason'] == 'legacy-withdrawal-unsafe'
+    assert {path.name: path.read_bytes() for path in tx.iterdir()} == before
+assert selection_path.exists() and attempt_path.exists()
+assert (profile / 'opaque').read_text() == 'same-host-profile'
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, fault],
+        { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
+  it.each(["withdrawal-first", "activation-first"])(
+    "serializes withdrawal and activation under the actual lock: %s",
+    async (order) => {
+      const f = await fixture();
+      try {
+        const [definitions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+        const barrier = String.raw`
+sys.platform = 'darwin'
+bundle_identity = lambda active: None
+original_durable = durable
+def durable(path, value, exclusive=False):
+    root = pathlib.Path(__file__).parent
+    if pathlib.Path(path).name == (root / 'barrier-record').read_text():
+        (root / 'entered').write_text('entered')
+        deadline = time.monotonic() + 5
+        while not (root / 'released').exists():
+            if time.monotonic() >= deadline: raise RuntimeError('Fixture barrier timed out')
+            time.sleep(0.01)
+    return original_durable(path, value, exclusive)
+`;
+        await NodeFSP.writeFile(
+          NodePath.join(f.directory, "racing-helper.py"),
+          `${definitions}\n${barrier}\nparser = argparse.ArgumentParser()${parser}`,
+        );
+        const setup = activationScenario.split("\nevents = []")[0];
+        const scenario = String.raw`
+request = tx / 'activation-request.json'; os.rename(tx / 'intent.json', request)
+claim = dict(claim, preparationClaimProtocol=3)
+durable(tx / 'prepare-intent.json', claim)
+durable(tx / 'prepare-dispatched.json', claim)
+durable(tx / 'continuation.json', dict(claim, prepared=True))
+command = [sys.executable, str(root / 'racing-helper.py'), '--manifest', str(manifest_path),
+    '--staged-handle', staged['handle'], '--selection', str(selection_path), '--selection-sha256', selection_digest]
+withdraw = ['--withdraw-preparation', transaction_id, '--claim-sha256', digest(tx / 'prepare-intent.json')]
+claim_activation = ['--claim-activation', str(request)]
+first, second = (withdraw, claim_activation) if fault == 'withdrawal-first' else (claim_activation, withdraw)
+(root / 'barrier-record').write_text('preparation-withdrawal.json' if fault == 'withdrawal-first' else 'intent.json')
+child = subprocess.Popen(command + first, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+try:
+    deadline = time.monotonic() + 5
+    while not (root / 'entered').exists():
+        if child.poll() is not None: raise AssertionError(child.communicate())
+        if time.monotonic() >= deadline: raise AssertionError('First operation did not enter barrier')
+        time.sleep(0.01)
+    competing = subprocess.run(command + second, capture_output=True, text=True, timeout=5)
+    assert competing.returncode == 0, competing.stderr
+    assert json.loads(competing.stdout)['reason'] == 'busy'
+    assert not (tx / 'intent.json').exists() and not (tx / 'preparation-withdrawal.json').exists()
+    (root / 'released').write_text('released')
+    output, error = child.communicate(timeout=5)
+    assert child.returncode == 0, error
+    assert json.loads(output)['status'] == ('withdrawn' if fault == 'withdrawal-first' else 'claimed')
+    after = subprocess.run(command + second, capture_output=True, text=True, timeout=5)
+    assert after.returncode == 0, after.stderr
+    assert json.loads(after.stdout)['status'] == 'refused'
+    assert (tx / 'intent.json').exists() != (tx / 'preparation-withdrawal.json').exists()
+    if fault == 'withdrawal-first':
+        durable(tx / 'intent.json', intent, True)
+        try: activate(tx / 'intent.json')
+        except SelectionRefused as error: assert error.reason == 'preparation-withdrawn'
+        else: raise AssertionError('Direct activation bypassed withdrawal')
+        assert not (tx / 'journal.json').exists()
+finally:
+    if child.poll() is None: child.kill()
+    child.wait(timeout=5)
+`;
+        NodeChildProcess.execFileSync(
+          "python3",
+          ["-c", `${definitions}\n${setup}\n${scenario}`, f.directory, order],
+          { encoding: "utf8", timeout: 20_000, maxBuffer: 1024 * 1024 },
+        );
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+
   it("re-adopts a stale manifest from independently observed bundle metadata and preserves one preimage", async () => {
     const f = await fixture();
     try {
@@ -465,9 +837,11 @@ else:
     assert manifest_path.read_bytes() == before
     assert (tx / 'journal.json').exists() == (mode in ('trial-old', 'fenced'))
 `;
+        const script = NodePath.join(f.directory, "reconcile-running.py");
+        await NodeFSP.writeFile(script, definitions + "\n" + setup + "\n" + scenario);
         NodeChildProcess.execFileSync(
           "python3",
-          ["-c", definitions + "\n" + setup + "\n" + scenario, f.directory, "success", fault],
+          [script, f.directory, "success", fault],
           { encoding: "utf8", timeout: 10000 },
         );
       } finally {
@@ -1857,12 +2231,13 @@ else: raise AssertionError('Ordinary launch bypassed unresolved restore')
 assert 'restart-previous' not in events
 `
             : "";
+        const script = NodePath.join(f.directory, "activation-scenario.py");
+        await NodeFSP.writeFile(script, `${nativeFunctions}\n${activationScenario}\n${heldLaunch}`);
         const result = JSON.parse(
           NodeChildProcess.execFileSync(
             "python3",
             [
-              "-c",
-              `${nativeFunctions}\n${activationScenario}\n${heldLaunch}`,
+              script,
               f.directory,
               fault!,
               process.execPath,

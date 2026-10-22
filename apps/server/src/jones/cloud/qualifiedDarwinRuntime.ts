@@ -1,9 +1,10 @@
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Native staging is a Promise boundary with per-command cleanup timers.
 // Headless Darwin uses the same native service pointer and state pair as Linux.
 // Staging inspects the DMG/ASAR without launching Electron on the live home.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeTimers from "node:timers";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 import {
   bundleFileSystem,
@@ -14,10 +15,13 @@ import {
 export interface DarwinStageCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly signal?: AbortSignal;
 }
+/** An explicit signal stops only this command; the runner settles after its child has closed. */
 export type DarwinStageRunner = (
   input: DarwinStageCommand,
 ) => Promise<{ readonly code: number; readonly stdout: string }>;
+const DETACH_TIMEOUT_MS = 5_000;
 const invalid = (message: string): never => {
   throw new QualifiedRuntimeBlockedError("invalid-artifact", message);
 };
@@ -130,6 +134,7 @@ export async function extractQualifiedDarwinRuntime(input: {
   readonly destination: string;
   readonly baseDir: string;
   readonly run: DarwinStageRunner;
+  readonly signal?: AbortSignal;
 }): Promise<void> {
   if (
     input.artifact.candidate.platform !== "darwin" ||
@@ -145,8 +150,14 @@ export async function extractQualifiedDarwinRuntime(input: {
   let mountingAttempted = false;
   let stagingFailed = false;
   let stagingFailure: unknown;
-  const run = async (command: string, args: ReadonlyArray<string>) => {
-    const result = await input.run({ command, args });
+  const run = async (command: string, args: ReadonlyArray<string>, signal = input.signal) => {
+    signal?.throwIfAborted();
+    const result = await input.run({
+      command,
+      args,
+      ...(signal === undefined ? {} : { signal }),
+    });
+    signal?.throwIfAborted();
     if (result.code !== 0)
       return invalid(
         "The native DMG staging command could not complete; the active service was preserved.",
@@ -223,12 +234,39 @@ export async function extractQualifiedDarwinRuntime(input: {
   if (mounted || mountingAttempted) {
     // A failed attach can still have mounted the volume. Detach the exact
     // owned mount before considering recursive cleanup safe.
+    const detach = async (force: boolean) => {
+      const args = ["detach", mount, ...(force ? ["-force"] : [])];
+      // Legacy callers without a job signal retain their runner's command lifetime.
+      if (input.signal === undefined) return run("/usr/bin/hdiutil", args);
+      // Each preparation attempt has its own deadline: job cancellation must not skip
+      // cleanup, and an expired ordinary detach must leave time for the force attempt.
+      const controller = new AbortController();
+      const timer = NodeTimers.setTimeout(
+        () => controller.abort(new Error("The owned DMG detach deadline expired.")),
+        DETACH_TIMEOUT_MS,
+      );
+      try {
+        await run("/usr/bin/hdiutil", args, controller.signal);
+      } finally {
+        NodeTimers.clearTimeout(timer);
+      }
+    };
     try {
-      await run("/usr/bin/hdiutil", ["detach", mount]);
+      try {
+        await detach(false);
+      } catch (ordinary) {
+        try {
+          await detach(true);
+        } catch (forced) {
+          throw new AggregateError([ordinary, forced], "Ordinary and forced DMG detach failed.", {
+            cause: forced,
+          });
+        }
+      }
     } catch (cause) {
       const blocked = new QualifiedRuntimeBlockedError(
         "busy",
-        `DMG mount ownership needs reconciliation at ${mountOwner}; it was retained.`,
+        `DMG mount ownership needs reconciliation at ${mount}; its directory was retained.`,
       );
       // Retain the staging failure as well as the unknown detach effect.
       blocked.cause = stagingFailed

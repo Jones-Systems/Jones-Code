@@ -234,12 +234,12 @@ export async function stageQualifiedArtifact(input: {
         artifact: staged,
         destination: scratch,
         baseDir: binding.baseDir,
+        ...(signal === undefined ? {} : { signal }),
         run: async (command) => {
           const result = await runBoundedProcess({
             ...command,
             timeoutMs: DARWIN_TOOL_TIMEOUT_MS,
             outputLimit: OUTPUT_LIMIT,
-            ...(signal === undefined ? {} : { signal }),
           });
           return { code: result.code ?? 1, stdout: result.stdout };
         },

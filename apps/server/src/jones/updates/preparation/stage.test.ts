@@ -1,7 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
+import * as NodeEvents from "node:events";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import * as NodeStream from "node:stream";
 import { jonesCandidateHandle } from "@t3tools/shared/jones/jonesActions";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -15,6 +17,7 @@ import {
 } from "./protocol.ts";
 import { adoptPreparedStage, adoptVerifiedStage } from "./rebind.ts";
 import { makePreparationSupervisor, type PreparationWorkerExit } from "./supervisor.ts";
+import type { extractQualifiedDarwinRuntime } from "../../cloud/qualifiedDarwinRuntime.ts";
 import {
   actionsFixture,
   BASELINE,
@@ -32,6 +35,79 @@ import {
 const homes: PreparationHome[] = [];
 afterEach(async () => {
   for (const home of homes.splice(0)) await home.remove();
+});
+
+it("executes bounded Darwin cleanup even after the preparation signal is aborted", async () => {
+  const fixture = await home();
+  const actions = await actionsFixture(fixture);
+  const controller = new AbortController();
+  const cleanup = new AbortController();
+  const primary = new Error("Synthetic preparation cancellation.");
+  const mount = NodePath.join(fixture.base, "runtime", "owned-mount", "volume");
+  const spawn = vi.fn(() => {
+    const child = Object.assign(new NodeEvents.EventEmitter(), {
+      stdout: new NodeStream.PassThrough(),
+      pid: 12345,
+      kill: vi.fn(),
+    });
+    queueMicrotask(() => child.emit("close", 0));
+    return child;
+  });
+  vi.resetModules();
+  vi.doMock("node:child_process", () => ({ spawn }));
+  vi.doMock("@t3tools/shared/jones/jonesActions", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("@t3tools/shared/jones/jonesActions")>()),
+    validateJonesStagedArtifact: async () => ({
+      payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg"),
+      candidate: { ...actions.candidate, platform: "darwin", architecture: "arm64" },
+    }),
+  }));
+  vi.doMock("../../cloud/qualifiedRuntime.ts", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../cloud/qualifiedRuntime.ts")>()),
+    currentQualifiedRuntimeBinding: async () => ({ baseDir: fixture.base, dbPath: fixture.dbPath }),
+  }));
+  vi.doMock("../../cloud/qualifiedDarwinRuntime.ts", () => ({
+    extractQualifiedDarwinRuntime: async (
+      input: Parameters<typeof extractQualifiedDarwinRuntime>[0],
+    ) => {
+      controller.abort(primary);
+      await input.run({
+        command: "/usr/bin/hdiutil",
+        args: ["detach", mount],
+        signal: cleanup.signal,
+      });
+      throw primary;
+    },
+  }));
+  try {
+    const { stageQualifiedArtifact } = await import("./stageArtifact.ts");
+    await expect(
+      stageQualifiedArtifact({
+        artifact: { payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg") } as Parameters<
+          typeof stageQualifiedArtifact
+        >[0]["artifact"],
+        baseDir: fixture.base,
+        dbPath: fixture.dbPath,
+        activeVersion: BASELINE,
+        host: { platform: "darwin", architecture: "arm64" },
+        scratchParent: fixture.root,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(primary);
+    expect(spawn).toHaveBeenCalledExactlyOnceWith("/usr/bin/hdiutil", ["detach", mount], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    expect(spawn.mock.results[0]!.value.kill).not.toHaveBeenCalled();
+    expect(
+      (await NodeFSP.readdir(fixture.root)).filter((name) => name.startsWith(".jones-extract-")),
+    ).toEqual([]);
+  } finally {
+    vi.doUnmock("node:child_process");
+    vi.doUnmock("@t3tools/shared/jones/jonesActions");
+    vi.doUnmock("../../cloud/qualifiedRuntime.ts");
+    vi.doUnmock("../../cloud/qualifiedDarwinRuntime.ts");
+    vi.resetModules();
+  }
 });
 async function home(): Promise<PreparationHome> {
   const created = await makePreparationHome();

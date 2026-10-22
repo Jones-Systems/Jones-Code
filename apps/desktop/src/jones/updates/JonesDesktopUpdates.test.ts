@@ -473,7 +473,7 @@ describe("Jones desktop updates", () => {
             NodePath.join(controller.updaterRoot, "transactions", id, "continuation.json"),
             JSON.stringify({
               prepared: true,
-              preparationClaimProtocol: 2,
+              preparationClaimProtocol: 3,
               stagedHandle,
               transactionId: id,
             }),
@@ -607,7 +607,7 @@ describe("Jones desktop updates", () => {
             ),
             JSON.stringify({
               prepared: true,
-              preparationClaimProtocol: 2,
+              preparationClaimProtocol: 3,
               stagedHandle: selected,
               transactionId,
             }),
@@ -625,6 +625,7 @@ describe("Jones desktop updates", () => {
         else {
           expect(args?.[3]).toBe("--claim-preparation");
           expect(args?.[4]).toBe(handle);
+          expect(args).toContain("--withdrawable");
           order.push("claim");
           callback(null, claimedPreparation(f.home, args?.[6]), "");
         }
@@ -791,7 +792,7 @@ describe("Jones desktop updates", () => {
               ),
               JSON.stringify({
                 prepared: true,
-                preparationClaimProtocol: 2,
+                preparationClaimProtocol: 3,
                 stagedHandle,
                 transactionId,
               }),
@@ -1376,6 +1377,220 @@ describe("Jones desktop updates", () => {
         expect(await NodeFSP.readFile(file, "utf8")).toBe("retained-unknown-intent");
         expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
       } finally {
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["retired", "writer-busy", "uncertain", "wrong-binding"] as const)(
+    "retains current and failed generations while guarded old-success retirement reports %s",
+    async (outcome) => {
+      const f = await fixture(true, "committed");
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const operations: string[] = [];
+      try {
+        const transactions = NodePath.join(f.home, "runtime", "jones-updates", "transactions");
+        const currentRaw = await NodeFSP.readFile(
+          NodePath.join(transactions, handle, "journal.json"),
+          "utf8",
+        );
+        const current = JSON.parse(currentRaw);
+        const oldId = "1".repeat(64),
+          failedId = "2".repeat(64);
+        const old = NodePath.join(transactions, oldId),
+          failed = NodePath.join(transactions, failedId);
+        await NodeFSP.mkdir(old);
+        await NodeFSP.mkdir(failed);
+        const oldRaw = JSON.stringify({
+          ...current,
+          intent: { ...current.intent, transactionId: oldId },
+        });
+        await NodeFSP.writeFile(NodePath.join(old, "journal.json"), oldRaw);
+        await NodeFSP.writeFile(NodePath.join(old, "retained-payload"), "old recovery");
+        await NodeFSP.writeFile(
+          NodePath.join(failed, "journal.json"),
+          JSON.stringify({
+            ...current,
+            phase: "rolled-back",
+            intent: { ...current.intent, transactionId: failedId },
+          }),
+        );
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          const operation = String(args?.[3]).slice(2);
+          operations.push(operation);
+          expect(args?.[4]).toBe(oldId);
+          if (operation === "retire-transaction" && outcome === "retired")
+            NodeFS.unlinkSync(NodePath.join(old, "retained-payload"));
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation,
+              transactionId: oldId,
+              status:
+                operation === "inspect-retirement"
+                  ? "ready"
+                  : outcome === "retired"
+                    ? "retired"
+                    : outcome === "uncertain"
+                      ? "uncertain"
+                      : "refused",
+              reason: outcome === "writer-busy" ? outcome : undefined,
+              planSha256: "a".repeat(64),
+              activeBinding:
+                outcome === "wrong-binding" ? { ...f.active, generation: "other" } : f.active,
+              journalSha256: NodeCrypto.createHash("sha256").update(oldRaw).digest("hex"),
+              targets: [{ path: NodePath.join(old, "retained-payload"), bytes: 12 }],
+            }),
+            "",
+          );
+          return new NodeChildProcess.ChildProcess();
+        });
+        await f.controller.configure();
+        expect(operations).toEqual(
+          outcome === "wrong-binding"
+            ? ["inspect-retirement"]
+            : ["inspect-retirement", "retire-transaction"],
+        );
+        expect(
+          await NodeFSP.readFile(NodePath.join(transactions, handle, "journal.json"), "utf8"),
+        ).toBe(currentRaw);
+        expect(await NodeFSP.readFile(NodePath.join(old, "journal.json"), "utf8")).toBe(oldRaw);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+        if (outcome === "retired") {
+          await expect(NodeFSP.lstat(NodePath.join(old, "retained-payload"))).rejects.toMatchObject(
+            { code: "ENOENT" },
+          );
+        } else {
+          expect(await NodeFSP.readFile(NodePath.join(old, "retained-payload"), "utf8")).toBe(
+            "old recovery",
+          );
+          expect(f.controller.state.message).toContain("Older recovery data remains retained");
+        }
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["withdrawn", "uncertain", "wrong-digest", "wrong-binding"] as const)(
+    "recovers a dispatched preparation only with exact withdrawal proof: %s",
+    async (outcome) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const operations: string[] = [];
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        const updater = NodePath.join(f.home, "runtime", "jones-updates");
+        const staging = NodePath.join(updater, "staging");
+        const selectionPath = NodePath.join(staging, (await NodeFSP.readdir(staging))[0]!);
+        const selection = JSON.parse(await NodeFSP.readFile(selectionPath, "utf8"));
+        selection.app.startupGateProtocol = 1;
+        await NodeFSP.writeFile(selectionPath, JSON.stringify(selection));
+        const stageReceipt = JSON.parse(await NodeFSP.readFile(selection.app.receiptPath, "utf8"));
+        stageReceipt.app = selection.app;
+        await NodeFSP.writeFile(selection.app.receiptPath, JSON.stringify(stageReceipt));
+        const selectionSha256 = NodeCrypto.createHash("sha256")
+          .update(await NodeFSP.readFile(selectionPath))
+          .digest("hex");
+        const directory = NodePath.join(updater, "transactions", handle);
+        await NodeFSP.mkdir(directory, { recursive: true });
+        const claim = {
+          protocol: 1,
+          preparationClaimProtocol: 3,
+          transactionId: handle,
+          stagedHandle: handle,
+          selectionPath,
+          selectionSha256,
+          home: f.home,
+          databasePath: f.databasePath,
+          profile: f.profile,
+          environmentId: f.active.environmentId,
+        };
+        const claimRaw = JSON.stringify(claim) + "\n";
+        const claimSha256 = NodeCrypto.createHash("sha256").update(claimRaw).digest("hex");
+        await NodeFSP.writeFile(NodePath.join(directory, "prepare-intent.json"), claimRaw);
+        await NodeFSP.writeFile(NodePath.join(directory, "prepare-dispatched.json"), claimRaw);
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          const operation = String(args?.[3]).slice(2);
+          operations.push(operation);
+          expect(args?.[4]).toBe(handle);
+          if (operation === "withdraw-preparation") {
+            expect(args).toContain("--claim-sha256");
+            expect(args).toContain(claimSha256);
+            const proofPath = NodePath.join(directory, "preparation-withdrawal.json");
+            const proofRaw =
+              JSON.stringify({
+                protocol: 1,
+                withdrawalProtocol: 1,
+                transactionId: handle,
+                claimSha256,
+                claim,
+                expected:
+                  outcome === "wrong-binding" ? { ...f.active, generation: "other" } : f.active,
+                evidence: "withdrawal-protocol",
+              }) + "\n";
+            NodeFS.writeFileSync(proofPath, proofRaw);
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId: handle,
+                status: outcome === "uncertain" ? "uncertain" : "withdrawn",
+                claimSha256,
+                proofPath,
+                proofSha256:
+                  outcome === "wrong-digest"
+                    ? "0".repeat(64)
+                    : NodeCrypto.createHash("sha256").update(proofRaw).digest("hex"),
+                reason: outcome === "uncertain" ? "unknown-effect" : undefined,
+              }),
+              "",
+            );
+          } else {
+            if (operation === "retire-preparation")
+              NodeFS.renameSync(directory, NodePath.join(f.home, "retired"));
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId: handle,
+                status: operation === "inspect-preparation" ? "ready" : "retired",
+                evidence: "withdrawn",
+                planSha256: "a".repeat(64),
+              }),
+              "",
+            );
+          }
+          return new NodeChildProcess.ChildProcess();
+        });
+        const restarted = f.restart();
+        await restarted.configure();
+        expect(operations[0]).toBe("withdraw-preparation");
+        if (outcome === "withdrawn") {
+          expect(operations).toEqual([
+            "withdraw-preparation",
+            "inspect-preparation",
+            "retire-preparation",
+          ]);
+          expect(restarted.state.jones?.capability.install).toBe(true);
+          await expect(NodeFSP.lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(operations).toEqual(["withdraw-preparation"]);
+          expect(restarted.state.jones?.phase).toBe("blocked");
+          expect(restarted.state.jones?.capability.install).toBe(false);
+          expect(
+            await NodeFSP.readFile(NodePath.join(directory, "prepare-intent.json"), "utf8"),
+          ).toBe(claimRaw);
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
         await f.cleanup();
       }
     },

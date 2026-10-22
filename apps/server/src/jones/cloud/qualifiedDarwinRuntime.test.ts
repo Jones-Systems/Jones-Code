@@ -5,10 +5,14 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import { vi } from "vite-plus/test";
 import {
   extractQualifiedDarwinRuntime,
   readQualifiedAsarMetadata,
+  type DarwinStageCommand,
+  type DarwinStageRunner,
 } from "./qualifiedDarwinRuntime.ts";
+import { QualifiedRuntimeBlockedError } from "./qualifiedRuntime.ts";
 
 const version = "0.0.44-preview.20261002.100.1";
 const source = "a".repeat(40);
@@ -58,6 +62,98 @@ async function fixture<A>(body: (root: string) => Promise<A>) {
   }
 }
 
+const stagedArtifact = (root: string): JonesStagedArtifact => ({
+  schema: 1,
+  source: "jones-actions",
+  channel: "jones-main",
+  stagedHandle: "qualified-artifact",
+  payloadPath: NodePath.join(root, "candidate.dmg"),
+  candidate: {
+    schema: 1,
+    repository: "Jones-Systems/Jones-Code",
+    source,
+    tree,
+    installedSource: "c".repeat(40),
+    workflow: ".github/workflows/artifact-desktop-mac.yml",
+    workflowId: 1,
+    runId: 100,
+    runAttempt: 1,
+    ciRunId: 101,
+    artifactId: 102,
+    artifactName: "desktop-mac-arm64-100-1",
+    artifactDigest: `sha256:${"d".repeat(64)}`,
+    artifactBytes: 1,
+    expiresAt: "2026-10-10T00:00:00Z",
+    version,
+    platform: "darwin",
+    architecture: "arm64",
+  },
+  receipt: {
+    schema: 1,
+    repository: "Jones-Systems/Jones-Code",
+    source,
+    tree,
+    workflow: ".github/workflows/artifact-desktop-mac.yml",
+    event: "push",
+    ref: "refs/heads/main",
+    runId: "100",
+    runAttempt: "1",
+    version,
+    platform: "darwin",
+    architecture: "arm64",
+    artifact: "candidate.dmg",
+    sha256: "e".repeat(64),
+  },
+});
+
+async function cancellationFixture(
+  root: string,
+  detach: DarwinStageRunner,
+): Promise<{
+  readonly failure: unknown;
+  readonly primary: Error;
+  readonly mount: string;
+  readonly calls: ReadonlyArray<DarwinStageCommand>;
+}> {
+  const baseDir = NodePath.join(root, "home");
+  const destination = NodePath.join(root, "payload");
+  await NodeFSP.mkdir(NodePath.join(baseDir, "runtime"), { recursive: true });
+  await NodeFSP.mkdir(destination);
+  const controller = new AbortController();
+  const primary = new Error("Synthetic cancellation during app copy.");
+  const calls: DarwinStageCommand[] = [];
+  let mount = "";
+  const failure = await extractQualifiedDarwinRuntime({
+    artifact: stagedArtifact(root),
+    baseDir,
+    destination,
+    signal: controller.signal,
+    run: async (command) => {
+      calls.push(command);
+      // Model the preparation runner's pre-spawn abort gate without native tools.
+      (command.signal ?? controller.signal).throwIfAborted();
+      if (command.command === "/usr/bin/hdiutil" && command.args[0] === "attach") {
+        mount = command.args[command.args.indexOf("-mountpoint") + 1]!;
+        await NodeFSP.mkdir(NodePath.join(mount, "Fixture.app"));
+      } else if (command.command === "/usr/bin/ditto") {
+        controller.abort(primary);
+        throw primary;
+      } else {
+        assert.equal(command.command, "/usr/bin/hdiutil");
+        assert.equal(command.args[0], "detach");
+        assert.equal(command.args[1], mount);
+        assert.notEqual(command.signal, controller.signal);
+        return detach(command);
+      }
+      return { code: 0, stdout: "" };
+    },
+  }).then(
+    () => undefined,
+    (cause: unknown) => cause,
+  );
+  return { failure, primary, mount, calls };
+}
+
 it("checks packed ASAR version/source and its headless server entry without launching Electron", async () => {
   await fixture(async (root) => {
     const file = NodePath.join(root, "app.asar");
@@ -82,49 +178,7 @@ it("stages a readonly DMG app and exact Electron Node wrapper while preserving n
     await NodeFSP.mkdir(destination);
     await NodeFSP.writeFile(NodePath.join(home, "native-state"), "unchanged");
     const calls: string[] = [];
-    const artifact: JonesStagedArtifact = {
-      schema: 1,
-      source: "jones-actions",
-      channel: "jones-main",
-      stagedHandle: "qualified-artifact",
-      payloadPath: NodePath.join(root, "candidate.dmg"),
-      candidate: {
-        schema: 1,
-        repository: "Jones-Systems/Jones-Code",
-        source,
-        tree,
-        installedSource: "c".repeat(40),
-        workflow: ".github/workflows/artifact-desktop-mac.yml",
-        workflowId: 1,
-        runId: 100,
-        runAttempt: 1,
-        ciRunId: 101,
-        artifactId: 102,
-        artifactName: "desktop-mac-arm64-100-1",
-        artifactDigest: `sha256:${"d".repeat(64)}`,
-        artifactBytes: 1,
-        expiresAt: "2026-10-10T00:00:00Z",
-        version,
-        platform: "darwin",
-        architecture: "arm64",
-      },
-      receipt: {
-        schema: 1,
-        repository: "Jones-Systems/Jones-Code",
-        source,
-        tree,
-        workflow: ".github/workflows/artifact-desktop-mac.yml",
-        event: "push",
-        ref: "refs/heads/main",
-        runId: "100",
-        runAttempt: "1",
-        version,
-        platform: "darwin",
-        architecture: "arm64",
-        artifact: "candidate.dmg",
-        sha256: "e".repeat(64),
-      },
-    };
+    const artifact = stagedArtifact(root);
     await extractQualifiedDarwinRuntime({
       artifact,
       destination,
@@ -170,3 +224,103 @@ it("stages a readonly DMG app and exact Electron Node wrapper while preserving n
     );
   });
 });
+
+it("detaches the owned mount after the job is cancelled and preserves the cancellation", async () => {
+  await fixture(async (root) => {
+    const detached: DarwinStageCommand[] = [];
+    const result = await cancellationFixture(root, async (command) => {
+      detached.push(command);
+      return { code: 0, stdout: "" };
+    });
+    assert.equal(detached.length, 1);
+    assert.deepEqual(detached[0]!.args, ["detach", result.mount]);
+    assert.equal(result.failure, result.primary);
+    await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(result.mount)), { code: "ENOENT" });
+  });
+});
+
+it("retries a failed detach with force on only the owned mount", async () => {
+  await fixture(async (root) => {
+    const detached: DarwinStageCommand[] = [];
+    const result = await cancellationFixture(root, async (command) => {
+      detached.push(command);
+      return { code: command.args.includes("-force") ? 0 : 1, stdout: "" };
+    });
+    assert.deepEqual(
+      detached.map(({ args }) => args),
+      [
+        ["detach", result.mount],
+        ["detach", result.mount, "-force"],
+      ],
+    );
+    assert.notEqual(detached[0]!.signal, detached[1]!.signal);
+    assert.equal(result.failure, result.primary);
+    await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(result.mount)), { code: "ENOENT" });
+  });
+});
+
+it("retains the exact mount and both staging and cleanup failures when forced detach fails", async () => {
+  await fixture(async (root) => {
+    const ordinary = new Error("Synthetic ordinary detach failure.");
+    const forced = new Error("Synthetic forced detach failure.");
+    const result = await cancellationFixture(root, async ({ args }) => {
+      throw args.includes("-force") ? forced : ordinary;
+    });
+    assert.instanceOf(result.failure, QualifiedRuntimeBlockedError);
+    const blocked = result.failure as QualifiedRuntimeBlockedError;
+    assert.equal(blocked.reason, "busy");
+    assert.include(blocked.message, result.mount);
+    assert.instanceOf(blocked.cause, AggregateError);
+    const [primary, cleanup] = (blocked.cause as AggregateError).errors;
+    assert.equal(primary, result.primary);
+    assert.instanceOf(cleanup, AggregateError);
+    assert.deepEqual((cleanup as AggregateError).errors, [ordinary, forced]);
+    assert.isTrue((await NodeFSP.lstat(result.mount)).isDirectory());
+    assert.deepEqual(await NodeFSP.readdir(result.mount), ["Fixture.app"]);
+  });
+});
+
+it.each([false, true])(
+  "bounds each detach attempt and retains uncertainty after a forced deadline (%s)",
+  async (forceTimesOut) => {
+    await fixture(async (root) => {
+      vi.useFakeTimers();
+      try {
+        const ordinaryStarted = Promise.withResolvers<void>();
+        const forcedStarted = Promise.withResolvers<void>();
+        const detached: DarwinStageCommand[] = [];
+        const pending = cancellationFixture(root, async (command) => {
+          detached.push(command);
+          const forced = command.args.includes("-force");
+          (forced ? forcedStarted : ordinaryStarted).resolve();
+          if (forced && !forceTimesOut) return { code: 0, stdout: "" };
+          assert.isDefined(command.signal);
+          return new Promise((_, reject) => {
+            command.signal!.addEventListener("abort", () => reject(command.signal!.reason), {
+              once: true,
+            });
+          });
+        });
+        await ordinaryStarted.promise;
+        await vi.advanceTimersByTimeAsync(5_000);
+        await forcedStarted.promise;
+        assert.isTrue(detached[0]!.signal!.aborted);
+        assert.isFalse(detached[1]!.signal!.aborted);
+        await vi.advanceTimersByTimeAsync(5_000);
+        const result = await pending;
+        if (forceTimesOut) {
+          assert.instanceOf(result.failure, QualifiedRuntimeBlockedError);
+          assert.isTrue((await NodeFSP.lstat(result.mount)).isDirectory());
+        } else {
+          assert.equal(result.failure, result.primary);
+          await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(result.mount)), {
+            code: "ENOENT",
+          });
+        }
+        assert.equal(vi.getTimerCount(), 0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  },
+);
