@@ -11,6 +11,12 @@ import * as NodeURL from "node:url";
 
 import { PNG } from "pngjs";
 
+import {
+  selectShowcaseMetroPort,
+  stopShowcaseMetro,
+  waitForShowcaseMetro,
+  warmShowcaseMetroBundle,
+} from "./jones/mobile/showcase-metro.ts";
 import showcaseConfig, {
   type ShowcaseAppearance,
   type ShowcaseAndroidDevice,
@@ -681,6 +687,7 @@ function startMetro(config: ShowcaseConfig): NodeChildProcess.ChildProcess {
       env: {
         ...MOBILE_BUILD_ENV,
         EXPO_PUBLIC_SHOWCASE: "1",
+        CI: "1",
       },
     },
   );
@@ -690,9 +697,10 @@ async function warmMetroBundle(
   platform: ShowcaseDevice["platform"],
   host: string,
   config: ShowcaseConfig,
+  signal: AbortSignal,
 ): Promise<void> {
   const url = `http://${host}:${config.metroPort}/apps/mobile/index.bundle?platform=${platform}&dev=true&minify=false`;
-  await runCommand("curl", ["--fail", "--silent", "--show-error", "--output", "/dev/null", url]);
+  await warmShowcaseMetroBundle(url, signal);
 }
 
 async function buildIos(): Promise<string> {
@@ -1508,6 +1516,7 @@ async function main(): Promise<void> {
     readonly port: number;
   }> = [];
   let metro: NodeChildProcess.ChildProcess | null = null;
+  let captureFailed = false;
   const iosCleanups: IosCaptureCleanup[] = [];
   const androidCleanups: AndroidCaptureCleanup[] = [];
 
@@ -1542,14 +1551,27 @@ async function main(): Promise<void> {
       showcaseEnvironments.push({ baseDir, environmentId, label: environment.label, port });
     }
 
-    if (!options.skipMetro) {
-      metro = startMetro(showcaseConfig);
-      await waitForPort(showcaseConfig.metroPort, "Metro");
-      await Promise.all([
-        hasIos ? warmMetroBundle("ios", metroHost, showcaseConfig) : Promise.resolve(),
-        hasAndroid ? warmMetroBundle("android", "127.0.0.1", showcaseConfig) : Promise.resolve(),
-      ]);
-    }
+    const runConfig: ShowcaseConfig = {
+      ...showcaseConfig,
+      metroPort: await selectShowcaseMetroPort({
+        configuredPort: showcaseConfig.metroPort,
+        override: NodeProcess.env.T3_SHOWCASE_METRO_PORT,
+        reuse: options.skipMetro,
+        reserveAvailablePort,
+      }),
+    };
+    NodeProcess.stdout.write(`Showcase Metro port: ${runConfig.metroPort}\n`);
+    if (!options.skipMetro) metro = startMetro(runConfig);
+    await waitForShowcaseMetro({
+      port: runConfig.metroPort,
+      child: metro,
+      warmBundle: async (signal) => {
+        await Promise.all([
+          hasIos ? warmMetroBundle("ios", metroHost, runConfig, signal) : Promise.resolve(),
+          hasAndroid ? warmMetroBundle("android", "127.0.0.1", runConfig, signal) : Promise.resolve(),
+        ]);
+      },
+    });
 
     const iosAppPath = hasIos
       ? options.skipBuild
@@ -1578,7 +1600,7 @@ async function main(): Promise<void> {
           capture as ShowcaseCapture & { readonly device: ShowcaseIosDevice },
           iosAppPath,
           outputDirectory,
-          showcaseConfig,
+          runConfig,
           metroHost,
           pairingUrls,
           (cleanup) => iosCleanups.push(cleanup),
@@ -1588,7 +1610,7 @@ async function main(): Promise<void> {
           capture as ShowcaseCapture & { readonly device: ShowcaseAndroidDevice },
           androidApkPath,
           outputDirectory,
-          showcaseConfig,
+          runConfig,
           pairingUrls,
           (cleanup) => androidCleanups.push(cleanup),
         );
@@ -1611,6 +1633,9 @@ async function main(): Promise<void> {
         `Showcase environments kept at ${showcaseRootDir} (${serverSummary}).\n`,
       );
     }
+  } catch (error) {
+    captureFailed = true;
+    throw error;
   } finally {
     if (options.keepRunning) {
       metro?.unref();
@@ -1630,16 +1655,27 @@ async function main(): Promise<void> {
           await runCommand("xcrun", ["simctl", "delete", cleanup.udid]).catch(() => undefined);
         }
       }
+      let metroCleanupError: unknown;
       await Promise.all([
-        ...(metro ? [stopProcess(metro)] : []),
+        ...(metro
+          ? [stopShowcaseMetro(metro).catch((error: unknown) => {
+              metroCleanupError = error;
+              NodeProcess.stderr.write(`Metro cleanup failed: ${String(error)}\n`);
+            })]
+          : []),
         ...showcaseServers.map((server) => stopProcess(server)),
       ]);
-      await NodeFSP.rm(showcaseRootDir, {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 100,
-      });
+      if (metroCleanupError) {
+        NodeProcess.stderr.write(`Preserved showcase root after Metro cleanup failure: ${showcaseRootDir}\n`);
+        if (!captureFailed) throw metroCleanupError;
+      } else {
+        await NodeFSP.rm(showcaseRootDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 100,
+        });
+      }
     }
   }
 }

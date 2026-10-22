@@ -37,7 +37,7 @@ The command:
 
 The servers, Metro, temporary root directory, and devices started by the runner are cleaned up after
 capture. Pass `--keep-running` to retain them for inspection; the runner prints the base-directory
-paths and server ports.
+paths and server ports, including the selected Metro port.
 
 Captures wait for the real environment snapshot to hydrate and for the requested route to become
 active. Both platforms record readiness in the simulator/emulator app container. A final settle
@@ -46,10 +46,18 @@ delay allows native terminal and Git review data to finish rendering.
 A full capture regenerates the selected native project with Expo's clean production prebuild before
 building it. Use --skip-build for repeated captures after the first build.
 
-The harness uses fixed Metro port `8199`, which separates it from Expo's normal default port but is
-shared across every checkout. The readiness check only verifies that the port is open; it does not
-verify process ownership. Concurrent screenshot harnesses in different worktrees can therefore
-collide or attach to the wrong Metro process.
+Each default invocation chooses an available Metro port and passes it to the bundle requests and
+both platforms' dev-client URLs. Readiness requires the runner's Metro child to remain alive,
+`/status` to report `packager-status:running`, and every selected platform's bundle to warm
+successfully. Metro runs non-interactively so a port collision fails instead of switching ports.
+Port selection releases its temporary socket before Expo starts; a bind race remains possible and
+fails the run rather than authorizing reuse of another invocation.
+
+Set `T3_SHOWCASE_METRO_PORT` to intentionally select a fixed port. A non-default `metroPort` in
+`mobile-showcase.config.ts` also remains an override; its checked-in value `8199` means automatic
+allocation for ordinary runs. Explicit unavailable ports fail before Metro starts. Separate
+worktrees still need their own capture outputs and devices; Metro isolation alone does not make
+shared simulator or output use safe.
 
 Every configured device defaults to dark appearance and the `t3-code` palette, so plain
 `pnpm screenshots:mobile` produces 35 dark PNGs. Pass `--appearance light`, `--appearance dark`, or
@@ -150,18 +158,21 @@ Reuse the native build and retain the disposable environment:
 
     pnpm screenshots:mobile --device ipad-13 --skip-build --keep-running
 
-By default, let the screenshot runner start Metro on port `8199`. To keep Metro in a separate
-terminal, start it with the same showcase environment and explicit harness port:
+By default, let the screenshot runner choose and start its own Metro. To keep Metro in a separate
+terminal, start it with the same showcase environment and an explicit port:
 
     cd apps/mobile
     APP_VARIANT=development EXPO_PUBLIC_SHOWCASE=1 pnpm exec expo start --dev-client --port 8199
 
 Then run the capture from the repository root:
 
-    pnpm screenshots:mobile --skip-build --skip-metro --device iphone-6.9
+    T3_SHOWCASE_METRO_PORT=8199 pnpm screenshots:mobile --skip-build --skip-metro --device iphone-6.9
 
-`pnpm --filter @t3tools/mobile showcase` starts Expo on its normal port, so it is not compatible with
-the harness's `--skip-metro` mode.
+`--skip-metro` explicitly reuses an external Metro without taking ownership of its process; it still
+checks status and warms the requested bundles. Without an environment override, reuse retains the
+configured port (historically `8199`). To reuse a `--keep-running` invocation, set
+`T3_SHOWCASE_METRO_PORT` to the port that invocation printed. A separate Metro started on Expo's
+normal port also requires that explicit port override and the showcase environment above.
 
 List the matrix and flags:
 
