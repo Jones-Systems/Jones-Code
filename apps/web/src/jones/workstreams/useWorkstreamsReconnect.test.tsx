@@ -8,8 +8,10 @@ import {
   EnvironmentInternalError,
   t3PlacementInventoryJson,
   type T3PlacementIdentity,
-  type WorkstreamReceipt,
+  WorkstreamReceipt,
+  type WorkstreamCommand,
 } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { act, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -24,7 +26,7 @@ import {
   now,
 } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
-import { routeWorkstreamsHttp } from "./workstreamsHttp.fixtures";
+import { routeWorkstreamsHttp, syntheticWorkstreams } from "./workstreamsHttp.fixtures";
 
 const http = vi.hoisted(() => ({
   run: vi.fn<(effect: unknown, options?: { readonly signal?: AbortSignal }) => Promise<unknown>>(),
@@ -780,3 +782,155 @@ it("keeps an explicit recovery path after a preflight refusal without submitting
   expect(latest.error).toBeNull();
   expect(http.run).toHaveBeenCalledTimes(4);
 });
+
+// Bound to the actual EnvironmentHttpApi response asserted in server/workstreams/http.test.ts.
+// This seam exercises the unchanged hook and ledger; it does not verify producer proof bytes.
+const decodeRefusalConflict = Schema.decodeSync(EnvironmentHttpConflictError);
+const decodeOpaqueFailure = Schema.decodeSync(EnvironmentInternalError);
+const decodeObservedReceipt = Schema.decodeUnknownSync(WorkstreamReceipt);
+const verifiedRefusalResponse = () =>
+  decodeRefusalConflict({
+    _tag: "EnvironmentHttpConflictError",
+    message: "workstream_command_not_current",
+  });
+
+const refusalCommand = (commandId: string): WorkstreamCommand => ({
+  command_id: commandId,
+  expected_server_generation: data.binding.serverGeneration,
+  expected_registry_version: data.binding.registryVersion,
+  action: {
+    operation: "update_workstream",
+    workstream_id: "alpha",
+    expected_version: 3,
+    name: "Updated",
+    lifecycle: "active",
+    progress: { state: "progressing" },
+    sort_order: 0,
+  },
+});
+
+const observedReceipt = (command: WorkstreamCommand, state: "pending" | "rejected") =>
+  decodeObservedReceipt({
+    command_id: command.command_id,
+    owner_id: data.binding.ownerId,
+    actor: { principal_id: data.binding.principalId },
+    operation: command.action.operation,
+    request_sha256: "a".repeat(64),
+    server_generation: data.binding.serverGeneration,
+    accepted_at: "2026-09-30T12:00:00Z",
+    state,
+    ...(state === "pending"
+      ? { retry_after_seconds: 1 }
+      : {
+          completed_at: "2026-09-30T12:00:01Z",
+          error: {
+            code: "version_conflict",
+            status: 409,
+            request_id: "fixture",
+            recovery: "reload",
+          },
+        }),
+  });
+
+const mountRefusalLedger = async () => {
+  const server = syntheticWorkstreams({ now: () => now, assignments: [] });
+  http.run.mockImplementation(routeWorkstreamsHttp(server.handle));
+  await act(async () => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <MountedWorkstreams />
+      </RegistryContext.Provider>,
+    );
+  });
+  expect(latest.data?.binding).toEqual(data.binding);
+  return server;
+};
+
+it("clears a verified pre-dispatch refusal from the real ledger without replaying it", async () => {
+  const server = await mountRefusalLedger();
+  const submitted: WorkstreamCommand[] = [];
+  server.state.intercept = (call) => {
+    if (call.route === "submit") {
+      const command = call.request.payload?.command as WorkstreamCommand;
+      submitted.push(command);
+      if (submitted.length === 1) throw verifiedRefusalResponse();
+      return observedReceipt(command, "rejected");
+    }
+    return undefined;
+  };
+  const original = refusalCommand("command-verified-refusal");
+  await act(async () => {
+    await expect(latest.submit(original)).rejects.toMatchObject({ reason: "stale" });
+  });
+  await act(async () => latest.retry!());
+  expect(server.state.calls.filter((call) => call.route === "command")).toHaveLength(0);
+  expect(submitted).toEqual([original]);
+  const next = refusalCommand("command-after-refusal");
+  await act(async () => {
+    expect((await latest.submit(next)).state).toBe("rejected");
+  });
+  expect(submitted).toEqual([original, next]);
+});
+
+it.each(["opaque-submit-failure", "unverified-conflict", "pending-receipt"] as const)(
+  "retains the original command fence for %s and reconciles only its receipt",
+  async (failure) => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", globalThis);
+    const server = await mountRefusalLedger();
+    const original = refusalCommand(`command-refusal-${failure}`);
+    const submitted: WorkstreamCommand[] = [];
+    const observed: string[] = [];
+    let reconciled = false;
+    server.state.intercept = (call) => {
+      if (call.route === "submit") {
+        const command = call.request.payload?.command as WorkstreamCommand;
+        submitted.push(command);
+        if (submitted.length > 1) return observedReceipt(command, "rejected");
+        if (failure === "pending-receipt") return observedReceipt(command, "pending");
+        if (failure === "unverified-conflict")
+          throw decodeRefusalConflict({
+            _tag: "EnvironmentHttpConflictError",
+            message: "contract_mismatch",
+          });
+        throw decodeOpaqueFailure({
+          _tag: "EnvironmentInternalError",
+          code: "internal_error",
+          reason: "internal_error",
+          traceId: "fixture",
+        });
+      }
+      if (call.route === "command") {
+        observed.push(call.request.params!.commandId!);
+        if (reconciled) return observedReceipt(original, "rejected");
+        // Even a recognized POST refusal on a GET cannot erase a previously attempted command.
+        throw verifiedRefusalResponse();
+      }
+      return undefined;
+    };
+    let outcome: unknown;
+    await act(async () => {
+      const attempt = latest.submit(original).catch((cause: unknown) => {
+        outcome = cause;
+      });
+      if (failure === "pending-receipt") await vi.advanceTimersByTimeAsync(1_000);
+      await attempt;
+    });
+    expect(outcome).toMatchObject({ reason: "unknown" });
+    const next = refusalCommand("command-fenced-successor");
+    await act(async () => {
+      await expect(latest.submit(next)).rejects.toMatchObject({ reason: "unknown" });
+      await expect(latest.retry!()).rejects.toMatchObject({ reason: "unknown" });
+    });
+    expect(observed.length).toBeGreaterThan(0);
+    expect(new Set(observed)).toEqual(new Set([original.command_id]));
+    expect(submitted).toEqual([original]);
+    reconciled = true;
+    await act(async () => latest.retry!());
+    expect(submitted).toEqual([original]);
+    await act(async () => {
+      expect((await latest.submit(next)).state).toBe("rejected");
+    });
+    expect(submitted).toEqual([original, next]);
+  },
+);

@@ -35,6 +35,7 @@ import {
   WorkstreamGateway,
   WorkstreamGatewayError,
   WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
   type WorkstreamTransport,
 } from "./WorkstreamGateway.ts";
 import { WorkstreamsRegistrationContext } from "../jones/workstreams/registrationContext/service.ts";
@@ -332,6 +333,7 @@ it.effect.each([
 );
 
 const decodeInternalError = Schema.decodeUnknownSync(EnvironmentInternalError);
+const decodeConflictError = Schema.decodeUnknownSync(EnvironmentHttpConflictError);
 
 const submitRequest = (value: unknown = command) =>
   new Request("http://fixture/api/workstreams/commands", {
@@ -407,9 +409,51 @@ it.effect.each(["permission", "owner", "contract", "page-bound"] as const)(
     ),
 );
 
-it.effect.each(["no-effect", "unknown-effect"] as const)(
-  "keeps transport %s failures opaque after dispatch",
-  (effect) =>
+it.effect(
+  "maps a verified producer refusal after ready capabilities to the existing not-current codec",
+  () => {
+    const calls: string[] = [];
+    return withHttpFixture(
+      [AuthOrchestrationOperateScope],
+      async ({ handler, submissions }) => {
+        const result = await handler(submitRequest());
+        expect(submissions.count).toBe(1);
+        expect(calls).toEqual(["ready", "refused-before-dispatch"]);
+        expect(result.status).toBe(409);
+        const body = await result.json();
+        expect(body).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstream_command_not_current",
+        });
+        expect(decodeConflictError(body).message).toBe("workstream_command_not_current");
+      },
+      undefined,
+      (transport) => ({
+        ...transport,
+        getCapabilities: (input) =>
+          transport
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("ready")))),
+        // This fixture supplies qualified internal evidence, not a cryptographic proof verifier.
+        submitCommand: () => {
+          calls.push("refused-before-dispatch");
+          return Effect.fail(new WorkstreamVerifiedPreDispatchRefusal({}));
+        },
+      }),
+    );
+  },
+);
+
+it.effect.each([
+  { effect: "no-effect", detail: "workstream_command_not_current" },
+  { effect: "no-effect", detail: "contract_mismatch" },
+  { effect: "no-effect", detail: "invalid_response" },
+  { effect: "unknown-effect", detail: "missing_refusal_proof" },
+  { effect: "unknown-effect", detail: "invalid_refusal_proof" },
+  { effect: "unknown-effect", detail: "response_lost_after_dispatch" },
+] as const)(
+  "keeps unverified $detail transport failures opaque after submit",
+  ({ effect, detail }) =>
     withHttpFixture(
       [AuthOrchestrationOperateScope],
       async ({ handler, submissions }) => {
@@ -426,7 +470,7 @@ it.effect.each(["no-effect", "unknown-effect"] as const)(
             new WorkstreamTransportError({
               operation: "submit",
               effect,
-              detail: "synthetic lost response",
+              detail,
             }),
           ),
       }),

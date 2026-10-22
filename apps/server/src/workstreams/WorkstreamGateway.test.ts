@@ -18,6 +18,7 @@ import {
   type WorkstreamCommand,
   type WorkstreamTransport,
   WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
   make,
 } from "./WorkstreamGateway.ts";
 import { makeSyntheticWorkstreamTransport } from "./SyntheticWorkstreamTransport.ts";
@@ -29,6 +30,33 @@ const binding = {
   principalId: "principal-fixture",
   authorizationRevision: 1,
 } as const;
+
+it.effect("recognizes only a verified pre-dispatch refusal after capabilities succeeded", () =>
+  Effect.gen(function* () {
+    const fixture = makeSyntheticWorkstreamTransport();
+    const calls: string[] = [];
+    const refusal = new WorkstreamVerifiedPreDispatchRefusal({});
+    const gateway = yield* make(
+      {
+        ...fixture,
+        getCapabilities: (input) =>
+          fixture
+            .getCapabilities(input)
+            .pipe(Effect.tap(() => Effect.sync(() => calls.push("ready")))),
+        // Qualified internal fixture only; producer proof verification belongs to the adapter.
+        submitCommand: () => {
+          calls.push("refused-before-dispatch");
+          return Effect.fail(refusal);
+        },
+      },
+      { binding },
+    );
+    const error = yield* gateway.submit(updateCommand()).pipe(Effect.flip);
+    expect(error.reason).toBe("authorization-not-current");
+    expect(error.cause).toBe(refusal);
+    expect(calls).toEqual(["ready", "refused-before-dispatch"]);
+  }),
+);
 
 const updateCommand = (overrides: Partial<WorkstreamCommand> = {}): WorkstreamCommand => ({
   command_id: "command-fixture-0001",

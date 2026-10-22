@@ -65,6 +65,17 @@ export class WorkstreamTransportError extends Schema.TaggedError<WorkstreamTrans
   },
 ) {}
 
+/**
+ * Submit-only evidence that the producer refused this request before business dispatch.
+ * Only an adapter that authenticated the producer's refusal proof and bound it to
+ * this exact submitted request may emit this error.
+ * HTTP status, contract mismatch, missing/invalid proof, and response loss do not qualify.
+ */
+export class WorkstreamVerifiedPreDispatchRefusal extends Schema.TaggedError<WorkstreamVerifiedPreDispatchRefusal>()(
+  "WorkstreamVerifiedPreDispatchRefusal",
+  {},
+) {}
+
 /** Transport detail for a server started without complete control-plane activation. */
 export const WORKSTREAM_ACTIVATION_DISABLED_DETAIL =
   "Workstream control-plane activation is disabled.";
@@ -160,7 +171,10 @@ export interface WorkstreamTransport {
       readonly command: WorkstreamCommand;
       readonly idempotencyKey: string;
     } & ContractInput,
-  ) => Effect.Effect<WorkstreamReceipt, WorkstreamTransportError>;
+  ) => Effect.Effect<
+    WorkstreamReceipt,
+    WorkstreamTransportError | WorkstreamVerifiedPreDispatchRefusal
+  >;
 }
 
 export interface WorkstreamGatewayOptions {
@@ -719,7 +733,17 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         if (prior) return prior;
         const receipt = yield* transport
           .submitCommand({ body, command, idempotencyKey: command.command_id, ...contractInput })
-          .pipe(Effect.mapError(transportFailure));
+          .pipe(
+            Effect.mapError((error) =>
+              error._tag === "WorkstreamVerifiedPreDispatchRefusal"
+                ? new WorkstreamGatewayError({
+                    reason: "authorization-not-current",
+                    detail: "Command authorization is not current.",
+                    cause: error,
+                  })
+                : transportFailure(error),
+            ),
+          );
         yield* validateReceipt(
           receipt,
           command.command_id,
