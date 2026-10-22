@@ -37,7 +37,14 @@ const vectors = JSON.parse(
     body: string;
     mac: string;
     canonical_utf8: string;
-    input: { status: number; token: string; dispatch: string; requestSignature: string };
+    input: {
+      status: number;
+      token: string;
+      dispatch: string;
+      requestSignature: string;
+      contractVersion: string;
+      contractManifest: string;
+    };
   }[];
 };
 const secret = Buffer.from(vectors.synthetic_secret_hex, "hex");
@@ -80,6 +87,99 @@ it("accepts only the exact authenticated refusal envelope", () => {
     ).toBe(vector.mac);
   }
 });
+it.each(vectors.responses.filter((vector) => vector.input.dispatch === "dispatched"))(
+  "verifies frozen $name with optional command/receipt headers and rejects it for required families",
+  (vector) => {
+    const input = {
+      ...proofInput(),
+      body: Buffer.from(vector.body),
+      token: vector.input.token,
+      requestSignature: vector.input.requestSignature,
+      responseContractHeaders: "optional" as const,
+      response: new Response(vector.body, {
+        status: vector.input.status,
+        headers: {
+          "x-control-registry-binding": vector.input.token,
+          "x-control-registry-dispatch": vector.input.dispatch,
+          "x-control-registry-response-mac": vector.mac,
+          ...(vector.input.contractVersion
+            ? { "x-control-contract-version": vector.input.contractVersion }
+            : {}),
+          ...(vector.input.contractManifest
+            ? { "x-control-contract-manifest": vector.input.contractManifest }
+            : {}),
+        },
+      }),
+    };
+    expect(() => verifyRegistryResponse(input)).not.toThrow();
+    expect(() => verifyRegistryResponse({ ...input, responseContractHeaders: "required" })).toThrow(
+      "registry_binding_invalid",
+    );
+    expect(() => verifyRegistryResponse({ ...input, requestSignature: "another-request" })).toThrow(
+      "registry_binding_invalid",
+    );
+    expect(() =>
+      verifyRegistryResponse({ ...input, body: Buffer.from(vector.body + " ") }),
+    ).toThrow("registry_binding_invalid");
+  },
+);
+
+it.each([
+  [null, null, true, false],
+  ["matching", null, true, false],
+  [null, "matching", true, false],
+  ["matching", "matching", true, true],
+  ["wrong", "matching", false, false],
+  ["matching", "wrong", false, false],
+  ["", "", false, false],
+  ["", null, false, false],
+  [null, "", false, false],
+  ["matching, matching", "matching", false, false],
+] as const)(
+  "enforces authenticated response header semantics (%s, %s)",
+  (versionValue, manifestValue, optionalAccepted, requiredAccepted) => {
+    const input = proofInput();
+    input.body = Buffer.from('{"synthetic":"committed"}');
+    const version = versionValue === "matching" ? input.contractVersion : versionValue;
+    const manifest = manifestValue === "matching" ? input.contractManifest : manifestValue;
+    const canonical = [
+      "workstreams-registry-response/1.0.0",
+      input.requestSignature,
+      "200",
+      version ?? "",
+      manifest ?? "",
+      input.token,
+      "dispatched",
+      NodeCrypto.createHash("sha256").update(input.body).digest("hex"),
+    ].join("\n");
+    input.response = new Response(input.body, {
+      status: 200,
+      headers: {
+        "x-control-registry-binding": input.token,
+        "x-control-registry-dispatch": "dispatched",
+        "x-control-registry-response-mac": NodeCrypto.createHmac("sha256", secret)
+          .update(canonical)
+          .digest("base64url"),
+        ...(version === null ? {} : { "x-control-contract-version": version }),
+        ...(manifest === null ? {} : { "x-control-contract-manifest": manifest }),
+      },
+    });
+    for (const [policy, accepted] of [
+      ["optional", optionalAccepted],
+      ["required", requiredAccepted],
+    ] as const) {
+      const verify = () => verifyRegistryResponse({ ...input, responseContractHeaders: policy });
+      if (accepted) expect(verify).not.toThrow();
+      else expect(verify).toThrow("registry_binding_invalid");
+    }
+    // Optional family semantics cannot turn missing proof into accepted data.
+    input.response.headers.delete("x-control-registry-response-mac");
+    expect(() => verifyRegistryResponse({ ...input, responseContractHeaders: "optional" })).toThrow(
+      "registry_binding_invalid",
+    );
+  },
+);
+
 it.each([
   "body",
   "signature",
@@ -151,12 +251,13 @@ it.each([
 );
 
 effectIt.effect.each([
-  "http://127.0.0.1:8787/",
-  "http://[::1]:8787/",
-  "https://transport.synthetic.test/",
-])(
-  "signs all transport families at %s and fails closed against an old producer without fallback",
-  (baseUrl) =>
+  { baseUrl: "http://127.0.0.1:8787/", proof: "unsigned" },
+  { baseUrl: "http://[::1]:8787/", proof: "unsigned" },
+  { baseUrl: "https://transport.synthetic.test/", proof: "unsigned" },
+  { baseUrl: "http://127.0.0.1:8787/", proof: "authenticated-missing-contract" },
+] as const)(
+  "signs all transport families at $baseUrl and fails closed for $proof responses without fallback",
+  ({ baseUrl, proof }) =>
     Effect.gen(function* () {
       const observed: Headers[] = [];
       const activation = {
@@ -198,6 +299,29 @@ effectIt.effect.each([
         expect(h("x-control-signature")).toBe(
           NodeCrypto.createHmac("sha256", secret).update(canonical).digest("base64url"),
         );
+        if (proof === "authenticated-missing-contract") {
+          const body = "{}";
+          const responseCanonical = [
+            "workstreams-registry-response/1.0.0",
+            h("x-control-signature"),
+            "200",
+            "",
+            "",
+            vectors.token,
+            "dispatched",
+            NodeCrypto.createHash("sha256").update(body).digest("hex"),
+          ].join("\n");
+          return new Response(body, {
+            status: 200,
+            headers: {
+              "x-control-registry-binding": vectors.token,
+              "x-control-registry-dispatch": "dispatched",
+              "x-control-registry-response-mac": NodeCrypto.createHmac("sha256", secret)
+                .update(responseCanonical)
+                .digest("base64url"),
+            },
+          });
+        }
         // An old producer's unsigned error must not trigger a retry with the legacy algorithm.
         return new Response('{"code":"unauthorized"}', { status: 401 });
       };
@@ -229,7 +353,11 @@ effectIt.effect.each([
           { ...activation, value: { ...activation.value, registrationContextVersion: "2.0.0" } },
           fetchPort,
         ).registrationContext.readRegistrationContext,
-        t.getCommand({ ...contract, commandId: "receipt-command-001" }),
+        t.listWorkstreams({ ...contract, limit: 50 }),
+        t.listReferences({ ...contract, limit: 50 }),
+        ...(proof === "unsigned"
+          ? [t.getCommand({ ...contract, commandId: "receipt-command-001" })]
+          : []),
       ];
       for (const request of requests) {
         const result = yield* Effect.result(request);

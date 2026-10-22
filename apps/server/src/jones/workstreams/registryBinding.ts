@@ -23,6 +23,7 @@ export function verifyRegistryResponse(input: {
   readonly secret: Uint8Array;
   readonly contractVersion: string;
   readonly contractManifest: string;
+  readonly responseContractHeaders?: "required" | "optional";
 }): void {
   const headers = input.response.headers;
   const dispatch = headers.get("x-control-registry-dispatch");
@@ -63,5 +64,12 @@ export function verifyRegistryResponse(input: {
     throw new RegistryBindingRefusal();
   }
   // Only the exact envelope above proves effectlessness. Even receipt GET may enter business code.
-  if (!matchingContract || dispatch !== "dispatched") throw new RegistryBindingProofFailure();
+  // Command POST and receipt GET may omit these headers. Present values still have to match,
+  // and the exact received values above must authenticate before applying this family policy.
+  const acceptedContract =
+    input.responseContractHeaders === "optional"
+      ? (headers.get("x-control-contract-version") === null || version === input.contractVersion) &&
+        (headers.get("x-control-contract-manifest") === null || manifest === input.contractManifest)
+      : matchingContract;
+  if (!acceptedContract || dispatch !== "dispatched") throw new RegistryBindingProofFailure();
 }

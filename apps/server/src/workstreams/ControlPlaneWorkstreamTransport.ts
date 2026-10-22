@@ -234,6 +234,7 @@ async function performRequest(input: {
   readonly config: ControlPlaneWorkstreamActivation;
   readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
   readonly countsContract?: boolean;
+  readonly responseContractHeaders?: "required" | "optional";
   readonly method: "GET" | "POST";
   readonly target: string;
   readonly body: string;
@@ -362,6 +363,7 @@ async function performRequest(input: {
       secret: decodeSigningSecret(input.config.signingSecret)!,
       contractVersion,
       contractManifest,
+      responseContractHeaders: input.responseContractHeaders ?? "required",
     });
   }
   if (
@@ -473,6 +475,10 @@ export function makeControlPlaneWorkstreamTransport(
             body,
             sentAt,
             countsContract,
+            responseContractHeaders:
+              operation === "get_command" || operation === "submit_command"
+                ? "optional"
+                : "required",
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
             signal,
           }),

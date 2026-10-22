@@ -215,7 +215,7 @@ export async function startLoopbackControlPlane() {
     }
     const respond = (payload: string, status: number, dispatched: boolean): Response => {
       const responseHeaders = new Headers(
-        dispatched
+        dispatched && !commandPost && !url.pathname.startsWith("/workstreams/v1/commands/")
           ? {
               "x-control-contract-version": version,
               "x-control-contract-manifest": manifest,

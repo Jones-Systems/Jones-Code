@@ -1006,6 +1006,18 @@ const wireCommand = (id: string): WorkstreamCommand => ({
     sort_order: 0,
   },
 });
+it("completes a headerless producer command through real Jones HTTP and the unchanged ledger", async () => {
+  await withWireLedger(async (control, observed) => {
+    const original = wireCommand("wire-headerless-success-original");
+    await act(async () => {
+      expect((await latest.submit(original)).state).toBe("committed");
+    });
+    expect(observed).toContainEqual({ path: "/api/workstreams/commands", status: 200 });
+    expect(control.observations.commandIds).toEqual([original.command_id]);
+    expect(control.observations.submissions).toBe(1);
+    expect(control.observations.receiptReads).toBe(0);
+  });
+});
 it("joins capabilities, grant-change refusal, real HTTP 409 and unchanged ledger recovery without replay", async () => {
   await withWireLedger(async (control, observed) => {
     expect(control.observations.capabilities).toBeGreaterThan(0);
@@ -1054,6 +1066,15 @@ it.each(["missing", "invalid", "replayed", "lost"] as const)(
       await act(async () => latest.retry!());
       await wireReady();
       expect(control.observations.commandIds).toEqual([original.command_id]);
+      expect(observed).toContainEqual({
+        path: `/api/workstreams/commands/${original.command_id}`,
+        status: 200,
+      });
+      expect(
+        observed
+          .filter(({ path }) => path.startsWith("/api/workstreams/commands/"))
+          .every(({ path }) => path === `/api/workstreams/commands/${original.command_id}`),
+      ).toBe(true);
       // The fresh action uses the now-current version; the original command is never sent again.
       const base = wireCommand(next.command_id);
       const fresh = {
