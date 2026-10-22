@@ -11,10 +11,10 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import {
+  isQualifiedNativeEnrollmentSqliteRuntime,
   makeNativeEnrollmentSqliteConfig,
   NativeEnrollmentSqliteQualificationError,
 } from "./sqliteConnection.ts";
-import { isQualifiedNativeEnrollmentSqliteRuntime } from "./sqliteRuntimePolicy.ts";
 
 const runtimeIdentity = () => {
   const sqlite = process.versions.sqlite;
@@ -194,6 +194,7 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["24.21.0", "3.53.4"],
     ["24.22.0", "3.53.4"],
     ["26.8.2", "3.53.4"],
+    ["26.12.1", "3.54.0"],
   ])
     assert.strictEqual(isQualifiedNativeEnrollmentSqliteRuntime(node, sqlite), true);
   for (const [node, sqlite] of [
@@ -214,6 +215,14 @@ it("accepts only source-qualified exact Node/SQLite pairs", () => {
     ["26.8.2", "3.53.3"],
     ["26.8.2", "3.53.5"],
     ["26.8.2", undefined],
+    ["26.12.0", "3.54.0"],
+    ["26.12.2", "3.54.0"],
+    ["26.12.1", "3.53.4"],
+    ["26.12.1", "3.54.1"],
+    ["26.8.2", "3.54.0"],
+    ["26.12.1", undefined],
+    [undefined, "3.54.0"],
+    [undefined, undefined],
     ["24.19.0", undefined],
     [undefined, "3.53.3"],
   ])

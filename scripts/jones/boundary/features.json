@@ -1381,7 +1381,7 @@
         "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
-      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit candidate-only test configuration substitutes only candidate admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
     }
   ]
 }

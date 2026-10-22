@@ -2,6 +2,7 @@
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { isQualifiedNativeEnrollmentSqliteRuntime } from "./sqliteRuntimePolicy.ts";
+export { isQualifiedNativeEnrollmentSqliteRuntime } from "./sqliteRuntimePolicy.ts";
 
 export type NativeEnrollmentSqliteAccess = "strict_inspection" | "operational_inspection" | "apply";
 export interface NativeEnrollmentSqliteConfig {
