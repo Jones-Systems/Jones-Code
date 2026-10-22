@@ -42,7 +42,9 @@ jobs:
               .github/workflows/jones-native-workflows.yml \
               'apps/desktop/**' 'apps/web/src/components/Sidebar*' \
               'apps/web/src/components/sidebar/**' 'apps/web/src/jones/workstreams/**' \
+              'apps/web/src/state/**' 'apps/web/src/lib/api*' \
               'apps/server/src/jones/workstreams/**' 'apps/server/src/orchestration-v2/**' \
+              'apps/server/src/auth/**' 'apps/server/src/ws*' \
               'apps/server/src/persistence/**' 'scripts/jones/e2e/**' \
               'packages/client-runtime/**' 'packages/contracts/**' 'packages/shared/**' \
               'scripts/lib/**' 'native/browser-secret/**' \
@@ -57,9 +59,9 @@ jobs:
           fi
 
   # This dedicated check is not part of CI's aggregate Check. Native qualification
-  # here covers JE-01R on Linux; later portfolio scenarios need their own admission.
+  # here covers JE-01R and JE-02 on Linux; other scenarios need their own admission.
   electron-ui-evidence:
-    name: Jones Electron native pin restart
+    name: Jones Electron native workflows
     needs: changes
     if: needs.changes.outputs.changed == 'true' && github.event.pull_request.draft != true
     runs-on: ubuntu-24.04
@@ -321,6 +323,78 @@ jobs:
           }
           NODE
           done
+
+      - name: Verify Electron A and ordinarily paired read-only Node B
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'two-clients-admission.json').write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+          native_code=0
+          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs" \
+            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/two-clients" \
+            > "$JCUE_OUTPUT/two-clients-result.json" || native_code=$?
+          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/two-clients-exit-code.txt"
+          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read('two-clients-result.json');
+          const manifest = validateManifest(read('two-clients/manifest.json'));
+          const inner = read('two-clients/inner.json');
+          assert.equal(result.code, 0);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, 'passed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const scenario = fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs');
+          assert.equal(manifest.scenario.sha256, crypto.createHash('sha256').update(scenario).digest('hex'));
+          assert.equal(manifest.runtime.electron, '44.4.5');
+          assert.equal(manifest.error, null);
+          assert.equal(manifest.assertions.length, 59);
+          assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const client = manifest.fixture.nodeClient;
+          assert.equal(client.commandCount, 0);
+          assert.deepEqual(client.requests, ['orchestration.subscribeShell', 'orchestration.subscribeShell']);
+          assert.equal(client.connections.length, 2);
+          for (const connection of client.connections) {
+            assert.equal(connection.snapshots, 1);
+            assert.equal(connection.synchronized, true);
+          }
+          assert.ok(client.connections[0].updates > 0);
+          for (const key of ['removed', 'credentialsCleared', 'projectionCleared', 'socketClosed'])
+            assert.equal(client[key], true);
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+          }
+          NODE
 
       - name: Verify cleanup of this job's registered runs
         if: always() && env.JCUE_TASK_ROOT != ''

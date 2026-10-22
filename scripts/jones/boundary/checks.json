@@ -2313,7 +2313,8 @@
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
-        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs"
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs"
       ],
       "commands": ["vp run test:ui-evidence", "node scripts/jones/check-boundary.ts --strict"]
     }

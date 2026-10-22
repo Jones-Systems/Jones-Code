@@ -78,6 +78,16 @@ export async function stageRun({ run, source, harness, scenario, closure, config
         NodePath.join(stage, "harness", entry.name),
       );
   }
+  const support = NodePath.join(harness, "apps/desktop/scripts/ui-evidence/support");
+  let hasSupport = false;
+  try {
+    const info = await NodeFSP.lstat(support);
+    if (!info.isDirectory()) throw new Error("Harness support must be a regular directory");
+    hasSupport = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (hasSupport) await copyClosedTree(support, NodePath.join(stage, "harness/support"));
   await NodeFSP.cp(scenario, NodePath.join(stage, "harness/scenario.mjs"));
   await NodeFSP.writeFile(
     NodePath.join(stage, "harness/config.json"),
