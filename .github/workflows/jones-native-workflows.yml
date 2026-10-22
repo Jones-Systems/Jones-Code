@@ -699,7 +699,7 @@ jobs:
             'pinOnlyB':evidence.get('pinRouting',{})=={'ok':True,'count':1,'origin':'http://127.0.0.1:43774'},
             'aStrictInvariance':evidence.get('aStrictInvariance') is True and digest(evidence.get('aBeforeSha256')) and evidence.get('aBeforeSha256')==evidence.get('aAfterSha256'),
             'credentialFence':nc2.get('ok') is True and nc2.get('aStatus') in [401,403] and nc2.get('bStatus')==200,
-            'disabledNotLive':nc3.get('ok') is True and nc3.get('quietWindowMs')==5000 and evidence.get('bRetainedRows',{}).get('ok') is True,
+            'disabledNotLive':nc3.get('ok') is True and nc3.get('quietWindowMs')==5000 and evidence.get('bDisabledHidden',{}).get('ok') is True and evidence.get('bRestartHidden',{}).get('ok') is True and evidence.get('bReenableRestored',{}).get('ok') is True,
             'aLiveAndInvariant':a_live.get('ok') is True and digest(a_live.get('selectedSha256')) and a_live.get('selectedSha256')==evidence.get('aRestartSelectedSha256')==evidence.get('aFinalSelectedSha256'),
             'encryptedCatalog':catalog.get('encrypted') is True and catalog.get('plaintextAbsent') is True and 0<catalog.get('bytes',0)<=1048576 and catalog.get('storage')=={'available':True,'backend':'gnome_libsecret'} and all(restored.get(key) is True for key in ['target','profile','credential','disabled']),
             'credentialUnchangedOnReenable':set(fp)=={'0','1'} and all(fingerprint(fp[g].get(role)) for g in ['0','1'] for role in ['a','b']) and fp['0']['a']!=fp['0']['b'] and fp['1']['a']!=fp['1']['b'] and fp['0']['b']==fp['1']['b']==restored.get('b') and reenable=={'ok':True,'sameCredential':True,'pairedAgain':False},
