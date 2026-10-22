@@ -1536,7 +1536,13 @@
     "scripts/jones/mobile/xcuitest.test.ts": "jones-owned",
     "apps/mobile/plugins/withJonesE2eUITests.cjs": "jones-owned",
     "apps/mobile/e2e/xcuitest/PinWorkflowTests.swift": "jones-owned",
-    "apps/mobile/app.config.ts": "hook"
+    "apps/mobile/app.config.ts": "hook",
+    "scripts/mobile-showcase.ts": "hook",
+    "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
+    "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/mobile-showcase-metro.json": "jones-owned",
+    "scripts/package.json": "accepted-shared",
+    "docs/operations/mobile-app-store-screenshots.md": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
