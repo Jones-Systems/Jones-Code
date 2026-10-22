@@ -1395,6 +1395,15 @@
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
       "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+    },
+    {
+      "id": "server-e2e-integration",
+      "tests": [
+        "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
+        "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+      ],
+      "scope": "Real disk SQLite and loopback Effect-service integration for cross-server MCP delivery idempotency and destination/third-server absence, workspace placement after reopening state, and same-home startup refusal with owned listener cleanup. Provider opens fail closed. Local caller-context and peer metadata are injected; this group does not prove ordinary client enrollment, independent CLI-process restart, native UI, or distinct physical hosts."
     }
   ]
 }

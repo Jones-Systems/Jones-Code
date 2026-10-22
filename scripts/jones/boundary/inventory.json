@@ -1527,7 +1527,12 @@
     "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
     "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
     "apps/server/src/git/GitManager.ts": "accepted-shared",
-    ".github/workflows/native-enrollment-candidate.yml": "policy"
+    ".github/workflows/native-enrollment-candidate.yml": "policy",
+    "apps/server/integration/jones-e2e/serverFixture.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/server-e2e-integration.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

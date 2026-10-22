@@ -2300,6 +2300,20 @@
         "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-server-e2e-integration",
+      "tests": [
+        "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
+        "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run --config vite.config.ts --fileParallelism=false --testTimeout=120000 apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "vp lint apps/server/integration/jones-e2e/serverFixture.ts apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

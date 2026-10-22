@@ -1,0 +1,13 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "server-e2e-integration",
+  "jonesOwnedPaths": [
+    "apps/server/integration/jones-e2e/serverFixture.ts",
+    "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
+    "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
+    "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}
