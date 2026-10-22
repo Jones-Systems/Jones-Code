@@ -347,18 +347,66 @@ export default async function twoServersOneClient(ctx) {
       await take(() =>
         dialog.getByLabel("Pairing code", { exact: true }).fill(b.pairingCode, { timeout: 5000 }),
       );
+      let pairingStage = "submit-click";
       try {
         await take(() =>
           dialog
             .getByRole("button", { name: "Add environment", exact: true })
             .click({ timeout: 5000 }),
         );
+        pairingStage = "toast-visible";
         await take(() =>
           ctx.page.getByText("Backend added", { exact: true }).waitFor({ timeout: 15000 }),
         );
+        pairingStage = "dialog-hidden";
         await take(() => dialog.waitFor({ state: "hidden", timeout: 5000 }));
-      } catch {
-        throw new Error("remote-link-http-refused");
+      } catch (error) {
+        const message = typeof error?.message === "string" ? error.message.slice(0, 8192) : "";
+        const category = message.includes("strict mode violation")
+          ? "strict-locator"
+          : error?.name === "TimeoutError" ||
+              /Timeout \d+ms exceeded|^pair-b-ui-timeout$/.test(message)
+            ? "timeout"
+            : error?.name === "TargetClosedError" ||
+                /Target (?:page, context or browser has been closed|closed)/.test(message)
+              ? "target-closed"
+              : "other";
+        const diagnostic = {
+          stage: pairingStage,
+          category,
+          countLimit: 20,
+          probeLimitMs: 750,
+          probeStatus: "unavailable",
+        };
+        evidence.pairingUi = diagnostic;
+        let diagnosticTimer;
+        try {
+          const counts = await Promise.race([
+            Promise.all([
+              ctx.page.getByText("Backend added", { exact: true }).count(),
+              ctx.page
+                .locator('[data-slot="toast-title"]')
+                .filter({ hasText: /^Backend added$/ })
+                .count(),
+              dialog.count(),
+              ctx.page.getByText("Could not add backend", { exact: true }).count(),
+            ]),
+            new Promise((resolve) => {
+              diagnosticTimer = setTimeout(() => resolve(null), 750);
+            }),
+          ]).catch(() => null);
+          if (counts) {
+            const [successText, successTitle, dialogs, failureText] = counts.map((count) =>
+              Math.min(count, diagnostic.countLimit),
+            );
+            diagnostic.counts = { successText, successTitle, dialogs, failureText };
+            diagnostic.probeStatus = "observed";
+          }
+        } finally {
+          clearTimeout(diagnosticTimer);
+        }
+        // oxlint-disable-next-line preserve-caught-error -- Browser errors and causes can contain pairing credentials; retain only stage, category and bounded counts.
+        throw new Error(`remote-link-${pairingStage}-${category}`);
       }
       const catalog = await take(() => trace.catalog(ctx.page, identity.environmentId));
       requireThat(!catalog.disabled, "paired-b-disabled");
