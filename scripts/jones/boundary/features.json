@@ -1382,6 +1382,14 @@
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
       "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+    },
+    {
+      "id": "mobile-showcase-metro",
+      "tests": [
+        "scripts/jones/mobile/showcase-metro.node-test.mjs",
+        "scripts/mobile-showcase.test.ts"
+      ],
+      "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
     }
   ]
 }

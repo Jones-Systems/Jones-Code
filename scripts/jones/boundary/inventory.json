@@ -7,6 +7,12 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "scripts/mobile-showcase.ts": "hook",
+    "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
+    "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/mobile-showcase-metro.json": "jones-owned",
+    "scripts/package.json": "accepted-shared",
+    "docs/operations/mobile-app-store-screenshots.md": "accepted-shared",
     "apps/server/src/mcp/toolkits/core.test.ts": "jones-tests-in-upstream",
     "packages/effect-codex-app-server/src/client.ts": "accepted-shared",
     "packages/effect-codex-app-server/src/replay.ts": "accepted-shared",

@@ -1516,7 +1516,7 @@ async function main(): Promise<void> {
     readonly port: number;
   }> = [];
   let metro: NodeChildProcess.ChildProcess | null = null;
-  let captureFailed = false;
+  let metroCleanupError: unknown;
   const iosCleanups: IosCaptureCleanup[] = [];
   const androidCleanups: AndroidCaptureCleanup[] = [];
 
@@ -1568,7 +1568,9 @@ async function main(): Promise<void> {
       warmBundle: async (signal) => {
         await Promise.all([
           hasIos ? warmMetroBundle("ios", metroHost, runConfig, signal) : Promise.resolve(),
-          hasAndroid ? warmMetroBundle("android", "127.0.0.1", runConfig, signal) : Promise.resolve(),
+          hasAndroid
+            ? warmMetroBundle("android", "127.0.0.1", runConfig, signal)
+            : Promise.resolve(),
         ]);
       },
     });
@@ -1633,9 +1635,6 @@ async function main(): Promise<void> {
         `Showcase environments kept at ${showcaseRootDir} (${serverSummary}).\n`,
       );
     }
-  } catch (error) {
-    captureFailed = true;
-    throw error;
   } finally {
     if (options.keepRunning) {
       metro?.unref();
@@ -1655,19 +1654,21 @@ async function main(): Promise<void> {
           await runCommand("xcrun", ["simctl", "delete", cleanup.udid]).catch(() => undefined);
         }
       }
-      let metroCleanupError: unknown;
       await Promise.all([
         ...(metro
-          ? [stopShowcaseMetro(metro).catch((error: unknown) => {
-              metroCleanupError = error;
-              NodeProcess.stderr.write(`Metro cleanup failed: ${String(error)}\n`);
-            })]
+          ? [
+              stopShowcaseMetro(metro).catch((error: unknown) => {
+                metroCleanupError = error;
+                NodeProcess.stderr.write(`Metro cleanup failed: ${String(error)}\n`);
+              }),
+            ]
           : []),
         ...showcaseServers.map((server) => stopProcess(server)),
       ]);
       if (metroCleanupError) {
-        NodeProcess.stderr.write(`Preserved showcase root after Metro cleanup failure: ${showcaseRootDir}\n`);
-        if (!captureFailed) throw metroCleanupError;
+        NodeProcess.stderr.write(
+          `Preserved showcase root after Metro cleanup failure: ${showcaseRootDir}\n`,
+        );
       } else {
         await NodeFSP.rm(showcaseRootDir, {
           recursive: true,
@@ -1678,6 +1679,7 @@ async function main(): Promise<void> {
       }
     }
   }
+  if (metroCleanupError) throw metroCleanupError;
 }
 
 if (import.meta.main) {

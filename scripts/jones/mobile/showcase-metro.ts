@@ -1,8 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off - The showcase runner owns these local sockets, child listeners and bounded startup timers.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off globalFetch:off - This standalone Node showcase runner owns its abortable HTTP probes, local sockets, child listeners and bounded startup timers.
 import type * as NodeChildProcess from "node:child_process";
-import * as NodeHTTP from "node:http";
+import * as NodeHttp from "node:http";
 import * as NodeNet from "node:net";
-import * as NodeTimers from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 
 export async function selectShowcaseMetroPort(options: {
   readonly configuredPort: number;
@@ -35,7 +35,7 @@ export async function selectShowcaseMetroPort(options: {
 
 export function warmShowcaseMetroBundle(url: string, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const request = NodeHTTP.get(url, { signal }, (response) => {
+    const request = NodeHttp.get(url, { signal }, (response) => {
       response.once("error", reject);
       response.once("end", () => {
         if (response.statusCode === 200) resolve();
@@ -69,9 +69,10 @@ export async function waitForShowcaseMetro(options: {
   child?.once("exit", onExit);
   child?.once("error", onError);
   const timer = setTimeout(
-    () => controller.abort(
-      new Error(`Metro did not become ready on port ${port} within ${timeoutMs}ms.`),
-    ),
+    () =>
+      controller.abort(
+        new Error(`Metro did not become ready on port ${port} within ${timeoutMs}ms.`),
+      ),
     timeoutMs,
   );
   try {
@@ -88,7 +89,7 @@ export async function waitForShowcaseMetro(options: {
       }
       assertAlive();
       if (running) break;
-      await NodeTimers.setTimeout(100, undefined, { signal });
+      await NodeTimersPromises.setTimeout(100, undefined, { signal });
     }
     await warmBundle(signal);
     assertAlive();
