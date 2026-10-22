@@ -15,7 +15,7 @@ function write(root, name, content) {
   NodeFS.mkdirSync(NodePath.dirname(target), { recursive: true });
   NodeFS.writeFileSync(target, content);
 }
-function fixture() {
+function fixture(versionMode = "success") {
   const root = NodeFS.mkdtempSync(NodePath.join(repo, "node_modules", ".tsrs-test-"));
   roots.push(root);
   write(root, "package.json", JSON.stringify({ name: "fixture", private: true, type: "module" }));
@@ -64,6 +64,16 @@ function fixture() {
 const fs = require("node:fs");
 const NodePath = require("node:path");
 const args = process.argv.slice(2);
+if (args.length === 1 && args[0] === "--version") {
+  fs.appendFileSync(NodePath.join(__dirname, "version-queries"), "query\\n");
+  console.log("Version 7.1.0-dev.20260930.4");
+  if (${JSON.stringify(versionMode)} === "failure") {
+    console.error("version query failed");
+    process.exit(7);
+  }
+  if (${JSON.stringify(versionMode)} === "signal") process.kill(process.pid, "SIGTERM");
+  else process.exit(0);
+}
 const name = NodePath.basename(process.cwd());
 const config = JSON.parse(fs.readFileSync(args[args.indexOf("--project") + 1], "utf8"));
 fs.writeFileSync(args[args.indexOf("--tsBuildInfoFile") + 1], "owned-info");
@@ -215,7 +225,9 @@ describe("experimental typecheck", () => {
     const root = fixture();
     const result = await launch(root, ["@fixture/good", "--checkers", "3"]).completed;
     expect(result.code).toBe(0);
-    expect(result.output).toContain(`tsrs ${VERSION}; TypeScript 7.1.0-dev.20260929`);
+    expect(result.output).toContain(
+      `tsrs package ${VERSION}; TypeScript package metadata 7.1.0-dev.20260929`,
+    );
     expect(result.output).toContain("checkers=3");
     const observation = JSON.parse(
       result.output
@@ -235,6 +247,40 @@ describe("experimental typecheck", () => {
     ]);
     expectClean(root);
   });
+
+  it("displays the reported native version separately from metadata and queries once for multiple projects", async () => {
+    const root = fixture();
+    const result = await launch(root, ["packages/good", "packages/bad"]).completed;
+    expect(result.output).toContain(
+      `tsrs package ${VERSION}; TypeScript package metadata 7.1.0-dev.20260929`,
+    );
+    expect(result.output).toContain("Native compiler (--version):\nVersion 7.1.0-dev.20260930.4\n");
+    expect(
+      NodeFS.readFileSync(
+        NodePath.join(root, "node_modules/@tsrs/test-native/version-queries"),
+        "utf8",
+      ),
+    ).toBe("query\n");
+    expect(result.code).toBe(2);
+    expectClean(root);
+  });
+
+  it.each(["failure", "signal"])(
+    "preserves a version query %s and does not start compilation",
+    async (mode) => {
+      const root = fixture(mode);
+      const result = await launch(root, ["packages/good"]).completed;
+      if (mode === "failure") {
+        expect(result.code).toBe(7);
+        expect(result.output).toContain("version query failed");
+      } else {
+        expect(result.signal).toBe("SIGTERM");
+      }
+      expect(result.output).toContain("Version 7.1.0-dev.20260930.4");
+      expect(result.output).not.toContain("OBSERVATION");
+      expectClean(root);
+    },
+  );
 
   it("preserves diagnostics and the first nonzero status while continuing selected projects serially", async () => {
     const root = fixture();

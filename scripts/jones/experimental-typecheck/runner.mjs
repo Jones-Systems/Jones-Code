@@ -173,8 +173,21 @@ export async function runExperimental(root, args) {
     const compiler = await resolveCompiler(root);
     if (cancelled) return { code: 1, signal: cancelled };
     console.log(
-      `tsrs ${compiler.version}; TypeScript ${compiler.typescriptVersion}; ${compiler.packageName}; binary ${compiler.binary}`,
+      `tsrs package ${compiler.version}; TypeScript package metadata ${compiler.typescriptVersion}; ${compiler.packageName}; binary ${compiler.binary}`,
     );
+    console.log("Native compiler (--version):");
+    const versionTimeout = setTimeout(() => {
+      console.error("Native compiler version query timed out after 10 seconds.");
+      stop("SIGTERM");
+    }, 10_000);
+    let version;
+    try {
+      version = await execute(compiler.binary, ["--version"], root);
+    } finally {
+      clearTimeout(versionTimeout);
+    }
+    if (version.code !== 0 || version.signal || cancelled)
+      return { code: version.code, signal: cancelled ?? version.signal };
     console.log(
       `Selected projects: ${projects.map((project) => `${project.name} (${NodePath.relative(root, project.path)})`).join(", ")}; checkers=${options.checkers}`,
     );
