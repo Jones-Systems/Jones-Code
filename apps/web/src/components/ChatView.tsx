@@ -5104,6 +5104,12 @@ export default function ChatView(props: ChatViewProps) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
+  const onOpenChildInput = useStableCallback((threadRef: ScopedThreadRef) => {
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+    });
+  });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputBannerItem = (() => {
     const first = childThreadInputs[0];
@@ -5120,7 +5126,10 @@ export default function ChatView(props: ChatViewProps) {
         <Fragment key={child.id}>
           {index > 0 ? " " : null}
           <span className="whitespace-nowrap">
-            <InlineButton tone="muted" onClick={() => onOpenRelatedThreadStable(child.id)}>
+            <InlineButton
+              tone="muted"
+              onClick={() => onOpenChildInput(scopeThreadRef(child.environmentId, child.id))}
+            >
               {child.title}
             </InlineButton>
             {index < childThreadInputs.length - 1 ? "," : null}
@@ -5128,7 +5137,11 @@ export default function ChatView(props: ChatViewProps) {
         </Fragment>
       )),
       actions: (
-        <Button size="xs" variant="ghost" onClick={() => onOpenRelatedThreadStable(first.id)}>
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => onOpenChildInput(scopeThreadRef(first.environmentId, first.id))}
+        >
           {first.hasPendingApprovals ? "Open approval" : "Open question"}
         </Button>
       ),
