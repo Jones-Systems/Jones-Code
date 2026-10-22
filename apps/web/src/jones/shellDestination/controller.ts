@@ -1,6 +1,6 @@
 import type { ShellDestination } from "./model";
 import { shellCommandEligibility } from "./model";
-import { ShellRunStore, type ShellRun } from "./runStore";
+import { ShellRunStore, legacyShellRunKey, type ShellRun } from "./runStore";
 
 export const SHELL_RUN_THREAD_ID = "jones-shell-run";
 type Target = { environmentId: string; input: { threadId: string; terminalId: string } };
@@ -27,13 +27,15 @@ export class ShellRunController {
     again?: boolean;
     expectedTerminalId?: string;
   }): Promise<void> {
-    if (this.pending.has(input.key)) return;
+    const legacyKey = legacyShellRunKey(input.key);
+    if (!legacyKey || this.pending.has(input.key)) return;
     const observedTerminalId = input.expectedTerminalId ?? this.store.get(input.key)?.terminalId;
     this.pending.add(input.key);
     try {
       await this.store.withRunLock(input.key, async () => {
         const existing = this.store.get(input.key);
-        if (existing && !input.again) return;
+        // Recheck after lock acquisition: a stale tab may not have observed old evidence.
+        if ((existing || this.store.get(legacyKey)) && !input.again) return;
         // A stale Run again action must not replace a newer run from another tab.
         if (input.again && existing?.terminalId !== observedTerminalId) return;
         const eligibility = shellCommandEligibility(input.code, input.complete);
