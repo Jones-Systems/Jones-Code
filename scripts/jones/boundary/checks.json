@@ -163,14 +163,18 @@
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
         "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
         "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
+        "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/nativeWorkstreamActions.test.ts apps/web/src/components/workstreams/nativeThreadGrouping.test.ts apps/web/src/state/workstreams.test.ts apps/web/src/components/threadActionMenu.logic.test.ts packages/client-runtime/src/state/workstreams/placements.test.ts apps/web/src/components/Sidebar.logic.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/Sidebar.pointer.browser.test.tsx --maxWorkers=1",
         "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarThreadRow.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -178,13 +182,15 @@
       "tests": [
         "apps/web/src/jones/updates/versionSkew.test.ts",
         "apps/web/src/versionSkew.test.ts",
-        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx"
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx",
+        "apps/web/src/jones/updates/systemComposerBanners.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/jones/updates/versionSkew.test.ts apps/web/src/versionSkew.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/web test src/jones/updates/clientUpdateBanner.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/jones/updates/systemComposerBanners.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -231,8 +237,14 @@
     },
     {
       "id": "jones-environment-sidebar-filters",
-      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
-      "commands": ["vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts"]
+      "tests": [
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarDraftBlock.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+      ]
     },
     {
       "id": "jones-remote-host-status",
@@ -298,12 +310,12 @@
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts"
+        "apps/server/src/jones/orchestration/CodexCapacityReplay.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/orchestration-v2/RunExecutionService.test.ts apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts --maxWorkers=1",
         "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t 'capacity|native goals' --maxWorkers=1",
-        "vp test run apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
+        "vp test run apps/server/src/jones/orchestration/CodexCapacityReplay.test.ts -t 'completes a recovered Codex capacity run' --maxWorkers=1"
       ]
     },
     {
@@ -435,13 +447,15 @@
         "packages/provider-core/src/server/failure.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/orchestration/ProviderRuntimeBindingDiagnostics.test.ts packages/provider-core/src/server/failure.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts --maxWorkers=1",
         "vp test run apps/server/src/jones/resourceTelemetry/ProcessAttribution.test.ts packages/contracts/src/resourceTelemetry.test.ts apps/server/src/jones/orchestration/EventSink.runtimeIdentity.jones.test.ts packages/contracts/src/jones/providerRuntimeIdentity.test.ts",
         "vp test run apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts --maxWorkers=1",
-        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"admits each shared producer target|handles direct resume|leaves unconfirmed|keeps an unknown root\" --maxWorkers=1"
+        "vp test run apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts -t \"admits each shared producer target|handles direct resume|leaves unconfirmed|keeps an unknown root\" --maxWorkers=1",
+        "vp test run apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -457,10 +471,12 @@
         "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
         "apps/server/src/provider/providerGoal.test.ts",
         "apps/server/src/provider/providerQueue.test.ts",
-        "apps/server/src/provider/providerQueueHttp.test.ts"
+        "apps/server/src/provider/providerQueueHttp.test.ts",
+        "apps/web/src/jones/queue/queuedRunAdmission.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/provider/providerQueue.test.ts apps/server/src/provider/providerQueueHttp.test.ts"
+        "vp test run apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/orchestration-v2/LegacyBootstrapPersistence.test.ts apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts apps/server/src/orchestration-v2/LegacyKnownFailureDeletion.integration.test.ts apps/server/src/orchestration-v2/ProviderGoalState.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/providerGoalHttp.test.ts apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts apps/server/src/provider/providerGoal.test.ts apps/server/src/provider/providerQueue.test.ts apps/server/src/provider/providerQueueHttp.test.ts",
+        "vp test run apps/web/src/jones/queue/queuedRunAdmission.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -956,12 +972,14 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "commands": [
         "vp test run apps/server/src/jones/provider/observations/ProviderSessionBackgroundLiveness.test.ts apps/server/src/jones/provider/observations/ProviderThreadRuntimeObservation.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ThreadManagementService.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/orchestration-v2/runtimeLayer.test.ts",
         "vp run --filter t3 typecheck",
-        "vp run --filter @t3tools/contracts typecheck"
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp test run apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -1887,7 +1905,8 @@
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/ThreadStop.test.ts",
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
-        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "commands": [
         "vp test run packages/contracts/src/jones/delegatedTaskWorkspace.test.ts packages/contracts/src/orchestratorMcp.test.ts packages/provider-core/src/jones/orchestrationInstructions.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/orchestrator/tools.test.ts",
@@ -1897,7 +1916,8 @@
         "vp test run apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/contracts --filter @t3tools/provider-core --filter t3 --concurrency-limit 1 typecheck",
         "node scripts/jones/check-boundary.ts --strict",
-        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/contracts/src/jones/orchestrationCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts --maxWorkers=1"
       ]
     },
     {
@@ -2354,13 +2374,15 @@
         "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
         "apps/web/src/state/workstreams.test.ts",
         "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx"
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
+        "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/state/workstreams.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/sidebar/SidebarThreadRow.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
@@ -2389,6 +2411,20 @@
         "vp run --filter t3 typecheck",
         "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-markdown-table-interactions",
+      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/MarkdownTable.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "jones-composer-attachment-capacity",
+      "tests": ["apps/web/src/jones/composer/attachmentCapacity.test.ts"],
+      "commands": [
+        "vp test run apps/web/src/jones/composer/attachmentCapacity.test.ts --maxWorkers=1"
       ]
     }
   ]

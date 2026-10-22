@@ -1594,7 +1594,34 @@
     "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
     "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
     "apps/server/src/git/GitManager.ts": "accepted-shared",
-    ".github/workflows/native-enrollment-candidate.yml": "policy"
+    ".github/workflows/native-enrollment-candidate.yml": "policy",
+    "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
+    "apps/web/src/components/chat/ComposerControlsBar.tsx": "accepted-shared",
+    "apps/web/src/components/chat/MarkdownTable.browser.test.tsx": "jones-owned",
+    "apps/web/src/components/chat/MarkdownTable.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadVisitWatermark.tsx": "hook",
+    "apps/web/src/components/chat/composerSend.logic.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/composerSend.logic.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerCommandKey.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerContextImport.ts": "hook",
+    "apps/web/src/components/chat/useComposerProviderModel.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerResume.ts": "accepted-shared",
+    "apps/web/src/components/chat/useComposerSelection.ts": "hook",
+    "apps/web/src/components/chat/useComposerSend.ts": "hook",
+    "apps/web/src/components/chat/useComposerStash.ts": "hook",
+    "apps/web/src/components/chat/useMultipleModelSend.ts": "hook",
+    "apps/web/src/components/chat/useSystemComposerBanners.tsx": "hook",
+    "apps/web/src/components/pullRequest/PullRequestsPage.tsx": "hook",
+    "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx": "jones-owned",
+    "apps/web/src/components/sidebar/SidebarDraftBlock.tsx": "accepted-shared",
+    "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx": "jones-owned",
+    "apps/web/src/components/sidebar/SidebarThreadRow.tsx": "accepted-shared",
+    "apps/web/src/jones/composer/attachmentCapacity.test.ts": "jones-owned",
+    "apps/web/src/jones/composer/attachmentCapacity.ts": "jones-owned",
+    "apps/web/src/jones/queue/queuedRunAdmission.test.ts": "jones-owned",
+    "apps/web/src/jones/queue/queuedRunAdmission.ts": "jones-owned",
+    "apps/web/src/jones/updates/systemComposerBanners.browser.test.tsx": "jones-owned",
+    "scripts/dev-runner.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2209,6 +2236,66 @@
     {
       "from": "apps/web/src/components/ThreadNotificationCoordinator.badge.browser.test.tsx",
       "to": "packages/shared/src/jones/threadAttention.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/queue/queuedRunAdmission.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadVisitWatermark.tsx",
+      "to": "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerContextImport.ts",
+      "to": "apps/web/src/jones/threadReferenceExcerpt/useThreadReferenceCapture.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSelection.ts",
+      "to": "apps/web/src/jones/composer/composerModelEffortShortcuts.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSelection.ts",
+      "to": "apps/web/src/jones/composer/ProviderInstanceShortcuts.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/importedHistory/useImportedHistoryComposer.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/components/chat/composerSendRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerStash.ts",
+      "to": "apps/web/src/jones/composer/attachmentCapacity.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/components/chat/composerSendRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useSystemComposerBanners.tsx",
+      "to": "apps/web/src/jones/updates/ClientServerBuildLabels.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useSystemComposerBanners.tsx",
+      "to": "apps/web/src/jones/updates/clientUpdateBanner.tsx"
+    },
+    {
+      "from": "apps/web/src/components/pullRequest/PullRequestsPage.tsx",
+      "to": "apps/web/src/jones/pullRequestCi/PullRequestCiStatusPopover.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/updates/buildPairs.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/FleetEnrollmentControls.tsx"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/updates/JonesUpdateControls.tsx"
     }
   ]
 }

@@ -102,7 +102,9 @@
         "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
         "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx",
         "apps/web/src/jones/workstreams/useConnectedWorkstreamTrust.test.tsx",
-        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx"
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx",
+        "apps/web/src/components/sidebar/SidebarThreadRow.browser.test.tsx"
       ],
       "scope": "Web and desktop sidebar thread rows share the ordinary pointer threshold and cancellation behavior for Workstream movement and native active ordering. Context menus put primary assignment and removal below Snooze/Wake, retaining secondary membership context. Groups come from stored assignments read at one registry version; proof requests cover only stored identities in batches within the per-request identity and byte caps, each with its own canonical hash, and only upgrade assurance. Stale snapshots stay visible read-only, conflicts block membership changes, and only access loss hides them. Display trust also accepts each connected environment's live config descriptor, so remote threads can show as verified; disagreeing descriptors mark that environment's threads as conflicts, and membership changes keep primary placement trust. A thread from another environment is registered, verified and assigned through that environment's own server after its owner registry, registration source and write access are checked; commands reconcile only on the accepting environment. Shared menu builder and pointer edits expose only optional assignment items and the existing drag-distance constant."
     },
@@ -118,7 +120,8 @@
         "apps/server/src/jones/updates/JonesUpdater.test.ts",
         "apps/server/src/jones/updates/http.test.ts",
         "apps/server/src/jones/updates/serverCapability.test.ts",
-        "apps/server/src/jones/updates/desktopInstall.test.ts"
+        "apps/server/src/jones/updates/desktopInstall.test.ts",
+        "apps/web/src/jones/updates/systemComposerBanners.browser.test.tsx"
       ],
       "scope": "Client guidance for unequal Jones preview sources includes an explicit download and confirmed install toward the full source baked into the running client. Exact-source capability and endpoint preserve legacy offered-build fallback only for a matching source. Stale, disconnected, unprivileged and mismatched staged states refuse actions. Existing source-scoped dismissal remains. Synthetic production-controller fixtures and browser interactions cover download, confirmation, refusal and lost-response reconciliation; no mobile comparison or native host installation is claimed."
     },
@@ -150,7 +153,10 @@
     },
     {
       "id": "environment-sidebar-filters",
-      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
+      "tests": [
+        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts",
+        "apps/web/src/components/sidebar/SidebarDraftBlock.browser.test.tsx"
+      ],
       "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
     },
     {
@@ -226,7 +232,7 @@
         "apps/server/src/orchestration-v2/EventSink.providerSettlement.test.ts",
         "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayFixtures.integration.test.ts",
+        "apps/server/src/jones/orchestration/CodexCapacityReplay.test.ts",
         "packages/client-runtime/src/state/threadExecution.test.ts",
         "apps/web/src/components/chat/MessagesTimeline.logic.test.ts",
         "packages/client-runtime/src/jones/providerSettlementCompatibility.test.ts"
@@ -292,9 +298,10 @@
         "apps/server/src/orchestration-v2/queueCompatibilityHttp.test.ts",
         "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
         "apps/server/src/provider/providerQueue.test.ts",
-        "apps/server/src/provider/providerGoal.test.ts"
+        "apps/server/src/provider/providerGoal.test.ts",
+        "apps/web/src/jones/queue/queuedRunAdmission.test.ts"
       ],
-      "scope": "Guarded legacy queue dispatch, durable command observation and provider inventory/quota facade, with exact queueDispatch/v1 advertisement on the protocol-2 environment descriptor."
+      "scope": "Guarded legacy queue dispatch, durable command observation and provider inventory/quota facade, with exact queueDispatch/v1 advertisement on the protocol-2 environment descriptor. Current selected-run starts require the explicit optional queuedRunStart capability; absent or false does not authorize start-one, while explicit queue resume remains available."
     },
     {
       "id": "provider-runtime-identity",
@@ -306,7 +313,8 @@
         "packages/provider-core/src/server/failure.test.ts",
         "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "scope": "Closed binding-refusal diagnostics and persisted reason codes; runtime retirement checks the active provider conversation atomically so superseded records cannot become selected again."
     },
@@ -472,7 +480,8 @@
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
         "apps/server/src/mcp/OrchestratorMcpService.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
-        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "scope": "Bound owner-backed observation through ProviderSessionManager and optional ThreadManagementService/MCP output. Codex reports current positive live work with partial coverage; unsupported adapters and missing native coverage remain explicit. Ordinary MCP status and session retention are unchanged."
     },
@@ -1121,7 +1130,8 @@
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/ThreadStop.test.ts",
         "apps/server/src/orchestration-v2/DelegatedCompletionDelivery.test.ts",
-        "packages/contracts/src/jones/orchestrationCompatibility.test.ts"
+        "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
       "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. App-owned delegated existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, observes setup completion without publishing setup-tracker snapshots: synchronous setup holds provider release, while async setup releases the provider and remains cancellable. Stop (task_cancel) closes its setup terminal without removing the checkout, including cancellation after async release; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations."
     },
@@ -1442,6 +1452,16 @@
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
       "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+    },
+    {
+      "id": "markdown-table-interactions",
+      "tests": ["apps/web/src/components/chat/MarkdownTable.browser.test.tsx"],
+      "scope": "Jones markdown table expand/collapse controls retain accessible state and bounded scrolling through the extracted upstream leaf."
+    },
+    {
+      "id": "composer-attachment-capacity",
+      "tests": ["apps/web/src/jones/composer/attachmentCapacity.test.ts"],
+      "scope": "Composer stash and context attachments reserve the actual remaining attachment capacity before import, preserving existing drafts and bounded attachment limits."
     }
   ]
 }

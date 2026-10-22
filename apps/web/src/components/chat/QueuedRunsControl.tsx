@@ -128,13 +128,14 @@ export function QueuedRunsControl({
     threadId: props.threadId,
     queued,
   });
+  // Async review guards always compare against the latest committed route and queue.
   useLayoutEffect(() => {
     currentQueueRef.current = {
       environmentId: props.environmentId,
       threadId: props.threadId,
       queued,
     };
-  }, [props.environmentId, props.threadId, queued]);
+  });
   const reviewImportedQueued = async (runId: RunId, messageId: MessageId) => {
     if (busyRunId !== null || steerInFlightRef.current) return;
     const entry = queued.find((item) => item.run.id === runId && item.messageId === messageId);
