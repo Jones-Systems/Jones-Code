@@ -61,18 +61,21 @@ sidecars. Approval for these commands must cover those effects.
 
 The store is opened through a fixed `file:` URI with extensions disabled, and
 only on these source-qualified runtime pairs: Node 24.13.1 with SQLite 3.51.2,
-24.19.0 with 3.53.3, and 24.21.0, 24.22.0 or 26.8.2 with 3.53.4. The Node 26
-pair serves the standalone CLI artifacts; the desktop's Electron backend uses
-its own embedded Node runtime. Qualification follows the process executing the
-enrollment command, not the version of a different running server.
+24.19.0 with 3.53.3, 24.21.0, 24.22.0 or 26.8.2 with 3.53.4, and 26.12.1
+with 3.54.0. Node 26.12.1 serves the standalone CLI artifacts; the desktop's
+Electron backend uses its own embedded Node runtime. Qualification follows the
+process executing the enrollment command, not the version of a different running
+server.
 
-The native-enrollment CI job exercises the exact Node 26 pair on Linux and
-macOS arm64, records the test and subprocess executable identities, and checks
+The native-enrollment CI jobs exercise both exact Node 26 pairs on Linux x64
+and macOS arm64, record the test and subprocess executable identities, and check
 escaped file URIs, missing-file non-creation, read-only writes, disabled
-extension loading, WAL visibility and transaction-bound authority. Existing
-Node 24 CI remains in place. A newer runtime needs these checks before its exact
-Node/SQLite pair is added; a release label or successful server startup alone
-is insufficient. Unlisted pairs continue to fail closed.
+extension loading, WAL visibility and transaction-bound authority. The separate
+26.12.1 workflow also checks SQLite engine behavior in a disposable SEA fixture;
+this does not replace the ordinary Jones artifact version and serve smoke tests.
+Existing Node 24 CI remains in place. A newer runtime needs these checks before
+its exact Node/SQLite pair is added; a release label or successful server startup
+alone is insufficient. Unlisted pairs continue to fail closed.
 
 ## Desktop owner setup
 

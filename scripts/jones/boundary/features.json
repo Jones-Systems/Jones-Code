@@ -32,6 +32,9 @@
     {
       "id": "workstreams-interaction-recovery",
       "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
+        "apps/web/src/state/workstreams.test.ts",
         "packages/client-runtime/src/state/session.test.ts",
         "apps/web/src/state/session.test.ts",
         "packages/contracts/src/jones/workstreamsRegistrationAvailability.test.ts",
@@ -44,7 +47,7 @@
         "apps/web/src/reactCompilerCoverage.test.ts",
         "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx"
       ],
-      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The Jones-owned project-settings browser harness restores the permission cases from the upstream-deleted shared harness because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery."
+      "scope": "Bounded shared session recovery, strict environment access diagnostics, independent native reorder, pinned-to-Workstream drag integration, and pre-dispatch no-effect classification. Shared session atom edits preserve its existing ownership and retry only typed transient failures; shared web session tests exercise the singleton registry. Existing Sidebar and HTTP integration harnesses retain Jones cases because they own the consumed hooks. Registration diagnostics add only a sanitized response header, leaving the frozen response body unchanged. Source qualification and permission fences remain strict; transport and replay ambiguity never resubmit commands. React Compiler coverage checks the repaired hooks and sidebar. The Jones-owned project-settings browser harness restores the permission cases from the upstream-deleted shared harness because it exercises editable fields and project mutations through the actual shared session access helpers, covering fresh grants, checking, failure and recovery. The web sidebar shows actionable enrolled-build diagnostics and a closable detail panel with current members and collapsed management history, retaining existing write and source gates."
     },
     {
       "id": "sqlite-checkpoint-lifecycle",
@@ -333,7 +336,8 @@
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.browser.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts",
-        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts",
+        "apps/web/src/jones/subagents/accountDisplayName.test.ts"
       ]
     },
     {
@@ -1409,6 +1413,34 @@
         "apps/web/src/hooks/useHandleNewThread.test.ts"
       ],
       "scope": "Device-local project and environment ordering across connected environments. Jones owns ranking, migration-compatible keys, absent-item retention and sortable Settings \u2192 Jones Code controls. Shared hooks route sidebar, palette, draft and Run on lists through the same order without changing target environment defaults. uiStateStore persistence and restore-default wiring remain accepted shared edits; store tests require the upstream persistence harness."
+    },
+    {
+      "id": "pr-lookup-git-state",
+      "tests": [
+        "apps/server/src/jones/git/prLookupGitState.test.ts",
+        "apps/server/src/git/GitManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+      ],
+      "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. ThreadPullRequestService defers terminal confirmation only for discovery; its mandatory fresh check before writes remains. Integration tests stay with their existing Git and orchestration harnesses. Ref probes, foreground actions and installed runtime are unchanged."
+    },
+    {
+      "id": "workstreams-multi-environment",
+      "tests": [
+        "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
+      ],
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with injected synthetic authentication, HTTPS registry identity, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+    },
+    {
+      "id": "native-enrollment-runtime",
+      "tests": [
+        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
+      ],
+      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
     }
   ]
 }

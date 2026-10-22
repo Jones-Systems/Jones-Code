@@ -242,6 +242,78 @@ async function render(
   );
 }
 
+it("shows the enrolled-build reason while assignment menus remain blocked", async () => {
+  const availability = {
+    state: "unavailable" as const,
+    reason: "The running app differs from the enrolled build; refresh enrollment for this build",
+  };
+  controller = {
+    ...controller,
+    primaryAssignmentAvailability: availability,
+    assignmentAvailability: () => availability,
+  };
+  await render();
+  expect(container.textContent).toContain(availability.reason);
+  await openAssignment();
+  const beta = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => !container.contains(button) && button.textContent?.trim().startsWith("beta"),
+  );
+  expect(beta?.disabled).toBe(true);
+  const refresh = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "Refresh",
+  )!;
+  await act(async () => refresh.click());
+  expect(controller.refresh).toHaveBeenCalledOnce();
+});
+
+it("uses thread titles by source identity with an ID fallback in current members", async () => {
+  const unknown = {
+    ...reference,
+    native_reference_id: "unknown-reference",
+    identity: { ...reference.identity, source_instance_id: "different-environment" },
+  };
+  controller = {
+    ...controller,
+    loadDetail: vi.fn(
+      async () =>
+        ({
+          detail: {
+            context: { owner_id: "owner", server_generation: 7, registry_version: 11 },
+            workstream: { workstream_id: "alpha", name: "alpha", lifecycle: "active", version: 3 },
+          },
+          references: { items: [reference, unknown] },
+          memberships: {
+            items: [reference, unknown].map((ref) => ({
+              membership_id: ref.native_reference_id,
+              native_reference_id: ref.native_reference_id,
+              kind: "primary",
+              closed: null,
+            })),
+          },
+          declarations: { items: [] },
+          edges: { items: [] },
+          history: { items: [], next_cursor: null },
+        }) as unknown as WorkstreamDetailView,
+    ),
+  };
+  await render();
+  const title = [...container.querySelectorAll("button")].find(
+    (button) => button.textContent === "alpha",
+  )!;
+  await act(async () => title.click());
+  const members = container.querySelector('[aria-label="Current members"]')!;
+  expect(members.textContent).toContain("First native conversation");
+  expect(members.textContent).toContain("t3: thread");
+  expect(container.querySelector("details")?.open).toBe(false);
+  expect(document.activeElement?.id).toBe("workstream-detail-panel");
+  await act(async () =>
+    document.activeElement!.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    ),
+  );
+  expect(container.querySelector("#workstream-detail-panel")).toBeNull();
+});
+
 async function clickLabel(label: string) {
   const button = document.querySelector<HTMLElement>(`[aria-label="${label}"]`);
   expect(button, label).not.toBeNull();

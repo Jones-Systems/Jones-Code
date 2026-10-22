@@ -492,10 +492,11 @@
         "apps/web/src/jones/composer/ReasoningEffortShortcuts.browser.test.tsx",
         "apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts",
         "apps/web/src/jones/composer/composerShortcutRails.test.ts",
-        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
+        "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts",
+        "apps/web/src/jones/subagents/accountDisplayName.test.ts"
       ],
       "commands": [
-        "vp test run apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts apps/web/src/jones/composer/providerShortcutLabelColor.test.ts",
+        "vp test run apps/web/src/jones/composer/ProviderInstanceShortcuts.test.ts apps/web/src/jones/composer/composerModelEffortShortcuts.test.ts apps/web/src/jones/composer/composerShortcutRails.test.ts apps/web/src/jones/composer/providerShortcutLabelColor.test.ts apps/web/src/jones/subagents/accountDisplayName.test.ts",
         "vp test run --root apps/web --config vite.config.ts --project browser src/components/chat/FavoriteModelShortcuts.browser.test.tsx src/components/chat/ProviderModelPicker.favorites.browser.test.tsx src/jones/composer/ReasoningEffortShortcuts.browser.test.tsx --maxWorkers=1 --no-file-parallelism"
       ]
     },
@@ -2327,6 +2328,65 @@
         "cd apps/web && vp test run --project browser src/jones/presentationOrder/SortableOrderList.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "vp lint apps/web/src/components/CommandPalette.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/DraftHeroHeadline.tsx apps/web/src/components/settings/SettingsPanels.tsx apps/web/src/components/settings/settingsSearch.ts apps/web/src/hooks/useHandleNewThread.test.ts apps/web/src/hooks/useHandleNewThread.ts apps/web/src/hooks/useLogicalProjectEnvironments.ts apps/web/src/hooks/useSidebarProjectGroups.ts apps/web/src/jones/workQueue/PromptsSettings.tsx apps/web/src/uiStateStore.test.ts apps/web/src/uiStateStore.ts apps/web/src/jones/presentationOrder/PresentationOrderSettings.tsx apps/web/src/jones/presentationOrder/SortableOrderList.browser.test.tsx apps/web/src/jones/presentationOrder/SortableOrderList.tsx apps/web/src/jones/presentationOrder/environmentOrder.test.ts apps/web/src/jones/presentationOrder/environmentOrder.ts apps/web/src/jones/presentationOrder/projectOrder.test.ts apps/web/src/jones/presentationOrder/projectOrder.ts",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-pr-lookup-git-state",
+      "tests": [
+        "apps/server/src/jones/git/prLookupGitState.test.ts",
+        "apps/server/src/git/GitManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/git/prLookupGitState.ts apps/server/src/jones/git/prLookupGitState.test.ts apps/server/src/git/GitManager.ts apps/server/src/orchestration-v2/ThreadPullRequestService.ts apps/server/src/git/GitManager.test.ts apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstream-assignment-panel",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/state/workstreams.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx --maxWorkers=1",
+        "vp test run --root apps/web --config vite.config.ts --project browser src/components/workstreams/WorkstreamNativeSidebar.browser.test.tsx src/jones/workstreams/connectedWorkstreamTrust.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-native-enrollment-runtime",
+      "tests": [
+        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
+      ],
+      "commands": [
+        "node --input-type=module -e \"import { createRequire } from 'node:module'; import { dirname, resolve } from 'node:path'; const r = createRequire(import.meta.resolve('vite-plus/package.json')); const p = r.resolve('vitest/package.json'); process.argv = [process.execPath, resolve(dirname(p), r(p).bin.vitest), 'run', '--config', 'scripts/jones/native-enrollment/candidate.vite.config.ts']; await import(process.argv[1]);\"",
+        "JONES_SQLITE_SEA_FIXTURE=\"$TMPDIR/sqlite-sea\" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-multi-environment",
+      "tests": [
+        "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

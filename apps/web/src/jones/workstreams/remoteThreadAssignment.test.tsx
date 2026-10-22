@@ -682,11 +682,11 @@ describe("assigning a thread from another environment", () => {
     environment.state.availabilityHeader = "unavailable;reason=source_mismatch";
     expect(latest.assignmentAvailability!(remote)).toEqual({ state: "unknown", reason: null });
     expect(await assignRemote()).toMatchObject({
-      message: expect.stringContaining("enrolled source or build differs"),
+      message: expect.stringContaining("this environment is not enrolled"),
     });
     expect(latest.assignmentAvailability!(remote)).toMatchObject({
       state: "unavailable",
-      reason: expect.stringContaining("enrolled source or build differs"),
+      reason: expect.stringContaining("this environment is not enrolled"),
     });
     environment.state.sources = sources;
     environment.state.availabilityHeader = "ready";

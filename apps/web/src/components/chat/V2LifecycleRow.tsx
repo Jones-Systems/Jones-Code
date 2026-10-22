@@ -1,3 +1,5 @@
+import { ProviderAccountGlyph } from "../../jones/composer/ProviderShortcutIcon";
+import { subagentAccountDisplayName } from "../../jones/subagents/accountDisplayName";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
@@ -263,12 +265,14 @@ export function SubagentElapsed({ agent }: { agent: Parameters<typeof AgentElaps
 function SubagentAvatar({
   driver,
   displayName,
+  accountDisplayName,
   iconUrl,
   status,
   className,
 }: {
   driver?: ProviderDriverKind | undefined;
   displayName?: string | undefined;
+  accountDisplayName?: string | undefined;
   iconUrl?: string | undefined;
   status?: OrchestrationV2TurnItem["status"] | undefined;
   className?: string;
@@ -281,7 +285,13 @@ function SubagentAvatar({
         className,
       )}
     >
-      {driver ? (
+      {driver && accountDisplayName !== undefined ? (
+        <ProviderAccountGlyph
+          driverKind={driver}
+          displayName={accountDisplayName}
+          acpRegistryIconUrl={iconUrl}
+        />
+      ) : driver ? (
         <ProviderInstanceIcon
           driverKind={driver}
           displayName={displayName ?? driver}
@@ -295,7 +305,7 @@ function SubagentAvatar({
       {status ? (
         <span
           className={cn(
-            "absolute -right-px -bottom-px size-2 rounded-full ring-2 ring-background",
+            "absolute -right-px -bottom-px z-50 size-2 rounded-full ring-2 ring-background",
             subagentStatusVisual(status).dotClass,
           )}
         />
@@ -305,7 +315,7 @@ function SubagentAvatar({
 }
 
 /**
- * Reads only the two provider fields the avatar draws. Provider status pushes
+ * Reads only the primitive provider fields the avatar draws. Provider status pushes
  * replace the provider objects (fresh `checkedAt`), so selecting strings keeps
  * the avatar from re-rendering when nothing it shows changed.
  */
@@ -330,7 +340,17 @@ export function EnvironmentSubagentAvatar({
     (providers) =>
       providers?.find((provider) => provider.instanceId === providerInstanceId)?.iconUrl,
   );
-  return <SubagentAvatar {...props} displayName={displayName} iconUrl={iconUrl} />;
+  const accountDisplayName = useAtomValue(providersAtom, (providers) =>
+    subagentAccountDisplayName(providers, providerInstanceId, props.driver),
+  );
+  return (
+    <SubagentAvatar
+      {...props}
+      displayName={displayName}
+      accountDisplayName={accountDisplayName}
+      iconUrl={iconUrl}
+    />
+  );
 }
 
 const NOTIFICATION_OUTCOME_STATUS: Record<

@@ -17,6 +17,8 @@ import * as PlatformError from "effect/PlatformError";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import { expect } from "vite-plus/test";
 import type {
@@ -1027,6 +1029,167 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
+  it.effect("status briefly caches repeated lookups for the same cwd", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-cache"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-cache"]);
+
+      const existingPr = {
+        number: 113,
+        title: "Cached PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/113",
+        baseRefName: "main",
+        headRefName: "feature/status-cache",
+      };
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [JSON.stringify([existingPr]), JSON.stringify([existingPr])],
+        },
+      });
+
+      const first = yield* manager.status({ cwd: repoDir });
+      const second = yield* manager.status({ cwd: repoDir });
+
+      expect(first.pr?.number).toBe(113);
+      expect(second.pr?.number).toBe(113);
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+    }),
+  );
+
+  it.effect("a warm PR cache does not reread repository identity for status", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-identity-cache"]);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/status-identity-cache"]);
+
+      const gitConfigReads: string[] = [];
+      const { manager } = yield* makeManager({ gitConfigReads });
+
+      yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
+      gitConfigReads.length = 0;
+      yield* manager.remoteStatus({ cwd: repoDir }, { refreshUpstream: false });
+
+      const identityReads = gitConfigReads.filter(
+        (key) =>
+          key === "branch.feature/status-identity-cache.remote" || key === "remote.origin.url",
+      );
+      expect(identityReads).toHaveLength(0);
+    }),
+  );
+
+  it.effect("a warm branch PR lookup starts no git process", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      for (const branch of ["feature/warm-pr", "feature/warm-no-pr"]) {
+        yield* runGit(repoDir, ["checkout", "-b", branch, "main"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+      }
+      const gitCommands: string[] = [];
+      const gitConfigReads: string[] = [];
+      const { manager, ghCalls } = yield* makeManager({
+        gitCommands,
+        gitConfigReads,
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/warm-pr": encodeCliJson([
+              {
+                number: 230,
+                title: "Warm PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/230",
+                baseRefName: "main",
+                headRefName: "feature/warm-pr",
+                state: "OPEN",
+                updatedAt: "2026-04-07T15:00:00Z",
+              },
+            ]),
+          },
+        },
+      });
+      const lookupAll = Effect.forEach(["feature/warm-pr", "feature/warm-no-pr"], (branch) =>
+        manager.branchPullRequest({ cwd: repoDir, branch }),
+      );
+
+      const cold = yield* lookupAll;
+      expect(cold.map((pullRequest) => pullRequest?.number ?? null)).toEqual([230, null]);
+      expect(gitCommands.length).toBeGreaterThan(0);
+
+      gitCommands.length = 0;
+      const warm = yield* lookupAll;
+      expect(warm).toEqual(cold);
+      expect(gitCommands).toEqual([]);
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+      yield* TestClock.adjust("61 seconds");
+      gitConfigReads.length = 0;
+      expect(yield* lookupAll).toEqual(cold);
+      expect(gitConfigReads).toEqual([]);
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(3);
+    }),
+  );
+
+  it.effect(
+    "a branch PR lookup sees an upstream change on request, after a T3 git action, or after the TTL",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        yield* runGit(repoDir, ["checkout", "-b", "feature/moving-upstream"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", "feature/moving-upstream"]);
+        yield* runGit(repoDir, ["push", "origin", "HEAD:refs/heads/feature/other-head"]);
+        const pullRequest = (number: number, headRefName: string) =>
+          encodeCliJson([
+            {
+              number,
+              title: headRefName,
+              url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
+              baseRefName: "main",
+              headRefName,
+              state: "OPEN",
+              updatedAt: "2026-04-07T15:00:00Z",
+            },
+          ]);
+        const { manager } = yield* makeManager({
+          ghScenario: {
+            prListByHeadSelector: {
+              "feature/moving-upstream": pullRequest(235, "feature/moving-upstream"),
+              "feature/other-head": pullRequest(236, "feature/other-head"),
+            },
+          },
+        });
+        const lookup = manager.branchPullRequest({
+          cwd: repoDir,
+          branch: "feature/moving-upstream",
+        });
+        expect((yield* lookup)?.number).toBe(235);
+
+        yield* runGit(repoDir, ["branch", "--set-upstream-to=origin/feature/other-head"]);
+        const reread = yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/moving-upstream" },
+          { freshGitState: true },
+        );
+        expect(reread?.number).toBe(236);
+
+        yield* runGit(repoDir, ["branch", "--set-upstream-to=origin/feature/moving-upstream"]);
+        yield* manager.invalidateStatus(repoDir);
+        expect((yield* lookup)?.number).toBe(235);
+
+        yield* runGit(repoDir, ["branch", "--set-upstream-to=origin/feature/other-head"]);
+        yield* TestClock.adjust("5 minutes");
+        expect((yield* lookup)?.number).toBe(236);
+      }),
+  );
+
   it.effect("a git read in flight during a T3 git action does not outlive it", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
@@ -1676,6 +1839,218 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(second).toBeNull();
       expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
     }),
+  );
+
+  it.effect("branch PR lookup shares the status cache for the same repository identity", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/shared-pr-cache"]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "feature/shared-pr-cache"]);
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListSequence: [
+            JSON.stringify([
+              {
+                number: 220,
+                title: "Shared cache PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/220",
+                baseRefName: "main",
+                headRefName: "feature/shared-pr-cache",
+                headRefOid: "a".repeat(40),
+                state: "MERGED",
+                updatedAt: "2026-04-07T15:00:00Z",
+              },
+            ]),
+            encodeCliJson([
+              {
+                number: 221,
+                title: "New PR on the same branch",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/221",
+                baseRefName: "main",
+                headRefName: "feature/shared-pr-cache",
+                headRefOid: "b".repeat(40),
+                state: "OPEN",
+                updatedAt: "2026-04-08T15:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/shared-pr-cache",
+      });
+
+      expect(status.pr?.state).toBe("merged");
+      expect(pullRequest?.state).toBe("merged");
+      expect(pullRequest?.headSha).toBe("a".repeat(40));
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      const refreshed = yield* manager.branchPullRequest(
+        { cwd: repoDir, branch: "feature/shared-pr-cache" },
+        { refresh: true },
+      );
+      expect(refreshed).toMatchObject({
+        number: 221,
+        state: "open",
+        headSha: "b".repeat(40),
+        repositoryKey: "github.com/pingdotgg/codething-mvp",
+      });
+      expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(2);
+    }),
+  );
+
+  it.effect(
+    "discovery can defer the default terminal confirmation without forcing a host refresh",
+    () =>
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        const branch = "feature/terminal-confirmation";
+        yield* runGit(repoDir, ["checkout", "-b", branch]);
+        yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+        const gitCommands: string[] = [];
+        const { manager, ghCalls } = yield* makeManager({
+          gitCommands,
+          ghScenario: {
+            prListByHeadSelector: {
+              [branch]: encodeCliJson([
+                {
+                  number: 303,
+                  title: branch,
+                  url: "https://github.com/pingdotgg/codething-mvp/pull/303",
+                  baseRefName: "main",
+                  headRefName: branch,
+                  state: "MERGED",
+                  updatedAt: "2026-04-07T15:00:00Z",
+                },
+              ]),
+            },
+          },
+        });
+        const input = { cwd: repoDir, branch };
+        expect((yield* manager.branchPullRequest(input, { confirmTerminal: false }))?.state).toBe(
+          "merged",
+        );
+        gitCommands.length = 0;
+        expect((yield* manager.branchPullRequest(input, { confirmTerminal: false }))?.state).toBe(
+          "merged",
+        );
+        expect(gitCommands).toEqual([]);
+        expect((yield* manager.branchPullRequest(input))?.state).toBe("merged");
+        expect(gitCommands.some((command) => command.startsWith("for-each-ref"))).toBe(true);
+        expect(ghCalls.filter((call) => call.startsWith("pr list "))).toHaveLength(1);
+      }),
+  );
+
+  it.effect("branch PR lookup rechecks open PRs every minute and settled answers less often", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      for (const branch of ["feature/open-pr", "feature/merged-pr", "feature/no-pr"]) {
+        yield* runGit(repoDir, ["checkout", "-b", branch, "main"]);
+        yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+      }
+      const pullRequest = (number: number, headRefName: string, state: string) => ({
+        number,
+        title: headRefName,
+        url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
+        baseRefName: "main",
+        headRefName,
+        state,
+        updatedAt: "2026-04-07T15:00:00Z",
+      });
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/open-pr": encodeCliJson([pullRequest(301, "feature/open-pr", "OPEN")]),
+            "feature/merged-pr": encodeCliJson([pullRequest(302, "feature/merged-pr", "MERGED")]),
+          },
+        },
+      });
+      const lookupAll = Effect.forEach(
+        ["feature/open-pr", "feature/merged-pr", "feature/no-pr"],
+        (branch) => manager.branchPullRequest({ cwd: repoDir, branch }),
+      );
+      const prListCalls = () => ghCalls.filter((call) => call.startsWith("pr list "));
+
+      yield* lookupAll;
+      expect(prListCalls()).toHaveLength(3);
+
+      yield* TestClock.adjust("61 seconds");
+      yield* lookupAll;
+      expect(prListCalls()).toHaveLength(4);
+      expect(prListCalls().at(-1)).toContain("--head feature/open-pr");
+
+      yield* TestClock.adjust("238 seconds");
+      yield* lookupAll;
+      expect(prListCalls()).toHaveLength(5);
+      expect(prListCalls().at(-1)).toContain("--head feature/open-pr");
+
+      yield* TestClock.adjust("2 seconds");
+      yield* lookupAll;
+      expect(prListCalls()).toHaveLength(7);
+      expect(prListCalls().slice(-2).join("\n")).not.toContain("--head feature/open-pr");
+    }),
+  );
+
+  it.effect("branch PR lookup announces a pull request when it reads it merged", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const repoDir = yield* makeTempDir("t3code-git-manager-");
+        yield* initRepo(repoDir);
+        const remoteDir = yield* createBareRemote();
+        yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+        for (const branch of ["feature/merges-later", "feature/already-merged"]) {
+          yield* runGit(repoDir, ["checkout", "-b", branch, "main"]);
+          yield* runGit(repoDir, ["push", "-u", "origin", branch]);
+        }
+        const pullRequest = (number: number, headRefName: string, state: string) =>
+          encodeCliJson([
+            {
+              number,
+              title: headRefName,
+              url: `https://github.com/pingdotgg/codething-mvp/pull/${number}`,
+              baseRefName: "main",
+              headRefName,
+              state,
+              updatedAt: "2026-04-07T15:00:00Z",
+            },
+          ]);
+        const { manager } = yield* makeManager({
+          ghScenario: {
+            prListSequenceByHeadSelector: {
+              "feature/merges-later": [
+                pullRequest(401, "feature/merges-later", "OPEN"),
+                pullRequest(401, "feature/merges-later", "MERGED"),
+              ],
+              "feature/already-merged": [pullRequest(402, "feature/already-merged", "MERGED")],
+            },
+          },
+        });
+        const changes = yield* manager.subscribePullRequestStateChanges;
+        const lookup = (branch: string) => manager.branchPullRequest({ cwd: repoDir, branch });
+
+        yield* lookup("feature/merges-later");
+        yield* lookup("feature/already-merged");
+        yield* TestClock.adjust("61 seconds");
+        expect((yield* lookup("feature/merges-later"))?.state).toBe("merged");
+
+        const announced = yield* Stream.runCollect(Stream.take(changes, 2));
+        expect(announced).toEqual([
+          { host: "github.com", repository: "pingdotgg/codething-mvp", number: 402 },
+          { host: "github.com", repository: "pingdotgg/codething-mvp", number: 401 },
+        ]);
+      }),
+    ),
   );
 
   // regression: #8600 settle threads server-side
@@ -2380,6 +2755,132 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(ghCalls.some((call) => call.includes("--head contributor:"))).toBe(false);
         expect(ghCalls.some((call) => call.includes("--head main"))).toBe(false);
       }),
+  );
+
+  it.effect("branch PR lookup verifies identity on the fork that holds the own-name ref", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const originDir = yield* createBareRemote();
+      const forkDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "set-head", "origin", "main"]);
+      yield* configureRemote(repoDir, "team/fork", forkDir, "team/fork");
+      yield* runGit(repoDir, ["checkout", "-b", "feature/fork-settle", "origin/main"]);
+      yield* runGit(repoDir, ["push", "team/fork", "feature/fork-settle"]);
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+        originDir,
+      );
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/fork-settle": JSON.stringify([
+              {
+                number: 91,
+                title: "Fork PR to settle",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/91",
+                baseRefName: "main",
+                headRefName: "feature/fork-settle",
+                state: "MERGED",
+                updatedAt: "2026-05-02T10:00:00Z",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "contributor/codething-mvp" },
+                headRepositoryOwner: { login: "contributor" },
+              },
+            ]),
+          },
+        },
+      });
+
+      const pullRequest = yield* manager.branchPullRequest({
+        cwd: repoDir,
+        branch: "feature/fork-settle",
+      });
+
+      expect(pullRequest).toMatchObject({
+        state: "merged",
+        closedAt: null,
+        mergedAt: null,
+        updatedAt: "2026-05-02T10:00:00.000Z",
+      });
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:replacement/codething-mvp.git",
+        forkDir,
+      );
+      expect(
+        yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/fork-settle" },
+          { freshGitState: true },
+        ),
+      ).toBeNull();
+      yield* configureVisibleRemoteUrlWithLocalRewrite(
+        repoDir,
+        "team/fork",
+        "git@github.com:contributor/codething-mvp.git",
+        forkDir,
+      );
+      yield* manager.invalidateStatus(repoDir);
+      expect(
+        (yield* manager.branchPullRequest(
+          { cwd: repoDir, branch: "feature/fork-settle" },
+          { confirmTerminal: false },
+        ))?.number,
+      ).toBe(91);
+    }),
+  );
+
+  it.effect("status keeps an own-name PR when a later lookup fails on a default upstream", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const remoteDir = yield* createBareRemote();
+      yield* runGit(repoDir, ["remote", "add", "origin", remoteDir]);
+      yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
+      yield* runGit(repoDir, ["remote", "set-head", "origin", "main"]);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/sticky-plain", "origin/main"]);
+      yield* runGit(repoDir, ["push", "origin", "feature/sticky-plain"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            "feature/sticky-plain": JSON.stringify([
+              {
+                number: 90,
+                title: "Sticky own-name PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/90",
+                baseRefName: "main",
+                headRefName: "feature/sticky-plain",
+                state: "OPEN",
+                updatedAt: "2026-05-01T10:00:00Z",
+              },
+            ]),
+          },
+          failWith:
+            "No GitHub credential on the server. Set GH_TOKEN, or install the GitHub CLI and run `gh auth login`.",
+          failAfterCalls: 1,
+        },
+      });
+
+      const first = yield* manager.status({ cwd: repoDir });
+      expect(first.pr?.number).toBe(90);
+
+      yield* manager.invalidateStatus(repoDir);
+      const second = yield* manager.status({ cwd: repoDir });
+      expect(second.pr?.number).toBe(90);
+    }),
   );
 
   it.effect("status prefers open PR when merged PR has newer updatedAt", () =>

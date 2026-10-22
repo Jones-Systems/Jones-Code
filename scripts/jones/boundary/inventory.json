@@ -7,6 +7,7 @@
   },
   "baseline": "3e250a838773062804ee362272e7cf1baf9a5f1c",
   "paths": {
+    "docs/operations/workstreams-verification.md": "policy",
     "apps/server/src/mcp/toolkits/core.test.ts": "jones-tests-in-upstream",
     "packages/effect-codex-app-server/src/client.ts": "accepted-shared",
     "packages/effect-codex-app-server/src/replay.ts": "accepted-shared",
@@ -817,6 +818,7 @@
     "docs/ui-map/host-status.md": "jones-owned",
     "docs/ui-map/settings.md": "jones-owned",
     "docs/ui-map/thread-chat.md": "jones-owned",
+    "docs/ui-map/workstreams.md": "jones-owned",
     "docs/user/background-service.md": "accepted-shared",
     "docs/user/composer.md": "policy",
     "docs/user/devices.md": "accepted-shared",
@@ -1300,6 +1302,8 @@
     "apps/server/src/mcp/toolkits/project/handlers.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts": "upstream-deleted",
     "apps/web/src/jones/composer/providerShortcutLabelColor.ts": "jones-owned",
+    "apps/web/src/jones/subagents/accountDisplayName.ts": "jones-owned",
+    "apps/web/src/jones/subagents/accountDisplayName.test.ts": "jones-owned",
     "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts": "jones-owned",
     "apps/server/src/vcs/VcsProcess.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/ThreadPullRequestService.ts": "accepted-shared",
@@ -1587,7 +1591,11 @@
     "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/ThreadStop.test.ts": "jones-tests-in-upstream",
     "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts": "jones-tests-in-upstream",
-    "apps/web/src/jones/testing/nodeRenderer.ts": "jones-owned"
+    "apps/web/src/jones/testing/nodeRenderer.ts": "jones-owned",
+    "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
+    "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
+    "apps/server/src/git/GitManager.ts": "accepted-shared",
+    ".github/workflows/native-enrollment-candidate.yml": "policy"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

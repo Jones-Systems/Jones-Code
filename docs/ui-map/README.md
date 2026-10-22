@@ -64,6 +64,10 @@ inside chat also need the appropriate host capability.
 
 ## Evidence and upkeep
 
+The [Workstreams sidebar](workstreams.md) records its bounded assignment and
+details journeys. Its synthetic renderer checks do not qualify a live registry
+connection or native enrollment.
+
 The source/link review above passed only as documentation inspection. Runtime
 journeys in both entries were **not run**: this docs-only lane has no launched
 candidate, paired test tab or seeded fixture, and server launch belongs to the

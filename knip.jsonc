@@ -42,6 +42,10 @@
         "jones/performance/current-qualification-worker.mjs",
         "sign-macos.ts",
         "verify-windows-desktop-artifact.ts",
+        // Candidate CI builds and invokes these disposable SEA qualification entries.
+        "jones/native-enrollment/candidate.vite.config.ts",
+        "jones/native-enrollment/sea-fixture.cjs",
+        "jones/native-enrollment/sea-fixture.node-test.mjs",
       ],
       "ignoreDependencies": ["esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.

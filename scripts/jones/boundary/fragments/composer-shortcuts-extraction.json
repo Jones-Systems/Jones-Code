@@ -13,12 +13,15 @@
     "apps/web/src/jones/composer/composerShortcutRails.ts",
     "apps/web/src/jones/composer/ProviderShortcutIcon.tsx",
     "apps/web/src/jones/composer/providerShortcutLabelColor.ts",
-    "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts"
+    "apps/web/src/jones/composer/providerShortcutLabelColor.test.ts",
+    "apps/web/src/jones/subagents/accountDisplayName.ts",
+    "apps/web/src/jones/subagents/accountDisplayName.test.ts"
   ],
   "hookPaths": [
     "apps/web/src/components/ChatView.tsx",
     "apps/web/src/components/chat/ChatComposer.tsx",
-    "apps/web/src/components/chat/ModelPickerContent.tsx"
+    "apps/web/src/components/chat/ModelPickerContent.tsx",
+    "apps/web/src/components/chat/V2LifecycleRow.tsx"
   ],
   "tombstones": [
     "apps/web/src/components/chat/ProviderInstanceShortcuts.test.ts",
@@ -60,6 +63,14 @@
     {
       "from": "apps/web/src/components/chat/ChatComposer.tsx",
       "to": "apps/web/src/jones/composer/composerModelEffortShortcuts.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/V2LifecycleRow.tsx",
+      "to": "apps/web/src/jones/composer/ProviderShortcutIcon.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/V2LifecycleRow.tsx",
+      "to": "apps/web/src/jones/subagents/accountDisplayName.ts"
     }
   ]
 }

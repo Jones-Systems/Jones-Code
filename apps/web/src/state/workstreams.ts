@@ -334,6 +334,7 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly primaryAssignmentAvailability?: AssignmentAvailability;
   readonly assignmentAvailability?: (thread: {
     readonly environmentId: string;
     readonly id: string;
@@ -1534,6 +1535,7 @@ export function useWorkstreams(
   };
 
   return {
+    primaryAssignmentAvailability: registrationContextAvailability,
     assignmentAvailability,
     assignsThroughOwnEnvironment,
     assignNativeThread: assignThread,
