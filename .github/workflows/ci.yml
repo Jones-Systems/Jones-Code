@@ -166,10 +166,10 @@ jobs:
       # ACP process-tree live tests compile a small pthread fixture with `cc`
       # and soft-skip when it is missing. Install build-essential so that path
       # always runs in CI instead of silently no-oping.
-      - name: Install C toolchain for process-tree fixtures
+      - name: Install native test build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
           command -v cc
 
       - name: Setup Vite+
@@ -188,11 +188,11 @@ jobs:
       - name: Test nightly release checks
         run: node --test .github/scripts/check-nightly-release.test.cjs
 
+      - name: Test Chromium setup
+        run: node --test scripts/jones/ci/chromium-setup.node-test.mjs
+
       - name: Test process placement build custody
         run: node --test native/process-placement/build.test.mjs
-
-      - name: Install browser secret helper build libraries
-        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
       - name: Test
         run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/client-runtime' test
@@ -223,10 +223,10 @@ jobs:
           run-install: true
 
       # The browser project runs React tests in headless Chromium. Same cache key as
-      # test_server, so both jobs share one downloaded browser.
+      # test_server, so matching Playwright versions can reuse the cached browser.
       - name: Resolve Playwright version
         id: playwright_version
-        run: echo "version=$(node -p "require('./apps/web/node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/web version)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Chromium
         id: chromium_cache
@@ -239,13 +239,8 @@ jobs:
         if: steps.chromium_cache.outputs.cache-hit != 'true'
         run: node apps/web/node_modules/playwright/cli.js install --only-shell chromium
 
-      - name: Install missing Chromium system dependencies
-        run: |
-          browser=$(find "$HOME/.cache/ms-playwright" -name chrome-headless-shell -type f -print -quit)
-          test -n "$browser"
-          if ldd "$browser" | grep '=> not found'; then
-            node apps/web/node_modules/playwright/cli.js install-deps chromium
-          fi
+      - name: Verify Chromium and repair missing system dependencies
+        run: node scripts/jones/ci/chromium-setup.mjs apps/web
 
       - name: Test
         run: vp run --filter @t3tools/web test
@@ -326,8 +321,23 @@ jobs:
       # No Electron setup here: `t3` (apps/server) has no Electron dependency
       # and none of its tests touch the runtime. Only the non-server `test`
       # job, which covers @t3tools/desktop, needs the download.
+      - name: Resolve Playwright version
+        id: playwright_version
+        run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/server version)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chromium
+        id: chromium_cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
+
       - name: Install Chromium for server browser integration tests
-        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+        if: steps.chromium_cache.outputs.cache-hit != 'true'
+        run: node apps/server/node_modules/playwright-core/cli.js install --only-shell chromium
+
+      - name: Verify Chromium and repair missing system dependencies
+        run: node scripts/jones/ci/chromium-setup.mjs apps/server
 
       # Every shard must use the same weights, so a map that fails its digest
       # fails the shard rather than falling back on its own.
