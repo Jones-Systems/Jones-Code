@@ -32,20 +32,28 @@ const phases = new Set<string>([
   "closed",
 ]);
 
+const messageRunKeyPattern = /^m1:([a-f0-9]{64}):[a-f0-9]{64}$/;
+
+function digest(value: unknown): string {
+  return bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(value))));
+}
+
 export function shellRunKey(
   sourceEnvironmentId: string,
   threadId: string,
   blockPosition: number,
   destinationId: string,
   code: string,
+  messageId: string,
 ): string {
-  return bytesToHex(
-    sha256(
-      new TextEncoder().encode(
-        JSON.stringify([sourceEnvironmentId, threadId, blockPosition, destinationId, code]),
-      ),
-    ),
-  );
+  if (!messageId?.trim()) return "";
+  // Retain the old lookup without assigning its ambiguous terminal to this message.
+  const legacyKey = digest([sourceEnvironmentId, threadId, blockPosition, destinationId, code]);
+  return `m1:${legacyKey}:${digest(messageId)}`;
+}
+
+export function legacyShellRunKey(key: string): string | null {
+  return messageRunKeyPattern.exec(key)?.[1] ?? null;
 }
 
 function isRun(value: unknown, now: number): value is ShellRun {
@@ -53,7 +61,7 @@ function isRun(value: unknown, now: number): value is ShellRun {
   const run = value as Record<string, unknown>;
   return (
     typeof run.key === "string" &&
-    /^[a-f0-9]{64}$/.test(run.key) &&
+    (/^[a-f0-9]{64}$/.test(run.key) || messageRunKeyPattern.test(run.key)) &&
     typeof run.environmentId === "string" &&
     run.environmentId.length > 0 &&
     run.environmentId.length <= 1024 &&
@@ -175,7 +183,10 @@ export class ShellRunStore {
     await this.update((next) => {
       if (!next.has(run.key) && next.size >= MAX_RUNS) {
         // Evicting an unclosed association could turn an unknown delivery into a new Play.
-        const closed = [...next.values()].find((value) => value.phase === "closed");
+        // Legacy records also guard other messages; a new run must not remove that evidence.
+        const closed = [...next.values()].find(
+          (value) => value.phase === "closed" && legacyShellRunKey(value.key) !== null,
+        );
         if (!closed) throw new Error("Run tracking storage is full; close a previous run first.");
         next.delete(closed.key);
       }

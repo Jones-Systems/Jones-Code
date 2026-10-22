@@ -637,6 +637,7 @@
     "apps/web/src/components/BranchToolbar.logic.ts": "accepted-shared",
     "apps/web/src/components/BranchToolbarBranchSelector.tsx": "accepted-shared",
     "apps/web/src/components/ChatMarkdown.tsx": "hook",
+    "apps/web/src/components/ChatMarkdown.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/ChatView.logic.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/ChatView.logic.ts": "accepted-shared",
     "apps/web/src/components/ChatView.tsx": "accepted-shared",
