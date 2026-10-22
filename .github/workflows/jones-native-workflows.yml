@@ -401,6 +401,8 @@ jobs:
           done
 
       - name: Verify Electron A and ordinarily paired read-only Node B
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, time

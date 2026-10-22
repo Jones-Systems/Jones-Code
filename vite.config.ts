@@ -61,6 +61,8 @@ export default defineConfig({
       "**/dist/**",
       "**/dist-electron/**",
       "**/.{idea,git,cache,output,temp}/**",
+      // The native workflow runs this fixture suite explicitly with node --test.
+      "**/jones/e2e/acp-stub/agent.test.mjs",
     ],
     hookTimeout: 60_000,
     testTimeout: 60_000,
