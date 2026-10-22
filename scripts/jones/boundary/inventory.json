@@ -1544,6 +1544,7 @@
     "scripts/package.json": "accepted-shared",
     "docs/operations/mobile-app-store-screenshots.md": "accepted-shared",
     ".github/workflows/jones-ios-native.yml": "jones-owned",
+    ".gitmodules": "jones-owned",
     "scripts/jones/mobile/ios-admission.ts": "jones-owned",
     "scripts/jones/mobile/ios-admission.test.ts": "jones-owned",
     "scripts/jones/mobile/ios-native-build.ts": "jones-owned",
