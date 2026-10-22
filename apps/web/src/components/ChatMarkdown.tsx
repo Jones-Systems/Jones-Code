@@ -228,6 +228,7 @@ import { PullRequestLinkPreview } from "./pullRequest/PullRequestLinkPreview";
 
 interface ChatMarkdownProps {
   text: string;
+  messageId?: string | undefined;
   cwd: string | undefined;
   threadRef?: ScopedThreadRef | undefined;
   pullRequestPanelRef?: ScopedThreadRef | undefined;
@@ -2312,6 +2313,7 @@ const markdownServerConfigFieldsAtom = Atom.family((environmentId: EnvironmentId
 
 function useChatMarkdownState({
   text,
+  messageId,
   cwd,
   threadRef,
   pullRequestPanelRef,
@@ -2715,6 +2717,7 @@ function useChatMarkdownState({
     isStreaming,
     linkTargetPreference,
     markdownFileLinkMetaByHref,
+    messageId,
     onTaskListChange,
     onUseArtifactTemplate,
     onRunShellCommand,
@@ -3283,8 +3286,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
     return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
   },
   pre: function MarkdownPre({ node, children, ...props }) {
-    const { resolvedTheme, diffThemeName, expandMedia, isStreaming, onRunShellCommand, threadRef } =
-      use(ChatMarkdownRendererContext);
+    const {
+      resolvedTheme,
+      diffThemeName,
+      expandMedia,
+      isStreaming,
+      onRunShellCommand,
+      threadRef,
+      messageId,
+    } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const codeBlock = extractCodeBlock(children);
     if (!codeBlock) {
@@ -3323,6 +3333,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           meta={meta}
           complete={!isStreaming && isClosedCodeFence(node, text)}
           blockPosition={node?.position?.start.offset}
+          messageId={messageId}
           threadRef={threadRef ?? null}
           onRunShellCommand={onRunShellCommand}
         >
