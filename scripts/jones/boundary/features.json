@@ -1,7 +1,7 @@
 {
   "schema": "jones.boundary-features/v1",
   "scopeReference": "docs/operations/upstream-sync.md",
-  "baseline": "3e250a838773062804ee362272e7cf1baf9a5f1c",
+  "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
       "id": "agent-message-header",

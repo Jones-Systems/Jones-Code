@@ -3,9 +3,9 @@
   "upstream": {
     "repository": "pingdotgg/t3code",
     "ref": "refs/heads/main",
-    "commit": "3e250a838773062804ee362272e7cf1baf9a5f1c"
+    "commit": "05b697f6a2012497ae790425e197fbd1fcef7de7"
   },
-  "baseline": "3e250a838773062804ee362272e7cf1baf9a5f1c",
+  "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
     "docs/operations/workstreams-verification.md": "policy",
     "apps/server/src/mcp/toolkits/core.test.ts": "jones-tests-in-upstream",
@@ -392,7 +392,6 @@
     "apps/server/src/mcp/ThreadMetadataMcpService.ts": "accepted-shared",
     "apps/server/src/mcp/threadAccess.ts": "accepted-shared",
     "apps/server/src/mcp/toolkits/orchestrator/handlers.ts": "accepted-shared",
-    "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts": "upstream-deleted",
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts": "accepted-shared",
     "apps/server/src/mcp/toolkits/preview/handlers.test.ts": "jones-tests-in-upstream",
     "apps/server/src/mcp/toolkits/preview/handlers.ts": "accepted-shared",
@@ -1614,7 +1613,6 @@
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.tsx",
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx",
     "apps/server/src/mcp/ThreadMetadataMcpService.test.ts",
-    "apps/server/src/mcp/toolkits/orchestrator/tools.test.ts",
     "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
     "apps/server/src/observability/RpcInstrumentation.test.ts",
     "apps/server/src/preview/DesktopBrowserChannel.test.ts",
