@@ -13,6 +13,7 @@
     "scripts/jones/boundary/fragments/mobile-showcase-metro.json": "jones-owned",
     "scripts/package.json": "accepted-shared",
     "docs/operations/mobile-app-store-screenshots.md": "accepted-shared",
+    "docs/operations/workstreams-verification.md": "policy",
     "apps/server/src/mcp/toolkits/core.test.ts": "jones-tests-in-upstream",
     "packages/effect-codex-app-server/src/client.ts": "accepted-shared",
     "packages/effect-codex-app-server/src/replay.ts": "accepted-shared",
