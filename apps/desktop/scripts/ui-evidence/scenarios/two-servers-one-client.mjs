@@ -433,7 +433,7 @@ export default async function twoServersOneClient(ctx) {
       );
       await take(() =>
         ctx.page.waitForFunction(
-          ({ environmentId, threadId }) => location.pathname === `/${environmentId}/${threadId}`,
+          ({ environmentId, threadId }) => location.hash === `#/${environmentId}/${threadId}`,
           { environmentId: identity.environmentId, threadId: fixture.threadId },
           { timeout: 5000 },
         ),
