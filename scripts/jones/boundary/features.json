@@ -1405,6 +1405,14 @@
         "apps/server/integration/jones-e2e/physicalHost.transport.test.py"
       ],
       "scope": "Real disk SQLite and loopback Effect-service integration for cross-server MCP delivery idempotency and destination/third-server absence, workspace placement after reopening state, and same-home startup refusal with owned listener cleanup. Provider opens fail closed. Local caller-context and peer metadata are injected; this group does not prove ordinary client enrollment, independent CLI-process restart, native UI, or distinct physical hosts. The explicit physicalHost.ts command accepts an operator-bound request and relay for a separate B process on another host, with offline ledger reconciliation and sequential repeats. Source checks alone do not qualify that opt-in physical run; its redacted host/process/cleanup receipts are required separately. Repository-owned Python relay/operator scripts bind existing SSH aliases, source/storage and admission inputs; focused pure transport tests do not start remote workers. physicalHost.md documents the separate opt-in import, lifecycle and four-run qualification procedure."
+    },
+    {
+      "id": "mobile-showcase-metro",
+      "tests": [
+        "scripts/jones/mobile/showcase-metro.node-test.mjs",
+        "scripts/mobile-showcase.test.ts"
+      ],
+      "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
     }
   ]
 }
