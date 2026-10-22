@@ -184,7 +184,7 @@ export async function setupRuntime(source) {
   }
 }
 
-export async function packageAt(name, from) {
+async function packageAt(name, from) {
   let current = from;
   while (true) {
     const candidate = NodePath.join(current, "node_modules", name);
@@ -293,7 +293,7 @@ export async function dependencyClosure(source) {
   };
 }
 
-export async function readProcessIdentity(pid, readFile = NodeFSP.readFile) {
+async function readProcessIdentity(pid, readFile = NodeFSP.readFile) {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid captured process PID");
   const stat = await readFile(`/proc/${pid}/stat`, "utf8");
   const fields = stat
