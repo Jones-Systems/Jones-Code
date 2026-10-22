@@ -41,7 +41,10 @@ NodeTest.test("pin oracle accepts pin and unpin only for the selected thread", (
 
 NodeTest.test("negative control: a no-op or wrong-thread pin fails the pin assertion", () => {
   for (const state of [snapshot(false), snapshot(false, true)]) {
-    NodeAssert.throws(() => assertBackendPinState(state, fixture, true), /Backend target is pinned/);
+    NodeAssert.throws(
+      () => assertBackendPinState(state, fixture, true),
+      /Backend target is pinned/,
+    );
   }
   NodeAssert.throws(
     () => assertBackendPinState(snapshot(true, true), fixture, true),
