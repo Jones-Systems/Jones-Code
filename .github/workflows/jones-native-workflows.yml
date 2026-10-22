@@ -71,13 +71,13 @@ jobs:
         shell: bash
     env:
       JCUE_HARNESS_OID: ${{ github.event.pull_request.head.sha || github.sha }}
-      JCUE_RUNTIME_CACHE: ${{ runner.temp }}/jones-native-runtime-cache
     steps:
       - name: Allocate job-owned evidence and state
         run: |
           task_root=$(mktemp -d "$RUNNER_TEMP/jones-native.XXXXXX")
           mkdir -m 700 "$task_root/evidence" "$task_root/state"
           echo "JCUE_TASK_ROOT=$task_root" >> "$GITHUB_ENV"
+          echo "JCUE_RUNTIME_CACHE=$RUNNER_TEMP/jones-native-runtime-cache" >> "$GITHUB_ENV"
           echo "JCUE_OUTPUT=$task_root/evidence" >> "$GITHUB_ENV"
           echo "XDG_STATE_HOME=$task_root/state" >> "$GITHUB_ENV"
           date +%s > "$task_root/evidence/steps-started-epoch.txt"
