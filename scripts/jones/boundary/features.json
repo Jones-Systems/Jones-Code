@@ -4,6 +4,11 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "workstreams-sidebar-assignment",
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
+      "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
+    },
+    {
       "id": "apple-silicon-platforms",
       "tests": [
         "scripts/jones/platforms/supportedTargets.test.ts",
@@ -1416,9 +1421,32 @@
       "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
     },
     {
+      "id": "shell-destination",
+      "tests": [
+        "apps/web/src/jones/shellDestination/model.test.ts",
+        "apps/web/src/jones/shellDestination/controller.test.ts",
+        "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
+        "packages/contracts/src/jones/shellDestinationFence.test.ts",
+        "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "apps/web/src/components/ChatMarkdown.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx",
+        "apps/web/src/components/ThreadTerminalDrawer.permissions.browser.test.tsx"
+      ],
+      "scope": "Dedicated jones-shell metadata resolves exact client-known destination IDs; label hints only corroborate identity. Jones modules own command guards, bounded local run associations, one-shot native terminal delivery, and inline attachment. ChatMarkdown keeps generic optional toolbar hooks and dedicated dispatch. Source-environment commands retain the existing callback. C1 owns the contracts subpath export and shared orchestration instruction hook; these accepted shared surfaces avoid provider-specific copies. Browser tests retain the real Markdown/toolbar with synthetic connection and terminal adapters; native two-environment runtime verification remains separately required. No server transport, wire schema or persisted event change. The necessary optional TerminalViewport attachExistingOnly prop omits cwd and disables restart for known runs; a session-list check alone cannot prevent a reconnect race. All existing callers retain the original open/attach behavior."
+    },
+    {
       "id": "ci-dependency-setup",
       "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
       "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
+    },
+    {
+      "id": "child-input-navigation",
+      "tests": [
+        "packages/client-runtime/src/state/threadShell.test.ts",
+        "apps/web/src/threadRoutes.test.ts"
+      ],
+      "scope": "Web child-input title links and Open question/Open approval actions navigate with the selected child environment and thread identity; mobile child-input navigation uses the same scoped identity. The tiny callback edits remain in the existing accepted-shared ChatView and ThreadDetailScreen files because extracting navigation would add an unnecessary adapter. Their hook paths remain owned by composer-shortcuts-extraction and thread-read-dwell respectively. Existing selector tests cover local descendants, remote linked tasks and nested remote children; route tests cover scoped route resolution. Browser interaction evidence covers actual banner controls and the destination view; those unit tests alone do not prove click wiring. Existing ID-only related-thread callbacks keep their same-environment contract. No provider, selector, wire, stored-state or missing-thread fallback changes."
     }
   ]
 }

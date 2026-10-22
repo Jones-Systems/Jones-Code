@@ -26,6 +26,11 @@ details, and their focused shared-renderer verification.
 The [host-status companion entry](host-status.md) covers telemetry continuity
 across thread, draft, panel and Settings navigation, with focused runtime evidence.
 
+The [destination shell journey](thread-chat.md#destination-shell-blocks) covers
+exact computer targeting, inline terminal lifetime, disabled states and shared
+Markdown toolbar consumers. PR #521 supplies two isolated-environment runtime
+evidence; physical multi-host and packaged macOS behavior remain unverified.
+
 Discovery checked on **2026-10-20** against Jones Code source
 `e7527d88ef438daa443e49a84d59e9891415918b`: routes, navigation callers, shared
 components, development instructions and verification skills. The central

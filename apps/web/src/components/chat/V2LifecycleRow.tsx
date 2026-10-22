@@ -284,6 +284,7 @@ function SubagentAvatar({
           driverKind={driver}
           displayName={accountDisplayName}
           acpRegistryIconUrl={iconUrl}
+          labelSize="compact"
         />
       ) : driver ? (
         <ProviderInstanceIcon

@@ -1,4 +1,10 @@
 import { MarkdownFindContext, findRevealRef } from "./chat/markdownFindContext";
+import { JONES_SHELL_LANGUAGE } from "@t3tools/contracts/jones/shellDestinationFence";
+import {
+  ShellDestinationCodeBlock,
+  SourceShellRunLabel,
+} from "../jones/shellDestination/ShellDestinationCodeBlock";
+import { hasLegacyDestinationMetadata } from "../jones/shellDestination/model";
 import {
   buildFileLinkParentSuffixByPath,
   fileLinkLabel,
@@ -783,6 +789,7 @@ export function MarkdownCodeBlockFrame({
   wrapped = true,
   title,
   actions,
+  headerAccessory,
   headerProps,
   children,
 }: {
@@ -793,6 +800,7 @@ export function MarkdownCodeBlockFrame({
   wrapped?: boolean;
   title?: React.ReactNode;
   actions?: React.ReactNode;
+  headerAccessory?: React.ReactNode;
   headerProps?: React.HTMLAttributes<HTMLDivElement>;
   children: React.ReactNode;
 }) {
@@ -818,6 +826,7 @@ export function MarkdownCodeBlockFrame({
             />
           </span>
         )}
+        {headerAccessory}
         {actions}
       </div>
       {children}
@@ -869,6 +878,9 @@ function MarkdownCodeBlock({
   onRunShellCommand,
   isStreaming,
   viewToggle,
+  headerAccessory,
+  runControl,
+  runTooltip,
   canWrap = true,
   diagram = false,
   children,
@@ -880,6 +892,9 @@ function MarkdownCodeBlock({
   onRunShellCommand?: ((command: string) => void) | undefined;
   isStreaming: boolean;
   viewToggle?: ReactNode;
+  headerAccessory?: ReactNode;
+  runControl?: ReactNode;
+  runTooltip?: ReactNode;
   canWrap?: boolean;
   diagram?: boolean;
   children: ReactNode;
@@ -896,6 +911,7 @@ function MarkdownCodeBlock({
     /^(?:sh|bash|zsh|fish|shell|powershell|pwsh)$/.test(language) &&
     code.endsWith("\n") &&
     command.length > 0 &&
+    command.length + 1 <= 65_535 &&
     !command.endsWith("\\") &&
     // Control and invisible format characters (bidi overrides, zero-width) can
     // make the rendered command differ from what the terminal would receive.
@@ -976,6 +992,7 @@ function MarkdownCodeBlock({
       fenceTitle={fenceTitle}
       theme={theme}
       wrapped={wrapped}
+      headerAccessory={headerAccessory}
       headerProps={THREAD_FIND_IGNORE_PROPS}
       actions={
         <span className="flex items-center gap-0.5" role="toolbar" aria-label="Code block actions">
@@ -998,24 +1015,25 @@ function MarkdownCodeBlock({
               <TooltipPopup side="top">{wrapLabel}</TooltipPopup>
             </Tooltip>
           ) : null}
-          {canRun ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="ghost-muted"
-                    size="icon-xs"
-                    onClick={() => onRunShellCommand(command)}
-                    aria-label="Run in terminal"
-                  />
-                }
-              >
-                <PlayIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">Run in terminal</TooltipPopup>
-            </Tooltip>
-          ) : null}
+          {runControl ??
+            (canRun ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost-muted"
+                      size="icon-xs"
+                      onClick={() => onRunShellCommand(command)}
+                      aria-label="Run in terminal"
+                    />
+                  }
+                >
+                  <PlayIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">{runTooltip ?? "Run in terminal"}</TooltipPopup>
+              </Tooltip>
+            ) : null)}
           {viewToggle}
           {copyButton}
         </span>
@@ -1102,21 +1120,20 @@ function MarkdownMermaidCodeBlock({
 }
 
 interface SuspenseShikiCodeBlockProps {
-  className: string | undefined;
+  language: string;
   code: string;
   themeName: DiffThemeName;
   isStreaming: boolean;
 }
 
 function SuspenseShikiCodeBlock({
-  className,
+  language,
   code,
   themeName,
   isStreaming,
 }: SuspenseShikiCodeBlockProps) {
   const [hasStreamed, setHasStreamed] = useState(isStreaming);
   if (isStreaming && !hasStreamed) setHasStreamed(true);
-  const language = extractFenceLanguage(className);
   const cacheKey = createHighlightCacheKey(code, language, themeName);
   // Once lines are mounted individually, keep that renderer when streaming
   // finishes so switching to cached HTML cannot clear an existing selection.
@@ -3266,9 +3283,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
     return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
   },
   pre: function MarkdownPre({ node, children, ...props }) {
-    const { resolvedTheme, diffThemeName, expandMedia, isStreaming, onRunShellCommand } = use(
-      ChatMarkdownRendererContext,
-    );
+    const { resolvedTheme, diffThemeName, expandMedia, isStreaming, onRunShellCommand, threadRef } =
+      use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const codeBlock = extractCodeBlock(children);
     if (!codeBlock) {
@@ -3276,7 +3292,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
 
     const language = extractFenceLanguage(codeBlock.className);
-    const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+    const meta = extractPreCodeMeta(node);
+    const fenceTitle = extractFenceTitle(meta);
+    const legacyDestination = hasLegacyDestinationMetadata(language, meta);
     const highlightedCode = (
       <RenderErrorBoundary
         resetKeys={[codeBlock.code, language, diffThemeName, isStreaming]}
@@ -3290,7 +3308,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           }
         >
           <SuspenseShikiCodeBlock
-            className={codeBlock.className}
+            language={language === JONES_SHELL_LANGUAGE ? "bash" : language}
             code={codeBlock.code}
             themeName={diffThemeName}
             isStreaming={isStreaming}
@@ -3298,6 +3316,30 @@ const CHAT_MARKDOWN_COMPONENTS = {
         </Suspense>
       </RenderErrorBoundary>
     );
+    if (language === JONES_SHELL_LANGUAGE) {
+      return (
+        <ShellDestinationCodeBlock
+          code={codeBlock.code}
+          meta={meta}
+          complete={!isStreaming && isClosedCodeFence(node, text)}
+          blockPosition={node?.position?.start.offset}
+          threadRef={threadRef ?? null}
+          onRunShellCommand={onRunShellCommand}
+        >
+          {(controls) => (
+            <MarkdownCodeBlock
+              code={codeBlock.code}
+              language="bash"
+              theme={resolvedTheme}
+              isStreaming={isStreaming}
+              {...controls}
+            >
+              {highlightedCode}
+            </MarkdownCodeBlock>
+          )}
+        </ShellDestinationCodeBlock>
+      );
+    }
     if (language === "mermaid") {
       return (
         <MarkdownMermaidCodeBlock
@@ -3317,8 +3359,16 @@ const CHAT_MARKDOWN_COMPONENTS = {
         language={language}
         fenceTitle={fenceTitle}
         theme={resolvedTheme}
+        headerAccessory={
+          legacyDestination ? (
+            <span className="text-2xs text-muted-foreground">
+              Use a jones-shell fence to specify a destination.
+            </span>
+          ) : undefined
+        }
+        runTooltip={<SourceShellRunLabel environmentId={threadRef?.environmentId ?? null} />}
         onRunShellCommand={
-          onRunShellCommand && !isStreaming && isClosedCodeFence(node, text)
+          onRunShellCommand && !legacyDestination && !isStreaming && isClosedCodeFence(node, text)
             ? onRunShellCommand
             : undefined
         }
