@@ -248,7 +248,7 @@ export function QueuedRunsControl({
   ];
 
   const move = async (runId: RunId, beforeRunId: RunId | null) => {
-    if (steerInFlightRef.current) return;
+    if (queueBusy || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
     await Promise.resolve()
@@ -333,7 +333,7 @@ export function QueuedRunsControl({
     ) : null;
 
   const remove = async (runId: RunId) => {
-    if (steerInFlightRef.current) return;
+    if (queueBusy || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(runId);
     await Promise.resolve()
@@ -476,7 +476,7 @@ export function QueuedRunsControl({
                             dragArmedRunIdRef.current = rowRunId;
                           }}
                           onKeyDown={(event) => {
-                            if (busyRunId !== null || steerInFlightRef.current) return;
+                            if (queueBusy || steerInFlightRef.current) return;
                             if (event.key === "ArrowUp" && rowServerIndex > 0) {
                               event.preventDefault();
                               void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
@@ -552,7 +552,11 @@ export function QueuedRunsControl({
                           size="xs"
                           variant="ghost"
                           aria-label="Cancel editing queued message"
-                          onClick={props.onCancelEdit}
+                          disabled={queueBusy}
+                          onClick={() => {
+                            if (queueBusy || steerInFlightRef.current) return;
+                            props.onCancelEdit();
+                          }}
                         >
                           Cancel
                         </Button>
@@ -565,8 +569,9 @@ export function QueuedRunsControl({
                                   size="icon-xs"
                                   variant="ghost-muted"
                                   aria-label="Edit queued message"
-                                  disabled={item.runId === null || busyRunId !== null}
+                                  disabled={item.runId === null || queueBusy}
                                   onClick={() => {
+                                    if (queueBusy || steerInFlightRef.current) return;
                                     if (item.runId !== null && item.messageId !== null) {
                                       props.onEditQueuedRun({
                                         runId: item.runId,
@@ -590,7 +595,7 @@ export function QueuedRunsControl({
                               <Button
                                 size="xs"
                                 variant="ghost-muted"
-                                disabled={item.runId === null || busyRunId !== null || !canSend}
+                                disabled={item.runId === null || queueBusy || !canSend}
                                 onClick={() => {
                                   if (item.runId !== null) {
                                     void sendQueuedMessage(item.runId);
@@ -610,7 +615,7 @@ export function QueuedRunsControl({
                               render={
                                 <ComposerBanner.Dismiss
                                   aria-label="Remove queued message"
-                                  disabled={item.runId === null || busyRunId !== null}
+                                  disabled={item.runId === null || queueBusy}
                                   onClick={() => {
                                     if (item.runId !== null) void remove(item.runId);
                                   }}

@@ -92,12 +92,25 @@ it("shows the local draft's source notice through the extracted system hook and 
   using _dismissals = isolateDismissals();
   await using screen = await render(<Harness selected={environment("Local draft")} />);
   expect(screen.container.textContent).toContain("Local draft: Different preview sources");
-  expect(screen.container.textContent).toContain("aaaaaaaaaaaa");
-  expect(screen.container.textContent).toContain("bbbbbbbbbbbb");
+  const sourceDetails = () =>
+    [...screen.container.querySelectorAll("[aria-label]")].map((element) =>
+      element.getAttribute("aria-label"),
+    );
+  expect(sourceDetails()).toEqual([
+    expect.stringContaining(`source ${branding.APP_SOURCE_SHA}`),
+    expect.stringContaining(`source ${"b".repeat(40)}`),
+  ]);
   await act(() => screen.container.querySelector<HTMLButtonElement>("button")!.click());
   expect(screen.container.textContent).toBe("");
-  await screen.rerender(<Harness selected={environment("Local draft", "c".repeat(40))} />);
-  expect(screen.container.textContent).toContain("cccccccccccc");
+  const changedSource = "b".repeat(39) + "c";
+  await screen.rerender(<Harness selected={environment("Local draft", changedSource)} />);
+  expect(screen.container.textContent).toContain("Local draft: Different preview sources");
+  expect(sourceDetails()).toEqual([
+    expect.stringContaining(`source ${branding.APP_SOURCE_SHA}`),
+    expect.stringContaining(`source ${changedSource}`),
+  ]);
+  await screen.rerender(<Harness selected={environment("Local draft")} />);
+  expect(screen.container.textContent).toBe("");
 });
 
 it("shows every eligible automatic environment while excluding the manual selection and equal sources", async () => {

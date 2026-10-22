@@ -7,6 +7,7 @@ import { page } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
+  queuedRunStart: undefined as boolean | undefined,
   promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
 
@@ -28,6 +29,13 @@ vi.mock(import("@t3tools/client-runtime/state/thread-workflows"), async (importO
 vi.mock(import("../../state/entities"), async (importOriginal) => ({
   ...(await importOriginal()),
   useThreadProjection: (() => state.projection) as never,
+  useServerConfigs: (() =>
+    new Map([
+      [
+        "environment:test",
+        { environment: { capabilities: { queuedRunStart: state.queuedRunStart } } },
+      ],
+    ])) as never,
 }));
 
 vi.mock(import("../../state/use-atom-command"), async (importOriginal) => ({
@@ -49,6 +57,8 @@ import { act, render as renderUi } from "../../../test/render";
 function setup() {
   state.projection = null;
   state.workflow = null;
+  state.queuedRunStart = undefined;
+  state.promote.mockReset().mockResolvedValue(undefined);
 }
 
 const baseProps = {
@@ -79,7 +89,7 @@ it("previews assistant quotes as readable text and preserves the citation when e
     suffix: "",
   });
   const quoteAndText = `${quote}\n\nWhy per worktree?`;
-  state.projection = { projection: { messages: [] } };
+  state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
   state.workflow = {
     activeRun: { id: "run:active" },
     canPromoteToSteer: true,
@@ -140,7 +150,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
       queuedRuns: [second, first],
     };
     state.workflow = workflow;
-    state.projection = { projection: { messages: [] } };
+    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
     const control = () => (
       <QueuedRunsControl
         ref={ref}
@@ -199,7 +209,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
         finishSend!();
       });
       state.workflow = { ...workflow, queuedRuns: [first] };
-      state.projection = { projection: { messages: [] } };
+      state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
       await screen.rerender(control());
       await act(async () => {
         expect(enter(true)).toBe(true);
@@ -217,7 +227,7 @@ describe("QueuedRunsControl empty composer Enter", () => {
         finishSend!();
       });
       state.workflow = { ...workflow, queuedRuns: [] };
-      state.projection = { projection: { messages: [] } };
+      state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
       await screen.rerender(control());
       expect(enter()).toBe(true);
       expect(onSubmit).toHaveBeenCalledExactlyOnceWith("foreground");
@@ -232,5 +242,75 @@ describe("QueuedRunsControl empty composer Enter", () => {
       state.projection = null;
       state.workflow = null;
     }
+  });
+});
+
+describe("QueuedRunsControl selected run start", () => {
+  function idleQueue(historyOrigin: "native" | "v1_import" = "native") {
+    setup();
+    state.projection = { projection: { thread: { historyOrigin }, messages: [] } };
+    state.workflow = {
+      activeRun: null,
+      canSendNow: true,
+      canPromoteToSteer: false,
+      canReorder: true,
+      queuedRuns: [
+        {
+          run: { id: "run:queued", userMessageId: "message:queued" },
+          messageId: "message:queued",
+          text: "Queued request",
+          attachments: [],
+        },
+      ],
+    };
+  }
+
+  function sendButton(view: HTMLElement) {
+    return [...view.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Send now",
+    )!;
+  }
+
+  it.each([undefined, false])("refuses older/unsupported servers (%s)", async (capability) => {
+    idleQueue();
+    state.queuedRunStart = capability;
+    const ref = createRef<QueuedRunsControlHandle>();
+    await using screen = await renderQueue({ ref });
+    expect(sendButton(screen.container).disabled).toBe(true);
+    await act(() => {
+      sendButton(screen.container).click();
+      expect(ref.current?.steerNext(false)).toBe(false);
+    });
+    expect(state.promote).not.toHaveBeenCalled();
+  });
+
+  it("starts exactly the selected queued run when the server advertises support", async () => {
+    idleQueue();
+    state.queuedRunStart = true;
+    await using screen = await renderQueue();
+    expect(sendButton(screen.container).disabled).toBe(false);
+    await act(() => sendButton(screen.container).click());
+    expect(state.promote).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "environment:test",
+      input: { threadId: "thread:test", runId: "run:queued" },
+    });
+  });
+
+  it("keeps imported history behind review even when selected-run start is supported", async () => {
+    idleQueue("v1_import");
+    state.queuedRunStart = true;
+    const ref = createRef<QueuedRunsControlHandle>();
+    await using screen = await renderQueue({ ref });
+    expect(sendButton(screen.container).disabled).toBe(true);
+    expect(
+      [...screen.container.querySelectorAll("button")].some(
+        (button) => button.textContent?.trim() === "Review imported history" && !button.disabled,
+      ),
+    ).toBe(true);
+    await act(() => {
+      sendButton(screen.container).click();
+      expect(ref.current?.steerNext(false)).toBe(false);
+    });
+    expect(state.promote).not.toHaveBeenCalled();
   });
 });

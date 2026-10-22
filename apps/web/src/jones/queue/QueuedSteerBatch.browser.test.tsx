@@ -137,6 +137,7 @@ describe("queue header batch action", () => {
   it("one click dispatches all 22 IDs once, keeps the queue expanded, and locks row actions", async () => {
     setupTest();
     const ref = createRef<QueuedRunsControlHandle>();
+    const onEditQueuedRun = vi.fn();
     let finish!: (result: unknown) => void;
     state.batch.mockImplementation(
       () =>
@@ -144,7 +145,7 @@ describe("queue header batch action", () => {
           finish = resolve;
         }),
     );
-    await using screen = await render({ ref });
+    await using screen = await render({ ref, onEditQueuedRun });
     const view = screen.container;
     const send = button(view, "Steer all (22)")!;
     expect(send).toBeDefined();
@@ -153,9 +154,15 @@ describe("queue header batch action", () => {
       send.click();
       send.click();
       ref.current?.steerNext(false);
+      button(view, "Edit queued message")!.click();
+      button(view, "Remove queued message")!.click();
     });
     expect(state.batch).toHaveBeenCalledTimes(1);
     expect(state.row).not.toHaveBeenCalled();
+    expect(onEditQueuedRun).not.toHaveBeenCalled();
+    for (const row of view.querySelectorAll("li")) {
+      for (const action of row.querySelectorAll("button")) expect(action.disabled).toBe(true);
+    }
     const command = state.batch.mock.calls[0]![0];
     expect(command).toMatchObject({
       environmentId: "environment:test",
