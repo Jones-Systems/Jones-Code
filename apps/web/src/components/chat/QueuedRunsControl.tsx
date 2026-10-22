@@ -278,7 +278,7 @@ export function QueuedRunsControl({
     if (!canSend || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    try {
+    await (async () => {
       if (workflow?.canSendNow) {
         await resume({
           environmentId: props.environmentId,
@@ -290,10 +290,10 @@ export function QueuedRunsControl({
           input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
         });
       }
-    } finally {
+    })().finally(() => {
       steerInFlightRef.current = false;
       setBusyRunId(null);
-    }
+    });
   };
 
   useImperativeHandle(ref, () => ({

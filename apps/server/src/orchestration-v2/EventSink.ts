@@ -841,7 +841,7 @@ const layerBase: Layer.Layer<
               )
             : input.events;
           const identityEvents = yield* guardRuntimeIdentity({ ...input, events });
-          if (identityEvents === null) return [];
+          if (identityEvents === null) return { committed: [], outcomes: [] };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(identityEvents)
@@ -1244,7 +1244,13 @@ const layerBase: Layer.Layer<
               effectId: null,
               reason: choice.rejectionReason,
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-            return { receipt, storedEvents: [], committed: true as const, cancelledEffectIds: [] };
+            return {
+              receipt,
+              storedEvents: [],
+              outcomes: [],
+              committed: true as const,
+              cancelledEffectIds: [],
+            };
           }
           if (ordinary !== undefined && Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.validate(ordinary);

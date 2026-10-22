@@ -1098,7 +1098,7 @@ export function useComposerSend(input: ComposerSendInput) {
       isServerThread &&
       !shouldQueueBehindActiveRun
     ) {
-      try {
+      await (async () => {
         const attachments = await turnAttachmentsPromise;
         const fileBlockReason = readLiveAttachmentCapabilities().fileBlockReason;
         if (fileBlockReason !== null) throw new Error(fileBlockReason);
@@ -1133,16 +1133,18 @@ export function useComposerSend(input: ComposerSendInput) {
           `${routeThreadKey}:${messageIdForSend}`,
           unchanged,
         );
-      } catch (error) {
-        if (currentRouteThreadKeyRef.current === routeThreadKey)
-          setThreadError(
-            threadIdForSend,
-            error instanceof Error ? error.message : "Imported history review is unavailable.",
-          );
-      } finally {
-        sendInFlightRef.current = false;
-        resetLocalDispatch();
-      }
+      })()
+        .catch((error: unknown) => {
+          if (currentRouteThreadKeyRef.current === routeThreadKey)
+            setThreadError(
+              threadIdForSend,
+              error instanceof Error ? error.message : "Imported history review is unavailable.",
+            );
+        })
+        .finally(() => {
+          sendInFlightRef.current = false;
+          resetLocalDispatch();
+        });
       return;
     }
     if (multipleModelSelections !== null) {

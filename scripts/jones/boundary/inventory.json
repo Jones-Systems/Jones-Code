@@ -256,6 +256,7 @@
     "apps/server/src/auth/RpcAuthorization.test.ts": "jones-tests-in-upstream",
     "apps/server/src/auth/RpcAuthorization.ts": "accepted-shared",
     "apps/server/src/binCli.ts": "accepted-shared",
+    "apps/server/src/cli/thread.ts": "accepted-shared",
     "apps/server/src/checkpointing/CheckpointStore.test.ts": "jones-tests-in-upstream",
     "apps/server/src/cli/config.test.ts": "jones-tests-in-upstream",
     "apps/server/src/cli/config.ts": "accepted-shared",

@@ -46,8 +46,10 @@ export function useImportedHistoryComposer(
   ) => {
     try {
       const prepared = await prepare({ environmentId, input });
-      if (prepared._tag !== "Success")
-        throw new Error("Imported history preparation is unavailable.");
+      if (prepared._tag !== "Success") {
+        if (unchanged()) refuse("Imported history preparation is unavailable.");
+        return;
+      }
       const delivery = { type: "message" as const, command: prepared.value };
       const reviewed = await review({
         environmentId,

@@ -243,6 +243,7 @@ async function render(
 }
 
 it("shows the enrolled-build reason while assignment menus remain blocked", async () => {
+  await using _fixture = await setupFixture1();
   const availability = {
     state: "unavailable" as const,
     reason: "The running app differs from the enrolled build; refresh enrollment for this build",
@@ -267,6 +268,7 @@ it("shows the enrolled-build reason while assignment menus remain blocked", asyn
 });
 
 it("uses thread titles by source identity with an ID fallback in current members", async () => {
+  await using _fixture = await setupFixture1();
   const unknown = {
     ...reference,
     native_reference_id: "unknown-reference",
