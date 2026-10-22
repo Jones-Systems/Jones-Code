@@ -339,7 +339,7 @@ export default async function twoServersOneClient(ctx) {
           .getByRole("button", { name: "Add environment", exact: true })
           .click({ timeout: 5000 }),
       );
-      const dialog = ctx.page.getByRole("dialog");
+      const dialog = ctx.page.getByRole("dialog", { name: "Add Environment", exact: true });
       await take(() =>
         dialog.getByRole("button", { name: /Remote link/ }).click({ timeout: 5000 }),
       );
