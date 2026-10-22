@@ -1531,7 +1531,11 @@
     ".github/workflows/jones-native-workflows.yml": "policy",
     "apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs": "jones-owned",
-    "scripts/jones/boundary/fragments/native-electron-workflows.json": "jones-owned"
+    "scripts/jones/boundary/fragments/native-electron-workflows.json": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs": "jones-owned",
+    "scripts/jones/e2e/acp-stub/agent.mjs": "jones-owned",
+    "scripts/jones/e2e/acp-stub/agent.test.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

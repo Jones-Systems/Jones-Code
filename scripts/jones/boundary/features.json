@@ -1403,14 +1403,16 @@
         "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
         "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
         "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs",
         "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
         "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
-        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs"
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
+        "scripts/jones/e2e/acp-stub/agent.test.mjs"
       ],
-      "scope": "JE-01R uses the existing isolated Electron harness to pin and unpin through native UI, restart both desktop and its backend with retained disk state, and compare an unchanged-oracle no-action negative. The dedicated path-scoped Linux workflow builds once and records positive, negative, process-generation and cleanup evidence. No provider turns, multi-client or physical-host proof follows from this case."
+      "scope": "JE-01R uses the existing isolated Electron harness to pin and unpin through native UI, restart both desktop and its backend with retained disk state, and compare an unchanged-oracle no-action negative. The dedicated path-scoped Linux workflow builds once and records positive, negative, process-generation and cleanup evidence. No provider turns, multi-client or physical-host proof follows from this case. JE-06 adds a synthetic local ACP v2 peer and an Electron queue/edit/cancel/replay scenario configured through ordinary Local ACP settings. Source checks cover held prompts, cancellation, exact native commandId/messageId replay guards, edited-message and unchanged-draft oracles, durable counts, delivery-ledger duplicate detection, owned-process cleanup, and canonical-path queue-case staging. Gate-only readiness evidence cannot qualify the full workflow. These source checks do not establish native Electron execution, a live provider account, multi-client behavior, or physical-host qualification."
     }
   ]
 }
