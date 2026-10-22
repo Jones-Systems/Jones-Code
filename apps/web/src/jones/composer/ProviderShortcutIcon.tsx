@@ -25,11 +25,13 @@ export function ProviderAccountGlyph({
   accentColor,
   acpRegistryIconUrl,
   labelColor = "white",
+  labelSize = "default",
 }: Pick<
   ProviderInstanceEntry,
   "driverKind" | "displayName" | "accentColor" | "acpRegistryIconUrl"
 > & {
   labelColor?: string;
+  labelSize?: "default" | "compact";
 }) {
   const labelId = useId();
   const initials = Array.from(providerInstanceInitials(displayName));
@@ -69,7 +71,7 @@ export function ProviderAccountGlyph({
           width: 36,
           height: 26,
           fontFamily: "system-ui, sans-serif",
-          fontSize: 9,
+          fontSize: labelSize === "compact" ? 6 : 9,
           fontWeight: 600,
         }}
         dominantBaseline="central"
@@ -80,7 +82,7 @@ export function ProviderAccountGlyph({
         <use
           href={`#${labelId}`}
           className="stroke-black fill-black"
-          strokeWidth={6.25}
+          strokeWidth={labelSize === "compact" ? 3 : 6.25}
           strokeLinejoin="round"
         />
         <use href={`#${labelId}`} fill={labelColor} />

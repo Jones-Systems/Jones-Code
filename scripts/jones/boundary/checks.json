@@ -2,6 +2,16 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstreams-sidebar-assignment",
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
+        "vp lint apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-apple-silicon-platforms",
       "tests": [
         "scripts/jones/platforms/supportedTargets.test.ts",
@@ -2332,11 +2342,49 @@
       ]
     },
     {
+      "id": "jones-shell-destination",
+      "tests": [
+        "apps/web/src/jones/shellDestination/model.test.ts",
+        "apps/web/src/jones/shellDestination/controller.test.ts",
+        "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
+        "packages/contracts/src/jones/shellDestinationFence.test.ts",
+        "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "apps/web/src/components/ChatMarkdown.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx",
+        "apps/web/src/components/ThreadTerminalDrawer.permissions.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/jones/shellDestination/model.test.ts apps/web/src/jones/shellDestination/controller.test.ts packages/contracts/src/jones/shellDestinationFence.test.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/web && vp test run src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx src/jones/shellDestination/terminalAttachment.browser.test.tsx src/components/ChatMarkdown.browser.test.tsx src/components/ThreadTerminalDrawer.permissions.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/shellDestination apps/web/src/components/ChatMarkdown.tsx apps/web/src/components/ThreadTerminalDrawer.tsx packages/contracts/src/jones/shellDestinationFence.ts packages/contracts/src/jones/shellDestinationFence.test.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.ts packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.ts",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/provider-core typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-ci-dependency-setup",
       "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
       "commands": [
         "node --test scripts/jones/ci/chromium-setup.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
+      "id": "jones-child-input-navigation",
+      "tests": [
+        "packages/client-runtime/src/state/threadShell.test.ts",
+        "apps/web/src/threadRoutes.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/client-runtime/src/state/threadShell.test.ts apps/web/src/threadRoutes.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/components/ChatView.tsx apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/mobile-native-static-check.ts",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     }
   ]
