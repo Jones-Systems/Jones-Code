@@ -2258,6 +2258,22 @@
       ]
     },
     {
+      "id": "jones-workstream-assignment-panel",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/state/workstreams.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-native-enrollment-runtime",
       "tests": [
         "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
@@ -2267,6 +2283,21 @@
       "commands": [
         "node --input-type=module -e \"import { createRequire } from 'node:module'; import { dirname, resolve } from 'node:path'; const r = createRequire(import.meta.resolve('vite-plus/package.json')); const p = r.resolve('vitest/package.json'); process.argv = [process.execPath, resolve(dirname(p), r(p).bin.vitest), 'run', '--config', 'scripts/jones/native-enrollment/candidate.vite.config.ts']; await import(process.argv[1]);\"",
         "JONES_SQLITE_SEA_FIXTURE=\"$TMPDIR/sqlite-sea\" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-multi-environment",
+      "tests": [
+        "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts apps/server/src/workstreams/http.test.ts apps/server/src/jones/workstreams/registrationContext/service.test.ts apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
