@@ -161,6 +161,8 @@
     "apps/desktop/scripts/ui-evidence/sandbox.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenario-api.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/secret-service-stage.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/secret-service-stage.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/secret-service.test.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/support/secret-service.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenarios/example.mjs": "jones-owned",

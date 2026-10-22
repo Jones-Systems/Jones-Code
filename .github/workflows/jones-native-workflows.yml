@@ -89,7 +89,7 @@ jobs:
           fi
 
   # This dedicated check is not part of CI's aggregate Check. Native qualification
-  # here covers JE-01R, JE-02 and JE-06 on Linux; other scenarios need their own admission.
+  # here covers JE-01R, JE-02, JE-03 and JE-06 on Linux; other scenarios need their own admission.
   electron-ui-evidence:
     name: Jones Electron native workflows
     needs: changes
@@ -185,7 +185,14 @@ jobs:
             bubblewrap xvfb unzip fontconfig fonts-dejavu-core \
             libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 \
             libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2t64 \
-            libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config
+            libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config \
+            gnome-keyring dbus libglib2.0-bin
+          dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' \
+            gnome-keyring dbus libglib2.0-bin > "$JCUE_OUTPUT/secret-service-packages.txt"
+          dpkg-query -S /usr/bin/gnome-keyring-daemon /usr/bin/dbus-daemon /usr/bin/gdbus \
+            > "$JCUE_OUTPUT/secret-service-package-owners.txt"
+          sha256sum /usr/bin/gnome-keyring-daemon /usr/bin/dbus-daemon /usr/bin/gdbus \
+            > "$JCUE_OUTPUT/secret-service-system.sha256"
           # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
           pinned_node=$(node -p 'process.execPath')
           if [ -x /usr/bin/node ]; then
@@ -602,6 +609,202 @@ jobs:
           }
           NODE
           done
+
+      - name: Run JE-03 with private Secret Service and a whole-run deadline
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, time
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          cores = os.cpu_count()
+          admission = {'cpuUsedPercent': used, 'logicalCores': cores,
+                       'oneCorePercent': 100 / cores if cores else None, 'availableKiB': available}
+          (output / 'two-servers-admission.json').write_text(json.dumps(admission, indent=2))
+          assert cores and used < 85 and available > 3 * 1024 * 1024, 'Native run not admitted; no retry'
+          started = time.monotonic()
+          child = None
+          identity = None
+          signals = []
+          report = {'status': 'unknown', 'wholeRunCapSeconds': 390, 'attempts': 1}
+          def ticks(pid):
+              try:
+                  raw = pathlib.Path(f'/proc/{pid}/stat').read_text()
+                  return raw[raw.rfind(')') + 2:].split()[19]
+              except FileNotFoundError:
+                  return None
+          def group_exists(pgid):
+              try:
+                  os.killpg(pgid, 0)
+                  return True
+              except ProcessLookupError:
+                  return False
+          def signal_owned(sig):
+              if child is None or child.poll() is not None:
+                  return
+              assert identity is not None, 'Unknown child identity; no signal sent'
+              assert ticks(child.pid) == identity['startTicks'] and os.getpgid(child.pid) == identity['pgid'], 'Child identity changed; no signal sent'
+              os.killpg(identity['pgid'], sig)
+              signals.append(signal.Signals(sig).name)
+          def save_report():
+              report.update({'elapsedSeconds': time.monotonic() - started, 'cleanupSignals': signals})
+              (output / 'two-servers-controller.json').write_text(json.dumps(report, indent=2))
+          def deadline(_signal, _frame):
+              report.update({'status': 'unknown', 'error': '390-second whole-run deadline expired'})
+              try:
+                  signal_owned(signal.SIGKILL)
+              finally:
+                  save_report()
+                  os._exit(124)
+          def cancelled(signum, _frame):
+              raise RuntimeError(f'Controller cancelled: {signal.Signals(signum).name}')
+          signal.signal(signal.SIGALRM, deadline)
+          signal.setitimer(signal.ITIMER_REAL, max(0.001, 390 - (time.monotonic() - started)))
+          signal.signal(signal.SIGTERM, cancelled)
+          signal.signal(signal.SIGINT, cancelled)
+          def read(relative):
+              path = output / relative
+              assert path.is_file() and not path.is_symlink() and path.stat().st_size <= 2 * 1024 * 1024
+              return json.loads(path.read_text())
+          def sha(path):
+              return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+
+          def je03_checks(inner,evidence):
+           if not isinstance(inner,dict) or not isinstance(evidence,dict): return {'nativeEvidencePresent':False}
+           service=inner.get('secretService',{});storage=service.get('generations',[]);children=service.get('services',[])
+           apps=inner.get('processGenerations',[]);restarts=inner.get('restarts',[])
+           b=evidence.get('b',{});b_id=b.get('identity',{}) or {};b_stop=b.get('stop',{})
+           fp=evidence.get('trace',{}).get('fingerprints',{});catalog=evidence.get('catalog',{});restored=catalog.get('restored',{})
+           nc2=evidence.get('nc2',{});nc3=evidence.get('nc3',{});a_live=evidence.get('aLive',{});reenable=evidence.get('reenable',{})
+           steps=['onboarding-and-observability','seed-a','start-and-seed-b','pair-b-ui','pre-action-non-vacuity','pin-b','credential-fence','switch-off-b','b-not-live','a-stays-live','restart-disabled-b','reenable-b']
+           def ident(value): return isinstance(value,dict) and isinstance(value.get('pid'),int) and value['pid']>0 and isinstance(value.get('startTicks'),str) and re.fullmatch(r'[0-9]+',value['startTicks']) is not None
+           def fingerprint(value): return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{16}',value) is not None
+           def digest(value): return isinstance(value,str) and re.fullmatch(r'[a-f0-9]{64}',value) is not None
+           return {
+            'scenarioPassed':evidence.get('schema')=='je03-two-servers/v1' and evidence.get('status')=='passed',
+            'allNativeStepsPassed':evidence.get('scenarioCapMs')==300000 and evidence.get('operatorCapMs')==390000 and [s.get('name') for s in evidence.get('steps',[])]==steps and all(s.get('status')=='passed' for s in evidence.get('steps',[])),
+            'secondaryStopped':ident(b_id) and b_id.get('origin')=='http://127.0.0.1:43774' and b_stop.get('outcome')=='stopped' and b_stop.get('pid')==b_id.get('pid') and b_stop.get('startTicks')==b_id.get('startTicks'),
+            'distinctEnvironments':bool(evidence.get('environments',{}).get('a')) and bool(evidence.get('environments',{}).get('b')) and evidence['environments']['a']!=evidence['environments']['b'] and b_id.get('primaryEnvironmentId')==evidence['environments']['a'] and b_id.get('environmentId')==evidence['environments']['b'],
+            'crossover':evidence.get('crossover',{}).get('ok') is True and evidence.get('trace',{}).get('failure') is None and 0<evidence.get('trace',{}).get('count',0)<=5000,
+            'pinOnlyB':evidence.get('pinRouting',{})=={'ok':True,'count':1,'origin':'http://127.0.0.1:43774'},
+            'aStrictInvariance':evidence.get('aStrictInvariance') is True and digest(evidence.get('aBeforeSha256')) and evidence.get('aBeforeSha256')==evidence.get('aAfterSha256'),
+            'credentialFence':nc2.get('ok') is True and nc2.get('aStatus') in [401,403] and nc2.get('bStatus')==200,
+            'disabledNotLive':nc3.get('ok') is True and nc3.get('quietWindowMs')==5000 and evidence.get('bRetainedRows',{}).get('ok') is True,
+            'aLiveAndInvariant':a_live.get('ok') is True and digest(a_live.get('selectedSha256')) and a_live.get('selectedSha256')==evidence.get('aRestartSelectedSha256')==evidence.get('aFinalSelectedSha256'),
+            'encryptedCatalog':catalog.get('encrypted') is True and catalog.get('plaintextAbsent') is True and 0<catalog.get('bytes',0)<=1048576 and catalog.get('storage')=={'available':True,'backend':'gnome_libsecret'} and all(restored.get(key) is True for key in ['target','profile','credential','disabled']),
+            'credentialUnchangedOnReenable':set(fp)=={'0','1'} and all(fingerprint(fp[g].get(role)) for g in ['0','1'] for role in ['a','b']) and fp['0']['a']!=fp['0']['b'] and fp['1']['a']!=fp['1']['b'] and fp['0']['b']==fp['1']['b']==restored.get('b') and reenable=={'ok':True,'sameCredential':True,'pairedAgain':False},
+            'managedClosed':service.get('status')=='closed' and len(storage)==2 and all(g.get('backend')=='gnome_libsecret' and g.get('available') is True for g in storage) and len(children)==2 and all(ident(g) and g.get('closed') is True and g.get('exited') is True for g in children),
+            'twoGenerationsClosed':len(apps)==2 and all(g.get('closed') is True and g.get('closeAttempted') is True and ident(g.get('processes',{}).get('electron')) and ident(g.get('processes',{}).get('server')) for g in apps),
+            'actualRestart':len(restarts)==1 and restarts[0].get('oldProcessesClosed') is True and all(ident(restarts[0].get('before',{}).get(role)) and ident(restarts[0].get('after',{}).get(role)) and restarts[0]['before'][role]['pid']!=restarts[0]['after'][role]['pid'] for role in ['electron','server']),
+            'innerPassed':inner.get('status')=='passed' and inner.get('runtime',{}).get('electron')=='44.4.5' and not inner.get('pendingElectronLaunch'),
+           }
+
+          gate_read, gate_write = os.pipe()
+          try:
+              argv = [shutil.which('node'), 'apps/desktop/scripts/ui-evidence.mjs', 'run',
+                      '--source', os.environ['GITHUB_WORKSPACE'],
+                      '--scenario', os.environ['GITHUB_WORKSPACE'] + '/apps/desktop/scripts/ui-evidence/scenarios/two-servers-one-client.mjs',
+                      '--secret-service', 'system', '--build-receipt', str(output / 'build/receipt.json'),
+                      '--out', str(output / 'two-servers')]
+              assert argv[0], 'Pinned Node unavailable'
+              bootstrap = "import json,os,sys; a=json.loads(sys.argv[1]); fd=int(sys.argv[2]); b=os.read(fd,1); os.close(fd); sys.exit(125) if b!=b'1' else os.execv(a[0],a)"
+              with (output / 'two-servers-result.json').open('xb') as stdout, (output / 'two-servers-stderr.log').open('xb') as stderr:
+                  child = subprocess.Popen([sys.executable, '-I', '-S', '-c', bootstrap, json.dumps(argv), str(gate_read)],
+                                           stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                           start_new_session=True, close_fds=True, pass_fds=(gate_read,))
+                  os.close(gate_read)
+                  gate_read = -1
+                  identity = {'pid': child.pid, 'pgid': os.getpgid(child.pid), 'startTicks': ticks(child.pid)}
+                  assert identity['pgid'] == child.pid and identity['startTicks'], 'Captured child identity unavailable'
+                  with (output / 'two-servers-started.json').open('x') as journal:
+                      json.dump({'identity': identity, 'argv': argv, 'wholeRunCapSeconds': 390}, journal, indent=2)
+                      journal.flush()
+                      os.fsync(journal.fileno())
+                  report['identity'] = identity
+                  os.write(gate_write, b'1')
+                  os.close(gate_write)
+                  gate_write = -1
+                  code = child.wait(timeout=max(0.1, 355 - (time.monotonic() - started)))
+              report['exitCode'] = code
+              (output / 'two-servers-exit-code.txt').write_text(str(code) + '\n')
+              assert code == 0, 'JE03 first attempt failed'
+              assert not group_exists(identity['pgid']), 'Captured child group still present'
+              result = read('two-servers-result.json')
+              manifest = read('two-servers/manifest.json')
+              inner = read('two-servers/inner.json')
+              evidence = read('two-servers/je03-evidence.json')
+              assert result['code'] == 0
+              assert manifest['schema'] == 'jones-code-ui-evidence/v1'
+              assert result['status'] == manifest['status'] == inner['status'] == 'passed'
+              assert all(value['cleanup'] == {'outcome': 'complete', 'rootAbsent': True} for value in [result, manifest])
+              namespace = manifest['namespaceProcess']
+              assert namespace['exited'] is True and isinstance(namespace['pid'], int) and namespace['pid'] > 0
+              assert re.fullmatch(r'[0-9]+', namespace['startTicks']) and ticks(namespace['pid']) != namespace['startTicks']
+              registry = pathlib.Path(os.environ['XDG_STATE_HOME']) / 'jones-code-ui-evidence/registry' / (manifest['runId'] + '.json')
+              assert re.fullmatch(r'[a-zA-Z0-9-]+', manifest['runId']) and result['runId'] == manifest['runId']
+              assert registry.is_file() and not registry.is_symlink()
+              record = json.loads(registry.read_text())
+              assert record['id'] == manifest['runId'] and record['cleanup'] == 'complete'
+              assert not pathlib.Path(record['root']).exists() and not pathlib.Path(record['root']).is_symlink()
+              receipt = read('build/receipt.json')
+              head = os.environ['JCUE_HARNESS_OID']
+              assert manifest['source']['head'] == manifest['harness']['head'] == receipt['source']['head'] == head
+              assert manifest['source']['clean'] is True and manifest['harness']['clean'] is True
+              assert manifest['source']['statusSha256'] == manifest['source']['patch']['sha256'] == hashlib.sha256(b'').hexdigest()
+              assert manifest['source']['untracked']['sha256'] == hashlib.sha256(b'[]').hexdigest()
+              assert manifest['build']['sourceCorrespondence']['status'] == 'receipt-matched'
+              assert manifest['build']['sourceCorrespondence']['receipt']['sha256'] == sha(output / 'build/receipt.json')
+              assert all(manifest['build'][key]['sha256'] == receipt['build'][key] for key in ['desktop', 'server', 'web', 'boot'])
+              assert manifest['scenario']['sha256'] == sha(argv[6])
+              assert manifest['error'] is None and manifest['assertions'] and all(a['status'] == 'passed' for a in manifest['assertions'])
+              assert inner['isolation']['status'] == 'passed' and 'closeError' not in inner and 'startupDiagnosticsError' not in inner
+              inputs = read('two-servers/secret-service-inputs.json')
+              assert inputs['schema'] == 'jones-system-secret-service-stage/v1'
+              config = inputs['configuration']['managedSecretService']
+              assert config['libraries'] == [] and config['libraryDirectories'] == []
+              for name, path in [('daemon', '/usr/bin/gnome-keyring-daemon'), ('bus', '/usr/bin/dbus-daemon'), ('client', '/usr/bin/gdbus')]:
+                  assert inputs['inputs'][name] == {'path': path, 'sha256': sha(path)}
+              assert config['daemon'] == {'path': '/harness/support/native/bin/gnome-keyring-daemon', 'sha256': inputs['inputs']['daemon']['sha256']}
+              assert config['bus'] == inputs['inputs']['bus'] and config['client'] == inputs['inputs']['client']
+              assert inner['secretService']['inputs'] == [config['daemon'], config['bus'], config['client']]
+              checks = je03_checks(inner, evidence)
+              report['nativeChecks'] = checks
+              assert all(checks.values()), 'Direct JE03 evidence predicates failed'
+              assert time.monotonic() - started < 390, 'Whole-run cap exceeded'
+              report['status'] = 'passed'
+          except BaseException as error:
+              report.update({'status': 'unknown', 'error': type(error).__name__ + ': ' + str(error)})
+          finally:
+              for fd in [gate_read, gate_write]:
+                  if fd >= 0:
+                      os.close(fd)
+              try:
+                  if child is not None and child.poll() is None:
+                      signal_owned(signal.SIGTERM)
+                      try:
+                          child.wait(timeout=20)
+                      except subprocess.TimeoutExpired:
+                          signal_owned(signal.SIGKILL)
+                          child.wait(timeout=5)
+                  report['childReaped'] = child is not None and child.returncode is not None
+                  report['groupAbsent'] = identity is not None and not group_exists(identity['pgid'])
+                  if not report['childReaped'] or not report['groupAbsent']:
+                      report['status'] = 'unknown'
+              except BaseException as error:
+                  report.update({'status': 'unknown', 'cleanupError': str(error)})
+              save_report()
+              signal.setitimer(signal.ITIMER_REAL, 0)
+          assert report['status'] == 'passed', report.get('error', 'Cleanup unproved')
 
       - name: Verify cleanup of this job's registered runs
         if: always() && env.JCUE_TASK_ROOT != ''
