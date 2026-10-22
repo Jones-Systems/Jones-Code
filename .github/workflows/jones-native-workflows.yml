@@ -89,7 +89,7 @@ jobs:
           fi
 
   # This dedicated check is not part of CI's aggregate Check. Native qualification
-  # here covers JE-01R and JE-02 on Linux; other scenarios need their own admission.
+  # here covers JE-01R, JE-02 and JE-06 on Linux; other scenarios need their own admission.
   electron-ui-evidence:
     name: Jones Electron native workflows
     needs: changes
@@ -188,7 +188,11 @@ jobs:
             libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config
           # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
           pinned_node=$(node -p 'process.execPath')
-          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          if [ -x /usr/bin/node ]; then
+            /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          else
+            printf '%s\n' 'unavailable: /usr/bin/node is absent or not executable' > "$JCUE_OUTPUT/system-node-before.txt"
+          fi
           if ! cmp -s "$pinned_node" /usr/bin/node; then
             sudo -n install -m 0755 "$pinned_node" /usr/bin/node
           fi
@@ -233,7 +237,9 @@ jobs:
           fi
 
       - name: Check the focused harness source group
-        run: vp run test:ui-evidence
+        run: |
+          vp run test:ui-evidence
+          node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.test.mjs
 
       - name: Build once and bind the operator receipt
         run: |
@@ -458,6 +464,144 @@ jobs:
             assert.equal(generation.exit.signal, null);
           }
           NODE
+
+      - name: Run JE-06 and its unchanged-oracle no-edit negative once each
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          for queue_case in workflow no-edit-negative; do
+            export JCUE_QUEUE_CASE="$queue_case"
+            python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          cores = os.cpu_count()
+          sample = {'cpuUsedPercent': used, 'logicalCores': cores,
+                    'oneCorePercent': 100 / cores if cores else None, 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / ('queue-' + os.environ['JCUE_QUEUE_CASE'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
+          assert cores and used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+            native_code=0
+            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+              --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs" \
+              --queue-case "$queue_case" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
+              --out "$JCUE_OUTPUT/queue-$queue_case" \
+              > "$JCUE_OUTPUT/queue-$queue_case-result.json" || native_code=$?
+            export JCUE_NATIVE_CODE="$native_code"
+            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/queue-$queue_case-exit-code.txt"
+            # Preserve the first positive failure; never run another behavior attempt.
+            if [ "$queue_case" = workflow ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
+            node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          import { assertDeliveries, assertFullQueueEvidence } from './apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs';
+          const queueCase = process.env.JCUE_QUEUE_CASE;
+          const positive = queueCase === 'workflow';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+          const prefix = `queue-${queueCase}`;
+          const result = read(`${prefix}-result.json`);
+          const manifest = validateManifest(read(`${prefix}/manifest.json`));
+          const inner = read(`${prefix}/inner.json`);
+          const expectedCode = positive ? 0 : 1;
+          assert.equal(Number(process.env.JCUE_NATIVE_CODE), expectedCode);
+          assert.equal(result.code, expectedCode);
+          for (const value of [result, manifest, inner])
+            assert.equal(value.status, positive ? 'passed' : 'failed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.harness.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.source.statusSha256, hash(''));
+          assert.equal(manifest.source.patch.sha256, hash(''));
+          assert.equal(manifest.source.untracked.sha256, hash('[]'));
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const receipt = read('build/receipt.json');
+          assert.equal(receipt.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.build.sourceCorrespondence.receipt.sha256,
+            hash(fs.readFileSync(`${output}/build/receipt.json`)));
+          for (const name of ['desktop', 'server', 'web', 'boot'])
+            assert.equal(manifest.build[name].sha256, receipt.build[name]);
+          assert.equal(manifest.scenario.sha256,
+            hash(fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs')));
+          assert.equal(manifest.scenario.queueCase, queueCase);
+          assert.equal(manifest.runtime.electron, '44.4.5');
+          assert.equal(inner.isolation.status, 'passed');
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          assert.ok(inner.processGenerations.length > 0);
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+            assert.equal(generation.closeError, undefined);
+          }
+          const fixture = manifest.fixture;
+          assert.equal(fixture.queueCase, queueCase);
+          assert.equal(fixture.agentSha256, hash(fs.readFileSync('scripts/jones/e2e/acp-stub/agent.mjs')));
+          assert.equal(fixture.providerGate.status, 'ready');
+          assert.equal(fixture.providerGate.protocolVersion, 2);
+          assert.match(fixture.runId, /^[0-9a-f-]{36}$/);
+          const ledger = read(`${prefix}/je06-${fixture.runId}-ledger.json`);
+          const beforeCleanup = read(`${prefix}/je06-${fixture.runId}-ledger-before-cleanup.json`);
+          assert.equal(ledger.runId, fixture.runId);
+          assert.equal(beforeCleanup.runId, fixture.runId);
+          assert.equal(fixture.stubCleanup.closed, true);
+          assert.deepEqual(ledger.cleanup, fixture.stubCleanup);
+          assert.ok(ledger.cleanup.starts.length > 0);
+          assert.equal(ledger.ledger.filter(row => row.event === 'start').length, ledger.cleanup.starts.length);
+          assert.equal(new Set(ledger.cleanup.starts.map(start => start.processId)).size, ledger.cleanup.starts.length);
+          assert.ok(ledger.ledger.every(row => row.runId === fixture.runId));
+          assert.deepEqual(ledger.ledger.slice(0, beforeCleanup.ledger.length), beforeCleanup.ledger);
+          for (const start of ledger.cleanup.starts) {
+            assert.ok(Number.isInteger(start.pid) && start.pid > 0);
+            assert.match(start.startTicks, /^\d+$/);
+            assert.equal(ledger.ledger.filter(row => row.event === 'start' &&
+              row.processId === start.processId && row.pid === start.pid && row.startTicks === start.startTicks).length, 1);
+            assert.equal(ledger.ledger.filter(row => row.event === 'close' && row.processId === start.processId).length, 1);
+          }
+          assertDeliveries(beforeCleanup.ledger, fixture, positive);
+          assertDeliveries(ledger.ledger, fixture, positive);
+          if (positive) {
+            assert.equal(manifest.error, null);
+            assert.equal(manifest.assertions.length, 99);
+            assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+            assert.equal(manifest.scenario.steps.length, 7);
+            assert.ok(manifest.scenario.steps.every(step => step.status === 'passed'));
+            assertFullQueueEvidence(fixture);
+            assert.match(fixture.replay.payloadSha256, /^[0-9a-f]{64}$/);
+            assert.ok(Number.isInteger(fixture.replay.resultSequence) && fixture.replay.resultSequence > 0);
+            assert.match(fixture.durable.controlSha256, /^[0-9a-f]{64}$/);
+            assert.ok(manifest.assertions.some(a => a.name === 'Normal unsent draft is restored unchanged'));
+          } else {
+            const expected = 'Scenario assertion failed: M2 retains exactly the edited text';
+            for (const value of [result, manifest, inner]) assert.equal(value.error, expected);
+            assert.equal(fixture.variant, 'no-edit-negative');
+            assert.equal(manifest.assertions.length, 25);
+            assert.deepEqual(manifest.assertions.filter(a => a.status !== 'passed'),
+              [{ name: 'M2 retains exactly the edited text', status: 'failed' }]);
+            assert.equal(manifest.scenario.steps.length, 5);
+            assert.ok(manifest.scenario.steps.slice(0, 4).every(step => step.status === 'passed'));
+            assert.equal(manifest.scenario.steps[4].status, 'failed');
+          }
+          NODE
+          done
 
       - name: Verify cleanup of this job's registered runs
         if: always() && env.JCUE_TASK_ROOT != ''
