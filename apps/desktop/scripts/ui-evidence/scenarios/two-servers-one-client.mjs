@@ -138,6 +138,107 @@ export function inspectEncryptedCatalog(bytes) {
   return { encrypted: true, plaintextAbsent: true, bytes: bytes.length, sha256: hash(bytes) };
 }
 
+export async function recordRestartStep(artifacts, phase, work, appendFile = NodeFSP.appendFile) {
+  if (!["restart", "reload", "checkpoint"].includes(phase))
+    throw new Error("je03-progress-phase-invalid");
+  const record = (state) =>
+    appendFile(
+      `${artifacts}/je03-restart-progress.ndjson`,
+      `${JSON.stringify({ phase, state })}\n`,
+      { mode: 0o600, flush: true },
+    );
+  await record("entered");
+  const result = await work();
+  await record("completed");
+  return result;
+}
+
+export async function finalizeEvidence({
+  evidence,
+  trace,
+  secondary,
+  path,
+  failed,
+  writeFile = NodeFSP.writeFile,
+}) {
+  const fail = (code) => {
+    failed ??= new Error(code);
+    evidence.status = "failed";
+    evidence.failure = failed.message;
+  };
+  if (failed) {
+    failed = new Error(
+      typeof failed.message === "string" && /^[a-z][a-z0-9-]{1,90}$/.test(failed.message)
+        ? failed.message
+        : "je03-failed",
+    );
+    fail(failed.message);
+  }
+  const completed = evidence.status === "passed" && !failed;
+  // A provisional file must never qualify a run whose drain or cleanup is still pending.
+  evidence.status = "failed";
+  evidence.finalization = { drain: "pending", cleanup: "pending" };
+  let created = false;
+  let safeToFinalize = false;
+  const scan = () => {
+    evidence.trace = trace.summary();
+    evidence.b = secondary.evidence;
+    secondary.assertSafeEvidence(evidence);
+  };
+  const persist = async (initial) => {
+    await writeFile(path, JSON.stringify(evidence, null, 2), {
+      ...(initial ? { flag: "wx" } : {}),
+      mode: 0o600,
+      flush: true,
+    });
+  };
+  trace.detach();
+  try {
+    try {
+      scan();
+      await persist(true);
+      created = true;
+    } catch {
+      fail("secret-in-evidence-or-write-failed");
+    }
+    try {
+      await trace.flush();
+      evidence.finalization.drain = "completed";
+    } catch {
+      evidence.finalization.drain = "failed";
+      fail("renderer-network-unobservable");
+    }
+    try {
+      // Scan drained observations while the secondary still retains its secret matchers.
+      scan();
+      safeToFinalize = true;
+    } catch {
+      fail("secret-in-evidence-or-write-failed");
+    }
+  } finally {
+    try {
+      await secondary.stop();
+      evidence.finalization.cleanup = "completed";
+    } catch {
+      evidence.finalization.cleanup = "failed";
+      fail("secondary-stop-unknown");
+    }
+    try {
+      if (completed && !failed) evidence.status = "passed";
+      if (created && safeToFinalize) {
+        // Only the fixed-shape stop result has changed since the secret scan.
+        evidence.b = secondary.evidence;
+        await persist(false);
+      }
+    } catch {
+      fail("je03-evidence-write-failed");
+    } finally {
+      trace.dispose();
+    }
+  }
+  return failed;
+}
+
 export default async function twoServersOneClient(ctx) {
   const fixture = {
     projectId: NodeCrypto.randomUUID(),
@@ -607,10 +708,12 @@ export default async function twoServersOneClient(ctx) {
       await checkpoint();
     });
     await step("restart-disabled-b", 90000, async () => {
-      const restart = await take(() => ctx.restart());
+      const restart = await recordRestartStep(ctx.artifacts, "restart", () =>
+        take(() => ctx.restart()),
+      );
       requireThat(restart.oldProcessesClosed === true, "restart-processes-not-closed");
       trace.attach(ctx.page);
-      await take(() => ctx.reload());
+      await recordRestartStep(ctx.artifacts, "reload", () => take(() => ctx.reload()));
       await until(
         () =>
           trace.entries.some(
@@ -663,7 +766,7 @@ export default async function twoServersOneClient(ctx) {
         ),
         "disabled-b-reconnected-after-restart",
       );
-      await checkpoint();
+      await recordRestartStep(ctx.artifacts, "checkpoint", checkpoint);
     });
     await step("reenable-b", 20000, async () => {
       await settings();
@@ -707,41 +810,13 @@ export default async function twoServersOneClient(ctx) {
     clearTimeout(timer);
     process.removeListener("SIGINT", cancel);
     process.removeListener("SIGTERM", cancel);
-    trace.detach();
-    try {
-      await trace.flush();
-    } catch {
-      failed ??= new Error("renderer-network-unobservable");
-    }
-    const path = `${ctx.artifacts}/je03-evidence.json`;
-    let safeToWrite = false;
-    try {
-      evidence.trace = trace.summary();
-      evidence.b = b.evidence;
-      b.assertSafeEvidence(evidence);
-      await NodeFSP.writeFile(path, JSON.stringify(evidence, null, 2), { flag: "wx", mode: 0o600 });
-      safeToWrite = true;
-    } catch {
-      failed ??= new Error("secret-in-evidence-or-write-failed");
-    }
-    try {
-      await b.stop();
-    } catch {
-      failed = new Error("secondary-stop-unknown");
-    }
-    evidence.b = b.evidence;
-    if (failed) {
-      evidence.status = "failed";
-      evidence.failure = failed.message;
-    }
-    try {
-      // Only the fixed-shape stop result has changed since the secret scan.
-      if (safeToWrite)
-        await NodeFSP.writeFile(path, JSON.stringify(evidence, null, 2), { mode: 0o600 });
-    } catch {
-      failed ??= new Error("je03-evidence-write-failed");
-    }
-    trace.dispose();
+    failed = await finalizeEvidence({
+      evidence,
+      trace,
+      secondary: b,
+      path: `${ctx.artifacts}/je03-evidence.json`,
+      failed,
+    });
   }
   if (failed) throw failed;
 }

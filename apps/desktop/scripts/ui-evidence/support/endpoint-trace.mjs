@@ -56,16 +56,34 @@ export class EndpointTrace {
   #expected = {};
   #limit;
   #localAssetRequests = 0;
+  #drainTimeoutMs;
+  #incomplete = false;
+  #pendingAtTimeout = null;
+  #sealed = false;
+  #disposed = false;
 
-  constructor(threadId, { key = NodeCrypto.randomBytes(32), limit = 5000 } = {}) {
-    if (key.length !== 32 || !Number.isInteger(limit) || limit < 1 || limit > 5000)
+  constructor(
+    threadId,
+    { key = NodeCrypto.randomBytes(32), limit = 5000, drainTimeoutMs = 1000 } = {},
+  ) {
+    if (
+      key.length !== 32 ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 5000 ||
+      !Number.isInteger(drainTimeoutMs) ||
+      drainTimeoutMs < 1 ||
+      drainTimeoutMs > 1000
+    )
       throw new Error("invalid-trace-bounds");
     this.#key = Buffer.from(key);
     this.#threadId = threadId;
     this.#limit = limit;
+    this.#drainTimeoutMs = drainTimeoutMs;
   }
 
   fingerprint(value) {
+    if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
     return NodeCrypto.createHmac("sha256", this.#key).update(value).digest("hex").slice(0, 16);
   }
   get generation() {
@@ -79,14 +97,16 @@ export class EndpointTrace {
   }
 
   #reserve() {
+    if (this.#sealed) return null;
     if (this.#sequence >= this.#limit) {
-      this.#failure = "renderer-trace-overflow";
+      this.#failure ??= "renderer-trace-overflow";
       return null;
     }
     return { sequence: this.#sequence++, generation: this.#generation, t: performance.now() };
   }
 
   attach(page) {
+    if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
     this.detach();
     this.#generation++;
     const listen = (emitter, event, fn) => {
@@ -99,6 +119,7 @@ export class EndpointTrace {
       const pending = (async () => {
         const url = endpoint(request.url());
         const headers = await request.allHeaders();
+        if (this.#sealed) return;
         const auth = headers.authorization;
         // ElectronProtocol.ts serves packaged assets at t3code://app, outside HTTP endpoints.
         const packagedAsset = url.protocol === "t3code:" && url.hostname === "app";
@@ -115,7 +136,7 @@ export class EndpointTrace {
           authFp: auth ? this.fingerprint(auth) : null,
         });
       })().catch(() => {
-        this.#failure = "renderer-network-unobservable";
+        if (!this.#sealed) this.#failure ??= "renderer-network-unobservable";
       });
       this.#pending.add(pending);
       void pending.finally(() => this.#pending.delete(pending));
@@ -127,7 +148,7 @@ export class EndpointTrace {
         const ticket = url.searchParams.get("wsTicket");
         const slot = this.#reserve();
         if (!slot) return;
-        if (!ticket) this.#failure = "renderer-network-unobservable";
+        if (!ticket) this.#failure ??= "renderer-network-unobservable";
         this.#entries.push({
           ...slot,
           kind: "websocket",
@@ -156,7 +177,7 @@ export class EndpointTrace {
                       (typeof value.payload.type !== "string" ||
                         !/^[a-zA-Z0-9_.-]{1,128}$/.test(value.payload.type)))
                   ) {
-                    this.#failure = "renderer-frame-unreadable";
+                    this.#failure ??= "renderer-frame-unreadable";
                   } else {
                     frame.tag = value.tag;
                     frame.commandType = value.payload?.type ?? null;
@@ -164,7 +185,7 @@ export class EndpointTrace {
                   frame.threadMatch = value.payload?.threadId === this.#threadId;
                 }
               } catch {
-                this.#failure = "renderer-frame-unreadable";
+                this.#failure ??= "renderer-frame-unreadable";
               }
             }
             this.#entries.push(frame);
@@ -175,17 +196,37 @@ export class EndpointTrace {
           if (closeSlot) this.#entries.push({ ...closeSlot, kind: "close", origin });
         });
       } catch {
-        this.#failure = "renderer-network-unobservable";
+        if (!this.#sealed) this.#failure ??= "renderer-network-unobservable";
       }
     });
   }
 
   async flush() {
-    await Promise.all(this.#pending);
+    if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
+    let timer;
+    try {
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          this.#incomplete = true;
+          this.#pendingAtTimeout = this.#pending.size;
+          this.#sealed = true;
+          this.#failure ??= "renderer-trace-drain-timeout";
+          this.detach();
+          reject(new Error(this.#failure));
+        }, this.#drainTimeoutMs);
+      });
+      // Include observations arriving during the drain without extending its deadline.
+      while (this.#pending.size) await Promise.race([Promise.all(this.#pending), deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (this.#disposed) throw new Error(this.#failure ?? "renderer-trace-disposed");
     if (this.#failure) throw new Error(this.#failure);
   }
 
   async catalog(page, environmentId) {
+    if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
+    const generation = this.#generation;
     const value = await page.evaluate(
       async ({ keyBytes, environmentId, origin }) => {
         const key = await crypto.subtle.importKey(
@@ -246,12 +287,14 @@ export class EndpointTrace {
       },
       { keyBytes: [...this.#key], environmentId, origin: B },
     );
-    const previous = this.#expected[this.#generation];
+    if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
+    if (generation !== this.#generation) throw new Error("catalog-generation-changed");
+    const previous = this.#expected[generation];
     if (previous && (previous.a !== value.a || previous.b !== value.b))
       throw new Error("catalog-credential-changed");
     const first = this.#expected[0];
     if (first && first.b !== value.b) throw new Error("catalog-credential-changed");
-    this.#expected[this.#generation] = { a: value.a, b: value.b };
+    this.#expected[generation] = { a: value.a, b: value.b };
     return value;
   }
 
@@ -271,12 +314,19 @@ export class EndpointTrace {
       counts,
       fingerprints: structuredClone(this.#expected),
       failure: this.#failure,
+      incomplete: this.#incomplete,
+      pending: this.#pending.size,
+      pendingAtTimeout: this.#pendingAtTimeout,
+      drainTimeoutMs: this.#drainTimeoutMs,
     };
   }
   detach() {
     for (const off of this.#detach.splice(0)) off();
   }
   dispose() {
+    this.#sealed = true;
+    this.#disposed = true;
+    if (this.#pending.size) this.#incomplete = true;
     this.detach();
     this.#key.fill(0);
   }
