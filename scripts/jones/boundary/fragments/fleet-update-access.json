@@ -58,7 +58,10 @@
     "apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts",
     "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
   ],
-  "hookPaths": ["apps/web/vite.config.ts"],
+  "hookPaths": [
+    "apps/web/vite.config.ts",
+    "apps/web/src/components/settings/SavedEnvironmentRows.tsx"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -144,6 +147,10 @@
     {
       "from": "apps/server/src/bin.ts",
       "to": "apps/server/src/jones/updates/preparation/worker.ts"
+    },
+    {
+      "from": "apps/web/src/components/settings/SavedEnvironmentRows.tsx",
+      "to": "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.tsx"
     }
   ]
 }

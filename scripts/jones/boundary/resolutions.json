@@ -66,7 +66,7 @@
       "anchors": [
         {
           "path": "apps/server/package.json",
-          "sha256": "bcc29ad3bff6567fef08c24be6fbcf6a163c87ee02629c8e76f371270436bc52"
+          "sha256": "34e8316d69b3a237a272d6db90119a3f2d0104549ef6e53e32b156283850e31c"
         }
       ],
       "targets": []
@@ -92,7 +92,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
+          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
         }
       ],
       "targets": []
@@ -129,7 +129,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
+          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
         },
         {
           "path": "patches/@pierre%2Fdiffs@1.5.2.patch",
@@ -146,7 +146,7 @@
       "anchors": [
         {
           "path": "apps/mobile/package.json",
-          "sha256": "ffd8a6ffe0311dca55e593a2a06b1f061ef96a99f54846ea1c0a9ef0673405b9"
+          "sha256": "d26e69a86a23a98d537b54653c0ce1994a1f86a0913746c956b17cf399c67402"
         },
         {
           "path": "apps/mobile/metro.config.js",
@@ -180,7 +180,7 @@
       "anchors": [
         {
           "path": "apps/web/package.json",
-          "sha256": "fde141e2f529095bb65bc3850c2a684eea6c3f6e6dbb1302791b3842511b421f"
+          "sha256": "a58a10ba2a3bf73c98401d8430ef46ce092fbf9ae4e7b187ae23d7049341797a"
         },
         {
           "path": "scripts/package.json",
