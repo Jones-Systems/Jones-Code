@@ -2258,6 +2258,22 @@
       ]
     },
     {
+      "id": "jones-workstream-assignment-panel",
+      "tests": [
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx",
+        "apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx",
+        "apps/web/src/state/workstreams.test.ts",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/web/src/components/workstreams/WorkstreamSidebarSection.binding.test.tsx apps/web/src/components/workstreams/WorkstreamSidebarSection.test.tsx apps/web/src/components/workstreams/WorkstreamNativeSidebar.test.tsx apps/web/src/state/workstreams.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/connectedWorkstreamTrust.test.tsx --maxWorkers=1",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-native-enrollment-runtime",
       "tests": [
         "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",

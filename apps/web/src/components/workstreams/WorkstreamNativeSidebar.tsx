@@ -474,6 +474,16 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        memberLabel={(reference) =>
+          reference.identity.provider === "t3"
+            ? threadsByKey.get(
+                nativeWorkstreamThreadKey(
+                  reference.identity.source_instance_id,
+                  reference.identity.native_id,
+                ),
+              )?.title
+            : undefined
+        }
         renderMembers={renderMembers}
         unassignedLabel={hasUnchecked ? otherThreadsLabel : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}
