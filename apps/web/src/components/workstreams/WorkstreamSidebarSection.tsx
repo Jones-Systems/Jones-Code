@@ -200,6 +200,9 @@ export function WorkstreamSidebarSection(props: {
   readonly controller: WorkstreamListView;
   readonly threadStatusSummaries?: ReadonlyMap<string, WorkstreamThreadStatusSummary>;
   readonly renderMembers?: (workstreamId: string | null) => ReactNode;
+  readonly memberLabel?: (
+    reference: Awaited<ReturnType<WorkstreamListView["loadReference"]>>["reference"],
+  ) => string | undefined;
   readonly unassignedLabel?: string;
   readonly onThreadDragOver?: (event: DragEvent, workstreamId: string | null) => boolean;
   readonly threadDropTarget?: string | null | undefined;
@@ -224,6 +227,9 @@ export function WorkstreamSidebarSection(props: {
     null,
   );
   const [selected, setSelected] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const selectedRef = useRef<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [targetId, setTargetId] = useState("");
   const [declarationText, setDeclarationText] = useState("");
   const [receipt, setReceipt] = useState<WorkstreamReceipt | null>(null);
@@ -281,15 +287,34 @@ export function WorkstreamSidebarSection(props: {
       manualRefreshRequest.current = null;
     };
   }, [bindingKey]);
+  useLayoutEffect(() => {
+    if (selected) panelRef.current?.focus();
+  }, [selected]);
   if (!data) return null;
   const canWrite = canEditWorkstreams(data) && !props.controller.loading && !props.threadActionBusy;
 
+  const closeDetail = () => {
+    detailRequest.current?.abort();
+    detailRequest.current = null;
+    manualRefreshRequest.current?.abort();
+    manualRefreshRequest.current = null;
+    selectedRef.current = null;
+    setSelected(null);
+    setDetail(null);
+    setReceipt(null);
+    setPullRequestStatus({});
+    setDeclarationText("");
+    setCommandError(null);
+    setDetailError(null);
+  };
   const showDetail = (workstreamId: string) => {
     detailRequest.current?.abort();
     const controller = new AbortController();
     detailRequest.current = controller;
     const startedBindingKey = bindingKey;
+    selectedRef.current = workstreamId;
     setSelected(workstreamId);
+    setDetailError(null);
     setDetail(null);
     setPullRequestStatus({});
     setTargetId(items.find((item) => item.workstreamId !== workstreamId)?.workstreamId ?? "");
@@ -317,7 +342,7 @@ export function WorkstreamSidebarSection(props: {
       },
       () => {
         if (!controller.signal.aborted && bindingKeyRef.current === startedBindingKey)
-          setDetail(null);
+          setDetailError("Workstream details could not be loaded. Close and reopen to retry.");
       },
     );
   };
@@ -326,6 +351,7 @@ export function WorkstreamSidebarSection(props: {
     registryVersion?: number,
     startedBindingKey = bindingKey,
   ) => {
+    const startedSelection = selectedRef.current;
     const id = await workstreamCommandId();
     if (bindingKeyRef.current !== startedBindingKey) throw bindingSuperseded;
     const value = await submit({
@@ -335,9 +361,11 @@ export function WorkstreamSidebarSection(props: {
       action,
     });
     if (bindingKeyRef.current !== startedBindingKey) throw bindingSuperseded;
-    setReceipt(value);
-    setCommandError(null);
-    if (selected) showDetail(selected);
+    if (selectedRef.current === startedSelection && startedSelection !== null) {
+      setReceipt(value);
+      setCommandError(null);
+      showDetail(startedSelection);
+    }
     return value;
   };
   const invoke = (action: WorkstreamCommand["action"]) => {
@@ -418,6 +446,17 @@ export function WorkstreamSidebarSection(props: {
 
   return (
     <section aria-label="Owner Workstreams" className="border-b border-sidebar-border/60 px-2 pb-2">
+      {props.controller.primaryAssignmentAvailability?.state === "unavailable" ? (
+        <div role="status" className="px-1 pb-2 text-xs text-muted-foreground">
+          <p>
+            Thread assignment from this environment is unavailable:{" "}
+            {props.controller.primaryAssignmentAvailability.reason}.
+          </p>
+          <Button size="xs" variant="ghost" onClick={() => props.controller.refresh()}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {!canWrite ? (
         <p className="px-1 pb-1 text-xs text-muted-foreground">Workstreams are read-only.</p>
       ) : null}
@@ -562,7 +601,11 @@ export function WorkstreamSidebarSection(props: {
               ) : (
                 <button
                   className="min-w-0 flex-1 truncate px-1 text-left text-sm"
-                  onClick={() => showDetail(item.workstreamId)}
+                  aria-expanded={selected === item.workstreamId}
+                  aria-controls="workstream-detail-panel"
+                  onClick={() =>
+                    selected === item.workstreamId ? closeDetail() : showDetail(item.workstreamId)
+                  }
                   type="button"
                 >
                   {item.name}
@@ -663,429 +706,505 @@ export function WorkstreamSidebarSection(props: {
           {!collapsed.includes("__unassigned__") ? props.renderMembers(null) : null}
         </div>
       ) : null}
-      {workstream && selectedMetadata && detail ? (
-        <div className="mx-1 mt-2 space-y-2 rounded-md border border-sidebar-border/70 p-2 text-xs">
-          <div className="flex items-center gap-2">
-            <strong className="min-w-0 flex-1 truncate">{workstream.name}</strong>
-            <select
-              aria-label="Owner-declared workstream lifecycle"
-              disabled={!canWrite}
-              value={workstream.lifecycle}
-              onChange={(event) =>
-                update(selectedMetadata, {
-                  lifecycle: event.target.value as T3WorkstreamMetadata["lifecycle"],
-                })
-              }
-            >
-              {(["planned", "active", "paused", "completed", "deferred", "abandoned"] as const).map(
-                (value) => (
-                  <option key={value}>{value}</option>
-                ),
-              )}
-            </select>
+      {selected ? (
+        <div
+          ref={panelRef}
+          id="workstream-detail-panel"
+          aria-label="Workstream details"
+          tabIndex={-1}
+          className="mx-1 mt-2 space-y-3 rounded-md border border-sidebar-border/70 p-3 text-xs wrap-anywhere"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || event.defaultPrevented || addingPr || colorEditing)
+              return;
+            if (
+              typeof Element !== "undefined" &&
+              event.target instanceof Element &&
+              event.target.closest('[role="dialog"], [role="menu"]')
+            )
+              return;
+            event.preventDefault();
+            event.stopPropagation();
+            closeDetail();
+          }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <strong className="min-w-0">
+              {workstream?.name ?? selectedMetadata?.name ?? "Workstream"}
+            </strong>
+            <Button size="xs" variant="ghost" onClick={closeDetail}>
+              Close
+            </Button>
           </div>
-          {completionAuthority ? (
-            <div
-              aria-label="Workstream completion authority"
-              className="space-y-1 rounded border p-2"
-            >
-              <div>
-                Completion:{" "}
-                {completionAuthority.state === "owner-declared"
-                  ? `owner-declared by ${completionAuthority.declaration.actor.principal_id}`
-                  : completionAuthority.state === "unverified"
-                    ? `unverified owner declaration (${completionAuthority.reason.replaceAll("-", " ")})`
-                    : "not declared"}
+          {!detail ? <p role="status">{detailError ?? "Loading workstream…"}</p> : null}
+          {workstream && selectedMetadata && detail ? (
+            <>
+              <div className="flex items-center gap-2">
+                <span>Status</span>
+                <select
+                  aria-label="Owner-declared workstream lifecycle"
+                  disabled={!canWrite}
+                  value={workstream.lifecycle}
+                  onChange={(event) =>
+                    update(selectedMetadata, {
+                      lifecycle: event.target.value as T3WorkstreamMetadata["lifecycle"],
+                    })
+                  }
+                >
+                  {(
+                    ["planned", "active", "paused", "completed", "deferred", "abandoned"] as const
+                  ).map((value) => (
+                    <option key={value}>{value}</option>
+                  ))}
+                </select>
               </div>
-              {completionAuthority.state === "owner-declared" ? (
-                <div className="text-muted-foreground">
-                  Revision {completionAuthority.declaration.revision} · registry version{" "}
-                  {completionAuthority.declaration.registry_version} · recorded{" "}
-                  {completionAuthority.declaration.recorded_at} · command{" "}
-                  {completionAuthority.declaration.command_id}
-                </div>
-              ) : null}
               <p className="text-muted-foreground">
-                Terminal turns, member disposition, pull request status, and T3 thread settlement
-                are separate evidence. None completes this workstream.
+                Planned, active, paused, completed, deferred, and abandoned track the workstream
+                only. They do not change thread activity or settlement.
               </p>
-            </div>
-          ) : null}
-          <label className="block">
-            Target Workstream{" "}
-            <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
-              {items
-                .filter((item) => item.workstreamId !== workstream.workstream_id)
-                .map((item) => (
-                  <option key={item.workstreamId} value={item.workstreamId}>
-                    {item.name}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <ul aria-label="Membership history" className="space-y-1">
-            {detail.memberships.items.map((membership) => {
-              const reference = references.get(membership.native_reference_id);
-              const label = reference
-                ? `${reference.identity.provider}: ${reference.identity.native_id}`
-                : membership.native_reference_id;
-              return (
-                <li className="rounded border p-1" key={membership.membership_id}>
-                  <span>
-                    {label} · {membership.kind} · {membership.closed ? "removed" : "current"}
-                  </span>
-                  <div className="flex flex-wrap gap-1">
-                    {canWrite && !membership.closed && membership.kind === "primary" && target ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "move_primary",
-                            source_workstream_id: workstream.workstream_id,
-                            expected_source_version: workstream.version,
-                            source_membership_id: membership.membership_id,
-                            destination_workstream_id: target.workstreamId,
-                            expected_destination_version: target.version,
-                          })
-                        }
-                      >
-                        Move
-                      </Button>
+              <ul aria-label="Current members" className="space-y-1">
+                {detail.memberships.items
+                  .filter((membership) => !membership.closed)
+                  .map((membership) => {
+                    const reference = references.get(membership.native_reference_id);
+                    return (
+                      <li key={membership.membership_id}>
+                        {reference
+                          ? (props.memberLabel?.(reference) ??
+                            `${reference.identity.provider}: ${reference.identity.native_id}`)
+                          : membership.native_reference_id}
+                      </li>
+                    );
+                  })}
+                {detail.memberships.items.every((membership) => membership.closed) ? (
+                  <li>No current members</li>
+                ) : null}
+              </ul>
+              <details className="space-y-2">
+                <summary className="cursor-pointer py-1 font-medium">Manage and history</summary>
+                {completionAuthority ? (
+                  <div
+                    aria-label="Workstream completion authority"
+                    className="space-y-1 rounded border p-2"
+                  >
+                    <div>
+                      Completion:{" "}
+                      {completionAuthority.state === "owner-declared"
+                        ? `owner-declared by ${completionAuthority.declaration.actor.principal_id}`
+                        : completionAuthority.state === "unverified"
+                          ? `unverified owner declaration (${completionAuthority.reason.replaceAll("-", " ")})`
+                          : "not declared"}
+                    </div>
+                    {completionAuthority.state === "owner-declared" ? (
+                      <div className="text-muted-foreground">
+                        Revision {completionAuthority.declaration.revision} · registry version{" "}
+                        {completionAuthority.declaration.registry_version} · recorded{" "}
+                        {completionAuthority.declaration.recorded_at} · command{" "}
+                        {completionAuthority.declaration.command_id}
+                      </div>
                     ) : null}
-                    {canWrite && !membership.closed && target ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "link_secondary",
-                            workstream_id: target.workstreamId,
-                            expected_version: target.version,
-                            native_reference_id: membership.native_reference_id,
-                          })
-                        }
-                      >
-                        Link
-                      </Button>
-                    ) : null}
-                    {canWrite && !membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "remove_membership",
-                            workstream_id: workstream.workstream_id,
-                            expected_version: workstream.version,
-                            membership_id: membership.membership_id,
-                          })
-                        }
-                      >
-                        {membership.kind === "secondary" ? "Unlink" : "Remove"}
-                      </Button>
-                    ) : null}
-                    {canWrite && !membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke({
-                            operation: "set_coordination_disposition",
-                            workstream_id: workstream.workstream_id,
-                            expected_version: workstream.version,
-                            membership_id: membership.membership_id,
-                            disposition: "completed",
-                            other_disposition: null,
-                          })
-                        }
-                      >
-                        Record member completed
-                      </Button>
-                    ) : null}
-                    {reference?.identity.provider === "t3" ? (
-                      !canWrite ? (
-                        <span className="text-muted-foreground">
-                          T3 settlement unavailable: write authority is required.
-                        </span>
-                      ) : reference.registration.state === "attested" ? (
-                        <>
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            onClick={() =>
-                              invoke({
-                                operation: "request_native_t3_settlement",
-                                native_reference_id: reference.native_reference_id,
-                                expected_attestation_version:
-                                  reference.registration.attestation_version,
-                                native_action: "settle",
-                              })
-                            }
-                          >
-                            Request T3 thread settlement
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="ghost"
-                            onClick={() =>
-                              invoke({
-                                operation: "request_native_t3_settlement",
-                                native_reference_id: reference.native_reference_id,
-                                expected_attestation_version:
-                                  reference.registration.attestation_version,
-                                native_action: "unsettle",
-                              })
-                            }
-                          >
-                            Request T3 thread restore
-                          </Button>
-                        </>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          T3 settlement unavailable: reference is {reference.registration.state}.
-                        </span>
-                      )
-                    ) : null}
-                    {canWrite && membership.closed ? (
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        onClick={() =>
-                          invoke(
-                            membership.kind === "primary"
-                              ? {
-                                  operation: "reattach_primary",
-                                  workstream_id: workstream.workstream_id,
-                                  expected_version: workstream.version,
-                                  native_reference_id: membership.native_reference_id,
-                                }
-                              : {
-                                  operation: "link_secondary",
-                                  workstream_id: workstream.workstream_id,
-                                  expected_version: workstream.version,
-                                  native_reference_id: membership.native_reference_id,
-                                },
-                          )
-                        }
-                      >
-                        Reattach
-                      </Button>
-                    ) : null}
+                    <p className="text-muted-foreground">
+                      Terminal turns, member disposition, pull request status, and T3 thread
+                      settlement are separate evidence. None completes this workstream.
+                    </p>
                   </div>
-                  {reference?.pr_locator ? (
-                    <div className="flex items-center gap-1">
-                      <a href={canonicalGitHubPullRequestUrl(reference.pr_locator)}>
-                        PR #{reference.pr_locator.number} ·{" "}
-                        {pullRequestStatus[reference.native_reference_id] ?? "loading"}
-                      </a>
-                      {canWrite ? (
-                        <Button
-                          size="xs"
-                          variant="ghost"
-                          onClick={() => {
-                            manualRefreshRequest.current?.abort();
-                            const controller = new AbortController();
-                            manualRefreshRequest.current = controller;
-                            const startedBindingKey = bindingKey;
-                            void (async () => {
-                              if (referenceController?.registrationContext) {
-                                const startedAuthority = prAuthorityKey;
-                                const observation = await refreshWorkstreamPr({
-                                  controller: referenceController,
-                                  workstreamId: workstream.workstream_id,
-                                  membershipId: membership.membership_id,
-                                  referenceId: reference.native_reference_id,
-                                  commandId: workstreamCommandId,
-                                  signal: controller.signal,
-                                });
-                                if (
-                                  controller.signal.aborted ||
-                                  prAuthorityKeyRef.current !== startedAuthority
-                                )
-                                  return;
-                                setPullRequestStatus((current) => ({
-                                  ...current,
-                                  [reference.native_reference_id]:
-                                    workstreamPrObservationLabel(observation),
-                                }));
-                                return;
+                ) : null}
+                <label className="block">
+                  Target Workstream{" "}
+                  <select value={targetId} onChange={(event) => setTargetId(event.target.value)}>
+                    {items
+                      .filter((item) => item.workstreamId !== workstream.workstream_id)
+                      .map((item) => (
+                        <option key={item.workstreamId} value={item.workstreamId}>
+                          {item.name}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <ul aria-label="Membership history" className="space-y-1">
+                  {detail.memberships.items.map((membership) => {
+                    const reference = references.get(membership.native_reference_id);
+                    const label = reference
+                      ? (props.memberLabel?.(reference) ??
+                        `${reference.identity.provider}: ${reference.identity.native_id}`)
+                      : membership.native_reference_id;
+                    return (
+                      <li className="rounded border p-1" key={membership.membership_id}>
+                        <span>
+                          {label} · {membership.kind} · {membership.closed ? "removed" : "current"}
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {canWrite &&
+                          !membership.closed &&
+                          membership.kind === "primary" &&
+                          target ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "move_primary",
+                                  source_workstream_id: workstream.workstream_id,
+                                  expected_source_version: workstream.version,
+                                  source_membership_id: membership.membership_id,
+                                  destination_workstream_id: target.workstreamId,
+                                  expected_destination_version: target.version,
+                                })
                               }
-                              const value = await loadReference(reference.native_reference_id, {
-                                signal: controller.signal,
-                              });
-                              if (
-                                controller.signal.aborted ||
-                                bindingKeyRef.current !== startedBindingKey
-                              )
-                                return;
-                              if (!value.latest_observation) return;
-                              await run(
-                                {
-                                  operation: "refresh_linked_pr",
+                            >
+                              Move
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed && target ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "link_secondary",
+                                  workstream_id: target.workstreamId,
+                                  expected_version: target.version,
+                                  native_reference_id: membership.native_reference_id,
+                                })
+                              }
+                            >
+                              Link
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "remove_membership",
                                   workstream_id: workstream.workstream_id,
                                   expected_version: workstream.version,
                                   membership_id: membership.membership_id,
-                                  expected_observation_version:
-                                    value.latest_observation.observation_version,
-                                },
-                                undefined,
-                                startedBindingKey,
-                              );
-                              const refreshed = await loadReference(reference.native_reference_id, {
-                                signal: controller.signal,
-                              });
-                              if (
-                                controller.signal.aborted ||
-                                bindingKeyRef.current !== startedBindingKey
-                              )
-                                return;
-                              setPullRequestStatus((current) => ({
-                                ...current,
-                                [reference.native_reference_id]:
-                                  refreshed.latest_observation?.last_success?.state ??
-                                  refreshed.latest_observation?.outcome ??
-                                  "unknown",
-                              }));
-                            })()
-                              .catch((cause: unknown) => {
-                                if (
-                                  cause === bindingSuperseded ||
-                                  controller.signal.aborted ||
-                                  bindingKeyRef.current !== startedBindingKey
+                                })
+                              }
+                            >
+                              {membership.kind === "secondary" ? "Unlink" : "Remove"}
+                            </Button>
+                          ) : null}
+                          {canWrite && !membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke({
+                                  operation: "set_coordination_disposition",
+                                  workstream_id: workstream.workstream_id,
+                                  expected_version: workstream.version,
+                                  membership_id: membership.membership_id,
+                                  disposition: "completed",
+                                  other_disposition: null,
+                                })
+                              }
+                            >
+                              Record member completed
+                            </Button>
+                          ) : null}
+                          {reference?.identity.provider === "t3" ? (
+                            !canWrite ? (
+                              <span className="text-muted-foreground">
+                                T3 settlement unavailable: write authority is required.
+                              </span>
+                            ) : reference.registration.state === "attested" ? (
+                              <>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    invoke({
+                                      operation: "request_native_t3_settlement",
+                                      native_reference_id: reference.native_reference_id,
+                                      expected_attestation_version:
+                                        reference.registration.attestation_version,
+                                      native_action: "settle",
+                                    })
+                                  }
+                                >
+                                  Request T3 thread settlement
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() =>
+                                    invoke({
+                                      operation: "request_native_t3_settlement",
+                                      native_reference_id: reference.native_reference_id,
+                                      expected_attestation_version:
+                                        reference.registration.attestation_version,
+                                      native_action: "unsettle",
+                                    })
+                                  }
+                                >
+                                  Request T3 thread restore
+                                </Button>
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground">
+                                T3 settlement unavailable:{" "}
+                                {reference.registration.state === "expired"
+                                  ? "verification expired; fresh verification is required before settlement"
+                                  : `reference is ${reference.registration.state}`}
+                                .
+                              </span>
+                            )
+                          ) : null}
+                          {canWrite && membership.closed ? (
+                            <Button
+                              size="xs"
+                              variant="ghost"
+                              onClick={() =>
+                                invoke(
+                                  membership.kind === "primary"
+                                    ? {
+                                        operation: "reattach_primary",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        native_reference_id: membership.native_reference_id,
+                                      }
+                                    : {
+                                        operation: "link_secondary",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        native_reference_id: membership.native_reference_id,
+                                      },
                                 )
-                                  return;
-                                setCommandError(
-                                  referenceController?.registrationContext
-                                    ? workstreamFailureMessage(cause)
-                                    : cause instanceof Error
-                                      ? cause.message
-                                      : "PR refresh failed.",
-                                );
-                              })
-                              .finally(() => {
-                                if (manualRefreshRequest.current === controller)
-                                  manualRefreshRequest.current = null;
-                              });
-                          }}
-                        >
-                          Refresh status
-                        </Button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-          {canWrite ? (
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!declarationText.trim()) return;
-                const latest = detail.declarations.items.toSorted(
-                  (a, b) => b.revision - a.revision,
-                )[0];
-                invoke({
-                  operation: "set_declaration",
-                  workstream_id: workstream.workstream_id,
-                  expected_version: workstream.version,
-                  declaration_id: latest?.declaration_id ?? null,
-                  expected_revision: latest?.revision ?? 0,
-                  text: declarationText.trim(),
-                });
-                setDeclarationText("");
-              }}
-            >
-              <Input
-                aria-label="Owner statement"
-                nativeInput
-                value={declarationText}
-                onChange={(event) => setDeclarationText(event.target.value)}
-              />
-              <Button size="xs" type="submit">
-                Record statement
-              </Button>
-            </form>
-          ) : null}
-          <p className="text-muted-foreground">
-            Owner statements add context only; they do not change lifecycle or grant execution
-            authority.
-          </p>
-          <ul aria-label="Owner statements">
-            {detail.declarations.items.map((entry) => (
-              <li key={`${entry.declaration_id}:${entry.revision}`}>
-                {entry.state}: {entry.text}
-              </li>
-            ))}
-          </ul>
-          <div>Continuation and supersession</div>
-          <ul>
-            {detail.edges.items.map((edge) => (
-              <li key={edge.edge_id}>
-                {edge.relation}: {edge.from_workstream_id} → {edge.to_workstream_id}
-              </li>
-            ))}
-          </ul>
-          {canWrite && target ? (
-            <div className="flex gap-1">
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() =>
-                  invoke({
-                    operation: "add_edge",
-                    from_workstream_id: workstream.workstream_id,
-                    expected_from_version: workstream.version,
-                    to_workstream_id: target.workstreamId,
-                    expected_to_version: target.version,
-                    relation: "continues_as",
-                  })
-                }
-              >
-                Continues as
-              </Button>
-              <Button
-                size="xs"
-                variant="ghost"
-                onClick={() =>
-                  invoke({
-                    operation: "add_edge",
-                    from_workstream_id: workstream.workstream_id,
-                    expected_from_version: workstream.version,
-                    to_workstream_id: target.workstreamId,
-                    expected_to_version: target.version,
-                    relation: "superseded_by",
-                  })
-                }
-              >
-                Superseded by
-              </Button>
-            </div>
-          ) : null}
-          <ol aria-label="Permanent history">
-            {detail.history.items.map((event) => (
-              <li key={event.event_id}>
-                {event.operation} · {event.occurred_at}
-              </li>
-            ))}
-          </ol>
-          <p>History complete: {detail.history.next_cursor === null ? "yes" : "no"}</p>
-          {receipt ? (
-            <div role="status">
-              <p>
-                Coordination:{" "}
-                {receipt.state === "committed" && receipt.effects.coordination_disposition
-                  ? receipt.effects.coordination_disposition.disposition
-                  : "unchanged"}
-              </p>
-              <p>
-                Native T3 settlement:{" "}
-                {receipt.state === "committed" && receipt.effects.native_settlement
-                  ? receipt.effects.native_settlement.outcome
-                  : "unchanged"}
-              </p>
-            </div>
+                              }
+                            >
+                              Reattach
+                            </Button>
+                          ) : null}
+                        </div>
+                        {reference?.pr_locator ? (
+                          <div className="flex items-center gap-1">
+                            <a href={canonicalGitHubPullRequestUrl(reference.pr_locator)}>
+                              PR #{reference.pr_locator.number} ·{" "}
+                              {pullRequestStatus[reference.native_reference_id] ?? "loading"}
+                            </a>
+                            {canWrite ? (
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => {
+                                  manualRefreshRequest.current?.abort();
+                                  const controller = new AbortController();
+                                  manualRefreshRequest.current = controller;
+                                  const startedBindingKey = bindingKey;
+                                  void (async () => {
+                                    if (referenceController?.registrationContext) {
+                                      const startedAuthority = prAuthorityKey;
+                                      const observation = await refreshWorkstreamPr({
+                                        controller: referenceController,
+                                        workstreamId: workstream.workstream_id,
+                                        membershipId: membership.membership_id,
+                                        referenceId: reference.native_reference_id,
+                                        commandId: workstreamCommandId,
+                                        signal: controller.signal,
+                                      });
+                                      if (
+                                        controller.signal.aborted ||
+                                        prAuthorityKeyRef.current !== startedAuthority
+                                      )
+                                        return;
+                                      setPullRequestStatus((current) => ({
+                                        ...current,
+                                        [reference.native_reference_id]:
+                                          workstreamPrObservationLabel(observation),
+                                      }));
+                                      return;
+                                    }
+                                    const value = await loadReference(
+                                      reference.native_reference_id,
+                                      {
+                                        signal: controller.signal,
+                                      },
+                                    );
+                                    if (
+                                      controller.signal.aborted ||
+                                      bindingKeyRef.current !== startedBindingKey
+                                    )
+                                      return;
+                                    if (!value.latest_observation) return;
+                                    await run(
+                                      {
+                                        operation: "refresh_linked_pr",
+                                        workstream_id: workstream.workstream_id,
+                                        expected_version: workstream.version,
+                                        membership_id: membership.membership_id,
+                                        expected_observation_version:
+                                          value.latest_observation.observation_version,
+                                      },
+                                      undefined,
+                                      startedBindingKey,
+                                    );
+                                    const refreshed = await loadReference(
+                                      reference.native_reference_id,
+                                      {
+                                        signal: controller.signal,
+                                      },
+                                    );
+                                    if (
+                                      controller.signal.aborted ||
+                                      bindingKeyRef.current !== startedBindingKey
+                                    )
+                                      return;
+                                    setPullRequestStatus((current) => ({
+                                      ...current,
+                                      [reference.native_reference_id]:
+                                        refreshed.latest_observation?.last_success?.state ??
+                                        refreshed.latest_observation?.outcome ??
+                                        "unknown",
+                                    }));
+                                  })()
+                                    .catch((cause: unknown) => {
+                                      if (
+                                        cause === bindingSuperseded ||
+                                        controller.signal.aborted ||
+                                        bindingKeyRef.current !== startedBindingKey
+                                      )
+                                        return;
+                                      setCommandError(
+                                        referenceController?.registrationContext
+                                          ? workstreamFailureMessage(cause)
+                                          : cause instanceof Error
+                                            ? cause.message
+                                            : "PR refresh failed.",
+                                      );
+                                    })
+                                    .finally(() => {
+                                      if (manualRefreshRequest.current === controller)
+                                        manualRefreshRequest.current = null;
+                                    });
+                                }}
+                              >
+                                Refresh status
+                              </Button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ul>
+                {canWrite ? (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!declarationText.trim()) return;
+                      const latest = detail.declarations.items.toSorted(
+                        (a, b) => b.revision - a.revision,
+                      )[0];
+                      invoke({
+                        operation: "set_declaration",
+                        workstream_id: workstream.workstream_id,
+                        expected_version: workstream.version,
+                        declaration_id: latest?.declaration_id ?? null,
+                        expected_revision: latest?.revision ?? 0,
+                        text: declarationText.trim(),
+                      });
+                      setDeclarationText("");
+                    }}
+                  >
+                    <Input
+                      aria-label="Owner statement"
+                      nativeInput
+                      value={declarationText}
+                      onChange={(event) => setDeclarationText(event.target.value)}
+                    />
+                    <Button size="xs" type="submit">
+                      Record statement
+                    </Button>
+                  </form>
+                ) : null}
+                <p className="text-muted-foreground">
+                  Owner statements add context only; they do not change lifecycle or grant execution
+                  authority.
+                </p>
+                <ul aria-label="Owner statements">
+                  {detail.declarations.items.map((entry) => (
+                    <li key={`${entry.declaration_id}:${entry.revision}`}>
+                      {entry.state}: {entry.text}
+                    </li>
+                  ))}
+                </ul>
+                <div>Continuation and supersession</div>
+                <ul>
+                  {detail.edges.items.map((edge) => (
+                    <li key={edge.edge_id}>
+                      {edge.relation}:{" "}
+                      {items.find((item) => item.workstreamId === edge.from_workstream_id)?.name ??
+                        edge.from_workstream_id}{" "}
+                      →{" "}
+                      {items.find((item) => item.workstreamId === edge.to_workstream_id)?.name ??
+                        edge.to_workstream_id}
+                    </li>
+                  ))}
+                </ul>
+                {canWrite && target ? (
+                  <div className="flex gap-1">
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() =>
+                        invoke({
+                          operation: "add_edge",
+                          from_workstream_id: workstream.workstream_id,
+                          expected_from_version: workstream.version,
+                          to_workstream_id: target.workstreamId,
+                          expected_to_version: target.version,
+                          relation: "continues_as",
+                        })
+                      }
+                    >
+                      Continues as
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      onClick={() =>
+                        invoke({
+                          operation: "add_edge",
+                          from_workstream_id: workstream.workstream_id,
+                          expected_from_version: workstream.version,
+                          to_workstream_id: target.workstreamId,
+                          expected_to_version: target.version,
+                          relation: "superseded_by",
+                        })
+                      }
+                    >
+                      Superseded by
+                    </Button>
+                  </div>
+                ) : null}
+                <ol aria-label="Permanent history">
+                  {detail.history.items.map((event) => (
+                    <li key={event.event_id}>
+                      {event.operation} · {event.occurred_at}
+                    </li>
+                  ))}
+                </ol>
+                <p>History complete: {detail.history.next_cursor === null ? "yes" : "no"}</p>
+                {receipt ? (
+                  <div role="status">
+                    <p>
+                      Coordination:{" "}
+                      {receipt.state === "committed" && receipt.effects.coordination_disposition
+                        ? receipt.effects.coordination_disposition.disposition
+                        : "unchanged"}
+                    </p>
+                    <p>
+                      Native T3 settlement:{" "}
+                      {receipt.state === "committed" && receipt.effects.native_settlement
+                        ? receipt.effects.native_settlement.outcome
+                        : "unchanged"}
+                    </p>
+                  </div>
+                ) : null}
+              </details>
+            </>
           ) : null}
         </div>
       ) : null}
