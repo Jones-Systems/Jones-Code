@@ -27,6 +27,8 @@
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
+        "jones/ci/chromium-setup.mjs",
+        "jones/ci/chromium-setup.node-test.mjs",
         "jones/server-shard-weights/select.ts",
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
