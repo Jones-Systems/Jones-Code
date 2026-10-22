@@ -5,7 +5,11 @@ import * as NodePath from "node:path";
 
 const GIB = 1024n ** 3n;
 type Options = { install: boolean; warm: boolean; reserve: bigint; peak: bigint };
-type Runner = (command: string, args: string[], options: NodeChildProcess.SpawnSyncOptions) => number | null;
+type Runner = (
+  command: string,
+  args: string[],
+  options: NodeChildProcess.SpawnSyncOptions,
+) => number | null;
 type Dependencies = {
   available: (destination: string) => bigint;
   run: Runner;
@@ -31,7 +35,8 @@ export function parseOptions(args: string[]): Options {
       else options.peak = BigInt(value) * GIB;
     } else throw new Error(`Unknown option: ${arg}`);
   }
-  if (options.warm && !options.install) throw new Error("--warm requires --install in the same invocation");
+  if (options.warm && !options.install)
+    throw new Error("--warm requires --install in the same invocation");
   return options;
 }
 
@@ -96,14 +101,20 @@ export function setupWorktree(
       available = dependencies.available(worktree);
       if (typeof available !== "bigint" || available < 0n) throw new Error("Invalid capacity");
     } catch {
-      throw new Error(`${producer} refused: capacity unknown for ${worktree}; reserve=${options.reserve} peak=${options.peak} bytes. No cleanup performed.`);
+      throw new Error(
+        `${producer} refused: capacity unknown for ${worktree}; reserve=${options.reserve} peak=${options.peak} bytes. No cleanup performed.`,
+      );
     }
     if (available < options.reserve + options.peak) {
-      throw new Error(`${producer} refused: ${worktree} available=${available} reserve=${options.reserve} peak=${options.peak} bytes. No cleanup performed.`);
+      throw new Error(
+        `${producer} refused: ${worktree} available=${available} reserve=${options.reserve} peak=${options.peak} bytes. No cleanup performed.`,
+      );
     }
   }
   if (options.install) {
-    dependencies.report("Storage admission covers the worktree filesystem; separately configured shared package stores are not measured.");
+    dependencies.report(
+      "Storage admission covers the worktree filesystem; separately configured shared package stores are not measured.",
+    );
     admit("Install");
     // `shell` resolves `vp` through PATH, including Windows command shims.
     // Setup has no one answering install prompts. Pass pnpm's confirmation flag
@@ -111,16 +122,25 @@ export function setupWorktree(
     // Install exactly the locked dependencies so setup never rewrites the lockfile.
     // A stale lockfile must fail setup rather than silently resolving a new one.
     const status = dependencies.run("vp i --frozen-lockfile -- --yes", [], {
-      cwd: worktree, shell: true, stdio: ["ignore", "inherit", "inherit"],
+      cwd: worktree,
+      shell: true,
+      stdio: ["ignore", "inherit", "inherit"],
     });
     if (status !== 0) return status ?? 1;
   }
   linkEnvironment(projectRoot, worktree, dependencies.report);
   if (options.warm) {
     admit("Cache warm");
-    return dependencies.run(process.execPath, [NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts")], {
-      cwd: worktree, stdio: "inherit",
-    }) ?? 1;
+    return (
+      dependencies.run(
+        process.execPath,
+        [NodePath.join(worktree, "apps", "web", "scripts", "warm-dep-cache.ts")],
+        {
+          cwd: worktree,
+          stdio: "inherit",
+        },
+      ) ?? 1
+    );
   }
   return 0;
 }

@@ -2,9 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "worktree-setup",
   "jonesOwnedPaths": [],
-  "hookPaths": [
-    "scripts/setup-worktree.ts"
-  ],
+  "hookPaths": ["scripts/setup-worktree.ts"],
   "tombstones": [],
   "allowedImports": [
     {
