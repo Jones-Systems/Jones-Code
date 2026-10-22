@@ -20,14 +20,44 @@ jobs:
     outputs:
       changed: ${{ steps.paths.outputs.changed }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+      - name: Fetch exact pull request commits anonymously
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY" == Jones-Systems/Jones-Code ]]
+          cd "$GITHUB_WORKSPACE"
+          test -z "$(ls -A)"
+          git init -q .
+          git remote add origin "https://github.com/$REPOSITORY.git"
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --no-recurse-submodules origin \
+                "+$BASE_SHA:refs/remotes/origin/pr-base" "+$HEAD_SHA:refs/remotes/origin/pr-head"; then break; fi
+            echo "Anonymous fetch attempt $attempt failed" >> "$GITHUB_STEP_SUMMARY"
+            test "$attempt" != 3; sleep 10
+          done
+          test "$(git rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+          test "$(git rev-parse "$HEAD_SHA^{commit}")" = "$HEAD_SHA"
+          git merge-base "$BASE_SHA" "$HEAD_SHA" > /dev/null
+          if git config --local --name-only --get-regexp '^(http\..*\.extraheader|credential\..*|includeif\..*|url\..*\.insteadof|core\.sshcommand)$'; then
+            echo 'Unexpected local credential configuration' >&2
+            exit 1
+          else
+            config_status=$?
+            if [ "$config_status" != 1 ]; then
+              echo 'Cannot verify local credential configuration' >&2
+              exit "$config_status"
+            fi
+          fi
+          if compgen -G "$RUNNER_TEMP/git-credentials-*" > /dev/null; then
+            echo 'Unexpected checkout credential file' >&2
+            exit 1
+          fi
       - name: Select native workflow paths
         id: paths
         env:
@@ -42,7 +72,9 @@ jobs:
               .github/workflows/jones-native-workflows.yml \
               'apps/desktop/**' 'apps/web/src/components/Sidebar*' \
               'apps/web/src/components/sidebar/**' 'apps/web/src/jones/workstreams/**' \
+              'apps/web/src/state/**' 'apps/web/src/lib/api*' \
               'apps/server/src/jones/workstreams/**' 'apps/server/src/orchestration-v2/**' \
+              'apps/server/src/auth/**' 'apps/server/src/ws*' \
               'apps/server/src/persistence/**' 'scripts/jones/e2e/**' \
               'packages/client-runtime/**' 'packages/contracts/**' 'packages/shared/**' \
               'scripts/lib/**' 'native/browser-secret/**' \
@@ -57,9 +89,9 @@ jobs:
           fi
 
   # This dedicated check is not part of CI's aggregate Check. Native qualification
-  # here covers JE-01R on Linux; later portfolio scenarios need their own admission.
+  # here covers JE-01R and JE-02 on Linux; other scenarios need their own admission.
   electron-ui-evidence:
-    name: Jones Electron native pin restart
+    name: Jones Electron native workflows
     needs: changes
     if: needs.changes.outputs.changed == 'true' && github.event.pull_request.draft != true
     runs-on: ubuntu-24.04
@@ -69,27 +101,60 @@ jobs:
         shell: bash
     env:
       JCUE_HARNESS_OID: ${{ github.event.pull_request.head.sha || github.sha }}
-      JCUE_RUNTIME_CACHE: ${{ runner.temp }}/jones-native-runtime-cache
     steps:
       - name: Allocate job-owned evidence and state
         run: |
           task_root=$(mktemp -d "$RUNNER_TEMP/jones-native.XXXXXX")
           mkdir -m 700 "$task_root/evidence" "$task_root/state"
           echo "JCUE_TASK_ROOT=$task_root" >> "$GITHUB_ENV"
+          echo "JCUE_RUNTIME_CACHE=$RUNNER_TEMP/jones-native-runtime-cache" >> "$GITHUB_ENV"
           echo "JCUE_OUTPUT=$task_root/evidence" >> "$GITHUB_ENV"
           echo "XDG_STATE_HOME=$task_root/state" >> "$GITHUB_ENV"
           date +%s > "$task_root/evidence/steps-started-epoch.txt"
 
-      - name: Checkout exact candidate
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-          sparse-checkout: |
-            /*
-            !/.repos/
-          sparse-checkout-cone-mode: false
+      - name: Checkout exact candidate anonymously
+        env:
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$REPOSITORY" == Jones-Systems/Jones-Code ]]
+          test "$CANDIDATE_SHA" = "$JCUE_HARNESS_OID"
+          cd "$GITHUB_WORKSPACE"
+          test -z "$(ls -A)"
+          git --version > "$JCUE_OUTPUT/checkout-git-version.txt"
+          git init -q .
+          git remote add origin "https://github.com/$REPOSITORY.git"
+          git config --local core.sparseCheckout true
+          printf '/*\n!/.repos/\n' > "$(git rev-parse --git-path info/sparse-checkout)"
+          for attempt in 1 2 3; do
+            if git fetch --no-tags --no-recurse-submodules origin "+$CANDIDATE_SHA:refs/remotes/origin/candidate"; then break; fi
+            echo "Anonymous fetch attempt $attempt failed" >> "$GITHUB_STEP_SUMMARY"
+            test "$attempt" != 3; sleep 10
+          done
+          git checkout -q --detach "$CANDIDATE_SHA"
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git diff-index --cached --quiet HEAD
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test ! -e .repos
+          if git config --local --name-only --get-regexp '^(http\..*\.extraheader|credential\..*|includeif\..*|url\..*\.insteadof|core\.sshcommand)$'; then
+            echo 'Unexpected local credential configuration' >&2
+            exit 1
+          else
+            config_status=$?
+            if [ "$config_status" != 1 ]; then
+              echo 'Cannot verify local credential configuration' >&2
+              exit "$config_status"
+            fi
+          fi
+          test "$(git config --local --get remote.origin.url)" = "https://github.com/$REPOSITORY.git"
+          if compgen -G "$RUNNER_TEMP/git-credentials-*" > /dev/null; then
+            echo 'Unexpected checkout credential file' >&2
+            exit 1
+          fi
+          { git rev-parse HEAD; git ls-files --stage | awk '$1 == "160000"'; } > "$JCUE_OUTPUT/checkout-readback.txt"
 
       - name: Setup pinned Vite+ and dependencies
         uses: voidzero-dev/setup-vp@v1
@@ -123,7 +188,11 @@ jobs:
             libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config
           # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
           pinned_node=$(node -p 'process.execPath')
-          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          if [ -x /usr/bin/node ]; then
+            /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          else
+            printf '%s\n' 'unavailable: /usr/bin/node is absent or not executable' > "$JCUE_OUTPUT/system-node-before.txt"
+          fi
           if ! cmp -s "$pinned_node" /usr/bin/node; then
             sudo -n install -m 0755 "$pinned_node" /usr/bin/node
           fi
@@ -321,6 +390,78 @@ jobs:
           }
           NODE
           done
+
+      - name: Verify Electron A and ordinarily paired read-only Node B
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'two-clients-admission.json').write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+          native_code=0
+          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs" \
+            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/two-clients" \
+            > "$JCUE_OUTPUT/two-clients-result.json" || native_code=$?
+          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/two-clients-exit-code.txt"
+          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import crypto from 'node:crypto';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read('two-clients-result.json');
+          const manifest = validateManifest(read('two-clients/manifest.json'));
+          const inner = read('two-clients/inner.json');
+          assert.equal(result.code, 0);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, 'passed');
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          const scenario = fs.readFileSync('apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs');
+          assert.equal(manifest.scenario.sha256, crypto.createHash('sha256').update(scenario).digest('hex'));
+          assert.equal(manifest.runtime.electron, '44.4.5');
+          assert.equal(manifest.error, null);
+          assert.equal(manifest.assertions.length, 59);
+          assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const client = manifest.fixture.nodeClient;
+          assert.equal(client.commandCount, 0);
+          assert.deepEqual(client.requests, ['orchestration.subscribeShell', 'orchestration.subscribeShell']);
+          assert.equal(client.connections.length, 2);
+          for (const connection of client.connections) {
+            assert.equal(connection.snapshots, 1);
+            assert.equal(connection.synchronized, true);
+          }
+          assert.ok(client.connections[0].updates > 0);
+          for (const key of ['removed', 'credentialsCleared', 'projectionCleared', 'socketClosed'])
+            assert.equal(client[key], true);
+          for (const generation of inner.processGenerations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+          }
+          NODE
 
       - name: Verify cleanup of this job's registered runs
         if: always() && env.JCUE_TASK_ROOT != ''
