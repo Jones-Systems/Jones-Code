@@ -1373,6 +1373,15 @@
         "apps/server/src/orchestration-v2/ThreadPullRequestService.test.ts"
       ],
       "scope": "PR discovery Git-state memoization is Jones-owned, bounded per cwd and key, coalesced and cancellation safe. GitManager retains optional config-reader plumbing and fresh identity checks because extracting its head-resolution machinery would duplicate upstream behavior. ThreadPullRequestService defers terminal confirmation only for discovery; its mandatory fresh check before writes remains. Integration tests stay with their existing Git and orchestration harnesses. Ref probes, foreground actions and installed runtime are unchanged."
+    },
+    {
+      "id": "native-enrollment-runtime",
+      "tests": [
+        "apps/server/src/jones/workstreams/enrollment/sqliteConnection.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/trustedCliContext.test.ts",
+        "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
+      ],
+      "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
     }
   ]
 }
