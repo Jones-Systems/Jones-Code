@@ -1,0 +1,174 @@
+# Synthetic environments for workflow testing
+
+This recipe creates disposable, provider-free fixtures for client workflows.
+It is source-verified at `86f048544c9462df722f2c4901f6e8bb681ead10`, but
+unrehearsed as a complete recipe. It does not establish native Electron,
+Simulator, physical-device or distinct-host qualification. Recheck the linked
+contracts when adapting it to a later build.
+
+Follow [development state and ports](./development.md#state-and-ports) and
+[test data](./development.md#test-data). Never copy private databases, settings,
+provider homes or credentials to make a fixture work. The worktree setup action
+can link configuration from another checkout; it is not part of this recipe.
+
+## Select the topology and oracle
+
+| Topology                                | State to observe                                                                                                                                                                                  |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One server, multiple clients            | Both clients observe the same server-owned mutation without a second write.                                                                                                                       |
+| Independent servers shown in one client | Read the owning server; assert the unrelated server is unchanged. Disconnects retain cached data under the [connection runtime](../internals/connection-runtime.md), without claiming it is live. |
+| Owner registry membership               | Read the registry's membership/reference separately from the thread's owning environment. Follow [workstream ownership](../user/workstreams.md).                                                  |
+
+Independent SQLite databases do not replicate merely because their rows appear
+in one UI. Pin state and workstream membership need their own assertions.
+Names such as laptop, VPS and Mac Mini are fixture labels; loopback servers do
+not qualify remote networks, host operating systems or fleet dispatch. HQ and
+Jones Code must not be assumed to share a backend.
+
+The signed-HTTP server integration introduced by
+[PR #499](https://github.com/Jones-Systems/Jones-Code/pull/499) exercises its
+server/auth boundary. It is distinct from a native client action through
+Electron preload/IPC or iOS native modules. A capture of preseeded rows likewise
+does not prove a command ran.
+
+## Allocate and start an owned server
+
+The existing implementation pattern is
+[`isolatedEnvironment` and `startServer`](../../scripts/jones/updates/install-preview-qualification.mjs#L55).
+These are source references, not a new public fixture CLI.
+
+1. Allocate a fresh scratch root with a defined cleanup owner. For each server,
+   create separate `home`, `tmp`, `t3` and workspace directories. Use the source
+   environment allowlist: owned `HOME`, `TMPDIR` and XDG directories, without
+   inherited provider credentials or application homes.
+2. Allocate an available loopback port using the existing `unusedPort` pattern.
+   A released reservation can race: startup must still prove that the captured
+   child owns the intended endpoint. Never adopt an existing listener.
+3. With the built server from the exact candidate, spawn the ordinary command
+   below under that isolated environment and capture its process identity:
+
+   ```text
+   node apps/server/dist/bin.mjs serve --base-dir <owned>/t3 --host 127.0.0.1 --port <allocated-port>
+   ```
+
+   Resolve the binary path against the source checkout, even when the child
+   working directory is scratch. The command is bound by
+   [`startServer`](../../scripts/jones/updates/install-preview-qualification.mjs#L407).
+   Building dependencies and the server remains governed by
+   [development](./development.md); this command does not build missing output.
+
+4. Require the owned child to remain alive, bounded startup completion and the
+   owned `t3/userdata/environment-id`. The environment-file readiness pattern
+   is in [`mobile-showcase.ts`](../../scripts/mobile-showcase.ts#L1538).
+   Read `GET /.well-known/t3/environment` from that endpoint and match its
+   identity to the fixture. Record its `orchestrationProtocolVersion`; an open
+   port alone is insufficient. Retain build/source identity with the result.
+
+## Pair the fixture driver and the client
+
+The ordinary pairing command is:
+
+```text
+node apps/server/dist/bin.mjs pair --base-dir <owned>/t3
+```
+
+[`pairCommand`](../../apps/server/src/cli/pair.ts#L487) defaults to standard
+client scopes. Capture the credential-bearing output privately in memory;
+never emit it in logs, command receipts or screenshots. The existing
+[`issueFixturePairing`](../../scripts/jones/updates/install-preview-qualification.mjs#L320)
+shows bounded output handling and exact child cleanup. Its repeated `--scope`
+arguments replace the defaults and grant administrative scopes because that
+fixture must mint additional client links; do not copy that broader grant
+without the corresponding fixture need.
+
+For a driver session, `POST /api/auth/browser-session` with JSON
+`{ "credential": <issued-token> }`. Require success and retain the returned
+`Set-Cookie` name/value pairs for subsequent `Cookie` headers. This is the
+real local auth route used by
+[`startServer`](../../scripts/jones/updates/install-preview-qualification.mjs#L437).
+Do not substitute a credential from an installed app or populated base directory.
+
+Issue a separate pairing credential for the native client using the same CLI
+against the same owned base. Alternatively, an appropriately scoped driver may
+`POST /api/auth/pairing-token` with `{ "label": <fixture-label> }` and use its
+`credential` in `<origin>/pair#token=<encoded-credential>`.
+The [handler](../../apps/server/src/auth/http.ts#L428) requires `access:write`
+and all delegated scopes; a default driver session must not be assumed to have
+that authority.
+
+On iOS, fill **Address** with the loopback origin and **Code** with the separate
+credential, then submit **Add environment**. Those accessibility labels and the
+submit action belong to
+[`ConnectionsNewRouteScreen`](../../apps/mobile/src/features/connection/ConnectionsNewRouteScreen.tsx#L199).
+Its `pairingUrl` deep-link prefill and `autoConnect` are `__DEV__`-only
+([source](../../apps/mobile/src/features/connection/ConnectionsNewRouteScreen.tsx#L54));
+a Release run must use the pairing UI. The
+[pairing parser](../../apps/mobile/src/features/connection/pairing.ts#L30) owns
+URL construction. Retain neither filled-code screenshots nor raw driver argv
+containing the code.
+
+## Seed through commands, then read back
+
+Use fresh command/project/thread IDs and a real directory under the owned
+workspace. The provider-free payload example is
+[`sidebar-rename.mjs`](../../apps/desktop/scripts/ui-evidence/scenarios/sidebar-rename.mjs#L15).
+Its `modelSelection` is metadata; creating this thread does not require starting
+a provider turn.
+
+| Operation         | Current wire contract                                                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create project    | Authenticated `POST /api/projects/mutate`: `type: "project.create"`, `commandId`, `projectId`, `title`, `workspaceRoot`.                                                                                                                                                                                                                                                                                        |
+| Obtain RPC access | Authenticated `POST /api/auth/websocket-ticket` with `{}`; take `ticket` from the response.                                                                                                                                                                                                                                                                                                                     |
+| Open RPC          | `ws://127.0.0.1:<port>/ws?orchestrationProtocol=<descriptor-version>&wsTicket=<encoded-ticket>`.                                                                                                                                                                                                                                                                                                                |
+| Create thread     | RPC request `{ _tag: "Request", id: "0", tag: "orchestration.dispatchCommand", payload, headers: [] }`. Payload: `type: "thread.create"`, fresh `commandId`, `threadId`, `projectId`, `title`, `createdBy: "user"`, `creationSource: "web"`, `modelSelection: { instanceId: "codex", model: "gpt-5" }`, `runtimeMode: "approval-required"`, `interactionMode: "default"`, `branch: null`, `worktreePath: null`. |
+| Read thread       | Authenticated `GET /api/orchestration/threads/<threadId>` with `x-t3-orchestration-protocol: 2`; response includes `snapshotSequence` and `projection`.                                                                                                                                                                                                                                                         |
+
+The [fixture transport](../../apps/desktop/scripts/ui-evidence/scenario-api.mjs#L105)
+owns project HTTP routing and the RPC envelope. Match the RPC response's
+`requestId`, require a successful `Exit`, handle `Ping`/`Pong`, and close the
+socket on completion or failure. The desktop harness uses its owned local
+bridge bearer token; the standalone driver uses its own cookie session and
+ticket. Do not borrow one client's credential to bypass the other's pairing.
+The [HTTP contract](../../packages/contracts/src/environmentHttp.ts#L704) and
+[snapshot schema](../../packages/contracts/src/orchestrationV2.ts#L3489) own
+readback; optional history-window fields do not imply complete event history.
+
+Create two threads for an isolation assertion. After the native action, verify
+the intended thread's state and sequence, assert the other thread is unchanged,
+then relaunch/reconnect the client and read back again. Preserve the actual
+state owner in the claim. Do not bypass the Electron fixture dispatch allowlist.
+[`mobile-showcase-environment.ts`](../../scripts/mobile-showcase-environment.ts#L356)
+writes projections for visual hydration; those rows are not command-created
+history and cannot establish mutation correctness.
+
+## Native qualification limits and teardown
+
+Saved remote environments in native Linux Electron remain held until the
+qualified Secret Service/safeStorage route is established. A browser-renderer
+substitute or `basic_text` fallback does not clear that boundary.
+
+For a source-bound iOS run, use a self-contained Release bundle as described in
+the [mobile README](../../apps/mobile/README.md#development). Set
+`T3CODE_MOBILE_UPDATES_ENABLED=0` when generating native configuration
+([config owner](../../apps/mobile/app.config.ts#L240)); verify the built app's
+`Expo.plist` disables updates and identify its embedded `main.jsbundle`.
+Use owned derived data and a newly created Simulator UDID, not a device found
+by name. Native pilot invocation is held: unmodified `agent-device` 0.21.25
+fresh-runner startup reaches `pkill -f` cleanup without a supported opt-out,
+which violates Jones process-ownership rules. An owned-PID cleanup route must
+exist before invocation. Separately, qualify the legacy restore condition for
+shared `~/Library/Developer/XCTestDevices` on each run; a real directory makes
+that restore a no-op, but does not remove the pattern-kill blocker. Isolating a
+driver's state directory alone does not isolate its shared host effects.
+
+Preserve redacted assertions, build identities and failure evidence first.
+Close owned client/driver sessions, terminate the owned app, shut down and delete
+only the Simulator created by the run, then stop captured server children and
+verify their exit and released ports. Remove only the exact owned scratch root,
+or record its retained evidence and lifetime. Unknown cleanup effects remain
+unknown; never use name-pattern kills or widen cleanup to another task's state.
+
+Record whether evidence is source-only, injected, real local service,
+native workflow or capture-only. A complete native claim requires the UI action,
+owner readback and persistence check to have executed on the identified build;
+authoring this recipe or passing server integration checks does not supply it.

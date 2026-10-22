@@ -1382,6 +1382,11 @@
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
       "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+    },
+    {
+      "id": "ios-native-pin-workflow",
+      "tests": ["scripts/jones/mobile/ios-pin-workflow.test.ts"],
+      "scope": "Provider-free iOS pin/unpin pilot with ordinary command-created synthetic threads, fresh native references, durable owner and control-thread oracles, relaunch persistence and exact owned-resource teardown. Injected checks remain boundary evidence. Native execution remains blocked by the pinned driver pattern-kill cleanup; preflight and source recipes do not claim a native pass."
     }
   ]
 }

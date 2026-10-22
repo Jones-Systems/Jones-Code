@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "ios-native-pin-workflow",
+  "jonesOwnedPaths": ["docs/operations/synthetic-environments.md"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

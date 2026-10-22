@@ -2269,6 +2269,18 @@
         "JONES_SQLITE_SEA_FIXTURE=\"$TMPDIR/sqlite-sea\" node --test scripts/jones/native-enrollment/sea-fixture.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-ios-native-pin-workflow",
+      "tests": ["scripts/jones/mobile/ios-pin-workflow.test.ts"],
+      "commands": [
+        "vp test run scripts/jones/mobile/ios-pin-workflow.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "vp run --filter @t3tools/scripts typecheck",
+        "node scripts/jones/mobile/ios-pin-workflow.ts --plan",
+        "vp fmt --check docs/operations/synthetic-environments.md",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
