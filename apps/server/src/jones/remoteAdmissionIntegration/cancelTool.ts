@@ -6,8 +6,6 @@ import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as RemoteAdmissionIntake from "./RemoteAdmissionIntake.ts";
 import { CancelRemoteAdmissionTool } from "./tools.ts";
 
-export { CancelRemoteAdmissionTool } from "./tools.ts";
-
 export const toolkit = Toolkit.make(CancelRemoteAdmissionTool);
 export const handlers = McpToolAccess.toLayer(toolkit, {
   t3_remote_admission_cancel: McpToolAccess.reads((input) =>
