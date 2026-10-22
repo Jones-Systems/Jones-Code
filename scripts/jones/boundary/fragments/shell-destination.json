@@ -1,0 +1,32 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "shell-destination",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/shellDestination/",
+    "packages/provider-core/src/server/jones/ShellDestinationInstructions.ts",
+    "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts"
+  ],
+  "hookPaths": [
+    "apps/web/src/components/ChatMarkdown.tsx",
+    "apps/web/src/components/ThreadTerminalDrawer.tsx"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatMarkdown.tsx",
+      "to": "packages/contracts/src/jones/shellDestinationFence.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatMarkdown.tsx",
+      "to": "apps/web/src/jones/shellDestination/model.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatMarkdown.tsx",
+      "to": "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.tsx"
+    },
+    {
+      "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/ShellDestinationInstructions.ts"
+    }
+  ]
+}
