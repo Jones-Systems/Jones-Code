@@ -188,7 +188,11 @@ jobs:
             libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config
           # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
           pinned_node=$(node -p 'process.execPath')
-          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          if [ -x /usr/bin/node ]; then
+            /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          else
+            printf '%s\n' 'unavailable: /usr/bin/node is absent or not executable' > "$JCUE_OUTPUT/system-node-before.txt"
+          fi
           if ! cmp -s "$pinned_node" /usr/bin/node; then
             sudo -n install -m 0755 "$pinned_node" /usr/bin/node
           fi
