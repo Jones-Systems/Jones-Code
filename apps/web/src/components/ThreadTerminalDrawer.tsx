@@ -420,6 +420,8 @@ interface TerminalViewportProps {
   terminalId: string;
   terminalLabel: string;
   cwd: string;
+  /** Reattach a known run without creating or restarting a missing shell. */
+  attachExistingOnly?: boolean;
   worktreePath?: string | null;
   runtimeEnv?: Record<string, string>;
   providerInstanceId?: ProviderInstanceId;
@@ -447,6 +449,7 @@ export function TerminalViewport(props: TerminalViewportProps) {
     props.threadId,
     props.terminalId,
     props.cwd,
+    props.attachExistingOnly ?? false,
     props.worktreePath ?? null,
     runtimeEnvSignature(props.runtimeEnv),
   ]);
@@ -460,6 +463,7 @@ function TerminalSessionViewport({
   terminalId,
   terminalLabel,
   cwd,
+  attachExistingOnly = false,
   worktreePath,
   runtimeEnv,
   providerInstanceId,
@@ -532,7 +536,7 @@ function TerminalSessionViewport({
     terminal: {
       threadId,
       terminalId,
-      cwd,
+      ...(attachExistingOnly ? { restartIfNotRunning: false } : { cwd }),
       ...(worktreePath !== undefined ? { worktreePath } : {}),
       ...(runtimeEnv ? { env: runtimeEnv } : {}),
       ...(providerInstanceId ? { providerInstanceId } : {}),

@@ -2,7 +2,9 @@ import type {
   OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderGoal,
   ThreadId,
+  ScopedThreadRef,
 } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   presentPendingBackgroundWork,
@@ -20,7 +22,7 @@ import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 export function childInputBannerItem(input: {
   readonly childThreadInputs: ReadonlyArray<EnvironmentThreadShell>;
   readonly parentAwaitingUser: boolean;
-  readonly onOpenThread: (threadId: ThreadId) => void;
+  readonly onOpenThread: (threadRef: ScopedThreadRef) => void;
 }): ComposerBannerStackItem | null {
   const { childThreadInputs, onOpenThread } = input;
   const first = childThreadInputs[0];
@@ -35,7 +37,10 @@ export function childInputBannerItem(input: {
       <Fragment key={child.id}>
         {index > 0 ? " " : null}
         <span className="whitespace-nowrap">
-          <InlineButton tone="muted" onClick={() => onOpenThread(child.id)}>
+          <InlineButton
+            tone="muted"
+            onClick={() => onOpenThread(scopeThreadRef(child.environmentId, child.id))}
+          >
             {child.title}
           </InlineButton>
           {index < childThreadInputs.length - 1 ? "," : null}
@@ -43,7 +48,11 @@ export function childInputBannerItem(input: {
       </Fragment>
     )),
     actions: (
-      <Button size="xs" variant="ghost" onClick={() => onOpenThread(first.id)}>
+      <Button
+        size="xs"
+        variant="ghost"
+        onClick={() => onOpenThread(scopeThreadRef(first.environmentId, first.id))}
+      >
         {first.hasPendingApprovals ? "Open approval" : "Open question"}
       </Button>
     ),

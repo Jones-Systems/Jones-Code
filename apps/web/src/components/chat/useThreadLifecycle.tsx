@@ -441,13 +441,19 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   };
   const onOpenRelatedThreadStable = useStableCallback(onOpenRelatedThread);
+  const onOpenChildInput = useStableCallback((threadRef: ScopedThreadRef) => {
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: buildThreadRouteParams(threadRef),
+    });
+  });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
   const childInputBanner = childInputBannerItem({
     childThreadInputs,
     parentAwaitingUser: Boolean(
       activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
     ),
-    onOpenThread: onOpenRelatedThreadStable,
+    onOpenThread: onOpenChildInput,
   });
 
   const sendStandaloneCommand = async (text: string, failureMessage: string) => {

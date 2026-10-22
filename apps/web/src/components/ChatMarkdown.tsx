@@ -1,4 +1,10 @@
 import { buildFileLinkParentSuffixByPath, fileLinkLabel } from "@t3tools/shared/fileLinks";
+import { JONES_SHELL_LANGUAGE } from "@t3tools/contracts/jones/shellDestinationFence";
+import {
+  ShellDestinationCodeBlock,
+  SourceShellRunLabel,
+} from "../jones/shellDestination/ShellDestinationCodeBlock";
+import { hasLegacyDestinationMetadata } from "../jones/shellDestination/model";
 import {
   isWindowsDrivePathHref,
   normalizeMarkdownLinkDestination,
@@ -1488,6 +1494,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       expandMedia,
       isStreaming,
       onRunShellCommand,
+      threadRef,
       inline,
       mathEnabled,
     } = use(ChatMarkdownRendererContext);
@@ -1507,7 +1514,9 @@ const CHAT_MARKDOWN_COMPONENTS = {
     ) {
       return <MarkdownMath tex={codeBlock.code} display focusable={!inline} />;
     }
-    const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+    const meta = extractPreCodeMeta(node);
+    const fenceTitle = extractFenceTitle(meta);
+    const legacyDestination = hasLegacyDestinationMetadata(language, meta);
     const highlightedCode = (
       <RenderErrorBoundary
         resetKeys={[codeBlock.code, language, diffThemeName, isStreaming]}
@@ -1521,7 +1530,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           }
         >
           <SuspenseShikiCodeBlock
-            className={codeBlock.className}
+            language={language === JONES_SHELL_LANGUAGE ? "bash" : language}
             code={codeBlock.code}
             themeName={diffThemeName}
             isStreaming={isStreaming}
@@ -1529,6 +1538,30 @@ const CHAT_MARKDOWN_COMPONENTS = {
         </Suspense>
       </RenderErrorBoundary>
     );
+    if (language === JONES_SHELL_LANGUAGE) {
+      return (
+        <ShellDestinationCodeBlock
+          code={codeBlock.code}
+          meta={meta}
+          complete={!isStreaming && isClosedCodeFence(node, text, codeBlock.code)}
+          blockPosition={node?.position?.start.offset}
+          threadRef={threadRef ?? null}
+          onRunShellCommand={onRunShellCommand}
+        >
+          {(controls) => (
+            <MarkdownCodeBlock
+              code={codeBlock.code}
+              language="bash"
+              theme={resolvedTheme}
+              isStreaming={isStreaming}
+              {...controls}
+            >
+              {highlightedCode}
+            </MarkdownCodeBlock>
+          )}
+        </ShellDestinationCodeBlock>
+      );
+    }
     if (language === "mermaid") {
       return (
         <MarkdownMermaidCodeBlock
@@ -1548,8 +1581,19 @@ const CHAT_MARKDOWN_COMPONENTS = {
         language={language}
         fenceTitle={fenceTitle}
         theme={resolvedTheme}
+        headerAccessory={
+          legacyDestination ? (
+            <span className="text-2xs text-muted-foreground">
+              Use a jones-shell fence to specify a destination.
+            </span>
+          ) : undefined
+        }
+        runTooltip={<SourceShellRunLabel environmentId={threadRef?.environmentId ?? null} />}
         onRunShellCommand={
-          onRunShellCommand && !isStreaming && isClosedCodeFence(node, text, codeBlock.code)
+          onRunShellCommand &&
+          !legacyDestination &&
+          !isStreaming &&
+          isClosedCodeFence(node, text, codeBlock.code)
             ? onRunShellCommand
             : undefined
         }

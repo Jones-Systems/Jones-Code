@@ -697,7 +697,7 @@ export const ThreadDetailScreen = function ThreadDetailScreen(props: ThreadDetai
           Keyboard.dismiss();
           navigation.dispatch(
             StackActions.push("Thread", {
-              environmentId: props.environmentId,
+              environmentId: childInput.environmentId,
               threadId: childInput.id,
             }),
           );

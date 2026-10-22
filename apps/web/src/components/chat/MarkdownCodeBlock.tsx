@@ -17,11 +17,7 @@ import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { HighlightedCodeLines } from "./HighlightedCodeLines";
-import {
-  createHighlightCacheKey,
-  estimateHighlightedSize,
-  extractFenceLanguage,
-} from "./MarkdownCodeBlock.logic";
+import { createHighlightCacheKey, estimateHighlightedSize } from "./MarkdownCodeBlock.logic";
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 
@@ -45,6 +41,7 @@ export function MarkdownCodeBlockFrame({
   wrapped = true,
   title,
   actions,
+  headerAccessory,
   headerProps,
   children,
 }: {
@@ -55,6 +52,7 @@ export function MarkdownCodeBlockFrame({
   wrapped?: boolean;
   title?: React.ReactNode;
   actions?: React.ReactNode;
+  headerAccessory?: React.ReactNode;
   headerProps?: React.HTMLAttributes<HTMLDivElement>;
   children: React.ReactNode;
 }) {
@@ -81,6 +79,7 @@ export function MarkdownCodeBlockFrame({
             />
           </span>
         )}
+        {headerAccessory}
         {actions}
       </div>
       {children}
@@ -132,6 +131,9 @@ export function MarkdownCodeBlock({
   onRunShellCommand,
   isStreaming,
   viewToggle,
+  headerAccessory,
+  runControl,
+  runTooltip,
   canWrap = true,
   diagram = false,
   children,
@@ -143,6 +145,9 @@ export function MarkdownCodeBlock({
   onRunShellCommand?: ((command: string) => void) | undefined;
   isStreaming: boolean;
   viewToggle?: ReactNode;
+  headerAccessory?: ReactNode;
+  runControl?: ReactNode;
+  runTooltip?: ReactNode;
   canWrap?: boolean;
   diagram?: boolean;
   children: ReactNode;
@@ -159,6 +164,7 @@ export function MarkdownCodeBlock({
     /^(?:sh|bash|zsh|fish|shell|powershell|pwsh)$/.test(language) &&
     code.endsWith("\n") &&
     command.length > 0 &&
+    command.length + 1 <= 65_535 &&
     !command.endsWith("\\") &&
     // Control and invisible format characters (bidi overrides, zero-width) can
     // make the rendered command differ from what the terminal would receive.
@@ -239,6 +245,7 @@ export function MarkdownCodeBlock({
       fenceTitle={fenceTitle}
       theme={theme}
       wrapped={wrapped}
+      headerAccessory={headerAccessory}
       headerProps={THREAD_FIND_IGNORE_PROPS}
       actions={
         <span className="flex items-center gap-0.5" role="toolbar" aria-label="Code block actions">
@@ -261,24 +268,25 @@ export function MarkdownCodeBlock({
               <TooltipPopup side="top">{wrapLabel}</TooltipPopup>
             </Tooltip>
           ) : null}
-          {canRun ? (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    variant="ghost-muted"
-                    size="icon-xs"
-                    onClick={() => onRunShellCommand(command)}
-                    aria-label="Run in terminal"
-                  />
-                }
-              >
-                <PlayIcon className="size-3" />
-              </TooltipTrigger>
-              <TooltipPopup side="top">Run in terminal</TooltipPopup>
-            </Tooltip>
-          ) : null}
+          {runControl ??
+            (canRun ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost-muted"
+                      size="icon-xs"
+                      onClick={() => onRunShellCommand(command)}
+                      aria-label="Run in terminal"
+                    />
+                  }
+                >
+                  <PlayIcon className="size-3" />
+                </TooltipTrigger>
+                <TooltipPopup side="top">{runTooltip ?? "Run in terminal"}</TooltipPopup>
+              </Tooltip>
+            ) : null)}
           {viewToggle}
           {copyButton}
         </span>
@@ -290,21 +298,20 @@ export function MarkdownCodeBlock({
 }
 
 interface SuspenseShikiCodeBlockProps {
-  className: string | undefined;
+  language: string;
   code: string;
   themeName: DiffThemeName;
   isStreaming: boolean;
 }
 
 export function SuspenseShikiCodeBlock({
-  className,
+  language,
   code,
   themeName,
   isStreaming,
 }: SuspenseShikiCodeBlockProps) {
   const [hasStreamed, setHasStreamed] = useState(isStreaming);
   if (isStreaming && !hasStreamed) setHasStreamed(true);
-  const language = extractFenceLanguage(className);
   const cacheKey = createHighlightCacheKey(code, language, themeName);
   // Once lines are mounted individually, keep that renderer when streaming
   // finishes so switching to cached HTML cannot clear an existing selection.
