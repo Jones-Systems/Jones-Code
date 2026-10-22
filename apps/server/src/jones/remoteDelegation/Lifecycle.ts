@@ -20,7 +20,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as IntentStore from "./IntentStore.ts";
-import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/cancelTool.ts";
+import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/tools.ts";
 
 const retry = Schedule.exponential(Duration.seconds(2)).pipe(
   Schedule.modifyDelay(({ duration }) =>
