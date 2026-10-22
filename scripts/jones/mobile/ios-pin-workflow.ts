@@ -9,7 +9,6 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeEvents from "node:events";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
-import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
@@ -24,6 +23,7 @@ import {
   treeDigest,
 } from "./xcuitest.ts";
 import type { ChildReceipt } from "./xcuitest.ts";
+import { assertResourceAdmission, hostedClass } from "./ios-admission.ts";
 
 const sha256 = (value: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
@@ -108,6 +108,13 @@ export interface WorkflowIO {
   relaunch(): Promise<void>;
 }
 
+export class PinOracleFailure extends Error {}
+class FixtureStartupTimeout extends Error {}
+export const FIXTURE_READINESS_TIMEOUT_MS = 30_000;
+export function nativeClaimAllowed(timeoutMs: number) {
+  return timeoutMs === FIXTURE_READINESS_TIMEOUT_MS;
+}
+
 export async function awaitTransition(
   read: () => Promise<PairState>,
   before: PairState,
@@ -133,7 +140,7 @@ export async function awaitTransition(
       signal: options.signal,
     });
   } while (Date.now() <= deadline);
-  throw new Error(`Pin oracle did not converge: ${message(last)}`);
+  throw new PinOracleFailure(`Pin oracle did not converge: ${message(last)}`);
 }
 
 async function exercise(io: WorkflowIO, noAction = false) {
@@ -240,8 +247,17 @@ interface Options {
   admission: string;
   controlPinned: boolean;
   noAction: boolean;
+  fixtureReadinessTimeoutMs: number;
+  progress?: string;
   signal?: AbortSignal;
   children: ChildReceipt[];
+}
+async function progress(
+  options: Options,
+  stage: "device-created" | "device-booted" | "fixture-ready" | "test-started" | "cleanup-started",
+) {
+  if (options.progress)
+    await NodeFSP.appendFile(options.progress, `${JSON.stringify({ stage })}\n`);
 }
 async function command(
   executable: string,
@@ -286,33 +302,7 @@ async function pathFact(path: string) {
 }
 
 export function assertAdmission(value: unknown, sourceSha: string, now = Date.now()) {
-  const admission = record(value);
-  NodeAssert.equal(admission.sourceSha, sourceSha, "admission source mismatch");
-  NodeAssert.equal(admission.hostname, NodeOS.hostname(), "admission host mismatch");
-  NodeAssert.ok(
-    typeof admission.serialSlot === "string" && admission.serialSlot.length > 0,
-    "root serial slot required",
-  );
-  NodeAssert.ok(
-    typeof admission.measuredAt === "number" &&
-      now >= admission.measuredAt &&
-      now - admission.measuredAt < 60_000,
-    "fresh root admission required",
-  );
-  NodeAssert.ok(
-    typeof admission.cpuUsed === "number" && admission.cpuUsed >= 0 && admission.cpuUsed < 85,
-    "CPU admission held",
-  );
-  NodeAssert.ok(
-    typeof admission.availableMemoryBytes === "number" && admission.availableMemoryBytes > 0,
-    "memory evidence required",
-  );
-  NodeAssert.equal(admission.memoryPressure, "normal", "memory pressure held");
-  NodeAssert.ok(
-    typeof admission.freeDiskBytes === "number" && admission.freeDiskBytes >= 30 * 1024 ** 3,
-    "30 GiB free disk required",
-  );
-  return admission;
+  return assertResourceAdmission(value, sourceSha, now);
 }
 
 async function preflight(options: Options) {
@@ -338,7 +328,8 @@ async function preflight(options: Options) {
     head,
   );
   const stat = await NodeFSP.statfs(options.scratchParent);
-  NodeAssert.ok(stat.bavail * stat.bsize >= 30 * 1024 ** 3, "fresh disk gate failed");
+  if (!hostedClass(admission))
+    NodeAssert.ok(stat.bavail * stat.bsize >= 30 * 1024 ** 3, "fresh disk gate failed");
   const build = record(JSON.parse(await NodeFSP.readFile(options.buildRecord, "utf8")));
   NodeAssert.equal(build.sourceSha, head, "build source mismatch");
   NodeAssert.equal(build.developerDir, options.developerDir, "Xcode identity mismatch");
@@ -533,6 +524,7 @@ async function startFixture(
   root: string,
   cleanup: OwnedCleanup,
   secrets: string[],
+  receipt: Record<string, unknown>,
 ) {
   const env = fixtureEnvironment(root);
   await NodeFSP.mkdir(env.HOME!, { recursive: true });
@@ -541,6 +533,7 @@ async function startFixture(
   const binary = NodePath.join(options.source, "apps/server/dist/bin.mjs");
   const port = await freePort();
   const origin = `http://127.0.0.1:${port}`;
+  receipt.server = { port };
   cleanup.add("server-port-closed", () => portClosed(port));
   const server = ownedCommand(
     process.execPath,
@@ -562,17 +555,17 @@ async function startFixture(
     });
   });
   await NodeEvents.EventEmitter.once(child, "spawn");
-  const until = Date.now() + 30_000;
+  const until = Date.now() + options.fixtureReadinessTimeoutMs;
   let environmentId = "";
   while (Date.now() < until) {
     options.signal?.throwIfAborted();
     NodeAssert.equal(child.exitCode, null, "fixture server exited before readiness");
     try {
       const response = await fetch(`${origin}/.well-known/t3/environment`, {
-        signal: AbortSignal.timeout(1_000),
+        signal: AbortSignal.timeout(Math.max(1, Math.min(1_000, until - Date.now()))),
       });
       const descriptor = record(await response.json());
-      if (response.ok && typeof descriptor.environmentId === "string") {
+      if (Date.now() < until && response.ok && typeof descriptor.environmentId === "string") {
         const source = record(descriptor.jonesSource);
         NodeAssert.equal(
           source.repository,
@@ -593,9 +586,10 @@ async function startFixture(
     } catch {
       /* Readiness is bounded; it never repeats a mutating request. */
     }
-    await NodeTimersPromises.setTimeout(100);
+    await NodeTimersPromises.setTimeout(Math.max(1, Math.min(100, until - Date.now())));
   }
-  NodeAssert.ok(environmentId, "fixture environment not ready");
+  if (!environmentId)
+    throw new FixtureStartupTimeout("fixture environment not ready before deadline");
   const pair = async () => {
     const output = await checked(
       process.execPath,
@@ -758,6 +752,8 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
     scratch: root,
     children: options.children,
     negativeControl: options.noAction,
+    fixtureReadinessTimeoutMs: options.fixtureReadinessTimeoutMs,
+    failureCode: null,
   };
   cleanup.add(
     "scratch-removed",
@@ -857,13 +853,22 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
         },
         true,
       );
+      await progress(options, "device-created");
     }
     if (creationError) throw creationError;
     NodeAssert.ok(udid, "created device unavailable");
     await run("/usr/bin/xcrun", ["simctl", "boot", udid]);
     await run("/usr/bin/xcrun", ["simctl", "bootstatus", udid, "-b"]);
-    const fixture = await startFixture(options, NodePath.join(root, "fixture"), cleanup, secrets);
+    await progress(options, "device-booted");
+    const fixture = await startFixture(
+      options,
+      NodePath.join(root, "fixture"),
+      cleanup,
+      secrets,
+      receipt,
+    );
     receipt.server = { environmentId: fixture.environmentId, port: fixture.port };
+    await progress(options, "fixture-ready");
     const phases = new PinPhases(fixture.read, options.signal);
     receipt.observations = phases.observations;
     const captures: { phase: string; path: string; sha256: string }[] = [];
@@ -937,7 +942,13 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
             NodeAssert.ok(body.length <= 1024, "phase body too large");
           }
           const phase = record(JSON.parse(body));
-          await phases.accept(String(phase.phase));
+          try {
+            await phases.accept(String(phase.phase));
+          } catch (error) {
+            if (options.noAction && phase.phase === "pinned" && error instanceof PinOracleFailure)
+              receipt.failureCode = "negative-control-oracle";
+            throw error;
+          }
           response.end("{}");
         } finally {
           requestActive = false;
@@ -1002,6 +1013,9 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
     cleanup.add("xcodebuild-group-gone", async () => {
       await test.stop();
     });
+    void test.result.catch(() => {});
+    await NodeEvents.EventEmitter.once(test.child, "spawn");
+    await progress(options, "test-started");
     const result = await test.result;
     receipt.testExitCode = result.code;
     receipt.outputSha256 = sha256(redact(result.stdout + result.stderr, secrets));
@@ -1013,15 +1027,29 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
       "native captures missing",
     );
     NodeAssert.equal(options.noAction, false, "no-action negative control unexpectedly passed");
-    receipt.nativeClaim = true;
+    receipt.nativeClaim = nativeClaimAllowed(options.fixtureReadinessTimeoutMs);
   } catch (error) {
     primary = redact(message(error), secrets);
+    receipt.failureCode = options.signal?.aborted
+      ? "cancelled"
+      : error instanceof FixtureStartupTimeout
+        ? "startup-timeout"
+        : (receipt.failureCode ?? "other");
     if (error instanceof AggregateError)
       receipt.primaryErrors = error.errors.map((item) => redact(message(item), secrets));
   }
+  try {
+    await progress(options, "cleanup-started");
+  } catch (error) {
+    primary ??= message(error);
+    receipt.failureCode ??= "other";
+  }
   const result = await cleanup.finish(primary);
   Object.assign(receipt, result);
-  if (result.outcome !== "pass") receipt.nativeClaim = false;
+  if (result.outcome !== "pass") {
+    receipt.nativeClaim = false;
+    receipt.failureCode ??= "other";
+  }
   // Raw XCTest logs/bundles can contain pairing text. Only the redacted semantic
   // receipt survives scratch cleanup, including on a failed pairing attempt.
   await NodeFSP.writeFile(options.receipt, redact(JSON.stringify(receipt, null, 2), secrets), {
@@ -1066,6 +1094,8 @@ export async function main(argv: string[]) {
     "--admission",
     "--control-pinned",
     "--no-action",
+    "--progress",
+    "--fixture-readiness-timeout-ms",
   ]);
   const values = new Map<string, string>();
   for (let i = 1; i < argv.length; i += 2) {
@@ -1087,6 +1117,15 @@ export async function main(argv: string[]) {
       !values.has(key) || ["true", "false"].includes(values.get(key)!),
       `${key} expects true or false`,
     );
+  const fixtureReadinessTimeoutMs = Number(
+    values.get("--fixture-readiness-timeout-ms") ?? FIXTURE_READINESS_TIMEOUT_MS,
+  );
+  NodeAssert.ok(
+    Number.isSafeInteger(fixtureReadinessTimeoutMs) &&
+      fixtureReadinessTimeoutMs >= 1 &&
+      fixtureReadinessTimeoutMs <= FIXTURE_READINESS_TIMEOUT_MS,
+    "Invalid fixture readiness timeout",
+  );
   const controller = new AbortController();
   const cancel = () => controller.abort(new Error("Workflow cancelled"));
   process.once("SIGINT", cancel);
@@ -1104,9 +1143,15 @@ export async function main(argv: string[]) {
       admission: NodePath.resolve(required("--admission")),
       controlPinned: values.get("--control-pinned") === "true",
       noAction: values.get("--no-action") === "true",
+      fixtureReadinessTimeoutMs,
+      ...(values.has("--progress")
+        ? { progress: NodePath.resolve(values.get("--progress")!) }
+        : {}),
       signal: controller.signal,
       children: [],
     };
+    if (options.progress)
+      await NodeFSP.writeFile(options.progress, "", { flag: "wx", mode: 0o600 });
     const facts = await preflight(options);
     if (argv[0] === "--preflight") return { outcome: "pass", nativeClaim: false, facts };
     // Artifact hashing can take time; root admission must still be fresh at launch.

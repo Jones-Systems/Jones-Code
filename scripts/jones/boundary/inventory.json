@@ -1542,7 +1542,14 @@
     "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/mobile-showcase-metro.json": "jones-owned",
     "scripts/package.json": "accepted-shared",
-    "docs/operations/mobile-app-store-screenshots.md": "accepted-shared"
+    "docs/operations/mobile-app-store-screenshots.md": "accepted-shared",
+    ".github/workflows/jones-ios-native.yml": "jones-owned",
+    "scripts/jones/mobile/ios-admission.ts": "jones-owned",
+    "scripts/jones/mobile/ios-admission.test.ts": "jones-owned",
+    "scripts/jones/mobile/ios-native-build.ts": "jones-owned",
+    "scripts/jones/mobile/ios-native-build.test.ts": "jones-owned",
+    "scripts/jones/mobile/ios-cleanup-sentinel.ts": "jones-owned",
+    "scripts/jones/mobile/ios-cleanup-sentinel.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

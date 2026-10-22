@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "ios-native-pin-workflow",
   "jonesOwnedPaths": [
+    ".github/workflows/jones-ios-native.yml",
     "docs/operations/synthetic-environments.md",
     "apps/mobile/plugins/withJonesE2eUITests.cjs",
     "apps/mobile/e2e/xcuitest/PinWorkflowTests.swift"

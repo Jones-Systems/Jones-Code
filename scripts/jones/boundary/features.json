@@ -1400,9 +1400,12 @@
       "id": "ios-native-pin-workflow",
       "tests": [
         "scripts/jones/mobile/ios-pin-workflow.test.ts",
-        "scripts/jones/mobile/xcuitest.test.ts"
+        "scripts/jones/mobile/xcuitest.test.ts",
+        "scripts/jones/mobile/ios-admission.test.ts",
+        "scripts/jones/mobile/ios-native-build.test.ts",
+        "scripts/jones/mobile/ios-cleanup-sentinel.test.ts"
       ],
-      "scope": "Provider-free iOS pin/unpin pilot using an opt-in Expo XCUITest target and captured xcodebuild child lifecycle. Ordinary pairing and command-created synthetic threads feed durable target/control-thread oracles, relaunch persistence, a no-action negative control and exact owned-resource cleanup. Injected checks are boundary evidence; compilation, native execution, repeated timing and cleanup-sentinel qualification remain required before a native pass is claimed."
+      "scope": "Provider-free iOS pin/unpin pilot using an opt-in Expo XCUITest target and captured xcodebuild child lifecycle. Ordinary pairing and command-created synthetic threads feed durable target/control-thread oracles, relaunch persistence, a no-action negative control and exact owned-resource cleanup. Hosted macOS glue selects installed tooling, produces fresh host-class admission and captured build records, and runs real success/failure/startup-timeout/cancellation sentinel cases plus a pinned-control journey. Pure checks are boundary evidence only: build, native, timing and sentinel tiers remain unqualified until real receipts establish them. IOS01 still requires hosted and laptop evidence; IOS02 remains open."
     },
     {
       "id": "mobile-showcase-metro",

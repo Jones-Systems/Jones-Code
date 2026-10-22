@@ -163,8 +163,10 @@ injected tests qualify native execution or sentinel survival.
 ### Qualify the owned XCUITest fallback
 
 The root coordinator assigns the serial host slot. Before build or execution,
-require fresh same-host CPU below 85%, available-memory/normal-pressure evidence,
-and at least 30 GiB free on the scratch filesystem. Do not use the disk-limited
+require fresh same-host CPU below 85% and measured available memory, pressure
+and swap. Normal or warning pressure passes; critical pressure holds only above
+10 MiB/s combined swap reads and writes. Unknown samples hold. Laptop runs also
+require at least 30 GiB free on the scratch filesystem. Do not use the disk-limited
 Mac Mini. Keep native generation, CocoaPods caches, DerivedData and artifacts in
 an explicitly owned disposable build tree; do not link `.env`, start Metro,
 change host `xcode-select`, or enable provisioning. Preserve that tree through
@@ -191,7 +193,7 @@ CODE_SIGNING_ALLOWED=NO`. Set `DEVELOPER_DIR` only in that child's environment.
    updates disabled, and the `.xctestrun` references to these same products.
 4. Supply `--admission <root-record.json>` with `sourceSha`, `hostname`,
    `serialSlot`, epoch-millisecond `measuredAt`, `cpuUsed`,
-   `availableMemoryBytes`, `memoryPressure: "normal"`, and `freeDiskBytes`.
+   `availableMemoryBytes`, `memoryPressure`, `swapBytesPerSecond`, and `freeDiskBytes`.
    Admission must be less than 60 seconds old at launch; it records the root's
    external gate and does not grant authority. The runner also reads current
    free disk space. `--plan` lists the other required arguments without running
@@ -214,6 +216,67 @@ CODE_SIGNING_ALLOWED=NO`. Set `DEVELOPER_DIR` only in that child's environment.
    Then qualify hosted macOS. IOS-02 (two environments, mutate B while A remains
    byte-unchanged, disconnect B while A stays live) follows IOS-01; it is not
    supplied by this single-environment test.
+
+### GitHub-hosted iOS qualification
+
+[`jones-ios-native.yml`](../../.github/workflows/jones-ios-native.yml) is a
+non-required `macos-26` job with a 75-minute limit, mobile pull-request paths
+and manual dispatch. It checks out the exact head SHA on a named task branch.
+The separate measured budget remains 50 minutes: `job-budget.json` measures
+same-host monotonic elapsed time from admission before installation through
+owned cleanup, and exceeding it fails the job even within the 75-minute timeout.
+The source addition and pure tests do not qualify native execution. IOS-01
+still needs both hosted and laptop evidence; the laptop helper-policy block
+requires resolution without a security bypass, and IOS-02 remains separate.
+
+The job selects the highest actually installed Xcode at or above 26.4, the
+highest available iOS runtime within that SDK, and iPhone 17. It records this
+metadata in `tooling.json`; moving runner-image documentation is not installed
+evidence. Missing tooling, helper-policy rejection or disk exhaustion holds the
+hosted route. Do not switch to paid runners, delete other Xcodes or retry an
+external blocker.
+
+Only a genuine GitHub-hosted disposable macOS26 job may use
+`hostClass: "github-hosted-ephemeral"`, with matching run ID, attempt and
+`gh-<run-id>-<attempt>` serial slot. It has no protective disk floor or claimed
+safe footprint. The build records actual free disk at the start, every ten
+seconds and at the end; ENOSPC is `hosted-disk-exhausted`. Laptop protection
+remains 30 GiB. Both hosts use the same memory rule and fresh CPU gate.
+
+The canonical helpers are `ios-admission.ts`, `ios-native-build.ts` and
+`ios-cleanup-sentinel.ts` under `scripts/jones/mobile/`. The build wrapper uses
+captured children for source stamping, the server build, Expo prebuild,
+CocoaPods and `build-for-testing`. It preserves and restores the two package
+manifests touched by the existing stamping helper before checking source
+cleanliness. Raw build output, caches and native results stay in the private
+job root. Build records and redacted evidence remain outside that root.
+
+The sentinel harness runs four real cases: normal success, `--no-action true`
+oracle failure, `--fixture-readiness-timeout-ms 1` after device/server capture,
+and SIGTERM after `test-started`. A separately owned booted Simulator and
+captured sleep must survive each case. The harness verifies each run's device,
+groups, scratch and fixture port are gone, then removes only its sentinels.
+Any uncertainty leaves `qualification: "not-established"` and retains scratch.
+After qualification, one additional `--control-pinned true` run completes the
+hosted IOS-01 journey set. Stage-only progress contains no pairing information.
+Any non-default fixture timeout forces `nativeClaim: false`.
+
+For an authorized laptop invocation, first produce a fresh admission with the
+root-issued serial slot, then pass its output to the existing runner:
+
+```sh
+node scripts/jones/mobile/ios-admission.ts --source-sha <sha> \
+  --serial-slot <root-issued-slot> --scratch <owned-root> --output <new-admission.json>
+```
+
+The hosted commands consume `JONES_IOS_SOURCE_SHA`, `JONES_IOS_SERIAL_SLOT`,
+`JONES_IOS_ROOT` and `JONES_IOS_OUTPUT`: run `ios-native-build.ts --admission`,
+`--tooling`, `--build`, then `ios-cleanup-sentinel.ts --qualify` and
+`--control-pinned`. The workflow finally runs `ios-native-build.ts --cleanup`;
+it removes the exact owned build/generated-iOS roots only after recorded child
+and native cleanup is known. Its artifact allowlist retains redacted receipts,
+tooling, build identity, disk samples and exactly two safe menu captures per
+passed positive journey. Raw XCTest output and `.xcresult` are never uploaded.
 
 The finite Swift test exports only the two menu screenshots after authenticated
 relaunch readback. Raw XCTest output and `.xcresult` may contain typed pairing

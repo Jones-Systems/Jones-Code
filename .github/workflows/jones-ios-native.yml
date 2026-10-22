@@ -1,0 +1,132 @@
+name: Jones iOS native
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - apps/mobile/**
+      - scripts/jones/mobile/**
+      - scripts/lib/public-config.ts
+      - scripts/lib/brand-assets.ts
+      - .github/workflows/jones-ios-native.yml
+      - pnpm-lock.yaml
+      - package.json
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-ios-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ios-native:
+    name: iOS native qualification (non-required)
+    runs-on: macos-26
+    timeout-minutes: 75
+    env:
+      JONES_IOS_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      JONES_IOS_SERIAL_SLOT: gh-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ env.JONES_IOS_SOURCE_SHA }}
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.22.1
+
+      - name: Allocate owned job roots and named branch
+        id: roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$JONES_IOS_SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          git switch -c "jones-ios-ci/$GITHUB_RUN_ID"
+          native_root=$(mktemp -d "$RUNNER_TEMP/jones-ios-native.XXXXXX")
+          evidence_root=$(mktemp -d "$RUNNER_TEMP/jones-ios-evidence.XXXXXX")
+          chmod 700 "$native_root" "$evidence_root"
+          printf 'JONES_IOS_ROOT=%s\nJONES_IOS_OUTPUT=%s\n' "$native_root" "$evidence_root" >> "$GITHUB_ENV"
+
+      - name: Fresh same-host admission before installation
+        id: admission
+        run: node scripts/jones/mobile/ios-native-build.ts --admission
+
+      - name: Set up Vite+ and dependencies
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version: 24.22.1
+          cache: true
+          run-install: true
+
+      - name: Select installed Xcode, iOS runtime and iPhone 17
+        run: node scripts/jones/mobile/ios-native-build.ts --tooling
+
+      - name: Build source-stamped server and Release XCUITest products
+        run: node scripts/jones/mobile/ios-native-build.ts --build
+
+      - name: Qualify real success, oracle failure, startup timeout and cancellation
+        id: sentinel
+        run: node scripts/jones/mobile/ios-cleanup-sentinel.ts --qualify
+
+      - name: Run IOS01 with a pinned control
+        id: pinned
+        run: node scripts/jones/mobile/ios-cleanup-sentinel.ts --control-pinned
+
+      - name: Remove owned private build output after proved native cleanup
+        if: always() && steps.roots.outcome == 'success'
+        run: node scripts/jones/mobile/ios-native-build.ts --cleanup
+
+      - name: Upload redacted evidence only
+        if: always() && steps.roots.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-native-receipts-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            ${{ env.JONES_IOS_OUTPUT }}/tooling.json
+            ${{ env.JONES_IOS_OUTPUT }}/build-record.json
+            ${{ env.JONES_IOS_OUTPUT }}/disk-samples.json
+            ${{ env.JONES_IOS_OUTPUT }}/job-budget.json
+            ${{ env.JONES_IOS_OUTPUT }}/admission-admission.json
+            ${{ env.JONES_IOS_OUTPUT }}/tooling-admission.json
+            ${{ env.JONES_IOS_OUTPUT }}/build-admission.json
+            ${{ env.JONES_IOS_OUTPUT }}/success.json
+            ${{ env.JONES_IOS_OUTPUT }}/failure.json
+            ${{ env.JONES_IOS_OUTPUT }}/startup-timeout.json
+            ${{ env.JONES_IOS_OUTPUT }}/cancellation.json
+            ${{ env.JONES_IOS_OUTPUT }}/sentinel.json
+            ${{ env.JONES_IOS_OUTPUT }}/control-pinned.json
+            ${{ env.JONES_IOS_OUTPUT }}/control-pinned-check.json
+            ${{ env.JONES_IOS_OUTPUT }}/build-*-state.json
+
+      - name: Upload two safe menu captures from the positive sentinel journey
+        if: always() && steps.sentinel.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-native-unpinned-control-menus-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ env.JONES_IOS_OUTPUT }}/success.json.pinnedRelaunch.png
+            ${{ env.JONES_IOS_OUTPUT }}/success.json.unpinnedRelaunch.png
+
+      - name: Upload two safe menu captures from the pinned-control journey
+        if: always() && steps.pinned.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ios-native-pinned-control-menus-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ env.JONES_IOS_OUTPUT }}/control-pinned.json.pinnedRelaunch.png
+            ${{ env.JONES_IOS_OUTPUT }}/control-pinned.json.unpinnedRelaunch.png

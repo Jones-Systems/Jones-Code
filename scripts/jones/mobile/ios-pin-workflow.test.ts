@@ -7,6 +7,7 @@ import {
   assertTransition,
   awaitTransition,
   main,
+  nativeClaimAllowed,
   OwnedCleanup,
   parseThread,
   PHASES,
@@ -162,6 +163,11 @@ describe("native phase handshake", () => {
 });
 
 describe("admission and device identity", () => {
+  it("never claims native qualification with a shortened fixture timeout", () => {
+    expect(nativeClaimAllowed(30_000)).toBe(true);
+    expect(nativeClaimAllowed(1)).toBe(false);
+    expect(nativeClaimAllowed(29_999)).toBe(false);
+  });
   const admission = () => ({
     sourceSha: "a".repeat(40),
     hostname: NodeOS.hostname(),
@@ -170,6 +176,7 @@ describe("admission and device identity", () => {
     cpuUsed: 20,
     availableMemoryBytes: 8 * 1024 ** 3,
     memoryPressure: "normal",
+    swapBytesPerSecond: 0,
     freeDiskBytes: 30 * 1024 ** 3,
   });
   it("requires a fresh same-host root slot and disk/CPU/memory evidence", () => {
