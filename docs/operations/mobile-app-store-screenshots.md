@@ -116,24 +116,18 @@ delay, Android ABI, or viewport. The selectable palette ids come from `MOBILE_TH
 [themePalettes.ts](../../packages/shared/src/themePalettes.ts), so the harness and the app's
 appearance settings can never drift apart.
 
-## Capture in GitHub Actions
+## Capture execution and evidence
 
-Run the `Mobile Showcase Screenshots` workflow from GitHub's Actions tab, choose `all`, `ios`, or
-`android`, select `light`, `dark`, or `both`, and pick a palette (or `all`, which raises each job's
-timeout from 60 to 300 minutes). The default dispatch captures both appearances of the `t3-code`
-palette and runs iOS and Android concurrently: iPhone and iPad capture on a
-12-vCPU Blacksmith macOS runner, while Android phone, 7-inch tablet, and 10-inch tablet capture on a
-16-vCPU Blacksmith Linux runner with a KVM-accelerated x86_64 emulator.
+Run the checked-in `pnpm screenshots:mobile` command locally using the prerequisites
+and device matrix above. This repository currently has no `Mobile Showcase
+Screenshots` GitHub Actions workflow; runner sizes, dispatch options and artifact
+retention are therefore not established CI capabilities.
 
-Every job uploads its PNGs even when capture fails, which makes partial runs useful for diagnosis.
-The separate validation step is success-gated: it runs before upload only when capture succeeds. If
-capture fails, the `always()` upload still publishes partial PNGs without re-validating them.
-Download `app-store-connect-screenshots` and `google-play-screenshots` from the workflow run's
-Artifacts section. Artifacts are retained for 14 days.
-
-The workflow uses the same checked-in device and scene matrix as local capture. Android remains
-ARM64 by default for local Apple Silicon development; CI sets `T3_SHOWCASE_ANDROID_ABI=x86_64` so the
-debug APK matches its accelerated emulator.
+Preserve the command, source/build identity, selected device and appearance, capture
+results and validation outcome with the PNGs. A partial capture is diagnostic evidence;
+it does not establish that the complete matrix passed. Showcase screenshots verify
+rendered scenes, while interactive workflow tests must separately prove their actions
+and durable outcomes.
 
 ## Fast iteration
 
