@@ -13,11 +13,13 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import { AsyncResult } from "effect/reactivity";
 import { act, useSyncExternalStore } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 import Sidebar from "../../components/Sidebar";
-import { SidebarProvider } from "../../components/ui/sidebar";
+import { Sidebar as SidebarFrame, SidebarProvider } from "../../components/ui/sidebar";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import {
   data,
@@ -25,24 +27,27 @@ import {
   placements,
   primary,
 } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
+import type { useThreadActions } from "../../hooks/useThreadActions";
+import "../../index.css";
 import { ensureLocalApi } from "../../localApi";
 import type { WorkstreamListView } from "../../state/workstreams";
 import { makeThreadFixture } from "../../test-fixtures";
 import { WorkstreamActionError } from "./workstreamActionSnapshot";
 
-// Only environment/controller boundaries are synthetic. Sidebar, its rows, the assignment
-// ref and dispatch, and WorkstreamNativeSidebar all run their production implementations.
+// Environment, controller, pin-command and shell-menu boundaries are synthetic. Sidebar, its
+// rows, sensors, assignment refs/dispatch and WorkstreamNativeSidebar run production code.
 const fixture = vi.hoisted(() => ({
   threads: [] as readonly EnvironmentThreadShell[],
   controller: null as WorkstreamListView | null,
   listeners: new Set<() => void>(),
   mutation: vi.fn(),
-  pinAction: vi.fn<() => Promise<never>>(),
+  pinAction: vi.fn<ReturnType<typeof useThreadActions>["unpinThread"]>(),
+  unpinAction: vi.fn<ReturnType<typeof useThreadActions>["unpinThread"]>(),
 }));
 
 vi.mock(import("../../state/entities"), async (original) => ({
   ...(await original()),
-  useThreadShells: () => fixture.threads,
+  useThreadShells: () => useSyncExternalStore(subscribe, () => fixture.threads),
   readThreadShell: (ref: { threadId: string }) =>
     fixture.threads.find((thread) => thread.id === ref.threadId) ?? null,
   useProjects: () => [],
@@ -65,16 +70,7 @@ vi.mock(import("../../state/session"), async (original) => ({
 }));
 vi.mock(import("../../state/workstreams"), async (original) => ({
   ...(await original()),
-  useWorkstreams: () =>
-    useSyncExternalStore(
-      (listener) => {
-        fixture.listeners.add(listener);
-        return () => {
-          fixture.listeners.delete(listener);
-        };
-      },
-      () => fixture.controller!,
-    ),
+  useWorkstreams: () => useSyncExternalStore(subscribe, () => fixture.controller!),
 }));
 vi.mock(import("../../state/use-orchestration-command"), async (original) => ({
   ...(await original()),
@@ -89,7 +85,7 @@ vi.mock(import("../../hooks/useThreadActions"), async (original) => {
       // A disconnected fixture could refuse before reaching a server mutation.
       // Count attempted pin changes as well as submitted orchestration commands.
       pinThread: fixture.pinAction,
-      unpinThread: fixture.pinAction,
+      unpinThread: fixture.unpinAction,
       confirmAndUnpinThread: fixture.pinAction,
     }),
   };
@@ -107,7 +103,7 @@ const serverConfigs = new Map<EnvironmentId, EnvironmentServerConfig>([
         label: "Synthetic environment",
         platform: { os: "linux", arch: "x64" },
         serverVersion: "test",
-        capabilities: { repositoryIdentity: false, threadPinning: true },
+        capabilities: { repositoryIdentity: false, threadPinning: true, threadPinReorder: true },
       },
       auth: {
         policy: "loopback-browser",
@@ -143,12 +139,20 @@ const unexpected = async (): Promise<never> => {
   throw new Error("Unexpected controller operation");
 };
 
+function subscribe(listener: () => void) {
+  fixture.listeners.add(listener);
+  return () => {
+    fixture.listeners.delete(listener);
+  };
+}
+
 function publish(controller: WorkstreamListView) {
   fixture.controller = controller;
   for (const listener of fixture.listeners) listener();
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await page.viewport(1000, 1000);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(now);
@@ -157,6 +161,8 @@ beforeEach(() => {
   fixture.mutation.mockImplementation(unexpected);
   fixture.pinAction.mockReset();
   fixture.pinAction.mockImplementation(unexpected);
+  fixture.unpinAction.mockReset();
+  fixture.unpinAction.mockImplementation((ref) => fixture.pinAction(ref));
   fixture.threads = [
     makeThreadFixture({
       environmentId,
@@ -244,7 +250,9 @@ async function renderSidebar() {
       <RegistryProvider>
         <TooltipProvider>
           <SidebarProvider>
-            <Sidebar />
+            <SidebarFrame>
+              <Sidebar />
+            </SidebarFrame>
           </SidebarProvider>
         </TooltipProvider>
       </RegistryProvider>
@@ -381,6 +389,169 @@ describe("production Sidebar Workstream assignment menus", () => {
       expect(fixture.controller!.placements!.items).toEqual([controlPlacement]);
       expect(fixture.mutation).not.toHaveBeenCalled();
       expect(fixture.pinAction).not.toHaveBeenCalled();
+    },
+  );
+});
+
+function group(destination: string | null) {
+  const element = [...container.querySelectorAll<HTMLElement>("[data-native-workstream]")].find(
+    (element) => element.dataset.nativeWorkstream === JSON.stringify(destination),
+  );
+  expect(element, `rendered Workstream ${destination}`).toBeDefined();
+  return element!;
+}
+
+async function dragToWorkstream(id: string, destination: string | null) {
+  const target = group(destination);
+  const previews: string[] = [];
+  // Observe the rendered highlight during the real browser gesture; do not inject hit tests.
+  const observer = new MutationObserver(() => {
+    if (target.dataset.dropTarget === "thread" && target.checkVisibility())
+      previews.push(getComputedStyle(target).boxShadow);
+  });
+  observer.observe(target, { attributes: true, attributeFilter: ["data-drop-target"] });
+  // Browser input must commit each move before release, rather than batch the whole drag in act.
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", false);
+  try {
+    await userEvent.dragAndDrop(row(id).querySelector('[role="button"]')!, target, { steps: 12 });
+    expect(previews.some((shadow) => shadow !== "none")).toBe(true);
+    expect(container.querySelector('[data-drop-target="thread"]')).toBeNull();
+  } finally {
+    observer.disconnect();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  }
+}
+
+describe("production Sidebar Workstream pointer assignment", () => {
+  it("drags an ordinary row into, between and out of Workstreams", async () => {
+    const before = structuredClone(fixture.threads);
+    await renderSidebar();
+    expectGroup("ordinary", null);
+    for (const destination of ["alpha", "beta", null]) {
+      await dragToWorkstream("ordinary", destination);
+      await expect
+        .poll(() =>
+          row("ordinary")
+            .closest("[data-native-workstream]")
+            ?.getAttribute("data-native-workstream"),
+        )
+        .toBe(JSON.stringify(destination));
+      expectGroup("control", "beta");
+    }
+    expect(assign.mock.calls.map(([thread, destination]) => [thread.id, destination])).toEqual([
+      ["ordinary", "alpha"],
+      ["ordinary", "beta"],
+      ["ordinary", null],
+    ]);
+    expect(fixture.controller!.placements!.items).toEqual([controlPlacement]);
+    expect(fixture.threads).toEqual(before);
+    expect(fixture.pinAction).not.toHaveBeenCalled();
+    expect(fixture.mutation).not.toHaveBeenCalled();
+  });
+
+  it("unpins a pointer-dropped pinned row only after the assignment is accepted", async () => {
+    const before = structuredClone(fixture.threads);
+    const events: string[] = [];
+    let acceptAssignment!: () => void;
+    const accepted = new Promise<void>((resolve) => {
+      acceptAssignment = resolve;
+    });
+    const applyAssignment = assign.getMockImplementation()!;
+    assign.mockImplementationOnce(async (...args) => {
+      events.push("assign requested");
+      await accepted;
+      await applyAssignment(...args);
+      events.push("assign accepted");
+    });
+    fixture.pinAction.mockImplementation(async (ref) => {
+      events.push("unpin");
+      expect(
+        fixture.controller!.placements!.items.find((item) => item.native_thread_id === "pinned"),
+      ).toMatchObject({ workstream_id: "alpha", kind: "primary" });
+      fixture.threads = fixture.threads.map((thread) =>
+        thread.id === ref.threadId ? { ...thread, pinnedAt: null, pinOrderKey: null } : thread,
+      );
+      publish({ ...fixture.controller! });
+      return AsyncResult.success({ sequence: 1 });
+    });
+    try {
+      await renderSidebar();
+      await dragToWorkstream("pinned", "alpha");
+      expect(assign).toHaveBeenCalledOnce();
+      expect(assign.mock.calls[0]!.slice(0, 2)).toEqual([before[1], "alpha"]);
+      expect(fixture.pinAction).not.toHaveBeenCalled();
+      expect(fixture.threads).toEqual(before);
+      expect(fixture.controller!.placements!.items).toEqual([controlPlacement]);
+      expect(row("pinned").closest("[data-native-workstream-thread]")).toBeNull();
+      expect(row("pinned").querySelector('[aria-label="Unpin thread"]')).not.toBeNull();
+      await expect
+        .element(page.getByText("Saving Workstream change…", { exact: true }))
+        .toBeVisible();
+      await act(async () => acceptAssignment());
+      expect(events).toEqual(["assign requested", "assign accepted", "unpin"]);
+      expect(fixture.pinAction).toHaveBeenCalledOnce();
+      expect(fixture.unpinAction).toHaveBeenCalledExactlyOnceWith({
+        environmentId,
+        threadId: ThreadId.make("pinned"),
+      });
+      expectGroup("pinned", "alpha");
+      expect(
+        row("pinned").querySelector('[aria-label="Pinned"], [aria-label="Unpin thread"]'),
+      ).toBeNull();
+      expect(fixture.threads).toEqual(
+        before.map((thread) =>
+          thread.id === "pinned" ? { ...thread, pinnedAt: null, pinOrderKey: null } : thread,
+        ),
+      );
+      expectGroup("ordinary", null);
+      expectGroup("control", "beta");
+      expect(
+        fixture.controller!.placements!.items.filter((item) => item.native_thread_id !== "pinned"),
+      ).toEqual([controlPlacement]);
+      expect(assign).toHaveBeenCalledOnce();
+      expect(fixture.mutation).not.toHaveBeenCalled();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally {
+      await act(async () => acceptAssignment());
+    }
+  });
+
+  it.each(["denied", "unknown"] as const)(
+    "keeps the pin and original membership after a %s drop, and refreshes without resubmitting",
+    async (reason) => {
+      const before = structuredClone(fixture.threads);
+      const originalPlacements = [controlPlacement, { ...primary, native_thread_id: "pinned" }];
+      const retry = vi.fn(async () => {});
+      fixture.controller = {
+        ...fixture.controller!,
+        placements: { ...placements, items: originalPlacements },
+        retry,
+      };
+      assign.mockRejectedValueOnce(new WorkstreamActionError(reason));
+      await renderSidebar();
+      await dragToWorkstream("pinned", "beta");
+      expect(assign).toHaveBeenCalledOnce();
+      expect(assign.mock.calls[0]!.slice(0, 2)).toEqual([before[1], "beta"]);
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        reason === "denied" ? "denied" : "effect is unknown",
+      );
+      expect(row("pinned").closest("[data-native-workstream-thread]")).toBeNull();
+      expect(row("pinned").querySelector('[aria-label="Unpin thread"]')).not.toBeNull();
+      expect(
+        (await menu("pinned")).find((item) => item.id === "assign-workstream:group:alpha")?.label,
+      ).toBe("alpha (primary)");
+      await act(async () =>
+        userEvent.click(page.getByRole("button", { name: "Refresh", exact: true })),
+      );
+      expect(retry).toHaveBeenCalledOnce();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(assign).toHaveBeenCalledOnce();
+      expect(fixture.pinAction).not.toHaveBeenCalled();
+      expect(fixture.mutation).not.toHaveBeenCalled();
+      expect(fixture.threads).toEqual(before);
+      expect(fixture.controller!.placements!.items).toEqual(originalPlacements);
+      expectGroup("ordinary", null);
+      expectGroup("control", "beta");
     },
   );
 });
