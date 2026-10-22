@@ -7,6 +7,12 @@
       "command": "node scripts/setup-worktree.ts",
       "icon": "configure",
       "runOnWorktreeCreate": true
+    },
+    {
+      "name": "Install and Warm Worktree",
+      "command": "node scripts/setup-worktree.ts --install --warm",
+      "icon": "configure",
+      "runOnWorktreeCreate": false
     }
   ]
 }

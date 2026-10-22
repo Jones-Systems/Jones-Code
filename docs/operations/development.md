@@ -11,12 +11,27 @@ vp i
 vp run dev
 ```
 
-The `t3.json` Setup Worktree action runs `scripts/setup-worktree.ts`: it installs
-dependencies, links the main checkout's gitignored `.env` and `infra/relay/.env`
-when present, and warms the web dependency cache. Those are separate effects,
-including access to potentially sensitive configuration. An assignment to edit
-source does not itself authorize running setup or accessing those files.
-Confirm the applicable scope before invoking it; do not print their contents.
+The automatic `t3.json` Setup Worktree action runs `node scripts/setup-worktree.ts`
+in lightweight mode: it links the main checkout's gitignored `.env` and
+`infra/relay/.env` when present, preserving real destination files. It does not
+install dependencies or warm caches. Linking configuration is still an effect;
+confirm the applicable scope before invoking it and do not print file contents.
+
+For an authorized install, use `node scripts/setup-worktree.ts --install` with
+`T3CODE_PROJECT_ROOT` set to the main checkout. Add `--warm` to warm the web cache
+after that invocation's successful frozen-lockfile install, or select the manual
+**Install and Warm Worktree** action. `--warm` alone is rejected.
+
+Before installation and again before warming, setup measures the worktree's
+actual filesystem and requires at least 40 GiB available: a provisional 30 GiB
+reserve plus 10 GiB estimated additional peak allocation. Existing outputs
+already reduce availability. `--reserve-gib` and `--peak-gib` accept integer
+values at least 30 and 10 respectively; smaller or malformed values are rejected.
+Unknown or insufficient capacity stops the next producer without deleting
+anything. This snapshot is not a storage reservation. Separately configured
+shared package stores are not resolved or measured by this check. Dependency
+outputs and warmed caches remain reusable worktree outputs; this action does
+not authorize cleanup of them or shared stores.
 
 Startup logs record issuance without printing pairing credentials or QR codes,
 including when stdout is a terminal or redirected. For manual access, explicitly
