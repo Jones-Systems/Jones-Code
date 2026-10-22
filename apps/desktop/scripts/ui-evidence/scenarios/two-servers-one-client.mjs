@@ -41,6 +41,40 @@ export function rowSelector(environmentId, threadId, pinned) {
     : `[data-testid="sidebar-pinned-divider"] ~ ${row}`;
 }
 
+export function environmentRowSelector(environmentId) {
+  requireThat(
+    typeof environmentId === "string" && /^[a-zA-Z0-9-]+$/.test(environmentId),
+    "row-identity-not-environment-scoped",
+  );
+  return `li[data-thread-item^="${environmentId}:"]`;
+}
+
+export function environmentRowCount(page, environmentId) {
+  return page.locator(environmentRowSelector(environmentId)).count();
+}
+
+export function assertRowCounts(phase, counts, preOffA) {
+  const { A, B } = counts;
+  requireThat(
+    [A, B].every((count) => Number.isSafeInteger(count) && count >= 0),
+    "row-count-invalid",
+  );
+  if (phase === "preOff") {
+    requireThat(A >= 3 && B >= 2, "pre-off-rows-missing");
+  } else if (phase === "off" || phase === "offRecheck") {
+    requireThat(Number.isSafeInteger(preOffA) && preOffA >= 3, "row-count-baseline-invalid");
+    requireThat(A === preOffA, "a-row-count-changed");
+    requireThat(B === 0, "b-rows-visible-while-disabled");
+  } else if (phase === "restart") {
+    requireThat(B === 0, "b-rows-visible-after-restart");
+  } else if (phase === "reenable") {
+    requireThat(B >= 2, "b-rows-missing-on-reenable");
+  } else {
+    throw new Error("row-count-phase-invalid");
+  }
+  return { A, B };
+}
+
 function one(rows, id) {
   const matches = rows.filter((row) => row.id === id);
   requireThat(matches.length === 1, "fixture-entity-missing-or-duplicated");
@@ -124,13 +158,14 @@ export default async function twoServersOneClient(ctx) {
     scenarioCapMs: 300000,
     operatorCapMs: 390000,
     steps: [],
+    rowCounts: {},
     bindings: {
       rowKey: "environmentId:threadId",
       disabledStatus: "Off",
       pinCommand: "thread.pin",
       runtimeFields: ["version", "pid", "port", "origin"],
       observability: "page request/websocket events, attach then ordinary reload",
-      restartDisabledRows: "U8 observational, non-gating",
+      restartDisabledRows: "PC-JE03-3 absent, gating",
     },
   };
   const controller = new AbortController();
@@ -194,6 +229,15 @@ export default async function twoServersOneClient(ctx) {
     throw new Error(code);
   };
   const row = (env, id, pinned) => ctx.page.locator(rowSelector(env, id, pinned));
+  const rowCounts = async (phase) => {
+    const [A, B] = await take(() =>
+      Promise.all([
+        environmentRowCount(ctx.page, identity.primaryEnvironmentId),
+        environmentRowCount(ctx.page, identity.environmentId),
+      ]),
+    );
+    return assertRowCounts(phase, { A, B }, evidence.rowCounts.preOff?.A);
+  };
   const showThreads = async () => {
     const back = ctx.page.getByRole("button", {
       name: "Back to conversation from Settings",
@@ -464,6 +508,17 @@ export default async function twoServersOneClient(ctx) {
       await checkpoint();
     });
     await step("switch-off-b", 20000, async () => {
+      evidence.rowCounts.preOff = await rowCounts("preOff");
+      for (const id of [fixture.threadId, fixture.controlThreadId, fixture.liveThreadId])
+        requireThat(
+          (await take(() => row(identity.primaryEnvironmentId, id).count())) === 1,
+          "pre-off-a-row-missing",
+        );
+      requireThat(
+        (await take(() => row(identity.environmentId, fixture.threadId, true).count())) === 1 &&
+          (await take(() => row(identity.environmentId, fixture.controlThreadId).count())) === 1,
+        "pre-off-b-row-missing",
+      );
       await settings();
       const entry = await bEntry(true);
       const from = trace.mark();
@@ -476,17 +531,29 @@ export default async function twoServersOneClient(ctx) {
         10000,
         "b-socket-not-closed",
       );
-      await status(false);
+      const disabledEntry = await status(false);
+      await take(() => disabledEntry.getByRole("switch").waitFor({ timeout: 5000 }));
       const catalog = await take(() => trace.catalog(ctx.page, identity.environmentId));
       requireThat(catalog.disabled, "b-not-disabled");
       await showThreads();
-      await uiPin(identity.environmentId, fixture.threadId, true, false);
-      await title(identity.environmentId, fixture.controlThreadId, fixture.controlTitle);
-      evidence.bRetainedRows = { ok: true };
+      await until(
+        async () => (await environmentRowCount(ctx.page, identity.environmentId)) === 0,
+        10000,
+        "b-rows-visible-while-disabled",
+      );
+      evidence.rowCounts.off = await rowCounts("off");
+      await take(() => NodeTimersPromises.setTimeout(1000, undefined, { signal: stepSignal }));
+      evidence.rowCounts.offRecheck = await rowCounts("offRecheck");
+      for (const [id, value] of [
+        [fixture.threadId, fixture.title],
+        [fixture.controlThreadId, fixture.controlTitle],
+        [fixture.liveThreadId, fixture.liveTitle],
+      ])
+        await title(identity.primaryEnvironmentId, id, value);
+      evidence.bDisabledHidden = { ok: true };
       await checkpoint();
     });
     await step("b-not-live", 15000, async () => {
-      const from = trace.mark();
       await take(() =>
         b.seed({
           type: "thread.metadata.update",
@@ -495,32 +562,36 @@ export default async function twoServersOneClient(ctx) {
           title: fixture.renamedControl,
         }),
       );
-      requireThat(
+      const seederApplied =
         one((await take(() => b.readSnapshot())).threads, fixture.controlThreadId).title ===
-          fixture.renamedControl,
-        "b-offline-rename-not-committed",
-      );
-      await take(() => NodeTimersPromises.setTimeout(5000, undefined, { signal: stepSignal }));
-      await title(identity.environmentId, fixture.controlThreadId, fixture.controlTitle, 1000);
-      requireThat(
-        (await take(() =>
-          row(identity.environmentId, fixture.controlThreadId)
-            .getByText(fixture.renamedControl, { exact: true })
-            .count(),
-        )) === 0,
-        "b-live-while-disabled",
-      );
-      requireThat(
-        !trace.entries.some(
-          (entry) =>
-            entry.sequence >= from &&
-            entry.origin === B &&
-            ["frame", "websocket"].includes(entry.kind),
-        ),
-        "b-live-while-disabled",
-      );
-      evidence.nc3 = { ok: true, quietWindowMs: 5000 };
+        fixture.renamedControl;
+      requireThat(seederApplied, "b-offline-rename-not-committed");
+      const from = trace.mark();
+      const end = performance.now() + 5000;
+      do {
+        requireThat(
+          (await take(() => environmentRowCount(ctx.page, identity.environmentId))) === 0,
+          "b-live-while-disabled",
+        );
+        const remaining = end - performance.now();
+        if (remaining <= 0) break;
+        await take(() =>
+          NodeTimersPromises.setTimeout(Math.min(50, remaining), undefined, { signal: stepSignal }),
+        );
+      } while (true);
       await checkpoint();
+      const windowEntries = trace.entries.filter(
+        (entry) => entry.sequence >= from && entry.origin === B,
+      );
+      const bRequests = windowEntries.filter((entry) => entry.kind === "request").length;
+      const bFrames = windowEntries.filter((entry) => entry.kind === "frame").length;
+      requireThat(
+        bRequests === 0 &&
+          bFrames === 0 &&
+          !windowEntries.some((entry) => entry.kind === "websocket"),
+        "b-live-while-disabled",
+      );
+      evidence.nc3 = { ok: true, quietWindowMs: 5000, bRequests, bFrames, seederApplied };
     });
     await step("a-stays-live", 10000, async () => {
       await take(() =>
@@ -577,15 +648,11 @@ export default async function twoServersOneClient(ctx) {
       );
       evidence.catalog.storage = storage;
       await settings();
-      await status(false);
+      const disabledEntry = await status(false);
+      await take(() => disabledEntry.getByRole("switch").waitFor({ timeout: 5000 }));
       await showThreads();
-      evidence.restartDisabledRows = {
-        gating: false,
-        targetCount: await take(() => row(identity.environmentId, fixture.threadId).count()),
-        controlCount: await take(() =>
-          row(identity.environmentId, fixture.controlThreadId).count(),
-        ),
-      };
+      evidence.rowCounts.restart = await rowCounts("restart");
+      evidence.bRestartHidden = { ok: true };
       evidence.aRestartSelectedSha256 = await selectedInvariant();
       requireThat(
         !trace.entries.some(
@@ -626,6 +693,8 @@ export default async function twoServersOneClient(ctx) {
         ),
         "reenable-paired-again",
       );
+      evidence.rowCounts.reenable = await rowCounts("reenable");
+      evidence.bReenableRestored = { ok: true };
       evidence.reenable = { ok: true, sameCredential: true, pairedAgain: false };
       evidence.aFinalSelectedSha256 = await selectedInvariant();
       await checkpoint();
