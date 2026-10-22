@@ -1531,7 +1531,12 @@
     "apps/server/src/jones/git/prLookupGitState.ts": "jones-owned",
     "apps/server/src/jones/git/prLookupGitState.test.ts": "jones-owned",
     "apps/server/src/git/GitManager.ts": "accepted-shared",
-    ".github/workflows/native-enrollment-candidate.yml": "policy"
+    ".github/workflows/native-enrollment-candidate.yml": "policy",
+    "scripts/jones/mobile/xcuitest.ts": "jones-owned",
+    "scripts/jones/mobile/xcuitest.test.ts": "jones-owned",
+    "apps/mobile/plugins/withJonesE2eUITests.cjs": "jones-owned",
+    "apps/mobile/e2e/xcuitest/PinWorkflowTests.swift": "jones-owned",
+    "apps/mobile/app.config.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

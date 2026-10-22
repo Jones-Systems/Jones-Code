@@ -2303,10 +2303,13 @@
     },
     {
       "id": "jones-ios-native-pin-workflow",
-      "tests": ["scripts/jones/mobile/ios-pin-workflow.test.ts"],
+      "tests": [
+        "scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "scripts/jones/mobile/xcuitest.test.ts"
+      ],
       "commands": [
-        "vp test run scripts/jones/mobile/ios-pin-workflow.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "vp test run scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/mobile/ios-pin-workflow.ts scripts/jones/mobile/ios-pin-workflow.test.ts scripts/jones/mobile/xcuitest.ts scripts/jones/mobile/xcuitest.test.ts apps/mobile/app.config.ts apps/mobile/plugins/withJonesE2eUITests.cjs",
         "vp run --filter @t3tools/scripts typecheck",
         "node scripts/jones/mobile/ios-pin-workflow.ts --plan",
         "vp fmt --check docs/operations/synthetic-environments.md",

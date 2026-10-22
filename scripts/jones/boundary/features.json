@@ -1398,8 +1398,11 @@
     },
     {
       "id": "ios-native-pin-workflow",
-      "tests": ["scripts/jones/mobile/ios-pin-workflow.test.ts"],
-      "scope": "Provider-free iOS pin/unpin pilot with ordinary command-created synthetic threads, fresh native references, durable owner and control-thread oracles, relaunch persistence and exact owned-resource teardown. Injected checks remain boundary evidence. Native execution remains blocked by the pinned driver pattern-kill cleanup; preflight and source recipes do not claim a native pass."
+      "tests": [
+        "scripts/jones/mobile/ios-pin-workflow.test.ts",
+        "scripts/jones/mobile/xcuitest.test.ts"
+      ],
+      "scope": "Provider-free iOS pin/unpin pilot using an opt-in Expo XCUITest target and captured xcodebuild child lifecycle. Ordinary pairing and command-created synthetic threads feed durable target/control-thread oracles, relaunch persistence, a no-action negative control and exact owned-resource cleanup. Injected checks are boundary evidence; compilation, native execution, repeated timing and cleanup-sentinel qualification remain required before a native pass is claimed."
     }
   ]
 }
