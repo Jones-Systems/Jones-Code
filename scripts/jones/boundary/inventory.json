@@ -1534,7 +1534,13 @@
     "scripts/jones/boundary/fragments/native-electron-workflows.json": "jones-owned",
     "apps/desktop/scripts/ui-evidence/support/node-client.mjs": "jones-owned",
     "apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs": "jones-owned",
-    "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs": "jones-owned"
+    "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/support/endpoint-trace.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/support/secondary-server.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/scenarios/two-servers-one-client.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

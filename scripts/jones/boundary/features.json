@@ -1399,6 +1399,7 @@
     {
       "id": "native-electron-workflows",
       "tests": [
+        "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
         "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
         "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
         "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
@@ -1406,12 +1407,14 @@
         "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
         "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
         "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
-        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs"
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs"
       ],
-      "scope": "JE-01R uses the existing isolated Electron harness to pin and unpin through native UI, restart both desktop and its backend with retained disk state, and compare an unchanged-oracle no-action negative. The dedicated path-scoped Linux workflow builds once and records positive, negative, process-generation and cleanup evidence. No provider turns, multi-client or physical-host proof follows from this case. JE-02 uses Electron A for pin/rename and an ordinarily paired standard-grant Node protocol fixture B for read-only subscriptions, disconnect/reconnect, and exact current projection. B sends zero commands; control thread and A remain unchanged by B lifecycle. Stale-cache rejection and connection removal belong to the fixture, not the production client runtime or server-session revocation."
+      "scope": "JE-01R uses the existing isolated Electron harness to pin and unpin through native UI, restart both desktop and its backend with retained disk state, and compare an unchanged-oracle no-action negative. The dedicated path-scoped Linux workflow builds once and records positive, negative, process-generation and cleanup evidence. No provider turns, multi-client or physical-host proof follows from this case. JE-02 uses Electron A for pin/rename and an ordinarily paired standard-grant Node protocol fixture B for read-only subscriptions, disconnect/reconnect, and exact current projection. B sends zero commands; control thread and A remain unchanged by B lifecycle. Stale-cache rejection and connection removal belong to the fixture, not the production client runtime or server-session revocation. JE-03 exercises one Electron client against two real synthetic servers with colliding thread identities, endpoint-attributed pin commands and credential checks, Switch off retention, encrypted catalog restart, and re-enable without pairing again. Source tests do not establish the native two-server result."
     }
   ]
 }

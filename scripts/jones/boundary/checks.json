@@ -2304,6 +2304,7 @@
     {
       "id": "jones-native-electron-workflows",
       "tests": [
+        "apps/desktop/scripts/ui-evidence/endpoint-trace.test.mjs",
         "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
         "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
         "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
@@ -2311,10 +2312,12 @@
         "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
         "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
         "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
-        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs"
+        "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs"
       ],
       "commands": ["vp run test:ui-evidence", "node scripts/jones/check-boundary.ts --strict"]
     }
