@@ -1529,10 +1529,17 @@
     "apps/server/src/git/GitManager.ts": "accepted-shared",
     ".github/workflows/native-enrollment-candidate.yml": "policy",
     "apps/server/integration/jones-e2e/serverFixture.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.ts": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.worker.ts": "jones-owned",
     "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts": "jones-owned",
     "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts": "jones-owned",
     "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/server-e2e-integration.json": "jones-owned"
+    "scripts/jones/boundary/fragments/server-e2e-integration.json": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.relay.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.operator.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.transport.test.py": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.request.example.json": "jones-owned",
+    "apps/server/integration/jones-e2e/physicalHost.md": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

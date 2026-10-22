@@ -2306,13 +2306,17 @@
       "tests": [
         "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
         "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
-        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "apps/server/integration/jones-e2e/physicalHost.transport.test.py"
       ],
       "commands": [
         "vp test run --config vite.config.ts --fileParallelism=false --testTimeout=120000 apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
-        "vp lint apps/server/integration/jones-e2e/serverFixture.ts apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "vp lint apps/server/integration/jones-e2e/serverFixture.ts apps/server/integration/jones-e2e/cross-server-message.integration.test.ts apps/server/integration/jones-e2e/multi-workspace.integration.test.ts apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts apps/server/integration/jones-e2e/physicalHost.ts apps/server/integration/jones-e2e/physicalHost.worker.ts",
         "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "node --check apps/server/integration/jones-e2e/physicalHost.ts",
+        "node --check apps/server/integration/jones-e2e/physicalHost.worker.ts",
+        "PYTHONDONTWRITEBYTECODE=1 python3 apps/server/integration/jones-e2e/physicalHost.transport.test.py"
       ]
     }
   ]

@@ -1,0 +1,53 @@
+{
+  "schema": "jones-je08h-operator/v1",
+  "operatorRoot": "/absolute/operator/task-owned-evidence",
+  "ssh": "/usr/bin/ssh",
+  "hosts": {
+    "driver": {
+      "alias": "REPLACE-driver-ssh-alias",
+      "python": "/usr/bin/python3",
+      "admissionCollector": "/absolute/driver/collect_work_capacity.py",
+      "taskRoot": "/absolute/driver/task-owned-storage"
+    },
+    "worker": {
+      "alias": "REPLACE-worker-ssh-alias",
+      "python": "/usr/bin/python3",
+      "admissionCollector": "/absolute/worker/collect_work_capacity.py",
+      "taskRoot": "/absolute/worker/task-owned-storage"
+    }
+  },
+  "runId": "REPLACE-fresh-run-id",
+  "stage": "import-smoke",
+  "local": {
+    "repository": "/absolute/driver/checkout",
+    "node": "/absolute/driver/node",
+    "nodeVersion": "24.19.0",
+    "identity": "REPLACE_WITH_VERIFIED_SOURCE_IDENTITY",
+    "hashes": {
+      "apps/server/integration/jones-e2e/physicalHost.worker.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/physicalHost.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/serverFixture.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts": "REPLACE_WITH_SHA256",
+      "pnpm-lock.yaml": "REPLACE_WITH_SHA256"
+    }
+  },
+  "remote": {
+    "repository": "/absolute/worker/checkout",
+    "node": "/absolute/worker/node",
+    "nodeVersion": "24.19.0",
+    "identity": "REPLACE_WITH_VERIFIED_SOURCE_IDENTITY",
+    "hashes": {
+      "apps/server/integration/jones-e2e/physicalHost.worker.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/physicalHost.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/serverFixture.ts": "REPLACE_WITH_SHA256",
+      "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts": "REPLACE_WITH_SHA256",
+      "pnpm-lock.yaml": "REPLACE_WITH_SHA256"
+    }
+  },
+  "controlPort": 45401,
+  "peerPort": 45402,
+  "transportSources": {
+    "relaySha256": "REPLACE_WITH_SHA256",
+    "operatorSha256": "REPLACE_WITH_SHA256"
+  }
+}

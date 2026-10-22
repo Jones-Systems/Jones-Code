@@ -1401,9 +1401,10 @@
       "tests": [
         "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
         "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
-        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+        "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+        "apps/server/integration/jones-e2e/physicalHost.transport.test.py"
       ],
-      "scope": "Real disk SQLite and loopback Effect-service integration for cross-server MCP delivery idempotency and destination/third-server absence, workspace placement after reopening state, and same-home startup refusal with owned listener cleanup. Provider opens fail closed. Local caller-context and peer metadata are injected; this group does not prove ordinary client enrollment, independent CLI-process restart, native UI, or distinct physical hosts."
+      "scope": "Real disk SQLite and loopback Effect-service integration for cross-server MCP delivery idempotency and destination/third-server absence, workspace placement after reopening state, and same-home startup refusal with owned listener cleanup. Provider opens fail closed. Local caller-context and peer metadata are injected; this group does not prove ordinary client enrollment, independent CLI-process restart, native UI, or distinct physical hosts. The explicit physicalHost.ts command accepts an operator-bound request and relay for a separate B process on another host, with offline ledger reconciliation and sequential repeats. Source checks alone do not qualify that opt-in physical run; its redacted host/process/cleanup receipts are required separately. Repository-owned Python relay/operator scripts bind existing SSH aliases, source/storage and admission inputs; focused pure transport tests do not start remote workers. physicalHost.md documents the separate opt-in import, lifecycle and four-run qualification procedure."
     }
   ]
 }

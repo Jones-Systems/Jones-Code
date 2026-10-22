@@ -5,7 +5,14 @@
     "apps/server/integration/jones-e2e/serverFixture.ts",
     "apps/server/integration/jones-e2e/cross-server-message.integration.test.ts",
     "apps/server/integration/jones-e2e/multi-workspace.integration.test.ts",
-    "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts"
+    "apps/server/integration/jones-e2e/same-home-refusal.integration.test.ts",
+    "apps/server/integration/jones-e2e/physicalHost.ts",
+    "apps/server/integration/jones-e2e/physicalHost.worker.ts",
+    "apps/server/integration/jones-e2e/physicalHost.relay.py",
+    "apps/server/integration/jones-e2e/physicalHost.operator.py",
+    "apps/server/integration/jones-e2e/physicalHost.transport.test.py",
+    "apps/server/integration/jones-e2e/physicalHost.request.example.json",
+    "apps/server/integration/jones-e2e/physicalHost.md"
   ],
   "hookPaths": [],
   "tombstones": [],

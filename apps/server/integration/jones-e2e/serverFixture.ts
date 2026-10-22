@@ -106,7 +106,7 @@ export const makeHome = (prefix: string) =>
   });
 
 /**
- * Real independently scoped HTTP/MCP servers and disk SQLite, in the Vitest process.
+ * Real independently scoped HTTP/MCP servers and disk SQLite, in the caller's Node process.
  * Pairing, OAuth, link fencing, dispatch and persistence are production services.
  * Descriptor build/platform metadata and unused toolkit dependencies are substitutes.
  * No workstream registry/native enrollment is claimed; loopbackControlPlane's injected
