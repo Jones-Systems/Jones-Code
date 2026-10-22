@@ -1403,6 +1403,21 @@
         "scripts/mobile-showcase.test.ts"
       ],
       "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
+    },
+    {
+      "id": "shell-destination",
+      "tests": [
+        "apps/web/src/jones/shellDestination/model.test.ts",
+        "apps/web/src/jones/shellDestination/controller.test.ts",
+        "apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.browser.test.tsx",
+        "packages/contracts/src/jones/shellDestinationFence.test.ts",
+        "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "apps/web/src/components/ChatMarkdown.browser.test.tsx",
+        "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx",
+        "apps/web/src/components/ThreadTerminalDrawer.permissions.browser.test.tsx"
+      ],
+      "scope": "Dedicated jones-shell metadata resolves exact client-known destination IDs; label hints only corroborate identity. Jones modules own command guards, bounded local run associations, one-shot native terminal delivery, and inline attachment. ChatMarkdown keeps generic optional toolbar hooks and dedicated dispatch. Source-environment commands retain the existing callback. C1 owns the contracts subpath export and shared orchestration instruction hook; these accepted shared surfaces avoid provider-specific copies. Browser tests retain the real Markdown/toolbar with synthetic connection and terminal adapters; native two-environment runtime verification remains separately required. No server transport, wire schema or persisted event change. The necessary optional TerminalViewport attachExistingOnly prop omits cwd and disables restart for known runs; a session-list check alone cannot prevent a reconnect race. All existing callers retain the original open/attach behavior."
     }
   ]
 }
