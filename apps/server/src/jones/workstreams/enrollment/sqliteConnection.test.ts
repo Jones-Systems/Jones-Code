@@ -11,10 +11,10 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import {
-  isQualifiedNativeEnrollmentSqliteRuntime,
   makeNativeEnrollmentSqliteConfig,
   NativeEnrollmentSqliteQualificationError,
 } from "./sqliteConnection.ts";
+import { isQualifiedNativeEnrollmentSqliteRuntime } from "./sqliteRuntimePolicy.ts";
 
 const runtimeIdentity = () => {
   const sqlite = process.versions.sqlite;
@@ -43,11 +43,10 @@ const decodeSqliteVersion = Schema.decodeUnknownEffect(
   Schema.Struct({ version: Schema.String, sourceId: Schema.String }),
 );
 
-const helperUrl = new URL("./sqliteConnection.ts", import.meta.url).href;
 const childSource = `
   import * as NodeFS from 'node:fs';
   import * as NodeSqlite from 'node:sqlite';
-  const [helperUrl, dbPath, action] = process.argv.slice(1);
+  const [configJson, dbPath, action] = process.argv.slice(1);
   const result = (value) => JSON.stringify({
     runtime: {
       node: process.versions.node, sqlite: process.versions.sqlite,
@@ -65,8 +64,7 @@ const childSource = `
     finally { db.close(); }
     process.stdout.write(result(observed));
   } else {
-    const { makeNativeEnrollmentSqliteConfig } = await import(helperUrl);
-    const config = makeNativeEnrollmentSqliteConfig(dbPath, action === 'wal' || action === 'missing' ? 'apply' : 'operational_inspection');
+    const config = JSON.parse(configJson);
     if (action === 'missing') {
       try { const db = new NodeSqlite.DatabaseSync(config.filename, { readOnly: config.readonly, allowExtension: config.allowExtension }); db.close();
         process.stdout.write(result({ failed: false, exists: NodeFS.existsSync(dbPath) })); }
@@ -91,9 +89,22 @@ const fixtureProcess = (
 ) =>
   Effect.acquireRelease(
     Effect.sync(() => {
+      // The parent qualifies the URI; every child receipt must match its actual runtime.
+      const config = makeNativeEnrollmentSqliteConfig(
+        dbPath,
+        action === "wal" || action === "missing" ? "apply" : "operational_inspection",
+      );
       const child = NodeChildProcess.spawn(
         process.execPath,
-        ["--no-warnings", "--input-type=module", "-e", childSource, helperUrl, dbPath, action],
+        [
+          "--no-warnings",
+          "--input-type=module",
+          "-e",
+          childSource,
+          JSON.stringify(config),
+          dbPath,
+          action,
+        ],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
       let stdout = "";

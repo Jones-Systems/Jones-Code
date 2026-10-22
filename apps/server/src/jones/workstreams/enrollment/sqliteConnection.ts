@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- This enrollment-local adapter constructs fixed file URIs and never opens SQLite.
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { isQualifiedNativeEnrollmentSqliteRuntime } from "./sqliteRuntimePolicy.ts";
 
 export type NativeEnrollmentSqliteAccess = "strict_inspection" | "operational_inspection" | "apply";
 export interface NativeEnrollmentSqliteConfig {
@@ -16,16 +17,6 @@ export class NativeEnrollmentSqliteQualificationError extends Error {
     this.code = code;
   }
 }
-export const isQualifiedNativeEnrollmentSqliteRuntime = (
-  node: string | undefined,
-  sqlite: string | undefined,
-): boolean =>
-  (node === "24.13.1" && sqlite === "3.51.2") ||
-  (node === "24.19.0" && sqlite === "3.53.3") ||
-  (node === "24.21.0" && sqlite === "3.53.4") ||
-  (node === "24.22.0" && sqlite === "3.53.4") ||
-  (node === "26.8.2" && sqlite === "3.53.4");
-
 export const makeNativeEnrollmentSqliteConfig = (
   dbPath: string,
   access: NativeEnrollmentSqliteAccess,
