@@ -1,0 +1,8 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "native-electron-workflows",
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

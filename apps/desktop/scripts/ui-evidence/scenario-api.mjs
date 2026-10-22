@@ -193,6 +193,7 @@ export function createScenarioContext({
   theme,
   configuration = {},
   restoreConnectivity,
+  restartApplication,
 }) {
   const state = { steps: [], captures: [], assertions: [], fixture: {}, logs: [], topology: null };
   async function topology() {
@@ -213,8 +214,12 @@ export function createScenarioContext({
   }
 
   const ctx = {
-    electronApp,
-    page,
+    get electronApp() {
+      return electronApp;
+    },
+    get page() {
+      return page;
+    },
     workspace,
     artifacts,
     size,
@@ -300,6 +305,19 @@ export function createScenarioContext({
       return request("dispatch", command);
     },
     readSnapshot: () => request("snapshot"),
+    async restart() {
+      if (!restartApplication) throw new Error("Application restart is unavailable");
+      const replacement = await restartApplication();
+      electronApp = replacement.electronApp;
+      page = replacement.page;
+      restoreConnectivity = replacement.restoreConnectivity;
+      state.topology = null;
+      (state.restarts ??= []).push(replacement.evidence);
+      await ctx.topology();
+      await ctx.setWindowSize(size.width, size.height);
+      await ctx.setTheme(ctx.theme);
+      return replacement.evidence;
+    },
     async reload() {
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.waitForFunction(() => Boolean(window.desktopBridge));

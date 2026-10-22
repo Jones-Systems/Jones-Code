@@ -1,0 +1,400 @@
+name: Jones native workflows
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jones-native-workflows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect native workflow changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      changed: ${{ steps.paths.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+      - name: Select native workflow paths
+        id: paths
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
+              .github/workflows/jones-native-workflows.yml \
+              'apps/desktop/**' 'apps/web/src/components/Sidebar*' \
+              'apps/web/src/components/sidebar/**' 'apps/web/src/jones/workstreams/**' \
+              'apps/server/src/jones/workstreams/**' 'apps/server/src/orchestration-v2/**' \
+              'apps/server/src/persistence/**' 'scripts/jones/e2e/**' \
+              'packages/client-runtime/**' 'packages/contracts/**' 'packages/shared/**' \
+              'scripts/lib/**' 'native/browser-secret/**' \
+              'apps/server/package.json' 'apps/server/vite.config.ts' \
+              'apps/web/package.json' 'apps/web/vite.config.ts' \
+              package.json pnpm-lock.yaml pnpm-workspace.yaml vite.config.ts patches)
+            if [ -n "$changed_paths" ]; then
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'changed=false' >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  # This dedicated check is not part of CI's aggregate Check. Native qualification
+  # here covers JE-01R on Linux; later portfolio scenarios need their own admission.
+  electron-ui-evidence:
+    name: Jones Electron native pin restart
+    needs: changes
+    if: needs.changes.outputs.changed == 'true' && github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      JCUE_HARNESS_OID: ${{ github.event.pull_request.head.sha || github.sha }}
+      JCUE_RUNTIME_CACHE: ${{ runner.temp }}/jones-native-runtime-cache
+    steps:
+      - name: Allocate job-owned evidence and state
+        run: |
+          task_root=$(mktemp -d "$RUNNER_TEMP/jones-native.XXXXXX")
+          mkdir -m 700 "$task_root/evidence" "$task_root/state"
+          echo "JCUE_TASK_ROOT=$task_root" >> "$GITHUB_ENV"
+          echo "JCUE_OUTPUT=$task_root/evidence" >> "$GITHUB_ENV"
+          echo "XDG_STATE_HOME=$task_root/state" >> "$GITHUB_ENV"
+          date +%s > "$task_root/evidence/steps-started-epoch.txt"
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup pinned Vite+ and dependencies
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          version: 1.0.0
+          node-version: 24.22.0
+          cache: true
+          cache-dependency-path: pnpm-lock.yaml
+          run-install: |
+            args: ['--frozen-lockfile']
+
+      - name: Verify qualified driver pins
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          const pkg = JSON.parse(fs.readFileSync('apps/desktop/package.json'));
+          assert.equal(pkg.dependencies.electron, '44.4.5');
+          assert.equal(pkg.dependencies['playwright-core'], '1.60.0');
+          assert.equal(process.version, 'v24.22.0');
+          NODE
+          vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install native prerequisites on the ephemeral runner
+        run: |
+          sudo -n apt-get update
+          sudo -n apt-get install -y --no-install-recommends \
+            bubblewrap xvfb unzip fontconfig fonts-dejavu-core \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 \
+            libxcomposite1 libxdamage1 libxrandr2 libgbm1 libasound2t64 \
+            libgtk-3-0t64 libx11-6 libxcb1 libxkbcommon0 libsecret-1-dev pkg-config
+          # The sandbox mounts /usr, not the tool cache containing setup-vp's Node.
+          pinned_node=$(node -p 'process.execPath')
+          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-before.txt"
+          if ! cmp -s "$pinned_node" /usr/bin/node; then
+            sudo -n install -m 0755 "$pinned_node" /usr/bin/node
+          fi
+          cmp "$pinned_node" /usr/bin/node
+          /usr/bin/node --version > "$JCUE_OUTPUT/system-node-after.txt"
+          sha256sum /usr/bin/node > "$JCUE_OUTPUT/system-node.sha256"
+
+      - name: Restore checksum-verified Electron download cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.JCUE_RUNTIME_CACHE }}/jones-code-ui-evidence/electron/44.4.5
+          key: jones-native-electron-ubuntu-24.04-x64-44.4.5-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/scripts/ui-evidence/runtime.mjs') }}
+
+      - name: Prepare pinned sandbox runtime
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: node apps/desktop/scripts/ui-evidence.mjs setup --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/runtime-setup.json"
+
+      - name: Probe rootless namespaces before any runner-only adjustment
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          doctor_code=0
+          node apps/desktop/scripts/ui-evidence.mjs doctor --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/doctor-before-build.json" || doctor_code=$?
+          test "$doctor_code" = 0 || test "$doctor_code" = 2
+          restricted=$(node --input-type=module -e '
+            import fs from "node:fs";
+            const report = JSON.parse(fs.readFileSync(process.env.JCUE_OUTPUT + "/doctor-before-build.json"));
+            const check = report.checks.find(c => c.name === "nested-user-namespace");
+            if (!check) throw new Error("Missing namespace probe");
+            console.log(check.status === "failed" ? "yes" : "no");')
+          if [ "$restricted" = yes ]; then
+            test "$RUNNER_ENVIRONMENT" = github-hosted
+            test "$(id -u)" != 0
+            key=kernel.apparmor_restrict_unprivileged_userns
+            before=$(sysctl -n "$key")
+            printf '%s\n' "$before" > "$JCUE_OUTPUT/userns-before.txt"
+            test "$before" = 1
+            sudo -n sysctl -w "$key=0" > "$JCUE_OUTPUT/userns-adjustment.txt"
+            sysctl -n "$key" > "$JCUE_OUTPUT/userns-after.txt"
+            test "$(cat "$JCUE_OUTPUT/userns-after.txt")" = 0
+          fi
+
+      - name: Check the focused harness source group
+        run: vp run test:ui-evidence
+
+      - name: Build once and bind the operator receipt
+        run: |
+          unset T3CODE_DESKTOP_DEV T3CODE_PACK_EXE T3CODE_PACK_EXE_TARGET VITE_HTTP_URL VITE_WS_URL
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import { execFileSync, spawnSync } from 'node:child_process';
+          import { collectProvenance, sha256 } from './apps/desktop/scripts/ui-evidence/provenance.mjs';
+          const git = (...args) => execFileSync('git', args);
+          const head = git('rev-parse', 'HEAD').toString().trim();
+          assert.equal(head, process.env.JCUE_HARNESS_OID);
+          assert.equal(git('status', '--porcelain=v1', '-z', '--untracked-files=all').length, 0);
+          for (const file of ['.env', '.env.local']) {
+            await assert.rejects(fs.lstat(file), { code: 'ENOENT' });
+          }
+          const startedAt = new Date().toISOString();
+          const build = spawnSync('vp', ['run', 'build:desktop'], { stdio: 'inherit' });
+          if (build.error) throw build.error;
+          if (build.status !== 0) process.exit(build.status ?? 1);
+          const finishedAt = new Date().toISOString();
+          const source = process.cwd();
+          const artifacts = `${process.env.JCUE_OUTPUT}/build`;
+          await fs.mkdir(artifacts);
+          const result = await collectProvenance({ source, harness: source, artifacts,
+            buildPaths: { desktop: `${source}/apps/desktop/dist-electron`,
+              server: `${source}/apps/server/dist`, web: `${source}/apps/server/dist/client` } });
+          assert.equal(result.source.head, head);
+          assert.equal(result.source.clean, true);
+          assert.equal(result.source.statusSha256, sha256(''));
+          assert.equal(result.source.patch.sha256, sha256(''));
+          assert.equal(result.source.untracked.sha256, sha256('[]'));
+          const receipt = { schema: 'jones-code-ui-evidence-build/v1',
+            source: { head, statusSha256: result.source.statusSha256,
+              patchSha256: result.source.patch.sha256, untrackedSha256: result.source.untracked.sha256 },
+            build: Object.fromEntries(['desktop', 'server', 'web', 'boot'].map(n => [n, result.build[n].sha256])),
+            invocation: 'vp run build:desktop (development/packaged overrides unset)', startedAt, finishedAt };
+          await fs.writeFile(`${artifacts}/receipt.json`, JSON.stringify(receipt, null, 2));
+          NODE
+
+      - name: Require complete native doctor
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: node apps/desktop/scripts/ui-evidence.mjs doctor --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/doctor.json"
+
+      - name: Derive only the no-action negative control
+        shell: python
+        run: |
+          import difflib, hashlib, json, os, pathlib
+          source = pathlib.Path('apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs').read_bytes()
+          needle = b'skipPinGesture = false'
+          assert source.count(needle) == 1, 'Expected exactly one default gesture switch'
+          negative = source.replace(needle, b'skipPinGesture = true', 1)
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / 'negative.mjs').write_bytes(negative)
+          (output / 'negative.diff').write_text(''.join(difflib.unified_diff(
+              source.decode().splitlines(True), negative.decode().splitlines(True),
+              fromfile='sidebar-pin-restart.mjs', tofile='negative.mjs')))
+          (output / 'scenario-hashes.json').write_text(json.dumps({
+              'positive': hashlib.sha256(source).hexdigest(),
+              'negative': hashlib.sha256(negative).hexdigest()}, indent=2))
+
+      - name: Run JE-01R and its unchanged-oracle negative once each
+        env:
+          XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
+        run: |
+          for variant in positive negative; do
+            export JCUE_VARIANT="$variant"
+            python3 - <<'PY'
+          import json, os, pathlib, time
+          def cpu():
+              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
+              return sum(values), values[3] + values[4]
+          total0, idle0 = cpu()
+          time.sleep(1)
+          total1, idle1 = cpu()
+          assert total1 > total0, 'CPU sample unavailable'
+          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
+          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
+          available = int(memory['MemAvailable'].split()[0])
+          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          (output / (os.environ['JCUE_VARIANT'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
+          assert used < 85 and available > 0, 'Native run not admitted; no retry'
+          PY
+            scenario="$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs"
+            if [ "$variant" = negative ]; then scenario="$JCUE_OUTPUT/negative.mjs"; fi
+            native_code=0
+            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
+              --scenario "$scenario" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
+              --out "$JCUE_OUTPUT/$variant" > "$JCUE_OUTPUT/$variant-result.json" || native_code=$?
+            export JCUE_NATIVE_CODE="$native_code"
+            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/$variant-exit-code.txt"
+            # Preserve the first positive failure; never run another behavior attempt.
+            if [ "$variant" = positive ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
+            node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs';
+          import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
+          const variant = process.env.JCUE_VARIANT;
+          const output = process.env.JCUE_OUTPUT;
+          const read = p => JSON.parse(fs.readFileSync(`${output}/${p}`));
+          const result = read(`${variant}-result.json`);
+          const manifest = validateManifest(read(`${variant}/manifest.json`));
+          const inner = read(`${variant}/inner.json`);
+          const expectedCode = variant === 'positive' ? 0 : 1;
+          const expectedStatus = variant === 'positive' ? 'passed' : 'failed';
+          assert.equal(Number(process.env.JCUE_NATIVE_CODE), expectedCode);
+          assert.equal(result.code, expectedCode);
+          for (const value of [result, manifest, inner]) assert.equal(value.status, expectedStatus);
+          for (const value of [result, manifest]) {
+            assert.equal(value.cleanup.outcome, 'complete');
+            assert.equal(value.cleanup.rootAbsent, true);
+          }
+          assert.equal(manifest.namespaceProcess.exited, true);
+          assert.equal(manifest.build.sourceCorrespondence.status, 'receipt-matched');
+          assert.equal(manifest.source.head, process.env.JCUE_HARNESS_OID);
+          assert.equal(manifest.source.clean, true);
+          assert.equal(manifest.scenario.sha256, read('scenario-hashes.json')[variant]);
+          assert.equal(manifest.runtime.electron, '44.4.5');
+          assert.equal(manifest.resources.settledIntervalSeconds, 20);
+          assert.equal(inner.closeError, undefined);
+          assert.equal(inner.startupDiagnosticsError, undefined);
+          const generations = inner.processGenerations;
+          assert.equal(generations.length, variant === 'positive' ? 3 : 1);
+          for (const generation of generations) {
+            assert.equal(generation.closed, true);
+            assert.equal(generation.exit.code, 0);
+            assert.equal(generation.exit.signal, null);
+            assert.equal(generation.closeError, undefined);
+          }
+          if (variant === 'positive') {
+            assert.equal(manifest.error, null);
+            assert.equal(manifest.assertions.length, 58);
+            assert.ok(manifest.assertions.every(a => a.status === 'passed'));
+            for (const role of ['electron', 'server'])
+              assert.equal(new Set(generations.map(g => g.processes[role].pid)).size, 3);
+            for (const generation of generations.slice(1)) {
+              assert.deepEqual(generation.database, generations[0].database);
+              assert.deepEqual(generation.paths, generations[0].paths);
+            }
+          } else {
+            const expected = 'Scenario assertion failed: Backend target is pinned';
+            for (const value of [result, manifest, inner]) assert.equal(value.error, expected);
+            const failures = manifest.assertions.filter(a => a.status !== 'passed');
+            assert.equal(failures.length, 1);
+            assert.equal(failures[0].name, 'Backend target is pinned');
+            assert.equal(failures[0].status, 'failed');
+            assert.equal(manifest.fixture.variant, 'no-action-negative');
+          }
+          NODE
+          done
+
+      - name: Verify cleanup of this job's registered runs
+        if: always() && env.JCUE_TASK_ROOT != ''
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          const parent = path.join(process.env.XDG_STATE_HOME, 'jones-code-ui-evidence');
+          const report = [];
+          let failed = false;
+          const entries = await fs.readdir(path.join(parent, 'registry')).catch(e => {
+            if (e.code === 'ENOENT') return [];
+            throw e;
+          });
+          for (const file of entries) {
+            const record = JSON.parse(await fs.readFile(path.join(parent, 'registry', file)));
+            try {
+              assert.equal(record.parent, parent);
+              assert.equal(file, `${record.id}.json`);
+              if (record.cleanup !== 'complete') {
+                const { cleanupRegistered } = await import('./apps/desktop/scripts/ui-evidence/lifecycle.mjs');
+                await cleanupRegistered(record.id);
+              }
+              await assert.rejects(fs.lstat(record.root), { code: 'ENOENT' });
+              report.push({ runId: record.id, outcome: 'complete', rootAbsent: true });
+            } catch (error) {
+              failed = true;
+              report.push({ runId: record.id, outcome: 'unknown', error: error.message });
+            }
+          }
+          const scratch = await fs.readdir(path.join(parent, 'scratch')).catch(e => {
+            if (e.code === 'ENOENT') return [];
+            throw e;
+          });
+          if (scratch.length) failed = true;
+          await fs.writeFile(`${process.env.JCUE_OUTPUT}/cleanup.json`, JSON.stringify({
+            outcome: failed ? 'unknown' : 'complete', runs: report, remainingRoots: scratch.length }, null, 2));
+          if (failed) process.exitCode = 1;
+          NODE
+
+      - name: Record measured runner-step time
+        if: always() && env.JCUE_TASK_ROOT != ''
+        shell: python
+        run: |
+          import json, os, pathlib, time
+          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
+          started = int((output / 'steps-started-epoch.txt').read_text())
+          report = {'runnerStepsSeconds': time.time() - started,
+                    'scope': 'Allocation through cleanup; excludes queue, upload and action post steps',
+                    'fullJobWall': 'Read the completed Actions job started_at/completed_at; not yet available'}
+          (output / 'timing.json').write_text(json.dumps(report, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write(f"Measured runner steps: {report['runnerStepsSeconds']:.1f}s (excludes upload/post steps).\n")
+              summary.write('Full job wall requires the completed Actions job timestamps. No timing target is certified here.\n')
+
+      - name: Preserve bounded native evidence on success or failure
+        id: evidence
+        if: always() && env.JCUE_TASK_ROOT != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: jones-electron-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.JCUE_OUTPUT }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove only this job's scratch after evidence upload
+        if: always() && env.JCUE_TASK_ROOT != '' && steps.evidence.outcome == 'success'
+        shell: python
+        run: |
+          import json, os, pathlib, shutil
+          root = pathlib.Path(os.environ['JCUE_TASK_ROOT'])
+          assert not root.is_symlink() and root.parent.resolve() == pathlib.Path(os.environ['RUNNER_TEMP']).resolve()
+          cleanup = json.loads((root / 'evidence/cleanup.json').read_text())
+          assert cleanup['outcome'] == 'complete', 'Unproved cleanup: leave state for ephemeral runner disposal'
+          shutil.rmtree(root)
+          assert not root.exists()

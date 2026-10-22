@@ -2300,6 +2300,22 @@
         "vp lint apps/server/src/jones/workstreams/testing/loopbackControlPlane.ts apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-native-electron-workflows",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
+        "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs"
+      ],
+      "commands": ["vp run test:ui-evidence", "node scripts/jones/check-boundary.ts --strict"]
     }
   ]
 }

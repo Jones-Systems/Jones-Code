@@ -333,3 +333,76 @@ for (const [name, wsBaseUrl, expectedPath] of [
     },
   );
 }
+
+NodeTest.test(
+  "restart rebinds scenario operations to the new page and app while retaining evidence",
+  async () => {
+    const calls = [];
+    const makePage = (name) => ({
+      evaluate: async (fn, input) => {
+        calls.push([name, input?.method ?? "topology"]);
+        return input ? { threads: [] } : [endpoint];
+      },
+      reload: async () => {
+        calls.push([name, "reload"]);
+      },
+      waitForFunction: async () => {},
+    });
+    const firstPage = makePage("first");
+    const secondPage = makePage("second");
+    const secondApp = {};
+    const evidence = { oldProcessesClosed: true };
+    const ctx = createScenarioContext({
+      electronApp: {},
+      page: firstPage,
+      workspace: "/scratch/workspace",
+      size: { width: 1280, height: 800 },
+      theme: "light",
+      restartApplication: async () => ({
+        electronApp: secondApp,
+        page: secondPage,
+        evidence,
+        restoreConnectivity: async () => {
+          calls.push(["second", "connectivity"]);
+        },
+      }),
+    });
+    ctx.setWindowSize = async () => {};
+    ctx.setTheme = async () => {};
+    ctx.fixture.threadId = "preserved";
+    ctx.assert(true, "Before restart");
+    NodeAssert.deepEqual(await ctx.restart(), evidence);
+    NodeAssert.equal(ctx.page, secondPage);
+    NodeAssert.equal(ctx.electronApp, secondApp);
+    await ctx.readSnapshot();
+    await ctx.reload();
+    NodeAssert.deepEqual(calls, [
+      ["second", "topology"],
+      ["second", "topology"],
+      ["second", "snapshot"],
+      ["second", "reload"],
+      ["second", "connectivity"],
+    ]);
+    NodeAssert.equal(ctx.results().fixture.threadId, "preserved");
+    NodeAssert.deepEqual(ctx.results().restarts, [evidence]);
+    NodeAssert.equal(ctx.results().assertions[0].name, "Before restart");
+  },
+);
+
+NodeTest.test(
+  "failed restart preserves original failure and never substitutes a new page",
+  async () => {
+    const page = {};
+    const failure = new Error("Old server process still exists");
+    const ctx = createScenarioContext({
+      electronApp: {},
+      page,
+      restartApplication: async () => {
+        throw failure;
+      },
+    });
+    await NodeAssert.rejects(ctx.restart(), (error) => error === failure);
+    NodeAssert.equal(ctx.page, page);
+    NodeAssert.equal(ctx.results().restarts, undefined);
+  },
+);

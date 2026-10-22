@@ -1395,6 +1395,22 @@
         "scripts/jones/native-enrollment/sea-fixture.node-test.mjs"
       ],
       "scope": "Exact Node/SQLite runtime admission remains in the production policy. An explicit exact-runtime test configuration requires production admission while exercising real SQLite connection and transaction-authority checks. A disposable SEA fixture covers embedded-engine SQLite semantics and owned scratch lifecycle; it adds no product command."
+    },
+    {
+      "id": "native-electron-workflows",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/lifecycle.test.mjs",
+        "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
+        "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs"
+      ],
+      "scope": "JE-01R uses the existing isolated Electron harness to pin and unpin through native UI, restart both desktop and its backend with retained disk state, and compare an unchanged-oracle no-action negative. The dedicated path-scoped Linux workflow builds once and records positive, negative, process-generation and cleanup evidence. No provider turns, multi-client or physical-host proof follows from this case."
     }
   ]
 }

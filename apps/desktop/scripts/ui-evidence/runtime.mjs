@@ -292,3 +292,73 @@ export async function dependencyClosure(source) {
     links: [...links].map(([destination, root]) => ({ destination, root })),
   };
 }
+
+export async function readProcessIdentity(pid, readFile = NodeFSP.readFile) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid captured process PID");
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat
+    .slice(stat.lastIndexOf(")") + 2)
+    .trim()
+    .split(/\s+/);
+  if (!/^\d+$/.test(fields[19] || "")) throw new Error("Missing process start identity");
+  return { pid, parentPid: Number(fields[1]), startTicks: fields[19], state: fields[0] };
+}
+
+export async function captureApplicationProcesses(app, readFile = NodeFSP.readFile) {
+  const electron = await readProcessIdentity(app.process().pid, readFile);
+  // Only inspect direct children of the captured app inside the runner's private PID namespace.
+  const children = await readFile(`/proc/${electron.pid}/task/${electron.pid}/children`, "utf8");
+  const servers = [];
+  for (const value of children.trim().split(/\s+/).filter(Boolean)) {
+    const pid = Number(value);
+    try {
+      const argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+      if (!argv.includes("/app/apps/server/dist/bin.mjs")) continue;
+      const server = await readProcessIdentity(pid, readFile);
+      if (server.parentPid !== electron.pid) throw new Error("Backend parent identity changed");
+      servers.push(server);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  if (servers.length !== 1) throw new Error("Expected one captured app-owned backend");
+  return { electron, server: servers[0] };
+}
+
+export async function assertApplicationStopped(processes, readFile = NodeFSP.readFile) {
+  for (const [role, identity] of Object.entries(processes)) {
+    try {
+      const current = await readProcessIdentity(identity.pid, readFile);
+      if (current.startTicks === identity.startTicks)
+        throw new Error(`Old ${role} process still exists after app close`);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+export async function closeApplicationGeneration(generation, readFile = NodeFSP.readFile) {
+  if (generation.closeAttempted) {
+    if (!generation.closed) throw new Error("Previous app close has unresolved outcome");
+    return;
+  }
+  const child = generation.app.process();
+  generation.closeAttempted = true;
+  await generation.app.close();
+  generation.exit = { code: child.exitCode, signal: child.signalCode };
+  if (child.exitCode !== 0 || child.signalCode !== null)
+    throw new Error("Electron did not exit cleanly");
+  if (generation.processes) await assertApplicationStopped(generation.processes, readFile);
+  generation.closed = true;
+}
+
+export function assertRestartIdentity(before, after) {
+  for (const role of ["electron", "server"]) {
+    if (before.processes[role].pid === after.processes[role].pid)
+      throw new Error(`Restart reused the ${role} PID`);
+  }
+  if (JSON.stringify(before.paths) !== JSON.stringify(after.paths))
+    throw new Error("Restart changed private application paths");
+  if (JSON.stringify(before.database) !== JSON.stringify(after.database))
+    throw new Error("Restart replaced the synthetic database file");
+}
