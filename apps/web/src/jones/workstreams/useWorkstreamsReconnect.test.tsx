@@ -1,3 +1,8 @@
+// @effect-diagnostics globalFetch:off -- Joined tests use captured, task-owned loopback listeners.
+import {
+  startWireFixture,
+  type WireFixture,
+} from "../../../../server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs";
 import { RegistryContext } from "@effect/atom-react";
 import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import type { WorkstreamsRegistrationContextAcceptedResponse } from "@t3tools/contracts";
@@ -26,7 +31,11 @@ import {
   now,
 } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
 import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
-import { routeWorkstreamsHttp, syntheticWorkstreams } from "./workstreamsHttp.fixtures";
+import {
+  routeWorkstreamsHttp,
+  syntheticWorkstreams,
+  wireWorkstreamsHttp,
+} from "./workstreamsHttp.fixtures";
 
 const http = vi.hoisted(() => ({
   run: vi.fn<(effect: unknown, options?: { readonly signal?: AbortSignal }) => Promise<unknown>>(),
@@ -932,5 +941,159 @@ it.each(["opaque-submit-failure", "unverified-conflict", "pending-receipt"] as c
       expect((await latest.submit(next)).state).toBe("rejected");
     });
     expect(submitted).toEqual([original, next]);
+  },
+);
+
+// The real hook, ledger and EnvironmentHttpApi decoder join real Jones HTTP to signed
+// loopback transport. Principal/build/native authority and registry business state are synthetic.
+async function withWireLedger(
+  run: (
+    control: WireFixture["control"],
+    observed: { path: string; status: number }[],
+  ) => Promise<void>,
+) {
+  const fixture = await startWireFixture();
+  const observed: { path: string; status: number }[] = [];
+  try {
+    http.run.mockImplementation(
+      await wireWorkstreamsHttp(fixture.origin, async (input, init) => {
+        const response = await fetch(input, init);
+        observed.push({
+          path: new URL(typeof input === "string" || input instanceof URL ? input : input.url)
+            .pathname,
+          status: response.status,
+        });
+        return response;
+      }),
+    );
+    await act(async () => {
+      renderer = create(
+        <RegistryContext.Provider value={registry}>
+          <MountedWorkstreams />
+        </RegistryContext.Provider>,
+      );
+    });
+    await wireReady();
+    await run(fixture.control, observed);
+  } finally {
+    try {
+      await act(() => renderer?.unmount());
+      renderer = undefined;
+    } finally {
+      await fixture.close();
+    }
+  }
+}
+const wireReady = async () => {
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(latest.data?.binding.registryId).toBe("https://workstreams.test");
+    expect(latest.loading).toBe(false);
+    expect(latest.data?.stale).toBe(false);
+  });
+};
+const wireCommand = (id: string): WorkstreamCommand => ({
+  command_id: id,
+  expected_server_generation: latest.data!.binding.serverGeneration,
+  expected_registry_version: latest.data!.binding.registryVersion,
+  action: {
+    operation: "update_workstream",
+    workstream_id: "ws-core-v1",
+    expected_version: 3,
+    name: "Wire ledger proof",
+    lifecycle: "active",
+    progress: { state: "progressing" },
+    sort_order: 0,
+  },
+});
+it("joins capabilities, grant-change refusal, real HTTP 409 and unchanged ledger recovery without replay", async () => {
+  await withWireLedger(async (control, observed) => {
+    expect(control.observations.capabilities).toBeGreaterThan(0);
+    control.faults.changeGrantBeforeSubmit = true;
+    const original = wireCommand("wire-refusal-original");
+    await act(async () => {
+      await expect(latest.submit(original)).rejects.toMatchObject({ reason: "stale" });
+    });
+    expect(control.observations.refusals).toBeGreaterThan(0);
+    expect(control.observations.submissions).toBe(0);
+    expect(observed).toContainEqual({ path: "/api/workstreams/commands", status: 409 });
+    control.authority.authorization_revision = 1;
+    await act(async () => latest.retry!());
+    await wireReady();
+    expect(control.observations.receiptReads).toBe(0);
+    const next = wireCommand("wire-refusal-fresh-command");
+    await act(async () => {
+      expect((await latest.submit(next)).state).toBe("committed");
+    });
+    expect(control.observations.commandIds).toEqual([original.command_id, next.command_id]);
+    expect(control.observations.submissions).toBe(1);
+  });
+});
+it.each(["missing", "invalid", "replayed", "lost"] as const)(
+  "keeps the real ledger fenced after %s response proof and reconciles the original receipt only",
+  async (mode) => {
+    await withWireLedger(async (control, observed) => {
+      control.faults.commandResponse = mode;
+      control.faults.receiptResponse = "missing";
+      const original = wireCommand(`wire-unknown-${mode}-original`);
+      await act(async () => {
+        await expect(latest.submit(original)).rejects.toMatchObject({ reason: "unknown" });
+      });
+      expect(observed).toContainEqual({ path: "/api/workstreams/commands", status: 500 });
+      expect(control.observations.submissions).toBe(1);
+      await wireReady();
+      const next = wireCommand(`wire-unknown-${mode}-successor`);
+      await act(async () => {
+        await expect(latest.submit(next)).rejects.toMatchObject({ reason: "unknown" });
+        await expect(latest.retry!()).rejects.toMatchObject({ reason: "unknown" });
+      });
+      expect(control.observations.commandIds).toEqual([original.command_id]);
+      expect(control.observations.receiptReads).toBeGreaterThan(0);
+      control.faults.commandResponse = "valid";
+      control.faults.receiptResponse = "valid";
+      await act(async () => latest.retry!());
+      await wireReady();
+      expect(control.observations.commandIds).toEqual([original.command_id]);
+      // The fresh action uses the now-current version; the original command is never sent again.
+      const base = wireCommand(next.command_id);
+      const fresh = {
+        ...base,
+        action: { ...base.action, expected_version: 4 } as WorkstreamCommand["action"],
+      };
+      await act(async () => {
+        expect((await latest.submit(fresh)).state).toBe("committed");
+      });
+      expect(control.observations.commandIds).toEqual([original.command_id, next.command_id]);
+      expect(control.observations.submissions).toBe(2);
+    });
+  },
+);
+
+it.each(["missing", "invalid", "replayed"] as const)(
+  "does not clear the ledger for an unverified %s pre-dispatch refusal",
+  async (mode) => {
+    await withWireLedger(async (control, observed) => {
+      control.faults.commandResponse = mode;
+      control.faults.changeGrantBeforeSubmit = true;
+      const original = wireCommand(`wire-unverified-${mode}-refusal`);
+      await act(async () => {
+        await expect(latest.submit(original)).rejects.toMatchObject({ reason: "unknown" });
+      });
+      expect(observed).toContainEqual({ path: "/api/workstreams/commands", status: 500 });
+      expect(control.observations.submissions).toBe(0);
+      control.authority.authorization_revision = 1;
+      await act(async () => {
+        await expect(latest.retry!()).rejects.toMatchObject({ reason: "unknown" });
+      });
+      await wireReady();
+      await act(async () => {
+        await expect(
+          latest.submit(wireCommand("wire-unverified-fenced-next")),
+        ).rejects.toMatchObject({ reason: "unknown" });
+      });
+      expect(control.observations.receiptReads).toBeGreaterThan(0);
+      expect(control.observations.commandIds).toEqual([original.command_id]);
+      expect(control.observations.submissions).toBe(0);
+    });
   },
 );

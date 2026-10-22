@@ -2361,6 +2361,25 @@
         "node scripts/mobile-native-static-check.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/workstreamsRegistryBinding.test.ts apps/server/src/jones/workstreams/registryBinding.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

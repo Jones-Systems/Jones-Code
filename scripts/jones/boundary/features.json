@@ -1385,7 +1385,7 @@
         "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with injected synthetic authentication, HTTPS registry identity, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
     },
     {
       "id": "native-enrollment-runtime",
@@ -1431,6 +1431,19 @@
         "apps/web/src/threadRoutes.test.ts"
       ],
       "scope": "Web child-input title links and Open question/Open approval actions navigate with the selected child environment and thread identity; mobile child-input navigation uses the same scoped identity. The tiny callback edits remain in the existing accepted-shared ChatView and ThreadDetailScreen files because extracting navigation would add an unnecessary adapter. Their hook paths remain owned by composer-shortcuts-extraction and thread-read-dwell respectively. Existing selector tests cover local descendants, remote linked tasks and nested remote children; route tests cover scoped route resolution. Browser interaction evidence covers actual banner controls and the destination view; those unit tests alone do not prove click wiring. Existing ID-only related-thread callbacks keep their same-environment contract. No provider, selector, wire, stored-state or missing-thread fallback changes."
+    },
+    {
+      "id": "workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "scope": "Independently pinned registry identity separates canonical HTTPS metadata from literal-loopback transport. Strict activation tokens, request HMAC and bounded exact response proofs cover all signed families without altering legacy manifests or native provider identity. A joined real HTTP client/hook ledger test proves the authenticated pre-dispatch refusal mapping and unknown-effect receipt-only recovery. Synthetic authority, build and authentication remain explicit test seams; no installed or PostgreSQL qualification is claimed."
     }
   ]
 }

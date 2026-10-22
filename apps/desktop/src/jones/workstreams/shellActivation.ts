@@ -5,6 +5,7 @@ export const WORKSTREAM_SHELL_ENV_NAMES = [
   "T3_WORKSTREAM_KEY_ID",
   "T3_WORKSTREAM_SIGNING_SECRET",
   "T3_WORKSTREAM_AUTHORIZATION_REVISION",
+  "T3_WORKSTREAM_REGISTRY_BINDING",
 ] as const;
 
 export function installMissingWorkstreamShellActivation(

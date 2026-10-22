@@ -564,7 +564,7 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
         }),
     );
     const environment = {
-      T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+      T3_WORKSTREAM_CONTROL_PLANE_URL: "https://startup.synthetic.test/",
       T3_WORKSTREAM_OWNER_ID: "owner-startup",
       T3_WORKSTREAM_PRINCIPAL_ID: "principal-startup",
       T3_WORKSTREAM_KEY_ID: "key-startup",

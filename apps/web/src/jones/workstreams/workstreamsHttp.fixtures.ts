@@ -1,3 +1,4 @@
+import { makeEnvironmentHttpApiClient, layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import {
   t3PlacementIdentityKey,
   t3PlacementInventoryJson,
@@ -242,4 +243,25 @@ export function syntheticWorkstreams(input: {
     }
   };
   return { state, handle, registration };
+}
+
+/** Promise boundary for the React harness; requests use the unchanged EnvironmentHttpApi client. */
+export async function wireWorkstreamsHttp(origin: string, fetchPort: typeof globalThis.fetch) {
+  const client = await Effect.runPromise(
+    makeEnvironmentHttpApiClient(origin).pipe(Effect.provide(layerRemoteHttpClient(fetchPort))),
+  );
+  return async (effect: unknown, options?: { readonly signal?: AbortSignal }): Promise<unknown> => {
+    const result = await Effect.runPromise(
+      (effect as Effect.Effect<unknown, Error, PrimaryEnvironmentHttpClient>).pipe(
+        Effect.provideService(PrimaryEnvironmentHttpClient, client),
+        Effect.match({
+          onFailure: (error) => ({ ok: false as const, error }),
+          onSuccess: (value) => ({ ok: true as const, value }),
+        }),
+      ),
+      options,
+    );
+    if (!result.ok) throw result.error;
+    return result.value;
+  };
 }

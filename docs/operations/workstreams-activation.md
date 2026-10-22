@@ -3,7 +3,7 @@
 The server reads one activation snapshot at startup for both Workstreams and
 registration-context requests. Existing shell/environment configuration remains
 supported: if any required activation variable or the optional registration
-version selector is defined, including an empty value, the complete environment
+version selector or registry binding is defined, including an empty value, the complete environment
 group must be valid. Missing values are never filled from a file.
 
 When all activation variables are absent, the server reads only
@@ -12,7 +12,8 @@ When all activation variables are absent, the server reads only
 `T3_WORKSTREAM_CONTROL_PLANE_URL`, `T3_WORKSTREAM_OWNER_ID`,
 `T3_WORKSTREAM_PRINCIPAL_ID`, `T3_WORKSTREAM_KEY_ID`,
 `T3_WORKSTREAM_SIGNING_SECRET`, and `T3_WORKSTREAM_AUTHORIZATION_REVISION`.
-It may also contain one `T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION` assignment.
+It may also contain one `T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION` assignment
+and one `T3_WORKSTREAM_REGISTRY_BINDING` assignment.
 The file is data, not shell input: no `export`, quotes, interpolation, comments,
 extra keys, or duplicate keys. The URL is a canonical HTTPS root origin, or
 HTTP to literal `127.0.0.1` or `[::1]` on the same host.
@@ -70,3 +71,30 @@ and running-adapter proof.
 
 Keep credential staging and permission changes within the installation's exact
 operational authorization. Do not print the file or copy it into diagnostics.
+
+## Registry identity and loopback transport
+
+Literal-loopback HTTP requires the independently provisioned
+`T3_WORKSTREAM_REGISTRY_BINDING` token. Its canonical HTTPS origin identifies
+the registry; it never changes the configured transport destination. Jones
+validates the token against its pinned contract and the activation owner,
+principal and authorization revision. An unbound literal-loopback activation
+fails before a request. Legacy unbound HTTPS remains supported.
+
+The token is the control plane's `stage-jones --registry-binding-version 1.0.0`
+output, following the six required values and optional registration selector.
+Do not construct an HTTPS origin from the loopback address or take a replacement
+pin from a response. Provisioning, staging and restart need their own operational
+authority. Source support does not designate a real hostname or provision an
+installed registry.
+
+The new envelope is independently pinned to producer commit
+`562bd5cb51de8410560b63bba9119a104be3bb34`; its
+[exact contract corpus](../../packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw)
+retains producer bytes in `.raw` fixtures so formatting cannot change their
+digests. It does not change existing Workstreams or native-provider manifests. Jones checks
+bounded response bytes and the request-bound MAC before decoding. Only the exact
+authenticated pre-dispatch refusal maps to the existing command-not-current
+conflict. Missing or invalid proof and lost replies retain unknown outcomes;
+recovery reads the original command receipt without resubmission. Receipt GET
+may itself enter producer business logic and reconcile state.

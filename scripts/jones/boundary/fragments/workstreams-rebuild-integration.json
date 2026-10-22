@@ -141,7 +141,16 @@
     "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts",
     "apps/web/src/jones/workstreams/remoteThreadAssignment.ts",
     "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
-    "packages/contracts/src/workstreams-fixtures/registry-counts.conformance.json.fixture"
+    "packages/contracts/src/workstreams-fixtures/registry-counts.conformance.json.fixture",
+    "packages/shared/src/jones/workstreamsRegistryBinding.ts",
+    "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/manifest.json.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/refusal.schema.json.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/provisioning.schema.json.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.json.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/binding.schema.json.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw"
   ],
   "hookPaths": [
     "apps/mobile/src/features/home/HomeScreen.tsx",

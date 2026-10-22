@@ -1,0 +1,118 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "provisioning_id",
+    "registry_instance_id",
+    "canonical_origin",
+    "owner_id",
+    "principal_id",
+    "expected_server_generation",
+    "expected_grant_id",
+    "expected_authorization_revision",
+    "expected_identity",
+    "expected_principal_policy"
+  ],
+  "properties": {
+    "schema": {
+      "const": "control-plane.workstreams-registry-binding-provisioning/v1"
+    },
+    "provisioning_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "registry_instance_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "canonical_origin": {
+      "type": "string",
+      "maxLength": 512,
+      "pattern": "^https://[^/@?#\\s]+$"
+    },
+    "owner_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "principal_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "expected_server_generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "expected_grant_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "expected_authorization_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "expected_identity": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "registry_instance_id",
+            "canonical_origin"
+          ],
+          "properties": {
+            "registry_instance_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "canonical_origin": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^https://[^/@?#\\s]+$"
+            }
+          }
+        }
+      ]
+    },
+    "expected_principal_policy": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "registry_instance_id",
+            "owner_id",
+            "principal_id",
+            "mode"
+          ],
+          "properties": {
+            "registry_instance_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "owner_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+            },
+            "principal_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "mode": {
+              "const": "required"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

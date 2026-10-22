@@ -1,3 +1,4 @@
+import type { WireFixture } from "./loopbackControlPlane.fixture.mjs";
 // @effect-diagnostics nodeBuiltinImport:off -- Test-only sockets and hashing never read host credentials or state.
 import * as NodeHttp from "node:http";
 import * as NodeCrypto from "node:crypto";
@@ -11,10 +12,7 @@ import {
   WorkstreamCommand,
   type WorkstreamsRegistrationContextT3Source,
 } from "@t3tools/contracts";
-import {
-  makeControlPlaneWorkstreamTransport,
-  signWorkstreamRequest,
-} from "../../../workstreams/ControlPlaneWorkstreamTransport.ts";
+import { makeControlPlaneWorkstreamTransport } from "../../../workstreams/ControlPlaneWorkstreamTransport.ts";
 import { makeSyntheticWorkstreamTransport } from "../../../workstreams/SyntheticWorkstreamTransport.ts";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -84,6 +82,10 @@ async function startLoopbackHandler(handler: (request: Request) => Promise<Respo
           ...(body ? { body } : {}),
         }),
       );
+      if (response.type === "error") {
+        outgoing.destroy();
+        return;
+      }
       outgoing.writeHead(response.status, Object.fromEntries(response.headers));
       outgoing.end(Buffer.from(await response.arrayBuffer()));
     })().catch(() => {
@@ -104,7 +106,12 @@ async function startLoopbackHandler(handler: (request: Request) => Promise<Respo
     origin: `http://127.0.0.1:${address.port}`,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
+        server.close((error) => {
+          if (error) reject(error);
+          else if (server.listening || server.address() !== null)
+            reject(new Error("Fixture listener still open"));
+          else resolve();
+        });
         server.closeAllConnections();
       }),
   };
@@ -113,13 +120,42 @@ async function startLoopbackHandler(handler: (request: Request) => Promise<Respo
 /** HTTP adaptation only: all registry mutations and receipts belong to the existing synthetic transport. */
 export async function startLoopbackControlPlane() {
   const registry = makeSyntheticWorkstreamTransport({
+    principalId: "22222222-2222-4222-8222-222222222222",
     assignments: [
       { sourceInstanceId: "source-a", nativeThreadId: "shared-thread" },
       { sourceInstanceId: "source-b", nativeThreadId: "shared-thread" },
       { sourceInstanceId: "source-b", nativeThreadId: "other-thread" },
     ],
   });
-  const observations = { accepted: 0, rejected: 0, submissions: 0 };
+  const observations = {
+    accepted: 0,
+    rejected: 0,
+    submissions: 0,
+    capabilities: 0,
+    receiptReads: 0,
+    refusals: 0,
+    commandIds: [] as string[],
+  } satisfies WireFixture["control"]["observations"];
+  const principalId = "22222222-2222-4222-8222-222222222222";
+  const pin = {
+    protocol: "workstreams-registry-binding/1.0.0",
+    manifest_sha256: "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
+    registry_instance_id: "11111111-1111-4111-8111-111111111111",
+    canonical_origin: "https://workstreams.test",
+    owner_id: "owner-fixture",
+    principal_id: principalId,
+    authorization_revision: 1,
+  };
+  const token = Buffer.from(JSON.stringify(pin)).toString("base64url");
+  const authority = { ...pin };
+  const faults = {
+    changeGrantBeforeSubmit: false,
+    commandResponse: "valid" as "valid" | "missing" | "invalid" | "replayed" | "lost",
+    listResponse: "valid" as "valid" | "missing",
+    receiptResponse: "valid" as "valid" | "missing",
+    readResponse: "valid" as "valid" | "missing" | "invalid",
+  };
+  let previousMac = "";
   const contract = {
     contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
     contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
@@ -136,32 +172,97 @@ export async function startLoopbackControlPlane() {
       : WORKSTREAM_CONTRACT_MANIFEST_SHA256;
     const header = (name: string) => request.headers.get(name) ?? "";
     const digest = NodeCrypto.createHash("sha256").update(body).digest("hex");
-    const expected = signWorkstreamRequest({
-      contractVersion: version,
-      requestId: header("x-control-request-id"),
-      idempotencyKey: header("idempotency-key"),
-      sentAt: header("x-control-timestamp"),
-      nonce: header("x-control-nonce"),
-      principalId: "principal-fixture",
-      keyId: "key-fixture",
-      method: request.method === "POST" ? "POST" : "GET",
-      target: url.pathname + url.search,
-      contentSha256: digest,
-      signingSecret,
-    });
+    // Independent producer-envelope implementation, qualified against the pinned producer vectors.
+    // Business authority remains the existing synthetic transport, not a second registry model.
+    const canonical = [
+      "hmac-sha256-workstreams-registry-v1",
+      version,
+      header("x-control-request-id"),
+      header("idempotency-key"),
+      header("x-control-timestamp"),
+      header("x-control-nonce"),
+      principalId,
+      "key-fixture",
+      request.method,
+      url.pathname + url.search,
+      digest,
+      manifest,
+      header("x-control-registry-binding"),
+    ].join("\n");
+    const expected = NodeCrypto.createHmac("sha256", Buffer.from(signingSecret, "base64"))
+      .update(canonical)
+      .digest("base64url");
     if (
       header("x-control-signature") !== expected ||
       header("x-control-content-sha256") !== digest ||
-      header("x-control-principal-id") !== "principal-fixture" ||
+      header("x-control-principal-id") !== principalId ||
       header("x-control-key-id") !== "key-fixture" ||
       header("x-control-contract-version") !== version ||
       header("x-control-contract-manifest") !== manifest ||
-      header("x-control-algorithm") !== "hmac-sha256-v1"
+      header("x-control-algorithm") !== "hmac-sha256-workstreams-registry-v1"
     ) {
       observations.rejected += 1;
       return new Response("Invalid synthetic signature or contract", { status: 401 });
     }
     observations.accepted += 1;
+    const commandPost = url.pathname === "/workstreams/v1/commands" && request.method === "POST";
+    if (commandPost) {
+      observations.commandIds.push(decodeCommand(body).command_id);
+      if (faults.changeGrantBeforeSubmit) {
+        authority.authorization_revision += 1;
+        faults.changeGrantBeforeSubmit = false;
+      }
+    }
+    const respond = (payload: string, status: number, dispatched: boolean): Response => {
+      const responseHeaders = new Headers(
+        dispatched
+          ? {
+              "x-control-contract-version": version,
+              "x-control-contract-manifest": manifest,
+            }
+          : {},
+      );
+      const dispatch = dispatched ? "dispatched" : "not-dispatched";
+      const responseCanonical = [
+        "workstreams-registry-response/1.0.0",
+        header("x-control-signature"),
+        String(status),
+        responseHeaders.get("x-control-contract-version") ?? "",
+        responseHeaders.get("x-control-contract-manifest") ?? "",
+        header("x-control-registry-binding"),
+        dispatch,
+        NodeCrypto.createHash("sha256").update(payload).digest("hex"),
+      ].join("\n");
+      const mac = NodeCrypto.createHmac("sha256", Buffer.from(signingSecret, "base64"))
+        .update(responseCanonical)
+        .digest("base64url");
+      const mode = commandPost
+        ? faults.commandResponse
+        : url.pathname.startsWith("/workstreams/v1/commands/")
+          ? faults.receiptResponse
+          : url.pathname === "/workstreams/v1/workstreams"
+            ? faults.listResponse
+            : faults.readResponse;
+      if (mode === "lost") return Response.error();
+      if (mode !== "missing") {
+        responseHeaders.set("x-control-registry-binding", header("x-control-registry-binding"));
+        responseHeaders.set("x-control-registry-dispatch", dispatch);
+        responseHeaders.set(
+          "x-control-registry-response-mac",
+          mode === "replayed" ? previousMac : mode === "invalid" ? "A".repeat(43) : mac,
+        );
+      }
+      previousMac = mac;
+      responseHeaders.set("content-type", "application/json");
+      return new Response(payload, { status, headers: responseHeaders });
+    };
+    if (
+      header("x-control-registry-binding") !==
+      Buffer.from(JSON.stringify(authority)).toString("base64url")
+    ) {
+      observations.refusals += 1;
+      return respond('{"code":"registry_binding_not_current"}', 409, false);
+    }
     const page = {
       ...contract,
       limit: Number(url.searchParams.get("limit") ?? 100),
@@ -175,12 +276,13 @@ export async function startLoopbackControlPlane() {
         protocol: WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
         state: "ready",
         ...capabilities.context,
-        principal_id: "principal-fixture",
+        principal_id: principalId,
         authorization_revision: 1,
         grant_id: "grant-fixture",
         sources,
       };
     } else if (url.pathname === "/workstreams/v1/capabilities") {
+      observations.capabilities += 1;
       result = await Effect.runPromise(registry.getCapabilities(contract));
     } else if (segments[2] === "commands" && request.method === "POST") {
       const command = decodeCommand(body);
@@ -194,6 +296,7 @@ export async function startLoopbackControlPlane() {
         }),
       );
     } else if (segments[2] === "commands" && segments[3]) {
+      observations.receiptReads += 1;
       result = await Effect.runPromise(
         registry.getCommand({ ...contract, commandId: segments[3] }),
       );
@@ -211,19 +314,20 @@ export async function startLoopbackControlPlane() {
           ? await Effect.runPromise(registry.listMemberships({ ...page, workstreamId }))
           : await Effect.runPromise(registry.getWorkstream({ ...contract, workstreamId }));
     } else return new Response("Fixture route not implemented", { status: 404 });
-    return Response.json(result, {
-      headers: { "x-control-contract-version": version, "x-control-contract-manifest": manifest },
-    });
+    return respond(JSON.stringify(result), 200, true);
   });
   return {
     ...listener,
     observations,
+    faults,
+    authority,
     activation: {
       state: "enabled" as const,
       value: {
         baseUrl: new URL(listener.origin),
         ownerId: "owner-fixture",
-        principalId: "principal-fixture",
+        principalId,
+        registryBinding: token,
         authorizationRevision: 1,
         keyId: "key-fixture",
         signingSecret,
@@ -257,11 +361,7 @@ export async function startEnvironment(
 ) {
   const configured = makeControlPlaneWorkstreamTransport(control.activation);
   const gateway = await Effect.runPromise(
-    // The client binding requires HTTPS even when transport activation uses loopback HTTP.
-    // Inject registry identity here; this fixture does not qualify production loopback activation.
-    make(configured.transport, {
-      binding: { ...configured.binding, registryId: "https://workstreams.test" },
-    }),
+    make(configured.transport, { binding: configured.binding }),
   );
   const registration = makeWorkstreamsRegistrationContext({
     ...configured.registrationContext,

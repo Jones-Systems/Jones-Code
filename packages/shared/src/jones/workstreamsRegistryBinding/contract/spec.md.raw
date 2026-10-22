@@ -1,0 +1,139 @@
+# Workstreams registry binding 1.0.0
+
+Artifact Type: `interface-contract`
+Artifact ID: `interface.workstreams-registry-binding`
+Purpose: Bind signed Workstreams requests to a durable producer registry.
+Governing artifact: accepted canonical-registry-identity proposal v1
+Decision owner: Jones Systems
+Consumers: control-plane producer and Jones Workstreams transport
+Authority effect: none
+
+<!-- codex-section:begin id="interface.workstreams-registry-binding#wire.001" -->
+## Canonical token and transport
+
+Protocol: `workstreams-registry-binding/1.0.0`. The token is unpadded base64url
+of UTF-8 JSON, no whitespace, in this exact key order: `protocol`,
+`manifest_sha256`, `registry_instance_id`, `canonical_origin`, `owner_id`,
+`principal_id`, `authorization_revision`. Reject duplicates, extra keys,
+noncanonical encoding, invalid UTF-8 and decoded content over 2048 bytes.
+The manifest digest is SHA-256 of exact `manifest.json` bytes. Its ordered file
+entries hash exact specification and schema bytes. Vectors are separately pinned
+by `vectors.sha256` and the source commit, avoiding a self-referential digest.
+
+The instance ID is a canonical lowercase UUID. Origin is an exact canonical
+HTTPS origin of at most 512 characters, with no credentials, path, trailing
+slash, query or fragment. URL normalization must not change it. It is metadata,
+never a destination or redirect. The actual transport URL remains separately
+configured, including supported literal-loopback HTTP. Domain ownership and
+uniqueness require explicit operator designation; syntax alone proves neither.
+Independent registries require different instance IDs and origins. Existing
+HTTPS registries should retain their client-visible origin. Restored copies of
+the same logical registry retain identity under existing generation fences;
+independent forks require separate provisioning. There is no clone operation.
+Native provider `registry_origin` bytes and meaning remain unchanged.
+
+Bound requests use `x-control-algorithm: hmac-sha256-workstreams-registry-v1`
+and `x-control-registry-binding: <token>`. HMAC-SHA256 input is UTF-8 fields
+joined by LF, no final LF: algorithm, request contract version, request ID,
+idempotency key (empty if absent), timestamp, nonce, principal ID, key ID,
+uppercase method, exact normalized request target, lowercase body SHA-256,
+request contract manifest, exact token. All existing field validation applies.
+Only existing signed Workstreams route families accept this algorithm:
+`/workstreams/v1/`, T3 placement lookup, and appearance read/write. General APIs
+reject it. Legacy canonical bytes remain unchanged. Removing or altering the
+token or algorithm invalidates authentication. No downgrade or fallback exists.
+<!-- codex-section:end id="interface.workstreams-registry-binding#wire.001" -->
+
+<!-- codex-section:begin id="interface.workstreams-registry-binding#proof.001" -->
+## Response proof and effect classification
+
+After verified signature and nonce freshness, a bound response has
+`x-control-registry-binding` (the exact request token),
+`x-control-registry-dispatch` (`not-dispatched` or `dispatched`) and
+`x-control-registry-response-mac` (canonical unpadded base64url HMAC-SHA256).
+MAC input is UTF-8 LF-joined fields with no final LF:
+`workstreams-registry-response/1.0.0`, request signature, decimal HTTP status,
+response `x-control-contract-version` (empty if absent), response
+`x-control-contract-manifest` (empty if absent), exact token, dispatch class,
+lowercase SHA-256 of exact response bytes. Verify in constant time before DTO
+parsing and enforce the family's existing response bound (at most 1 MiB).
+Never learn or replace a pin from a response. The response MAC is request-bound.
+
+Dispatch means entry to the business application, regardless of HTTP verb;
+receipt GET polling may reconcile persisted state. Dispatch does not prove
+commit. A not-dispatched proof is issued only when no business handler began.
+Identity, required-policy or current-owner/grant mismatch after authentication
+returns HTTP 409 with exactly `{"code":"registry_binding_not_current"}` and
+`not-dispatched`. This envelope refusal is independent of existing DTO schemas.
+The consumer MUST preserve command identity/provenance and map this verified
+refusal to the existing `workstream_command_not_current` conflict for unchanged
+clients (including grant changes after a successful capabilities read).
+
+Missing/invalid proof or loss after a possible write is unknown-effect, retaining
+original command/receipt for reconciliation. Never replay, fall back to legacy,
+or report no-effect from HTTP status, GET verb, or unverified error text alone.
+Valid proof of dispatch likewise cannot prove absence of an effect. Pre-signature
+failures need not have a proof and must fail closed. Identity failure prohibits
+gateway cached-success fallback and fresh authorization; existing explicitly
+read-only stale display is outside this contract. No client-wide purge is claimed.
+<!-- codex-section:end id="interface.workstreams-registry-binding#proof.001" -->
+
+<!-- codex-section:begin id="interface.workstreams-registry-binding#provision.001" -->
+## Durable provisioning and staging
+
+Migration 014 adds singleton `workstream_registry_identity`, immutable required
+`workstream_registry_binding_principals`, and a dedicated immutable
+`workstream_registry_binding_requests` ledger. Runtime has SELECT only on all
+three. Existing principal provisioning has no new ledger and is not retrofitted.
+The closed provisioning request binds identity, owner, principal, generation,
+active grant ID/revision, and exact nullable identity/policy preimages. Existing
+identity preimage is `{registry_instance_id,canonical_origin}`; policy preimage
+is `{registry_instance_id,owner_id,principal_id,mode:"required"}`.
+
+`registry-binding-plan`, `registry-binding-apply`, `registry-binding-readback`
+are separate provisioning CLI modes. Apply uses a serializable transaction,
+fixed registry lock, current active principal/unique grant/context validation,
+exact preimages, and a durable request ID plus canonical request SHA-256.
+Request digest input is UTF-8 compact JSON (no trailing newline), with object
+keys sorted recursively in ascending code-unit order and array order retained.
+Identity and policy are insert-only. Exact replay requires the same recorded
+request digest, exact current postimages, and current authority. Reusing an ID
+with changed input conflicts. Different requests cannot bypass stale preimages.
+Readback requires the durable request record AND postimages; a computed digest
+alone is never evidence of application. Unknown COMMIT is never retried by the
+source: read back the original request before deciding any further action.
+A known successful COMMIT followed by failed readback remains unknown to caller.
+No origin replacement, deletion, downgrade, or additional grant is exposed.
+
+`stage-jones --registry-binding-version 1.0.0` reads identity/policy from the
+same database as principal grant readback. It takes no replacement origin.
+The optional `T3_WORKSTREAM_REGISTRY_BINDING` line follows the six existing
+activation values and optional registration-context selector. Omission retains
+an existing binding selection but refreshes it from durable current authority;
+it never silently removes it. Existing identity cannot change on restaging.
+Changed files require the existing exact SHA-256 preimage and same identity/key
+lines; readback must match. No operational staging occurs as part of source tests.
+<!-- codex-section:end id="interface.workstreams-registry-binding#provision.001" -->
+
+<!-- codex-section:begin id="interface.workstreams-registry-binding#compatibility.001" -->
+## Compatibility and operating boundary
+
+Old/old remains unchanged, including the known loopback client serialization
+failure. New producer/old Jones remains legacy until principal opt-in; required
+principals reject legacy signed Workstreams requests before business dispatch.
+Old producer/new Jones accepts legacy HTTPS but rejects the new algorithm before
+business; bound clients fail closed. New/new uses canonical metadata with the
+configured HTTPS or literal-loopback transport. Existing client binding schemas
+remain unchanged. No installed version, real domain, enrollment, private state,
+physical-host result or deployment is established by source fixtures.
+
+Operator Interaction Inventory: source builds and synthetic tests require none.
+Live schema apply requires exact database/backup/migration authority. Identity
+and policy provisioning requires an explicit real origin designation and exact
+migration-role authority. Private staging, installation and restart require their
+separate approved file/host routes. Normal qualified bound requests need no
+operator interaction. Unknown provisioning or staging outcomes require exact
+readback, never automatic replay. Old binaries may reject database-ahead state;
+qualify rollback against exact binaries, never delete identity/policy/history to
+make rollback pass. Physical/native acceptance remains external to this repair.
+<!-- codex-section:end id="interface.workstreams-registry-binding#compatibility.001" -->

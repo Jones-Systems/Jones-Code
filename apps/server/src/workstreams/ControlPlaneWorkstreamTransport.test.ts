@@ -285,36 +285,13 @@ const capabilitiesResponse = () =>
     { status: 200, headers: { "content-type": "application/json" } },
   );
 
-it.effect("accepts only IP-literal loopback HTTP origins besides HTTPS", () =>
+it.effect("refuses unbound loopback and non-loopback HTTP before any wire request", () =>
   Effect.gen(function* () {
-    for (const [raw, expectedUrl] of [
-      ["http://127.0.0.1:8787/", "http://127.0.0.1:8787/workstreams/v1/capabilities"],
-      ["http://127.0.0.1", "http://127.0.0.1/workstreams/v1/capabilities"],
-      ["http://[::1]:8787/", "http://[::1]:8787/workstreams/v1/capabilities"],
-    ] as const) {
-      const observed: Array<{ readonly url: string; readonly headers: Headers }> = [];
-      const configured = makeControlPlaneWorkstreamTransport(
-        { ...activation, value: { ...activation.value, baseUrl: new URL(raw) } },
-        async (input, init) => {
-          observed.push({ url: String(input), headers: new Headers(init?.headers) });
-          return capabilitiesResponse();
-        },
-      );
-      expect(configured.binding.authorizationRevision, raw).toBe(2);
-      expect(configured.binding.registryId, raw).toBe(new URL(raw).origin);
-      yield* configured.transport.getCapabilities({
-        contractVersion: "workstreams/1.0.0",
-        contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-      });
-      expect(observed.map(({ url }) => url)).toEqual([expectedUrl]);
-      expect(observed[0]?.headers.get("x-control-signature")).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    }
-
     let requests = 0;
     for (const raw of [
+      "http://127.0.0.1:8787/",
+      "http://[::1]:8787/",
       "http://localhost:8787/",
-      "http://10.0.0.1:8787/",
-      "http://control-plane.example:8787/",
       "http://127.0.0.2:8787/",
       "http://127.0.0.1:8787/workstreams/",
       "http://127.0.0.1:8787/?route=workstreams",
@@ -328,20 +305,20 @@ it.effect("accepts only IP-literal loopback HTTP origins besides HTTPS", () =>
           return capabilitiesResponse();
         },
       );
-      expect(configured.binding.authorizationRevision, raw).toBe(0);
+      expect(configured.activationState).toBe("invalid");
       const unavailable = yield* configured.transport
         .getCapabilities({
           contractVersion: "workstreams/1.0.0",
           contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
         })
         .pipe(Effect.flip);
-      expect(unavailable.effect, raw).toBe("no-effect");
+      expect(unavailable.effect).toBe("no-effect");
     }
     expect(requests).toBe(0);
   }),
 );
 
-it("reads a loopback control-plane origin from the environment", () => {
+it("refuses unbound loopback environment activation before transport", () => {
   const environment = {
     T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
     T3_WORKSTREAM_OWNER_ID: activation.value.ownerId,
@@ -361,13 +338,8 @@ it("reads a loopback control-plane origin from the environment", () => {
     return makeControlPlaneWorkstreamTransport(undefined, noFetch).binding;
   };
   try {
-    expect(configure("http://127.0.0.1:8787/")).toEqual({
-      registryId: "http://127.0.0.1:8787",
-      ownerId: activation.value.ownerId,
-      principalId: activation.value.principalId,
-      authorizationRevision: activation.value.authorizationRevision,
-    });
-    expect(configure("http://[::1]:8787/").registryId).toBe("http://[::1]:8787");
+    expect(configure("http://127.0.0.1:8787/").authorizationRevision).toBe(0);
+    expect(configure("http://[::1]:8787/").authorizationRevision).toBe(0);
     expect(configure("http://localhost:8787/").authorizationRevision).toBe(0);
   } finally {
     for (const [name, value] of Object.entries(previous)) {
