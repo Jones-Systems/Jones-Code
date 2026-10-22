@@ -208,6 +208,38 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
+  it.each([false, true])(
+    "rechecks permission after the approval wait before sending (imported=%s)",
+    async (imported) => {
+      state.grantedEnvironments.add("secondary");
+      if (imported) {
+        state.projection = {
+          ...v2Projection,
+          thread: { ...v2Projection.thread, historyOrigin: "v1_import" },
+        };
+      }
+      const composer = useThreadComposerState();
+      let release!: () => void;
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const beforeDispatch = vi.fn(async () => {
+        await waiting;
+        return true;
+      });
+      const result = composer.onSendMessage(undefined, beforeDispatch);
+      expect(beforeDispatch).toHaveBeenCalledTimes(1);
+      state.grantedEnvironments.delete("secondary");
+      release();
+      expect(await result).toBeNull();
+      expect(state.draft.text).toBe("Keep my draft");
+      expect(state.clearDraft).not.toHaveBeenCalled();
+      expect(state.enqueue).not.toHaveBeenCalled();
+      expect(state.prepareImportedHistory).not.toHaveBeenCalled();
+      expect(state.getImportedHistoryChoice).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps a connected read-only task's draft instead of queueing it with another environment's grant", async () => {
     const composer = useThreadComposerState();
     expect(await composer.onSendMessage()).toBeNull();

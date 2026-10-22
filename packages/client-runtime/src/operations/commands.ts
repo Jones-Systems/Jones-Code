@@ -1,3 +1,4 @@
+import { requireQueuedRunStart } from "../jones/queue/commands.ts";
 export { promoteQueuedBatch, type PromoteQueuedBatchInput } from "../jones/queue/commands.ts";
 import { remapComposerContextAttachments } from "@t3tools/shared/composerContextReferences";
 import {
@@ -1034,6 +1035,7 @@ export const mergeThreadBack = Effect.fn("EnvironmentCommands.mergeThreadBack")(
 export const resumeThreadQueue = Effect.fn("EnvironmentCommands.resumeThreadQueue")(function* (
   input: ResumeThreadQueueInput,
 ) {
+  if (input.runId !== undefined) yield* requireQueuedRunStart();
   return yield* dispatch({
     ...(input.runId === undefined
       ? { type: "queue.resume" as const }

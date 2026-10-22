@@ -1,3 +1,4 @@
+import { PullRequestCiStatusPopover } from "../../jones/pullRequestCi/PullRequestCiStatusPopover";
 import { applyPullRequestDraftFilterChange } from "@t3tools/client-runtime/pull-request-query";
 import { Spinner } from "~/components/ui/spinner";
 import type { PullRequestSpeedActionResult } from "~/components/pullRequest/PullRequestSpeedActions";
@@ -1094,6 +1095,10 @@ export function PullRequestsPage() {
       className="absolute top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
     >
+      <PullRequestCiStatusPopover
+        environments={capableEnvironments}
+        scopedEnvironmentId={scopedEnvironmentId}
+      />
       {rightPanelState.isOpen ? (
         <RightPanelMaximizeControl
           maximized={rightPanelMaximized}

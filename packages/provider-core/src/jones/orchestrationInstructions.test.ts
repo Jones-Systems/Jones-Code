@@ -33,6 +33,10 @@ it("routes separate-session delegation through delegate_task with valid workspac
     "when you are a Claude agent asked to make subagents, or the child should be a Claude agent, create app-owned `delegate_task` children with a Claude target even when a native Claude subagent tool supports the chosen model",
   );
   assert.include(instructions, "For other providers, prefer native subagent tools");
+  assert.include(
+    instructions,
+    "It lists a short set of models per provider; pass `search` to find others.",
+  );
   assert.include(instructions, "Only when the user asks for a standalone top-level thread");
   assert.notInclude(instructions, "For independent implementation or a PR stack");
   // The delegated examples must be inputs delegate_task actually accepts.

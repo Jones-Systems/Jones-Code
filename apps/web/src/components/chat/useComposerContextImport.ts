@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import type { RefObject } from "react";
 import type { ChatComposerProps } from "./ChatComposer";
 import {
@@ -104,7 +105,11 @@ export function useComposerContextImport(input: {
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const captureThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
+  const captureComposerThreadContexts = useThreadReferenceCapture(composerDraftTarget);
   const createAssetUrl = useAtomQueryRunner(assetEnvironment.createUrl, { reportFailure: false });
   const loadThreadTranscript = useAtomCommand(orchestrationEnvironment.threadTranscript, {
     reportFailure: false,
@@ -354,9 +359,11 @@ export function useComposerContextImport(input: {
           break;
         }
         case "thread": {
-          // The agent can only read threads on its own server; a pasted foreign one is dropped.
-          if (record.environmentId !== environmentId) break;
-          addComposerDraftThreadContexts(threadDraftTarget, [record], {
+          const capture =
+            threadDraftTarget === attachmentDraftTarget
+              ? captureThreadContexts
+              : captureComposerThreadContexts;
+          capture([record], {
             appendReference: false,
           });
           rewritten.set(record.contextId, record.contextId);

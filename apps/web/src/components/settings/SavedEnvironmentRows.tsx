@@ -1,3 +1,6 @@
+import { clientServerBuildDetail, clientServerBuildLabels } from "../../jones/updates/buildPairs";
+import { FleetEnrollmentControls } from "../../jones/fleetUpdates/FleetEnrollmentControls";
+import { JonesUpdateControls } from "../../jones/updates/JonesUpdateControls";
 import { JonesBlockedHostUpdates } from "~/jones/fleetUpdates/JonesBlockedHostUpdates";
 import { SessionPermissions } from "./SessionPermissions";
 import {
@@ -170,7 +173,6 @@ export function SavedBackendListRow({
   const resumingServerUpdate =
     serverUpdateState.status === "running" && serverUpdateState.stage === "resuming";
   const status = savedBackendStatus(environment);
-  const serverVersion = environment.serverConfig?.environment.serverVersion ?? null;
   // Discovery empties its map on every refresh, so hold the last descriptor
   // seen or the glyph would blink back to the generic one each time.
   const relayDiscovery = useRelayEnvironmentDiscovery();
@@ -213,7 +215,7 @@ export function SavedBackendListRow({
     environmentTransportLabel(environment, connectedTarget),
     // The headline below names the failure in full.
     diagnosis ? null : resumingServerUpdate ? "Restarting" : status.text,
-    enabled && versionMismatch ? serverVersion : null,
+    enabled && versionMismatch ? clientServerBuildLabels(versionMismatch).serverLabel.text : null,
   ]
     .filter((value): value is string => value !== null)
     .join(" · ");
@@ -230,11 +232,7 @@ export function SavedBackendListRow({
       : enabled
         ? connectionStatusText(environment.connection)
         : "Switched off"
-  }${
-    versionMismatch
-      ? `\nUpdate available: ${versionMismatch.serverVersion} → ${versionMismatch.clientVersion}`
-      : ""
-  }`;
+  }${versionMismatch ? `\nUpdate available: ${clientServerBuildDetail(versionMismatch)}` : ""}`;
 
   return (
     <EnvironmentRow
@@ -308,6 +306,8 @@ export function SavedBackendListRow({
       }
       below={
         <>
+          {enabled ? <JonesUpdateControls environmentId={environmentId} compareWithLaptop /> : null}
+          <FleetEnrollmentControls environmentId={environmentId} label={environment.label} />
           {diagnosis ? (
             <ConnectionDiagnosisSummary
               diagnosis={diagnosis}

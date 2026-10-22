@@ -39,7 +39,7 @@ vi.mock(
         command === state.visitCommand ? state.visit : state.unread,
     }) as never,
 );
-import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
+import { ThreadVisitWatermark } from "../../components/chat/ThreadVisitWatermark";
 import { useMarkThreadUnread } from "./useMarkThreadUnread";
 
 const updatedAt = "2026-10-17T12:00:00.000Z";

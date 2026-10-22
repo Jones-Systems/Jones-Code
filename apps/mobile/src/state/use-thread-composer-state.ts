@@ -671,6 +671,7 @@ export function useThreadComposerState() {
 
     if (beforeDispatch !== undefined) {
       if (!(await beforeDispatch())) return null;
+      if (!readEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope)) return null;
       // A context paste still landing, or any draft or settings change while approvals were
       // declined, means this snapshot is no longer what the user sent.
       if (appAtomRegistry.get(composerContextImportsAtom)[threadKey]) return null;

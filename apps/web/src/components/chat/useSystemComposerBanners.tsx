@@ -1,3 +1,8 @@
+import { ClientServerBuildLabels } from "../../jones/updates/ClientServerBuildLabels";
+import {
+  useClientUpdateBanners,
+  type ClientUpdateBannerInput,
+} from "../../jones/updates/clientUpdateBanner";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import { type EnvironmentId } from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
@@ -48,6 +53,7 @@ export type EnvironmentUnavailableState = {
 
 interface SystemComposerBannersInput {
   readonly activeEnvironment: EnvironmentPresentation | null;
+  readonly clientUpdateEnvironment?: ClientUpdateBannerInput["activeEnvironment"];
   readonly activeEnvironmentUnavailable: boolean;
   readonly activeEnvironmentUnavailableState: EnvironmentUnavailableState | null;
   readonly activeThreadEnvironmentId: EnvironmentId | null;
@@ -152,6 +158,14 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
     handleDisconnectActiveEnvironment,
   );
   const autoBalanceUpdateBanner = useAutoBalanceUpdateBanner(autoUpdateEnvironments);
+  const clientUpdateBanners = useClientUpdateBanners({
+    activeEnvironment:
+      input.clientUpdateEnvironment === undefined
+        ? activeEnvironment
+        : input.clientUpdateEnvironment,
+    automaticEnvironment,
+    eligibleEnvironments: autoUpdateEnvironments,
+  });
   const versionMismatch = resolveServerConfigVersionMismatch(serverConfig);
   const versionMismatchDismissKey =
     versionMismatch && activeThreadEnvironmentId !== null
@@ -268,8 +282,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
                 }
               />
               <TooltipPopup side="top">
-                {versionMismatchServerLabel} {versionMismatch.serverVersion}{" "}
-                <span aria-hidden="true">→</span> {versionMismatch.clientVersion}
+                {versionMismatchServerLabel}: <ClientServerBuildLabels builds={versionMismatch} />
               </TooltipPopup>
             </Tooltip>
           ) : (
@@ -318,6 +331,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
       });
     }
     if (autoBalanceUpdateBanner) items.push(autoBalanceUpdateBanner);
+    items.push(...clientUpdateBanners);
     return items;
   })() as ComposerBannerStackItem[];
 }

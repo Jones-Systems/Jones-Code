@@ -1268,7 +1268,7 @@ export function sortProjectsForSidebar<
   );
 }
 
-function sortLogicalProjectsForSidebar<
+export function sortLogicalProjectsForSidebar<
   TProject extends LogicalSidebarProject,
   TThread extends ScopedSidebarThread,
 >(

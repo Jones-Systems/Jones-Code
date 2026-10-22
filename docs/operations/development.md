@@ -3,7 +3,7 @@
 ## First checkout
 
 Install `vp` using the [root README](../../README.md#install-vp). The checkout
-requires Node `^24.13.1` and declares `pnpm@11.10.0`; Bun is optional.
+requires Node `26.12.1` and declares `pnpm@12.14.0`; Bun is optional.
 For an authorized dependency install and development run, use the repository root:
 
 ```sh
@@ -12,8 +12,9 @@ vp run dev
 ```
 
 The `t3.json` Setup Worktree action runs `scripts/setup-worktree.ts`: it installs
-dependencies, links the main checkout's gitignored `.env` and `infra/relay/.env`
-when present, and warms the web dependency cache. Those are separate effects,
+dependencies and links the main checkout's gitignored `.env` and `infra/relay/.env`
+when present. The first development start warms the web dependency cache. These
+are separate effects,
 including access to potentially sensitive configuration. An assignment to edit
 source does not itself authorize running setup or accessing those files.
 Confirm the applicable scope before invoking it; do not print their contents.
@@ -61,6 +62,16 @@ destination before starting a process, including when reusing an existing
 launch command. Never run a development server against live `~/.t3/userdata`.
 Reading or copying private state also requires exact authorization.
 Follow [test data](#test-data) for isolated fixtures and snapshots.
+
+Development startup does not inspect or copy the live seed database by default.
+After authorization for that source and destination, `--seed` or
+`T3CODE_DEV_SEED=1` opts in to seeding an empty linked worktree's `.t3` from
+`~/.t3/userdata/statev2.sqlite`. `--no-seed` overrides an environment opt-in;
+`T3CODE_DEV_SEED=0` also disables seeding when no flag overrides it. A worktree
+with either `statev2.sqlite` or `state.sqlite` keeps its existing data. A
+separately selected `--home-dir` is not auto-seeded. For isolated synthetic
+verification, leave seeding disabled; an isolated destination alone does not
+authorize reading the live source.
 
 Read ports and the selected base directory from `[dev-runner]` output.
 Worktrees derive stable port preferences from their paths, but occupied ports

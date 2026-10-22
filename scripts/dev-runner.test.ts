@@ -8,16 +8,19 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, describe, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import { Command } from "effect/cli";
 import { ChildProcessSpawner } from "effect/process";
 
 import {
   checkPortAvailabilityOnHosts,
   createDevRunnerEnv,
+  devRunnerCli,
   findFirstAvailableOffset,
   resolveModePortOffsets,
   runDevRunnerWithInput,
@@ -705,7 +708,8 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
             });
 
           assert.deepStrictEqual(yield* spawnedArgs(false), []);
-          const [seedArgs] = yield* spawnedArgs(undefined);
+          assert.deepStrictEqual(yield* spawnedArgs(undefined), []);
+          const [seedArgs] = yield* spawnedArgs(true);
           assert.includeMembers([...(seedArgs ?? [])], ["--base-dir", path.join(root, ".t3")]);
 
           // Either database means the worktree already has data.
@@ -713,8 +717,139 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
             const file = path.join(root, ".t3", "userdata", name);
             NodeFS.mkdirSync(path.dirname(file), { recursive: true });
             NodeFS.writeFileSync(file, "");
-            assert.deepStrictEqual(yield* spawnedArgs(undefined), []);
+            assert.deepStrictEqual(yield* spawnedArgs(true), []);
             NodeFS.rmSync(file);
+          }
+        }).pipe(Effect.scoped),
+      );
+
+      it.effect.each([
+        { name: "default startup", args: [], env: {}, seed: false },
+        { name: "explicit flag opt-in", args: ["--seed"], env: {}, seed: true },
+        { name: "environment opt-in", args: [], env: { T3CODE_DEV_SEED: "1" }, seed: true },
+        { name: "environment opt-out", args: [], env: { T3CODE_DEV_SEED: "0" }, seed: false },
+        {
+          name: "flag opt-in overrides environment fallback",
+          args: ["--seed"],
+          env: { T3CODE_DEV_SEED: "0" },
+          seed: true,
+        },
+        {
+          name: "flag opt-out overrides environment opt-in",
+          args: ["--no-seed"],
+          env: { T3CODE_DEV_SEED: "1" },
+          seed: false,
+        },
+        {
+          name: "explicit isolated home is not auto-seeded",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          explicitHome: true,
+        },
+        { name: "dry run with opt-in", args: ["--seed", "--dry-run"], env: {}, seed: false },
+        {
+          name: "existing V1 data with opt-in",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          existingDatabase: "state.sqlite",
+        },
+        {
+          name: "existing V2 data with opt-in",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          existingDatabase: "statev2.sqlite",
+        },
+      ])("Jones seed privacy: $name", (scenario) =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* makeWorktree;
+          const home = path.join(root, "synthetic-home");
+          const privateRoot = path.join(home, ".t3");
+          const source = path.join(privateRoot, "userdata", "statev2.sqlite");
+          NodeFS.mkdirSync(path.dirname(source), { recursive: true });
+          NodeFS.writeFileSync(source, "synthetic-source-unchanged");
+          const existingDatabase =
+            "existingDatabase" in scenario && scenario.existingDatabase
+              ? path.join(root, ".t3", "userdata", scenario.existingDatabase)
+              : undefined;
+          if (existingDatabase !== undefined) {
+            NodeFS.mkdirSync(path.dirname(existingDatabase), { recursive: true });
+            NodeFS.writeFileSync(existingDatabase, "existing-worktree-data");
+          }
+          const sourceAccesses: string[] = [];
+          const observe = (file: string) => {
+            if (file === privateRoot || file.startsWith(`${privateRoot}${path.sep}`)) {
+              sourceAccesses.push(file);
+            }
+          };
+          const observedFs: FileSystem.FileSystem = {
+            ...fs,
+            exists: (file) => {
+              observe(file);
+              return fs.exists(file);
+            },
+            stat: (file) => {
+              observe(file);
+              return fs.stat(file);
+            },
+            readFile: (file) => {
+              observe(file);
+              return fs.readFile(file);
+            },
+            readFileString: (file, encoding) => {
+              observe(file);
+              return fs.readFileString(file, encoding);
+            },
+          };
+          const spawned: Array<ReadonlyArray<string>> = [];
+          const spawnerLayer = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              spawned.push((command as unknown as { readonly args: ReadonlyArray<string> }).args);
+              return Effect.succeed(mockProcess(0));
+            }),
+          );
+          const args = ["dev:server", "--port", "13773", ...scenario.args];
+          if ("explicitHome" in scenario) {
+            args.push("--home-dir", path.join(root, "isolated-destination"));
+          }
+          yield* Command.runWith(devRunnerCli, { version: "0.0.0" })(args).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                ConfigProvider.layer(ConfigProvider.fromEnv({ env: scenario.env })),
+                netServiceLayer,
+                spawnerLayer,
+              ),
+            ),
+            Effect.provideService(FileSystem.FileSystem, observedFs),
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.provideService(HostProcess.WorkingDirectory, root),
+            Effect.provideService(HostProcess.HomeDirectory, home),
+            Effect.provideService(HostProcess.Environment, scenario.env),
+          );
+          const seedCommands = spawned.filter((args) =>
+            args.some((arg) => arg.endsWith("migrate-dev-db.ts")),
+          );
+          if (scenario.seed) {
+            assert.deepStrictEqual(sourceAccesses, [source]);
+            assert.equal(seedCommands.length, 1);
+            assert.deepStrictEqual(seedCommands[0]?.slice(1), [
+              "--base-dir",
+              path.join(root, ".t3"),
+              "--source",
+              source,
+            ]);
+          } else {
+            assert.deepStrictEqual(sourceAccesses, []);
+            assert.deepStrictEqual(seedCommands, []);
+          }
+          assert.equal(NodeFS.readFileSync(source, "utf8"), "synthetic-source-unchanged");
+          if (existingDatabase !== undefined) {
+            assert.equal(NodeFS.readFileSync(existingDatabase, "utf8"), "existing-worktree-data");
           }
         }).pipe(Effect.scoped),
       );

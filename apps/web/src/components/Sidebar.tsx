@@ -231,6 +231,7 @@ import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
+  NonSortableThreadRow,
   SortableThreadRow,
   type SidebarProviderEntry,
   type SidebarSweepAction,
@@ -3139,7 +3140,7 @@ export default function Sidebar() {
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = isCard ? "card" : "slim";
-                        const ThreadRow = SortableThreadRow;
+                        const ThreadRow = assignment ? NonSortableThreadRow : SortableThreadRow;
                         return (
                           <ThreadRow
                             key={threadKey}

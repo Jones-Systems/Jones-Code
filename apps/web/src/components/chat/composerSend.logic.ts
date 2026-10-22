@@ -38,7 +38,7 @@ export function loadBalancingSendWarning(input: {
 
 /**
  * Why a multiple-model send cannot start: the server predates worktree bootstrap, or the
- * draft is not a new thread on a Git branch with at least one model.
+ * draft is not a new Git thread with at least one model and a selected or server-resolved base.
  */
 export function multipleModelSendBlock(input: {
   readonly selectionCount: number;
@@ -46,12 +46,13 @@ export function multipleModelSendBlock(input: {
   readonly isLocalDraftThread: boolean;
   readonly isGitRepo: boolean;
   readonly branch: string | null;
+  readonly serverResolvesWorktreeBase?: boolean;
 }): "server-outdated" | "needs-new-git-thread" | null {
   if (!input.serverSupportsWorktreeBootstrap) return "server-outdated";
   if (
     !input.isLocalDraftThread ||
     !input.isGitRepo ||
-    !input.branch ||
+    (!input.branch && input.serverResolvesWorktreeBase !== true) ||
     input.selectionCount === 0
   ) {
     return "needs-new-git-thread";

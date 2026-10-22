@@ -31,6 +31,8 @@ import type { useComposerProviderModel } from "./useComposerProviderModel";
  * blocks that do not fit. Rendered in the expanded footer or the resting controls host.
  */
 export function ComposerControlsBar(props: {
+  activeProjectDefaultModelSelection: ModelSelection | null | undefined;
+  configuredDefaultDriverKind: ProviderDriverKind | undefined;
   environmentId: EnvironmentId;
   routeKind: ChatComposerProps["routeKind"];
   routeThreadRef: ChatComposerProps["routeThreadRef"];
@@ -131,6 +133,8 @@ export function ComposerControlsBar(props: {
   const providerTraitsMenuContent = renderProviderTraitsMenuContent({
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: props.activeProjectDefaultModelSelection,
+    defaultDriverKind: props.configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,
@@ -144,6 +148,8 @@ export function ComposerControlsBar(props: {
   const providerTraitsPickerInput = {
     provider: selectedProvider,
     instanceId: selectedInstanceId,
+    defaultModelSelection: props.activeProjectDefaultModelSelection,
+    defaultDriverKind: props.configuredDefaultDriverKind,
     ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
     ...(routeKind === "draft" && draftId ? { draftId } : {}),
     model: selectedModel,

@@ -147,3 +147,45 @@ it("keeps native activity optional and validates explicit incomplete background 
     }),
   ).toBe(false);
 });
+
+describe("compact orchestration capability contracts", () => {
+  it("decodes search and environment selection together", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpCapabilitiesInput);
+    expect(decode({ environmentId: "environment:remote", search: "sonnet 4.6" })).toEqual({
+      environmentId: "environment:remote",
+      search: "sonnet 4.6",
+    });
+    expect(decode({})).toEqual({});
+    expect(() => decode({ search: " " })).toThrow();
+    expect(() => decode({ search: "a".repeat(201) })).toThrow();
+  });
+
+  it("retains compact options and accepts absent or explicit catalog labels and omitted counts", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcp.OrchestratorMcpProviderCapability);
+    const provider = {
+      providerInstanceId: "codex",
+      driverKind: "codex",
+      displayName: null,
+      models: [
+        {
+          id: "model:synthetic",
+          options: [
+            { id: "reasoningEffort", values: ["high", "max"], default: "high" },
+            { id: "fastMode", values: [false, true] },
+          ],
+        },
+      ],
+      canRunChildTask: true,
+      canRunCrossProviderChildTask: true,
+      constraints: [],
+    };
+    expect(decode(provider)).toEqual(provider);
+    const labeled = {
+      ...provider,
+      models: provider.models.map((model) => ({ ...model, label: "Synthetic model" })),
+      omittedModels: 12,
+    };
+    expect(decode(labeled)).toEqual(labeled);
+    expect(() => decode({ ...provider, omittedModels: -1 })).toThrow();
+  });
+});

@@ -57,6 +57,17 @@ describe("orchestrator MCP tool guidance", () => {
     assert.notInclude(launch, "requests independent work");
   });
 
+  it("keeps compact catalog search alongside environment selection and workspace guidance", () => {
+    const tool = OrchestratorToolkit.tools.orchestrator_capabilities;
+    const schema = Tool.getJsonSchema(tool) as {
+      readonly properties?: Readonly<Record<string, unknown>>;
+    };
+    assert.hasAllKeys(schema.properties ?? {}, ["environmentId", "search"]);
+    assert.include(tool.description ?? "", "omittedModels");
+    assert.include(tool.description ?? "", "pass search");
+    assert.include(tool.description ?? "", "delegate_task with workspaceStrategy");
+  });
+
   it("publishes thread metadata actions from an object-root schema", () => {
     const schema = Tool.getJsonSchema(ThreadUpdateTool) as {
       readonly type?: unknown;

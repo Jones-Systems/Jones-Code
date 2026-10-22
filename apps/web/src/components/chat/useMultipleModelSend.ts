@@ -1,3 +1,5 @@
+import { clearSubmittedComposer } from "./composerSendRecovery";
+import type { ComposerThreadDraftState } from "../../composerDraftStore";
 import {
   type EnvironmentId,
   type ModelSelection,
@@ -79,7 +81,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
   const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
     reportFailure: false,
   });
-  const clearComposerDraftContent = useComposerDraftStore((store) => store.clearComposerContent);
   const fanoutSelectionsAtom = draftFanoutSelectionsAtom(routeThreadKey);
   const { sendInFlight: sendInFlightRef, uncertainSubmissions: uncertainSubmissionsRef } =
     draftSendState(routeThreadKey);
@@ -97,10 +98,12 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     readFileBlockReason,
     buildOutgoingMessageContext,
     isCurrentSend,
+    submittedComposerDraft,
   }: {
     readonly threadId: ThreadId;
     readonly project: EnvironmentProject;
-    readonly branch: string;
+    readonly branch: string | null;
+    readonly submittedComposerDraft: ComposerThreadDraftState | null;
     readonly selections: ReadonlyArray<ModelSelection>;
     readonly targets: ReadonlyArray<MultipleModelTarget>;
     readonly sendSnapshot: ComposerSendSnapshot;
@@ -133,15 +136,22 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         text: messageText,
         attachments: attachmentsSnapshot,
       });
-      promptRef.current = "";
-      clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
-      clearedDraft = true;
+      clearedDraft =
+        clearSubmittedComposer({
+          routeThreadKey,
+          currentRouteThreadKeyRef,
+          composerDraftTarget,
+          promptRef,
+          expectedDraft: submittedComposerDraft,
+          isCurrentSend,
+          resetCursor: () => composerRef.current?.resetCursorState(),
+        }) !== null;
       const clearedDraftSnapshot = useComposerDraftStore
         .getState()
         .getComposerDraft(composerDraftTarget);
       const submittedSelections = appAtomRegistry.get(fanoutSelectionsAtom);
       canRestoreDraft = () =>
+        clearedDraft &&
         currentRouteThreadKeyRef.current === routeThreadKey &&
         isCurrentSend() &&
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget) ===
@@ -166,6 +176,9 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                 environmentId,
                 input: {
                   threadId: targetThreadId,
+                  serverResolvesWorktreeBase:
+                    appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)
+                      ?.environment.capabilities.worktreeDefaultBase === true,
                   message: {
                     messageId: newMessageId(),
                     role: "user",
@@ -193,7 +206,7 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
                     },
                     prepareWorktree: {
                       projectCwd: project.workspaceRoot,
-                      baseBranch: branch,
+                      ...(branch === null ? {} : { baseBranch: branch }),
                       requireWorktree: true,
                       ...(startFromOrigin ? { startFromOrigin: true } : {}),
                     },

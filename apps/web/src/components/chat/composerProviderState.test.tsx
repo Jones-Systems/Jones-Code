@@ -481,8 +481,8 @@ describe("provider traits render guards", () => {
       model: MODEL,
       models,
       modelOptions: undefined,
-      prompt: "",
-      onPromptChange: () => {},
+      promptUltrathink: readPromptUltrathink(""),
+      onPromptEdit: () => {},
       planModeEnabled: true,
     };
 

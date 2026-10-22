@@ -14,6 +14,27 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps queued-run start opt-in without inferring it from other queue capabilities", () => {
+    expect(decodeDescriptor(descriptor).capabilities.queuedRunStart).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          threadStop: true,
+          queuedToolBoundaryDelivery: true,
+        },
+      }).capabilities.queuedRunStart,
+    ).toBeUndefined();
+    for (const queuedRunStart of [true, false]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, queuedRunStart },
+        }).capabilities.queuedRunStart,
+      ).toBe(queuedRunStart);
+    }
+  });
   it("round-trips old descriptors and accepts an optional build time", () => {
     expect(decodeDescriptor(descriptor)).toEqual(descriptor);
     const stamped = { ...descriptor, jonesBuildStartedAt: "2026-10-20T21:13:43Z" };

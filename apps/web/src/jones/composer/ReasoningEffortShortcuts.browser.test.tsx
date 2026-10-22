@@ -9,7 +9,11 @@ import {
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { Menu, MenuPopup, MenuTrigger } from "../../components/ui/menu";
 import { ReasoningEffortShortcuts } from "./ReasoningEffortShortcuts";
-import { TraitsMenuContent, useTraitsSelection } from "../../components/chat/TraitsPicker";
+import {
+  TraitsMenuContent,
+  useTraitsSelection,
+  readPromptUltrathink,
+} from "../../components/chat/TraitsPicker";
 import { getComposerEffectiveTraitsOptions } from "../../components/chat/composerProviderState";
 
 const instanceId = ProviderInstanceId.make("reasoning-test");
@@ -39,7 +43,7 @@ let root: Screen;
 let onPromptChange = vi.fn<(prompt: string) => void>();
 
 async function render(
-  overrides: Partial<ComponentProps<typeof ReasoningEffortShortcuts>> = {},
+  overrides: Partial<ComponentProps<typeof ReasoningEffortShortcuts>> & { prompt?: string } = {},
   descriptors: ReadonlyArray<ProviderOptionDescriptor> = [effort, fast],
   withMenu = false,
 ) {
@@ -57,8 +61,9 @@ async function render(
       },
     ],
     modelOptions: [{ id: "fastMode", value: true }],
-    prompt: "",
-    onPromptChange,
+    promptUltrathink: readPromptUltrathink(overrides.prompt ?? ""),
+    onPromptEdit: (edit: (prompt: string) => string) =>
+      onPromptChange(edit(overrides.prompt ?? "")),
     planModeEnabled: true,
     visible: true,
     ...overrides,
@@ -342,8 +347,8 @@ describe("reasoning effort shortcuts", () => {
             capabilities: { optionDescriptors: [claude] },
           },
         ],
-        prompt: "Explain",
-        onPromptChange,
+        promptUltrathink: readPromptUltrathink("Explain"),
+        onPromptEdit: (edit) => onPromptChange(edit("Explain")),
         planModeEnabled: true,
         allowPromptInjectedEffort: false,
       });

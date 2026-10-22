@@ -80,6 +80,8 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly projectionRequests?: ThreadId[];
   readonly advertiseServerResolvedCommandContext?: boolean;
   readonly advertiseThreadStop?: boolean;
+  readonly advertiseQueuedRunStart?: boolean;
+  readonly advertiseQueuedToolBoundaryDelivery?: boolean;
 }) {
   const client = {
     [WS_METHODS.vcsListRefs]: input.listRefs ?? (() => Effect.never),
@@ -129,6 +131,12 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
       environment: {
         capabilities: {
           repositoryIdentity: true,
+          ...(input.advertiseQueuedRunStart === undefined
+            ? {}
+            : { queuedRunStart: input.advertiseQueuedRunStart }),
+          ...(input.advertiseQueuedToolBoundaryDelivery === true
+            ? { queuedToolBoundaryDelivery: true }
+            : {}),
           ...(input.advertiseThreadStop === true ? { threadStop: true } : {}),
           ...(input.advertiseServerResolvedCommandContext === false
             ? {}
@@ -153,10 +161,44 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
 });
 
 describe("V2 environment commands", () => {
+  it.effect("withholds start-one without its capability while explicit resume survives", () =>
+    Effect.gen(function* () {
+      for (const advertiseQueuedRunStart of [undefined, false]) {
+        const commands: OrchestrationV2Command[] = [];
+        const supervisor = yield* makeSupervisor({
+          commands,
+          projects: [],
+          ...(advertiseQueuedRunStart === undefined ? {} : { advertiseQueuedRunStart }),
+          advertiseThreadStop: true,
+          advertiseQueuedToolBoundaryDelivery: true,
+        });
+        const threadId = ThreadId.make("thread-1");
+        const failure = yield* resumeThreadQueue({
+          commandId: CommandId.make("unsupported-start"),
+          threadId,
+          runId: RunId.make("selected"),
+        }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.flip,
+        );
+        expect(failure._tag).toBe("QueuedRunStartUnavailableError");
+        expect(commands).toEqual([]);
+        yield* resumeThreadQueue({ commandId: CommandId.make("resume-only"), threadId }).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        );
+        expect(commands).toEqual([{ type: "queue.resume", commandId: "resume-only", threadId }]);
+      }
+    }).pipe(Effect.provide(layerTestCrypto)),
+  );
+
   it.effect("distinguishes sending a selected queued message from resuming queue order", () =>
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [] });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        advertiseQueuedRunStart: true,
+      });
       const threadId = ThreadId.make("thread-1");
       yield* resumeThreadQueue({
         commandId: CommandId.make("send-selected"),

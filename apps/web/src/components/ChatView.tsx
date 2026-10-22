@@ -1,3 +1,4 @@
+import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
@@ -1270,6 +1271,7 @@ export default function ChatView(props: ChatViewProps) {
       })
     : EMPTY_AUTO_UPDATE_ENVIRONMENTS;
   const systemComposerBannerItems = useSystemComposerBanners({
+    clientUpdateEnvironment: activeThread ? activeEnvironment : primaryEnvironment,
     activeEnvironment,
     activeEnvironmentUnavailable,
     activeEnvironmentUnavailableState,
@@ -2853,6 +2855,11 @@ export default function ChatView(props: ChatViewProps) {
     openProviderSetupStable,
     toggleInteractionModeStable,
   } = useComposerSelection({
+    providerInstanceEntries,
+    lockedContinuationGroupKey,
+    isEnvironmentChanging,
+    activeEnvironmentUnavailable,
+    isRevertingCheckpoint,
     environmentId,
     composerDraftTarget,
     draftThread,
@@ -2874,6 +2881,7 @@ export default function ChatView(props: ChatViewProps) {
     scheduleComposerFocus,
   });
   const { onResume, isResuming } = useComposerResume({
+    isImportedHistory: serverProjection?.thread.historyOrigin === "v1_import",
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -2910,7 +2918,9 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailable,
     defaultRuntimeMode,
   });
-  const { onSend } = useComposerSend({
+  const { onSend, importedHistoryChoice } = useComposerSend({
+    isImportedHistory: serverProjection?.thread.historyOrigin === "v1_import",
+    steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -3463,6 +3473,14 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
+                  {serverProjection?.thread.historyOrigin === "v1_import" && activeThread ? (
+                    <ContinuationChoiceBanner
+                      key={`${activeThread.environmentId}:${activeThread.id}`}
+                      environmentId={activeThread.environmentId}
+                      threadId={activeThread.id}
+                      {...importedHistoryChoice}
+                    />
+                  ) : null}
                   {isDraftHeroState ? (
                     <div className="absolute inset-x-0 bottom-full">
                       <div

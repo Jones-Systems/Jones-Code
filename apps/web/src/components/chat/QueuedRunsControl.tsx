@@ -1,3 +1,4 @@
+import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
 import { QueuedSteerBatchAction } from "../../jones/queue/QueuedSteerBatchAction";
 import { useQueuedSteerBatch } from "../../jones/queue/useQueuedSteerBatch";
 import {
@@ -29,7 +30,7 @@ import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref
 
 import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
-import { useThreadProjection } from "../../state/entities";
+import { useThreadProjection, useServerConfigs } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { isImageAttachment, type ChatMessage } from "../../types";
 import { cn } from "~/lib/utils";
@@ -89,6 +90,7 @@ export function QueuedRunsControl({
   const projection = useThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
   )?.projection;
+  const serverConfig = useServerConfigs().get(props.environmentId);
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue);
@@ -174,7 +176,6 @@ export function QueuedRunsControl({
 
   const activeRun = workflow?.activeRun ?? null;
   const canReorder = workflow?.canReorder === true;
-  const canSend = workflow?.canSendNow === true || workflow?.canPromoteToSteer === true;
   const queuedImageUrlById = new Map(
     queuedImageAttachmentUrls.flatMap((url, index) => {
       const resource = queuedImageAttachmentResources[index];
@@ -203,6 +204,13 @@ export function QueuedRunsControl({
     },
   });
   const queueBusy = busyRunId !== null || batch.pending;
+  const canSend = canDispatchQueuedRun({
+    busy: queueBusy,
+    importedHistory: projection?.thread.historyOrigin === "v1_import",
+    canStart: workflow?.canSendNow === true,
+    canSteer: workflow?.canPromoteToSteer === true,
+    queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
+  });
   const items = [
     ...queued.map(({ run, text, attachments }, serverIndex) => ({
       key: run.id,
@@ -269,19 +277,22 @@ export function QueuedRunsControl({
     if (!canSend || steerInFlightRef.current) return;
     steerInFlightRef.current = true;
     setBusyRunId(queuedRunId);
-    if (workflow?.canSendNow) {
-      await resume({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, runId: queuedRunId },
-      });
-    } else if (activeRun !== null) {
-      await promote({
-        environmentId: props.environmentId,
-        input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
-      });
+    try {
+      if (workflow?.canSendNow) {
+        await resume({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId: queuedRunId },
+        });
+      } else if (activeRun !== null) {
+        await promote({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, queuedRunId, targetRunId: activeRun.id },
+        });
+      }
+    } finally {
+      steerInFlightRef.current = false;
+      setBusyRunId(null);
     }
-    steerInFlightRef.current = false;
-    setBusyRunId(null);
   };
 
   useImperativeHandle(ref, () => ({

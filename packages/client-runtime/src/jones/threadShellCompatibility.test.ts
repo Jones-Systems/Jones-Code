@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   RuntimeRequestId,
+  RunId,
   ThreadId,
   type OrchestrationV2ShellSnapshot,
 } from "@t3tools/contracts";
@@ -45,6 +46,47 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
 }
 
 describe("v2 thread shell lists", () => {
+  it("keeps delegated quiet lists stable through streaming and exposes their parent membership", () => {
+    const { registry, threads, snapshotAtom } = makeHarness([environmentId, remoteEnvironmentId]);
+    const task = {
+      ...v2ThreadShell,
+      id: ThreadId.make("remote-stream"),
+      latestRunId: RunId.make("stream-run"),
+      activeRunId: RunId.make("stream-run"),
+      status: "running" as const,
+      itemCount: 1,
+      delegatedFrom: { environmentId, threadId: v2ThreadShell.id, title: v2ThreadShell.title },
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [v2ThreadShell] });
+    registry.set(snapshotAtom(remoteEnvironmentId), { ...v2ShellSnapshot, threads: [task] });
+    const dispose = registry.mount(threads.quietThreadShellsAtom);
+    const disposeMembership = registry.mount(threads.delegatedUnderParentAtom);
+    try {
+      const first = registry.get(threads.quietThreadShellsAtom);
+      const membership = registry.get(threads.delegatedUnderParentAtom);
+      expect(first).toHaveLength(2);
+      expect(membership.size).toBe(1);
+      registry.set(snapshotAtom(remoteEnvironmentId), {
+        ...v2ShellSnapshot,
+        threads: [{ ...task, itemCount: 4 }],
+      });
+      expect(registry.get(threads.quietThreadShellsAtom)).toBe(first);
+      expect(registry.get(threads.delegatedUnderParentAtom)).toBe(membership);
+      registry.set(snapshotAtom(remoteEnvironmentId), {
+        ...v2ShellSnapshot,
+        threads: [{ ...task, title: "Renamed remote task" }],
+      });
+      expect(registry.get(threads.quietThreadShellsAtom)).not.toBe(first);
+      expect(
+        registry.get(threads.quietThreadShellsAtom).find((thread) => thread.id === task.id)?.title,
+      ).toBe("Renamed remote task");
+    } finally {
+      disposeMembership();
+      dispose();
+      registry.dispose();
+    }
+  });
+
   it("lists a task a linked environment runs for a listed thread under that thread", () => {
     const { registry, threads, snapshotAtom, catalogValueAtom } = makeHarness([
       environmentId,

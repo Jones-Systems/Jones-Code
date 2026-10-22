@@ -1,3 +1,4 @@
+import { handleComposerEnter } from "./composerSubmission";
 import type { ChatComposerProps } from "./ChatComposer";
 import { type ComposerCommandItem } from "./ComposerCommandMenu";
 import {
@@ -33,6 +34,10 @@ export function useComposerCommandKey(input: {
   readonly routeKind: ChatComposerProps["routeKind"];
   readonly phase: ChatComposerProps["phase"];
   readonly isCompacting: boolean;
+  readonly steeringBlockedByQuestion: boolean;
+  readonly hasDraftContext: () => boolean;
+  readonly queueActionDisabled: boolean;
+  readonly onSteerNextQueuedMessage: () => boolean;
   readonly followUpBehavior: ChatComposerProps["settings"]["followUpBehavior"];
   readonly isSoftwareKeyboardOpen: boolean;
   readonly planModeUiEnabled: boolean;
@@ -85,6 +90,10 @@ export function useComposerCommandKey(input: {
     routeKind,
     phase,
     isCompacting,
+    steeringBlockedByQuestion,
+    hasDraftContext,
+    queueActionDisabled,
+    onSteerNextQueuedMessage,
     followUpBehavior,
     isSoftwareKeyboardOpen,
     planModeUiEnabled,
@@ -219,6 +228,35 @@ export function useComposerCommandKey(input: {
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
+    if (
+      key === "Enter" &&
+      handleComposerEnter({
+        event,
+        intent: {
+          keybindings,
+          isSoftwareKeyboardOpen,
+          isDraftThread: routeKind === "draft",
+          isRunning: phase === "running",
+          sendShortcut,
+          prompt: promptRef.current,
+        },
+        hasDraftContext: hasDraftContext(),
+        queueActionDisabled,
+        onSteerNextQueuedMessage,
+        onSubmit: (intent) =>
+          submitComposer(
+            undefined,
+            resolveComposerDispatchMode({
+              running: phase === "running",
+              alternateModifier: intent === "alternate",
+              activeTurnDefault: followUpBehavior,
+              canSteer: !isCompacting && !steeringBlockedByQuestion,
+            }),
+            intent,
+          ),
+      })
+    )
+      return true;
     if (submissionIntent) {
       submitComposer(
         undefined,
@@ -226,7 +264,7 @@ export function useComposerCommandKey(input: {
           running: phase === "running",
           alternateModifier: submissionIntent === "alternate",
           activeTurnDefault: followUpBehavior,
-          canSteer: !isCompacting,
+          canSteer: !isCompacting && !steeringBlockedByQuestion,
         }),
         submissionIntent,
       );

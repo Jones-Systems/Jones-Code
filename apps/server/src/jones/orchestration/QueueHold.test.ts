@@ -321,3 +321,57 @@ it.effect("a validation failure still permits eligible work behind historical ho
     assert.equal(runs.find((run) => run.id === f.held.id)?.status, "queued");
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect(
+  "selected held send starts once across retries and preserves the remaining historical queue order",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.send("later", "start_immediately");
+      yield* f.send("selected", "queue_after_active");
+      yield* f.send("after-selected", "queue_after_active");
+      yield* f.orchestrator.dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make("stop-later"),
+        threadId: f.threadId,
+      });
+      const before = yield* f.projection();
+      const selected = before.runs.find(
+        (run) => run.userMessageId === MessageId.make("message:selected"),
+      )!;
+      assert.isTrue(selected.queueHeld);
+      assert.isTrue(before.runs.find((run) => run.id === f.held.id)?.queueHeld);
+      const command = {
+        type: "queued-run.start" as const,
+        commandId: CommandId.make("send-selected"),
+        threadId: f.threadId,
+        runId: selected.id,
+      };
+      yield* f.orchestrator.dispatch(command);
+      yield* f.orchestrator.dispatch(command);
+      const after = yield* f.projection();
+      const starting = after.runs.find((run) => run.id === selected.id)!;
+      assert.equal(starting.status, "starting");
+      assert.deepEqual(
+        after.runs.filter((run) => run.status === "queued").map((run) => run.userMessageId),
+        [f.held.userMessageId, MessageId.make("message:after-selected")],
+      );
+      assert.isFalse(after.runs.some((run) => run.status === "queued" && run.queueHeld));
+      yield* f.finish(starting);
+      yield* f.orchestrator.dispatch(command);
+      assert.isFalse((yield* f.projection()).runs.some((run) => run.status === "starting"));
+      const effects = yield* (yield* EffectOutbox.EffectOutboxV2).listByThreadId(f.threadId);
+      assert.lengthOf(
+        effects.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" && effect.request.runId === selected.id,
+        ),
+        1,
+      );
+      yield* f.orchestrator.resumeQueuedRuns;
+      assert.equal(
+        (yield* f.projection()).runs.find((run) => run.id === f.held.id)?.status,
+        "starting",
+      );
+    }).pipe(Effect.provide(testLayer)),
+);

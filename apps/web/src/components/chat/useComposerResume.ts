@@ -21,6 +21,7 @@ import type { useTimelineFollow } from "./useTimelineFollow";
 import type { useUsageLimitsPanel } from "./useUsageLimitsPanel";
 
 interface ComposerResumeInput {
+  readonly isImportedHistory: boolean;
   readonly environmentId: EnvironmentId;
   readonly routeThreadKey: string;
   readonly currentRouteThreadKeyRef: { readonly current: string | null };
@@ -101,6 +102,13 @@ export function useComposerResume(input: ComposerResumeInput) {
       return;
     }
     const threadId = activeThread.id;
+    if (input.isImportedHistory && resumableRunId !== null) {
+      setThreadError(
+        threadId,
+        "Review a continuation in the composer before resuming imported history.",
+      );
+      return;
+    }
     sendInFlightRef.current = true;
     setResumingThreadKeys((current) => new Set(current).add(routeThreadKey));
     setThreadError(threadId, null);

@@ -176,6 +176,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   serverResolvedCommandContext: Schema.optionalKey(Schema.Boolean),
   /** Opted-in owner queues can deliver at successful foreground tool boundaries. */
   queuedToolBoundaryDelivery: Schema.optionalKey(Schema.Boolean),
+  /** Explicit support for starting one selected queued run; absent means unsupported. */
+  queuedRunStart: Schema.optionalKey(Schema.Boolean),
   threadStop: Schema.optionalKey(Schema.Boolean),
   threadPullRequests: Schema.optionalKey(Schema.Boolean),
   threadPullRequestWatch: Schema.optionalKey(Schema.Boolean),

@@ -1,3 +1,4 @@
+import { useServerConfigs } from "../../state/entities";
 import {
   MobileQueuedSteerBatchAction,
   useMobileQueuedSteerBatch,
@@ -89,6 +90,9 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const insets = useSafeAreaInsets();
   const theme = useUniwindTheme();
   const workflow = useThreadQueueWorkflow(target);
+  const serverConfig = useServerConfigs().get(target.environmentId);
+  const canSendNow =
+    workflow?.canSendNow === true && serverConfig?.environment.capabilities.queuedRunStart === true;
   const threadKey = scopedThreadKey(target.environmentId, target.threadId);
   const editing = useQueuedRunEdit(threadKey);
   const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun, "reorder queued message");
@@ -213,12 +217,19 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
       return;
     }
     if (action !== "steer" && action !== "remove") return;
+    if (action === "steer" && workflow?.canSendNow) {
+      if (!canSendNow) return;
+      if (importedThread) {
+        await reviewImportedQueued(runId);
+        return;
+      }
+    }
     busyRef.current = true;
     setBusyRunId(runId);
     void Haptics.selectionAsync();
     if (action === "remove") {
       await cancel(buildCancelQueuedRunCommand({ ...target, runId }));
-    } else if (workflow?.canSendNow) {
+    } else if (canSendNow) {
       await resume({ ...target, input: { threadId: target.threadId, runId } });
     } else if (workflow?.activeRun && workflow.canPromoteToSteer) {
       await promote({
@@ -294,7 +305,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
         const controls = resolveThreadQueueRowControls({
           busy: queueBusy || draggedRunId !== null,
           canPromoteToSteer: workflow?.canPromoteToSteer ?? false,
-          canSendNow: workflow?.canSendNow ?? false,
+          canSendNow,
           canReorder: workflow?.canReorder ?? false,
           index,
           isEditing: editing?.runId === run.id,
@@ -409,11 +420,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                   accessibilityLabel={`Actions for queued message ${index + 1}`}
                   shouldOpenOnLongPress
                   actions={[
-                    ...(workflow?.canPromoteToSteer || workflow?.canSendNow
+                    ...(workflow?.canPromoteToSteer || canSendNow
                       ? [
                           {
                             id: "steer",
-                            title: workflow?.canSendNow ? "Send now" : "Steer now",
+                            title: canSendNow ? "Send now" : "Steer now",
                             attributes: { disabled: !controls.canSend },
                             image: Platform.OS === "ios" ? "arrow.turn.left.up" : "arrow_upward",
                           },
@@ -468,11 +479,11 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                         Editing
                       </Text>
                     ) : null}
-                    {workflow?.canPromoteToSteer || workflow?.canSendNow ? (
+                    {workflow?.canPromoteToSteer || canSendNow ? (
                       <Pressable
                         accessibilityRole="button"
                         accessibilityLabel={
-                          workflow?.canSendNow
+                          canSendNow
                             ? `Send message ${index + 1} now`
                             : `Steer with message ${index + 1} now`
                         }
@@ -481,7 +492,7 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                         className="h-8 shrink-0 justify-center rounded-full bg-primary px-3 active:opacity-70 disabled:opacity-40"
                       >
                         <Text className="font-t3-medium text-xs text-primary-foreground">
-                          {workflow?.canSendNow ? "Send now" : "Steer"}
+                          {canSendNow ? "Send now" : "Steer"}
                         </Text>
                       </Pressable>
                     ) : null}

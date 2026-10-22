@@ -17,7 +17,7 @@ vi.mock(
   import("../../state/use-atom-command"),
   () => ({ useAtomCommand: () => state.visit }) as never,
 );
-import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
+import { ThreadVisitWatermark } from "../../components/chat/ThreadVisitWatermark";
 
 const updatedAt = "2026-10-17T12:00:00.000Z";
 const thread = makeThreadFixture({

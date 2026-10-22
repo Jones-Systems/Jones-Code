@@ -69,6 +69,15 @@ describe("multipleModelSendBlock", () => {
     expect(multipleModelSendBlock(ready)).toBeNull();
   });
 
+  it("uses the server default worktree base only when advertised", () => {
+    expect(
+      multipleModelSendBlock({ ...ready, branch: null, serverResolvesWorktreeBase: true }),
+    ).toBeNull();
+    expect(
+      multipleModelSendBlock({ ...ready, branch: null, serverResolvesWorktreeBase: false }),
+    ).toBe("needs-new-git-thread");
+  });
+
   it("asks for a server update before checking the draft", () => {
     expect(
       multipleModelSendBlock({

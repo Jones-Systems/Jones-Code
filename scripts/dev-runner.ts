@@ -614,9 +614,9 @@ const runRepoScript = Effect.fn("dev-runner.runRepoScript")(function* (
 });
 
 /**
- * The first start in a worktree seeds its empty database from the live install
- * and warms the web dependency cache. Each step checks for its own output, so
- * later starts skip it.
+ * The first start warms the web dependency cache. Seeding from the live install
+ * requires explicit opt-in; without it, the private source is not inspected.
+ * Each step checks for its own output, so later starts skip it.
  */
 const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (input: {
   readonly mode: DevMode;
@@ -639,23 +639,29 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
         );
       }
     }
-    const source = path.join(yield* HostProcess.HomeDirectory, ".t3", "userdata", "statev2.sqlite");
     // A V1 state.sqlite counts as data too: the server imports it only while
     // statev2.sqlite is missing, so seeding would hide it.
     if (
       input.seed &&
       !(yield* exists(path.join(stateDir, "statev2.sqlite"))) &&
-      !(yield* exists(path.join(stateDir, "state.sqlite"))) &&
-      (yield* exists(source))
+      !(yield* exists(path.join(stateDir, "state.sqlite")))
     ) {
-      yield* Effect.logInfo(
-        `[dev-runner] seeding ${input.worktreeHome} from ${source} (read-only). --no-seed or T3CODE_DEV_SEED=0 skips this.`,
+      const source = path.join(
+        yield* HostProcess.HomeDirectory,
+        ".t3",
+        "userdata",
+        "statev2.sqlite",
       );
-      yield* runRepoScript(
-        "apps/server/scripts/migrate-dev-db.ts",
-        ["--base-dir", input.worktreeHome, "--source", source],
-        input.env,
-      );
+      if (yield* exists(source)) {
+        yield* Effect.logInfo(
+          `[dev-runner] seeding ${input.worktreeHome} from ${source} (read-only). --no-seed or T3CODE_DEV_SEED=0 skips this.`,
+        );
+        yield* runRepoScript(
+          "apps/server/scripts/migrate-dev-db.ts",
+          ["--base-dir", input.worktreeHome, "--source", source],
+          input.env,
+        );
+      }
     }
   }
 
@@ -855,7 +861,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   // After sharing, so the warm step sees the same bundled-dev env as Vite.
   yield* prepareFirstStart({
     mode: input.mode,
-    seed: input.seed !== false,
+    seed: input.seed === true,
     worktreeHome: baseDir === worktreeHome ? worktreeHome : undefined,
     env,
   });
@@ -909,7 +915,7 @@ export const runDevRunnerWithInput = Effect.fn("dev-runner.runDevRunnerWithInput
   }
 });
 
-const devRunnerCli = Command.make("dev-runner", {
+export const devRunnerCli = Command.make("dev-runner", {
   mode: Argument.Literals("mode", DEV_RUNNER_MODES).pipe(
     Argument.withDescription("Development mode to run."),
   ),
@@ -964,7 +970,7 @@ const devRunnerCli = Command.make("dev-runner", {
   ),
   seed: Flag.Boolean("seed").pipe(
     Flag.withDescription(
-      "Seed an empty worktree database from ~/.t3 on first start (read-only, via migrate-dev-db). On by default; --no-seed or T3CODE_DEV_SEED=0 skips it.",
+      "Opt in to seed an empty worktree database from ~/.t3 (read-only, via migrate-dev-db). Off by default; --seed or T3CODE_DEV_SEED=1 enables it. --no-seed overrides the environment.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
   ),

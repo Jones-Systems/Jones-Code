@@ -44,7 +44,7 @@ import {
   releasePersistedAttachmentUpload,
   verifyStashedAttachmentUpload,
 } from "../../lib/attachmentUploadQueue";
-import { remainingComposerAttachmentSlots } from "./composerThreadImport";
+import { remainingComposerAttachmentSlots } from "../../jones/composer/attachmentCapacity";
 import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
 import { resizeSnapShotSource } from "../../lib/snapShotSource";
 import { resolveShortcutCommand } from "../../keybindings";

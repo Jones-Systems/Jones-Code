@@ -1,3 +1,8 @@
+import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
+import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
+import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
+import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
+import { getComposerEffectiveTraitsOptions } from "./composerProviderState";
 import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import type { ComposerModelSelectOptions } from "../../jones/composer/composerModelEffortShortcuts";
@@ -38,7 +43,6 @@ import {
   AuthOrchestrationOperateScope,
   ProviderDriverKind,
   ProviderInstanceId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import type { EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -53,7 +57,6 @@ import {
   memo,
   type ReactNode,
   useEffect,
-  useEffectEvent,
   useId,
   useImperativeHandle,
   useLayoutEffect,
@@ -191,7 +194,6 @@ import { useThreadContextDrop, threadContextDropTargetProps } from "./threadCont
 import { readThreadShell } from "~/state/entities";
 import { encodeComposerContextFragment } from "@t3tools/shared/composerContextClipboard";
 import type { ComposerContextRecord, ThreadPullRequestLink } from "@t3tools/contracts";
-import { threadContextAttachment } from "~/lib/threadContextAttachment";
 import {
   type ComposerCommandItem,
   ComposerCommandMenu,
@@ -232,7 +234,6 @@ import {
 } from "./composerSubmission";
 import { ComposerPromptLengthValidation } from "./ComposerPromptLengthValidation";
 import { pendingDraftWork } from "./pendingDraftWork";
-import { importComposerThreadAttachment } from "./composerThreadImport";
 import { isTimelineScrollTarget } from "./timelineScrollTarget";
 import {
   createComposerScrollGestureState,
@@ -2266,6 +2267,30 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const expandMobileComposerStable = useStableCallback(expandMobileComposer);
 
   const { onComposerCommandKey } = useComposerCommandKey({
+    steeringBlockedByQuestion,
+    hasDraftContext: () =>
+      composerImagesRef.current.length > 0 ||
+      composerFilesRef.current.length > 0 ||
+      composerTerminalContextsRef.current.length > 0 ||
+      composerPreviewAnnotations.length > 0 ||
+      composerReviewComments.length > 0 ||
+      composerThreadContexts.length > 0 ||
+      (pendingImageCompressionsRef.current.get(attachmentTargetKey) ?? 0) > 0 ||
+      pendingDraftWork.has(attachmentTargetKey),
+    queueActionDisabled:
+      noProviderAvailable ||
+      isSendDisabled ||
+      isSendBusy ||
+      isConnecting ||
+      isRevertingCheckpoint === true ||
+      projectSelectionRequired ||
+      environmentUnavailable !== null ||
+      isEditingQueuedMessage ||
+      activePendingApproval !== null ||
+      pendingUserInputs.length > 0 ||
+      steeringBlockedByQuestion ||
+      showPlanFollowUpPrompt,
+    onSteerNextQueuedMessage,
     keybindings,
     sendShortcut: settings.sendShortcut,
     routeKind,
@@ -2566,6 +2591,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     : expandedControlsIconOnlyBlockCount;
   const composerControls = (
     <ComposerControlsBar
+      activeProjectDefaultModelSelection={activeProjectDefaultModelSelection}
+      configuredDefaultDriverKind={configuredDefaultDriverKind}
       environmentId={environmentId}
       routeKind={routeKind}
       routeThreadRef={routeThreadRef}
@@ -3371,6 +3398,55 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       focusComposer={focusComposer}
     />
   ) : null;
+  const providerTraitsPickerInput = {
+    provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    ...(routeKind === "server" ? { threadRef: routeThreadRef } : {}),
+    ...(routeKind === "draft" && draftId ? { draftId } : {}),
+    model: selectedModel,
+    models: selectedProviderModels,
+    modelOptions: composerModelOptions?.[selectedInstanceId],
+    reportedModelSelection,
+    promptUltrathink,
+    onPromptEdit: editPromptFromTraitsStable,
+    planModeEnabled: settings.planModeEnabled,
+  };
+  const effectiveTraitsOptions = getComposerEffectiveTraitsOptions({
+    ...providerTraitsPickerInput,
+    defaultModelSelection: activeProjectDefaultModelSelection,
+    defaultDriverKind: configuredDefaultDriverKind,
+  });
+  const shortcutRailsContentKey = [
+    modelOptionsByInstance,
+    selectedInstanceId,
+    selectedModel,
+    effectiveTraitsOptions,
+  ];
+  const shortcutRails = useComposerShortcutRails({
+    host: shortcutControlsHost,
+    workspace: shortcutWorkspaceElement,
+    formRef: composerFormRef,
+    bandRef: shortcutBandRef,
+    accountGroupRef: accountShortcutGroupRef,
+    effortGroupRef: effortShortcutGroupRef,
+    contentKey: shortcutRailsContentKey,
+    eligible:
+      !isMobileViewport &&
+      !isComposerApprovalState &&
+      pendingUserInputs.length === 0 &&
+      multipleModelSelections === null &&
+      environmentUnavailable === null &&
+      !providerCatalogPending &&
+      !noProviderAvailable &&
+      !isConnecting &&
+      !isSendBusy &&
+      !isPreparingWorktree &&
+      externalSendDisabledReason === null &&
+      !props.isRevertingCheckpoint &&
+      !projectSelectionRequired,
+    hasWideActions: composerFooterHasWideActions,
+  });
+
   return (
     <form
       ref={composerFormRef}
@@ -3464,6 +3540,58 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {shortcutControlsHost
+        ? createPortal(
+            <div
+              ref={shortcutBandRef}
+              data-chat-composer-shortcut-rails="true"
+              aria-hidden={!shortcutRails.visible || undefined}
+              inert={!shortcutRails.visible || undefined}
+              className="relative w-full"
+              style={{ height: shortcutRails.height }}
+            >
+              <div className="pointer-events-auto absolute bottom-0 left-0">
+                <ComposerShortcutPlate visible={shortcutRails.visible}>
+                  <ProviderInstanceShortcuts
+                    instanceEntries={providerInstanceEntries}
+                    settings={settings}
+                    modelOptionsByInstance={modelOptionsByInstance}
+                    rememberedSelections={composerDraft.modelSelectionByProvider}
+                    activeInstanceId={selectedInstanceId}
+                    model={selectedModelForPickerWithCustomFallback}
+                    lockedProvider={lockedProvider}
+                    lockedContinuationGroupKey={lockedContinuationGroupKey ?? null}
+                    lockedInstanceId={
+                      activeThread?.runtime?.providerInstanceId ??
+                      activeThreadModelSelection?.instanceId ??
+                      null
+                    }
+                    disabled={isSendBusy}
+                    visible={shortcutRails.visible}
+                    groupRef={accountShortcutGroupRef}
+                    getModelDisabledReason={getModelDisabledReason}
+                    onSelect={onProviderModelSelect}
+                  />
+                </ComposerShortcutPlate>
+              </div>
+              <div className="pointer-events-auto absolute right-0 bottom-0 w-max">
+                {selectedModel !== "" ? (
+                  <ComposerShortcutPlate visible={shortcutRails.visible}>
+                    <ReasoningEffortShortcuts
+                      {...providerTraitsPickerInput}
+                      {...effectiveTraitsOptions}
+                      onProviderModelSelect={onProviderModelSelect}
+                      getModelDisabledReason={getModelDisabledReason}
+                      groupRef={effortShortcutGroupRef}
+                      visible={shortcutRails.visible}
+                    />
+                  </ComposerShortcutPlate>
+                ) : null}
+              </div>
+            </div>,
+            shortcutControlsHost,
+          )
+        : null}
       {composerControlsCollapsed && restingControlsHost
         ? createPortal(
             <div

@@ -473,6 +473,14 @@ export function SortableThreadRow(
   // Keyed by variant so a card/slim switch remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
 }
+// Workstream rows belong to the Workstream drag surface, not the native sidebar sorter.
+// Keep their streaming subscription in this leaf as for sortable native rows.
+export function NonSortableThreadRow(props: Omit<SidebarThreadRowProps, "sortable">) {
+  const thread =
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  return <SidebarThreadRow key={props.variant} {...props} thread={thread} />;
+}
+
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
   pin: (

@@ -81,6 +81,11 @@ export function useComposerProviderModel(
   const selectedProviderModels = selection.selectedProviderEntry?.models ?? NO_PROVIDER_MODELS;
   const composerProviderState = getComposerProviderState({
     provider: selectedProvider,
+    instanceId: selectedInstanceId,
+    defaultModelSelection: projectModelSelection,
+    defaultDriverKind: providerInstanceEntries.find(
+      (entry) => entry.instanceId === projectModelSelection?.instanceId,
+    )?.driverKind,
     model: modelState.selectedModel,
     models: selectedProviderModels,
     promptInjectionState,
