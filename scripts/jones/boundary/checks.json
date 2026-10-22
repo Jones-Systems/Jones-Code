@@ -2309,17 +2309,24 @@
         "apps/desktop/scripts/ui-evidence/manifest.test.mjs",
         "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
         "apps/desktop/scripts/ui-evidence/provenance.test.mjs",
+        "apps/desktop/scripts/ui-evidence/queue-edit-cancel.test.mjs",
         "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
         "apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
         "apps/desktop/scripts/ui-evidence/secondary-server.test.mjs",
+        "apps/desktop/scripts/ui-evidence/secret-service.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-reload.test.mjs",
         "apps/desktop/scripts/ui-evidence/sidebar-pin-restart.test.mjs",
         "apps/desktop/scripts/ui-evidence/startup-diagnostics.test.mjs",
         "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
-        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs"
+        "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs",
+        "scripts/jones/e2e/acp-stub/agent.test.mjs"
       ],
-      "commands": ["vp run test:ui-evidence", "node scripts/jones/check-boundary.ts --strict"]
+      "commands": [
+        "vp run test:ui-evidence",
+        "node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
