@@ -1,39 +1,52 @@
-import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import * as fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { test } from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeTest from "node:test";
 
-const repository = path.resolve(import.meta.dirname, "../../..");
-test("default entrypoint links synthetic configuration without starting an installer", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "jones-setup-entry-"));
-  try {
-    const worktree = path.join(root, "worktree");
-    const project = path.join(root, "project");
-    const bin = path.join(root, "bin");
-    fs.mkdirSync(path.join(worktree, "scripts", "jones"), { recursive: true });
-    fs.mkdirSync(project);
-    fs.mkdirSync(bin);
-    fs.writeFileSync(path.join(project, ".env"), "SYNTHETIC_FIXTURE=1\n");
-    fs.writeFileSync(path.join(bin, "vp"), "#!/bin/sh\nexit 73\n", { mode: 0o755 });
-    fs.copyFileSync(
-      path.join(repository, "scripts/setup-worktree.ts"),
-      path.join(worktree, "scripts/setup-worktree.ts"),
-    );
-    const implementation = path.join(repository, "scripts/jones/worktree-setup/setup.ts");
-    if (fs.existsSync(implementation)) {
-      fs.mkdirSync(path.join(worktree, "scripts/jones/worktree-setup"));
-      fs.copyFileSync(implementation, path.join(worktree, "scripts/jones/worktree-setup/setup.ts"));
+const repository = NodePath.resolve(import.meta.dirname, "../../..");
+NodeTest.test(
+  "default entrypoint links synthetic configuration without starting an installer",
+  () => {
+    const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-setup-entry-"));
+    try {
+      const worktree = NodePath.join(root, "worktree");
+      const project = NodePath.join(root, "project");
+      const bin = NodePath.join(root, "bin");
+      NodeFS.mkdirSync(NodePath.join(worktree, "scripts", "jones"), { recursive: true });
+      NodeFS.mkdirSync(project);
+      NodeFS.mkdirSync(bin);
+      NodeFS.writeFileSync(NodePath.join(project, ".env"), "SYNTHETIC_FIXTURE=1\n");
+      NodeFS.writeFileSync(NodePath.join(bin, "vp"), "#!/bin/sh\nexit 73\n", { mode: 0o755 });
+      NodeFS.copyFileSync(
+        NodePath.join(repository, "scripts/setup-worktree.ts"),
+        NodePath.join(worktree, "scripts/setup-worktree.ts"),
+      );
+      const implementation = NodePath.join(repository, "scripts/jones/worktree-setup/setup.ts");
+      if (NodeFS.existsSync(implementation)) {
+        NodeFS.mkdirSync(NodePath.join(worktree, "scripts/jones/worktree-setup"));
+        NodeFS.copyFileSync(
+          implementation,
+          NodePath.join(worktree, "scripts/jones/worktree-setup/setup.ts"),
+        );
+      }
+      const result = NodeChildProcess.spawnSync(
+        process.execPath,
+        [NodePath.join(worktree, "scripts/setup-worktree.ts")],
+        {
+          env: { PATH: bin, T3CODE_PROJECT_ROOT: project },
+          encoding: "utf8",
+        },
+      );
+      NodeAssert.equal(result.status, 0, result.stderr);
+      NodeAssert.equal(
+        NodeFS.readlinkSync(NodePath.join(worktree, ".env")),
+        NodePath.join(project, ".env"),
+      );
+      NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree, "node_modules")), false);
+    } finally {
+      NodeFS.rmSync(root, { recursive: true, force: true });
     }
-    const result = spawnSync(process.execPath, [path.join(worktree, "scripts/setup-worktree.ts")], {
-      env: { PATH: bin, T3CODE_PROJECT_ROOT: project },
-      encoding: "utf8",
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(fs.readlinkSync(path.join(worktree, ".env")), path.join(project, ".env"));
-    assert.equal(fs.existsSync(path.join(worktree, "node_modules")), false);
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
-});
+  },
+);
