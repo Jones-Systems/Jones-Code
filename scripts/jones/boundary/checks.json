@@ -2,6 +2,16 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-workstreams-sidebar-assignment",
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
+        "vp lint apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-apple-silicon-platforms",
       "tests": [
         "scripts/jones/platforms/supportedTargets.test.ts",
