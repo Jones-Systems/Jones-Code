@@ -414,7 +414,9 @@ assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generati
     async (boundary) => {
       const f = await fixture();
       try {
-        const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+        const definitions = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        )[0];
         const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
         const scenario = String.raw`
 boundary = sys.argv[3]
@@ -485,7 +487,9 @@ else:
   it("withdraws a dispatched preparation through the actual helper lock and retires its exact proof", async () => {
     const f = await fixture();
     try {
-      const [definitions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+      const [definitions, parser] = jonesNativeHelperSource.split(
+        "\nparser = argparse.ArgumentParser()",
+      );
       await NodeFSP.writeFile(
         NodePath.join(f.directory, "withdraw-helper.py"),
         `${definitions}\nsys.platform = 'darwin'\nbundle_identity = lambda active: None\nparser = argparse.ArgumentParser()${parser}`,
@@ -640,7 +644,9 @@ assert (profile / 'opaque').read_text() == 'same-host-profile'
     async (order) => {
       const f = await fixture();
       try {
-        const [definitions, parser] = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()");
+        const [definitions, parser] = jonesNativeHelperSource.split(
+          "\nparser = argparse.ArgumentParser()",
+        );
         const barrier = String.raw`
 sys.platform = 'darwin'
 bundle_identity = lambda active: None
@@ -839,11 +845,10 @@ else:
 `;
         const script = NodePath.join(f.directory, "reconcile-running.py");
         await NodeFSP.writeFile(script, definitions + "\n" + setup + "\n" + scenario);
-        NodeChildProcess.execFileSync(
-          "python3",
-          [script, f.directory, "success", fault],
-          { encoding: "utf8", timeout: 10000 },
-        );
+        NodeChildProcess.execFileSync("python3", [script, f.directory, "success", fault], {
+          encoding: "utf8",
+          timeout: 10000,
+        });
       } finally {
         await f.cleanup();
       }
