@@ -7,6 +7,11 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "scripts/jones/experimental-typecheck/cli.mjs": "jones-owned",
+    "scripts/jones/experimental-typecheck/runner.mjs": "jones-owned",
+    "scripts/jones/experimental-typecheck/runner.test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/experimental-typecheck.json": "jones-owned",
+
     "scripts/mobile-showcase.ts": "hook",
     "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
     "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",

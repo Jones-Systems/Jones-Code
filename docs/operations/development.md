@@ -238,6 +238,35 @@ Marketing keeps `astro check` for Astro files.
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 
+### Experimental tsrs checking
+
+For an optional TypeScript-only check of explicitly selected workspaces:
+
+```sh
+pnpm typecheck:tsrs:experimental packages/shared apps/server
+pnpm typecheck:tsrs:experimental @t3tools/shared --checkers 2
+```
+
+This uses the pinned local tsrs package and each selected project's existing
+`tsconfig.json`. Projects run serially with two checkers by default;
+`--checkers N` accepts a positive integer. Select package names or
+repository-relative workspace paths. Only the existing `tsc-rs --noEmit`
+script shape is supported; marketing's Astro check is outside coverage.
+Other compiler flags and implicit all-project selection are rejected.
+
+**This command omits configured Effect diagnostics.** Run the normal
+authoritative typecheck before accepting changes. The experimental compiler
+uses an older TypeScript snapshot and can fail projects that the normal checker
+accepts, including known web TS2883/TS4023 errors; diagnostics and nonzero exits
+are preserved. A passing result does not establish workspace parity.
+
+The runner prints selected projects, compiler/package versions and effective
+flags. It never downloads a compiler or falls back to the normal checker.
+It isolates incremental build information under an invocation-owned directory
+in root `node_modules`, leaving existing build information intact, and cleans
+that directory after success, failure, SIGINT or SIGTERM. Uncatchable process
+or host termination cannot run cleanup.
+
 ### Unused code
 
 `vp run knip:check` checks unused files and dependencies across the repo, then
