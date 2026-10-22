@@ -6,6 +6,7 @@ import {
   ShellRunStore,
   shellRunKey,
   type ShellRun,
+  type ShellRunCoordination,
 } from "./runStore";
 import type { ShellDestination } from "./model";
 
@@ -19,6 +20,28 @@ const destination: ShellDestination = {
   cwd: "/destination/server-cwd",
   reason: null,
 };
+function tabCoordination(): ShellRunCoordination {
+  const held = new Map<string, Promise<void>>();
+  const exclusive: ShellRunCoordination["exclusive"] = async (name, work) => {
+    const previous = held.get(name);
+    let release!: () => void;
+    const done = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    held.set(name, done);
+    await previous;
+    try {
+      return await work();
+    } finally {
+      if (held.get(name) === done) held.delete(name);
+      release();
+    }
+  };
+  return {
+    exclusive,
+    tryExclusive: async (name, work) => (held.has(name) ? undefined : exclusive(name, work)),
+  };
+}
 function setup(raw?: string) {
   const data = new Map<string, string>(raw ? [[SHELL_RUN_STORAGE_KEY, raw]] : []);
   const storage = {
@@ -27,7 +50,8 @@ function setup(raw?: string) {
       data.set(key, value);
     },
   };
-  const store = new ShellRunStore(storage, () => now);
+  const coordination = tabCoordination();
+  const store = new ShellRunStore(storage, () => now, coordination);
   const controller = new ShellRunController(
     store,
     () => id,
@@ -39,7 +63,7 @@ function setup(raw?: string) {
     close: vi.fn(async () => true),
   };
   const input = { key, code: "pwd\n", complete: true, destination: () => destination, terminal };
-  return { data, storage, store, controller, terminal, input };
+  return { data, storage, store, controller, terminal, input, coordination };
 }
 function deferred() {
   let resolve!: (result: boolean) => void;
@@ -50,6 +74,123 @@ function deferred() {
 }
 
 describe("native destination run controller", () => {
+  it("preserves unknown delivery when a stale tab runs another block, including reload", async () => {
+    const a = setup();
+    const bStore = new ShellRunStore(a.storage, () => now, a.coordination);
+    const b = new ShellRunController(
+      bStore,
+      () => "00000000-0000-4000-8000-000000000002",
+      () => now,
+    );
+    a.terminal.write.mockResolvedValueOnce(false);
+    await a.controller.run(a.input);
+    await b.run({ ...a.input, key: shellRunKey("source", "thread", 43, "destination", "pwd\n") });
+    const restored = new ShellRunStore(a.storage, () => now, a.coordination);
+    expect(restored.get(key)?.phase).toBe("writeUnknown");
+    await new ShellRunController(
+      restored,
+      () => id,
+      () => now,
+    ).run(a.input);
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+  });
+  it("admits exactly one ordinary concurrent Play across independent tabs", async () => {
+    const a = setup();
+    const b = new ShellRunController(
+      new ShellRunStore(a.storage, () => now, a.coordination),
+      () => "00000000-0000-4000-8000-000000000002",
+      () => now,
+    );
+    await Promise.all([a.controller.run(a.input), b.run(a.input)]);
+    expect(a.terminal.open).toHaveBeenCalledTimes(1);
+    expect(a.terminal.write).toHaveBeenCalledTimes(1);
+  });
+  it("retains both tabs while one write acknowledgement is outstanding", async () => {
+    const a = setup();
+    const bStore = new ShellRunStore(a.storage, () => now, a.coordination);
+    const b = new ShellRunController(
+      bStore,
+      () => "00000000-0000-4000-8000-000000000002",
+      () => now,
+    );
+    const writing = deferred();
+    const entered = deferred();
+    a.terminal.write.mockImplementationOnce(async () => {
+      entered.resolve(true);
+      return writing.promise;
+    });
+    const pending = a.controller.run(a.input);
+    await entered.promise;
+    const otherKey = shellRunKey("source", "thread", 45, "destination", "pwd\n");
+    await b.run({ ...a.input, key: otherKey });
+    // Unrelated keys finish even while A holds its lifecycle lock.
+    expect(bStore.get(otherKey)?.phase).toBe("running");
+    writing.resolve(false);
+    await pending;
+    const reload = new ShellRunStore(a.storage, () => now, a.coordination);
+    expect(reload.get(key)?.phase).toBe("writeUnknown");
+    expect(reload.get(otherKey)?.phase).toBe("running");
+    await b.run(a.input);
+    expect(bStore.get(key)?.phase).toBe("writeUnknown");
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+  });
+  it("serializes Run again and rejects stale replacement, close, and exit callbacks", async () => {
+    const a = setup();
+    a.terminal.write.mockResolvedValueOnce(false);
+    await a.controller.run(a.input);
+    const bStore = new ShellRunStore(a.storage, () => now, a.coordination);
+    const b = new ShellRunController(
+      bStore,
+      () => "00000000-0000-4000-8000-000000000002",
+      () => now,
+    );
+    const oldId = bStore.get(key)!.terminalId;
+    await Promise.all([
+      b.run({ ...a.input, again: true, expectedTerminalId: oldId }),
+      a.controller.run({ ...a.input, again: true, expectedTerminalId: oldId }),
+    ]);
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+    expect(bStore.get(key)?.terminalId).not.toBe(oldId);
+    await a.controller.run({ ...a.input, again: true, expectedTerminalId: oldId });
+    expect(await a.controller.close(key, a.terminal, () => true, oldId)).toBe(false);
+    await a.store.mark(key, "exited", oldId);
+    expect(a.store.get(key)?.phase).toBe("running");
+    expect(a.terminal.close).not.toHaveBeenCalled();
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+  });
+  it("fails closed without cross-tab coordination or when its lock is denied", async () => {
+    const a = setup();
+    for (const coordination of [
+      null,
+      {
+        exclusive: async () => {
+          throw new Error("lock denied");
+        },
+        tryExclusive: async () => {
+          throw new Error("lock denied");
+        },
+      },
+    ] as const) {
+      const controller = new ShellRunController(
+        new ShellRunStore(a.storage, () => now, coordination),
+        () => id,
+        () => now,
+      );
+      await expect(controller.run(a.input)).rejects.toThrow();
+    }
+    expect(a.terminal.open).not.toHaveBeenCalled();
+    expect(a.terminal.write).not.toHaveBeenCalled();
+  });
+  it("fails closed when shared storage becomes unreadable or malformed after tab startup", async () => {
+    const a = setup();
+    a.data.set(SHELL_RUN_STORAGE_KEY, "invalid JSON");
+    await expect(a.controller.run(a.input)).rejects.toThrow();
+    a.storage.getItem = () => {
+      throw new Error("storage denied");
+    };
+    await expect(a.controller.run(a.input)).rejects.toThrow("storage denied");
+    expect(a.terminal.open).not.toHaveBeenCalled();
+  });
   it("records intent before exactly one destination-local open and one CR-terminated write", async () => {
     const { controller, input, store, terminal } = setup();
     terminal.open.mockImplementation(async () => {
@@ -160,12 +301,12 @@ describe("native destination run controller", () => {
   it.each(["open", "write"] as const)(
     "keeps unknown delivery after interrupted %s without retry",
     async (operation) => {
-      const { controller, input, terminal, store, storage } = setup();
+      const { controller, input, terminal, store, storage, coordination } = setup();
       terminal[operation].mockRejectedValue(new Error("interrupted"));
       await controller.run(input);
       expect(store.get(key)?.phase).toBe("writeUnknown");
       const restored = new ShellRunController(
-        new ShellRunStore(storage, () => now),
+        new ShellRunStore(storage, () => now, coordination),
         () => id,
         () => now,
       );
@@ -191,11 +332,11 @@ describe("native destination run controller", () => {
   it("reconciles missing/restarted and exited sessions without replaying", async () => {
     const { controller, input, terminal, store } = setup();
     await controller.run(input);
-    controller.reconcile(key, null);
+    await controller.reconcile(key, null);
     expect(store.get(key)?.phase).toBe("running");
-    controller.reconcile(key, [{ terminalId: `run-${id}`, status: "exited" }]);
+    await controller.reconcile(key, [{ terminalId: `run-${id}`, status: "exited" }]);
     expect(store.get(key)?.phase).toBe("exited");
-    controller.reconcile(key, []);
+    await controller.reconcile(key, []);
     expect(store.get(key)?.phase).toBe("unavailable");
     await controller.run(input);
     expect(terminal.write).toHaveBeenCalledTimes(1);
@@ -216,7 +357,10 @@ describe("native destination run controller", () => {
   });
   it("fails closed when durable intent cannot be saved", async () => {
     const { terminal, input } = setup();
-    const controller = new ShellRunController(new ShellRunStore(null), () => id);
+    const controller = new ShellRunController(
+      new ShellRunStore(null, Date.now, tabCoordination()),
+      () => id,
+    );
     await expect(controller.run(input)).rejects.toThrow("storage");
     expect(terminal.open).not.toHaveBeenCalled();
   });
@@ -233,16 +377,16 @@ describe("bounded local run associations", () => {
   };
   it.each(["opening", "writing"] as const)(
     "restores %s as unknown without retaining command/input",
-    (phase) => {
+    async (phase) => {
       const { store, storage } = setup(
         JSON.stringify([{ ...run, phase, command: "private input", password: "private input" }]),
       );
       expect(store.get(key)?.phase).toBe("writeUnknown");
-      store.mark(key, "writeUnknown");
+      await store.mark(key, "writeUnknown");
       expect(storage.getItem(SHELL_RUN_STORAGE_KEY)).not.toContain("private input");
     },
   );
-  it("rejects invalid records, expires old associations, and caps at 32", () => {
+  it("rejects invalid records, expires old associations, and fails closed at 32 unclosed runs", async () => {
     const { store, storage } = setup(
       JSON.stringify([
         { ...run, terminalId: "invalid" },
@@ -250,9 +394,63 @@ describe("bounded local run associations", () => {
       ]),
     );
     expect(store.get(key)).toBeNull();
-    for (let index = 0; index < 40; index++)
-      store.save({ ...run, key: shellRunKey("source", "thread", index, "destination", "pwd\n") });
+    for (let index = 0; index < 32; index++)
+      await store.save({
+        ...run,
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+      });
+    await expect(store.save(run)).rejects.toThrow("full");
     expect(JSON.parse(storage.getItem(SHELL_RUN_STORAGE_KEY)!)).toHaveLength(32);
+  });
+  it("refreshes observers without unstable snapshots or losing unknown delivery", async () => {
+    const a = setup();
+    const b = new ShellRunStore(a.storage, () => now, a.coordination);
+    const listener = vi.fn();
+    b.subscribe(listener);
+    a.terminal.write.mockResolvedValue(false);
+    await a.controller.run(a.input);
+    b.observe();
+    expect(b.get(key)?.phase).toBe("writeUnknown");
+    const snapshot = b.get(key);
+    b.observe();
+    expect(b.get(key)).toBe(snapshot);
+    expect(listener).toHaveBeenCalledTimes(1);
+    // A delayed exit callback from a stale tab cannot erase the delivery warning.
+    await b.mark(key, "exited", snapshot!.terminalId);
+    expect(b.get(key)?.phase).toBe("writeUnknown");
+  });
+  it("reclaims only closed slots at capacity, preserving unexpired unknown delivery", async () => {
+    const a = setup();
+    for (let index = 0; index < 32; index++)
+      await a.store.save({
+        ...run,
+        phase: index === 0 ? "closed" : "writeUnknown",
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+      });
+    await a.store.save(run);
+    const records: ShellRun[] = JSON.parse(a.storage.getItem(SHELL_RUN_STORAGE_KEY)!);
+    expect(records).toHaveLength(32);
+    expect(records.filter((record) => record.phase === "writeUnknown")).toHaveLength(31);
+  });
+  it("refuses oversized storage before losing existing unknown tracking", async () => {
+    const a = setup();
+    await a.store.save({ ...run, phase: "writeUnknown" });
+    const longCwd = "\u0001".repeat(32_768);
+    for (let index = 0; index < 6; index++)
+      await a.store.save({
+        ...run,
+        cwd: longCwd,
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+      });
+    await expect(
+      a.store.save({
+        ...run,
+        cwd: longCwd,
+        key: shellRunKey("source", "thread", 7, "destination", "pwd\n"),
+      }),
+    ).rejects.toThrow("full");
+    const reloaded = new ShellRunStore(a.storage, () => now, a.coordination);
+    expect(reloaded.get(key)?.phase).toBe("writeUnknown");
   });
   it("separates source, thread, position, destination and command without persisting their contents", () => {
     const values = [

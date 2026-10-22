@@ -1,17 +1,32 @@
 import { act, type ReactElement } from "react";
+import { RegistryContext } from "@effect/atom-react";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { DestinationEnvironment } from "./model";
+import type { DestinationEnvironment, ShellDestination } from "./model";
+import { ShellRunController } from "./controller";
+import { randomUUID } from "../../lib/utils";
+import {
+  SHELL_RUN_STORAGE_KEY,
+  type ShellRun,
+  ShellRunStore,
+  shellRunKey,
+  shellRunStore,
+} from "./runStore";
 
+type TestTerminal = { threadId: string; terminalId: string; status: string };
 const state = vi.hoisted(() => ({
   environments: [] as DestinationEnvironment[],
-  sessions: [] as { threadId: string; terminalId: string; status: string }[],
+  sessions: [] as TestTerminal[],
+  metadata: null as Atom.Writable<AsyncResult.AsyncResult<readonly TestTerminal[], never>> | null,
   open: vi.fn(),
   write: vi.fn(),
   close: vi.fn(),
   queryTime: 0,
+  queryWaiting: true,
+  queryHasSnapshot: true,
 }));
 vi.mock(import("./useShellDestination"), async () => {
   const { resolveShellDestination } = await import("./model");
@@ -36,19 +51,18 @@ vi.mock(import("./useShellDestination"), async () => {
     },
   };
 });
-vi.mock(import("../../state/query"), async (original) => ({
-  ...(await original()),
-  useEnvironmentQuery: () =>
-    ({
-      data: state.sessions,
-      dataUpdatedAt: state.queryTime,
-      isSuccess: true,
-      isPending: false,
-      error: null,
-      failure: null,
-      refresh: vi.fn(),
-    }) as never,
-}));
+vi.mock(import("../../state/query"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    // Exercise the actual adapter: a live Success snapshot can still be waiting.
+    useEnvironmentQuery: ((query: unknown) =>
+      actual.useEnvironmentQuery(
+        query ? state.metadata : null,
+      )) as typeof actual.useEnvironmentQuery,
+  };
+});
+
 vi.mock(import("../../state/use-atom-command"), async () => {
   const { terminalEnvironment } = await import("../../state/terminal");
   return {
@@ -108,7 +122,23 @@ import { getSyntaxHighlighterPromise } from "../../lib/syntaxHighlighting";
 
 const roots: Root[] = [];
 let fixture = 0;
+let registry: AtomRegistry.AtomRegistry;
+function publishMetadata() {
+  registry.set(
+    state.metadata!,
+    state.queryHasSnapshot
+      ? AsyncResult.success(state.sessions, {
+          waiting: state.queryWaiting,
+          timestamp: state.queryTime,
+        })
+      : AsyncResult.initial(true),
+  );
+}
 beforeEach(() => {
+  registry = AtomRegistry.make();
+  state.metadata = Atom.make<AsyncResult.AsyncResult<readonly TestTerminal[], never>>(
+    AsyncResult.initial(),
+  );
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.environments = [
     {
@@ -122,12 +152,18 @@ beforeEach(() => {
   ];
   state.sessions = [];
   state.queryTime = 0;
+  state.queryWaiting = true;
+  state.queryHasSnapshot = true;
   state.open.mockReset().mockImplementation(async ({ input }) => {
-    state.sessions.push({
-      threadId: input.threadId,
-      terminalId: input.terminalId,
-      status: "running",
-    });
+    state.sessions = [
+      ...state.sessions,
+      {
+        threadId: input.threadId,
+        terminalId: input.terminalId,
+        status: "running",
+      },
+    ];
+    publishMetadata();
     return { _tag: "Success" };
   });
   state.write.mockReset().mockResolvedValue({ _tag: "Success" });
@@ -136,6 +172,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const root of roots.splice(0)) await act(async () => root.unmount());
   document.body.replaceChildren();
+  registry.dispose();
   vi.unstubAllGlobals();
 });
 async function render(element: ReactElement) {
@@ -143,10 +180,19 @@ async function render(element: ReactElement) {
   const container = document.body.appendChild(document.createElement("div"));
   const root = createRoot(container);
   roots.push(root);
-  await act(async () => root.render(element));
+  await act(async () => {
+    publishMetadata();
+    root.render(<RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>);
+  });
   return {
     container,
-    rerender: (element: ReactElement) => act(async () => root.render(element)),
+    rerender: (element: ReactElement) =>
+      act(async () => {
+        publishMetadata();
+        root.render(
+          <RegistryContext.Provider value={registry}>{element}</RegistryContext.Provider>,
+        );
+      }),
     unmount: () => act(async () => root.unmount()),
   };
 }
@@ -178,8 +224,21 @@ const fence = (meta = "environment=mini label=Mini", code = "pwd", close = true)
 const play = (container: HTMLElement) =>
   container.querySelector<HTMLButtonElement>('button[aria-label="Run on Mini"]')!;
 
+async function waitForRun(phase: ShellRun["phase"], writes = 1) {
+  await act(async () => {
+    await expect
+      .poll(() => {
+        if (state.write.mock.calls.length !== writes) return null;
+        const id = state.open.mock.lastCall?.[0].input.terminalId;
+        const runs: ShellRun[] = JSON.parse(localStorage.getItem(SHELL_RUN_STORAGE_KEY) ?? "[]");
+        return runs.find((run) => run.terminalId === id)?.phase;
+      })
+      .toBe(phase);
+  });
+}
+
 describe("destination shell Markdown UI", () => {
-  it("shows authoritative destination, uses a single native run, focuses it, and preserves it across unmount", async () => {
+  it("uses a successful waiting metadata stream to mount, focus, and preserve the native terminal", async () => {
     const element = message(fence());
     const view = await render(element);
     expect(view.container.textContent).toContain("Mini · ready");
@@ -190,6 +249,7 @@ describe("destination shell Markdown UI", () => {
       play(view.container).click();
       play(view.container).click();
     });
+    await waitForRun("running");
     expect(state.open).toHaveBeenCalledTimes(1);
     expect(state.write).toHaveBeenCalledTimes(1);
     expect(state.open.mock.calls[0]?.[0]).toMatchObject({
@@ -216,6 +276,7 @@ describe("destination shell Markdown UI", () => {
         .find((button) => button.textContent === "Close")!
         .click(),
     );
+    await waitForRun("closed");
     expect(state.close.mock.calls[0]?.[0].input.deleteHistory).toBe(true);
     expect(remount.container.querySelector("textarea")).toBeNull();
   });
@@ -231,6 +292,7 @@ describe("destination shell Markdown UI", () => {
     const element = message(fence());
     const view = await render(element);
     await act(async () => play(view.container).click());
+    await waitForRun("running");
     await view.unmount();
     state.sessions = [];
     const checking = await render(element);
@@ -239,11 +301,27 @@ describe("destination shell Markdown UI", () => {
     await checking.unmount();
     state.queryTime = Date.now() + 1;
     const missing = await render(element);
+    await waitForRun("unavailable");
     expect(missing.container.textContent).toContain("The previous terminal is unavailable");
     expect(missing.container.querySelector("textarea")).toBeNull();
     expect(state.open).toHaveBeenCalledTimes(1);
     expect(state.write).toHaveBeenCalledTimes(1);
     expect(state.close).not.toHaveBeenCalled();
+  });
+  it("waits for the first metadata snapshot without mounting or recreating a terminal", async () => {
+    state.queryHasSnapshot = false;
+    const element = message(fence());
+    const view = await render(element);
+    await act(async () => play(view.container).click());
+    await waitForRun("running");
+    expect(view.container.textContent).toContain("checking previous terminal");
+    expect(view.container.querySelector("textarea")).toBeNull();
+    await view.unmount();
+    state.queryHasSnapshot = true;
+    const confirmed = await render(element);
+    expect(confirmed.container.querySelector("textarea")).not.toBeNull();
+    expect(state.open).toHaveBeenCalledTimes(1);
+    expect(state.write).toHaveBeenCalledTimes(1);
   });
   it.each(["offline", "connecting", "no-permission", "unknown", "label-mismatch"])(
     "shows the disabled reason for %s",
@@ -270,6 +348,7 @@ describe("destination shell Markdown UI", () => {
     state.write.mockResolvedValue({ _tag: "Failure" });
     const { container } = await render(message(fence()));
     await act(async () => play(container).click());
+    await waitForRun("writeUnknown");
     expect(container.textContent).toContain("Command delivery is unknown");
     expect(container.querySelector("textarea")).not.toBeNull();
     const firstId = state.open.mock.calls[0]?.[0].input.terminalId;
@@ -278,6 +357,7 @@ describe("destination shell Markdown UI", () => {
         .find((button) => button.textContent === "Run again")!
         .click(),
     );
+    await waitForRun("writeUnknown", 2);
     expect(state.open.mock.calls[1]?.[0].input.terminalId).not.toBe(firstId);
     expect(state.write).toHaveBeenCalledTimes(2);
   });
@@ -304,5 +384,48 @@ describe("destination shell Markdown UI", () => {
     await rerender(message("```bash environment=mini\npwd\n```", { callback }));
     expect(container.querySelector('button[aria-label="Run in terminal"]')).toBeNull();
     expect(container.textContent).toContain("Use a jones-shell fence");
+  });
+});
+
+describe("browser cross-context run coordination", () => {
+  it("uses native Web Locks across browsing contexts and observes shared storage updates", async () => {
+    const frame = document.body.appendChild(document.createElement("iframe"));
+    const otherWindow = frame.contentWindow!;
+    const locks = otherWindow.navigator.locks;
+    expect(locks).toBeDefined();
+    const aStore = shellRunStore();
+    const bStore = new ShellRunStore(otherWindow.localStorage, Date.now, {
+      exclusive: (name, work) => locks.request(name, work),
+      tryExclusive: (name, work) =>
+        locks.request(name, { ifAvailable: true }, (lock) => (lock ? work() : undefined)),
+    });
+    const a = new ShellRunController(aStore, randomUUID);
+    const b = new ShellRunController(bStore, randomUUID);
+    const destination: ShellDestination = {
+      status: "ready",
+      environmentId: "mini",
+      label: "Mini",
+      cwd: "/destination-only",
+      reason: null,
+    };
+    const terminal = {
+      open: vi.fn(async () => true),
+      write: vi.fn(async () => false),
+      close: vi.fn(async () => true),
+    };
+    const key = shellRunKey("source", `native-locks-${++fixture}`, 0, "mini", "pwd\n");
+    const input = { key, code: "pwd\n", complete: true, destination: () => destination, terminal };
+    await Promise.all([a.run(input), b.run(input)]);
+    expect(terminal.open).toHaveBeenCalledTimes(1);
+    expect(terminal.write).toHaveBeenCalledTimes(1);
+    const otherKey = shellRunKey("source", `native-locks-${fixture}`, 1, "mini", "pwd\n");
+    await b.run({ ...input, key: otherKey });
+    // This notification is a real storage event from the other browsing context.
+    await expect.poll(() => aStore.get(otherKey)?.phase).toBe("writeUnknown");
+    const restored = new ShellRunStore(localStorage);
+    expect(restored.get(key)?.phase).toBe("writeUnknown");
+    expect(restored.get(otherKey)?.phase).toBe("writeUnknown");
+    await new ShellRunController(restored, randomUUID).run(input);
+    expect(terminal.write).toHaveBeenCalledTimes(2);
   });
 });

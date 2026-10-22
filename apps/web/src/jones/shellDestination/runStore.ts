@@ -4,6 +4,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 export const SHELL_RUN_STORAGE_KEY = "jones.shell-destination-runs.v1";
 export const SHELL_RUN_TTL = 7 * 24 * 60 * 60 * 1000;
 const MAX_RUNS = 32;
+const MAX_STORAGE_LENGTH = 1_200_000;
 export type RunPhase =
   | "opening"
   | "writing"
@@ -70,32 +71,86 @@ function isRun(value: unknown, now: number): value is ShellRun {
   );
 }
 
+// The browser owns lock lifetime, including release when a tab disappears.
+// Per-run locks span terminal effects; the storage lock spans only read/modify/write.
+export interface ShellRunCoordination {
+  exclusive<T>(name: string, work: () => Promise<T>): Promise<T>;
+  tryExclusive<T>(name: string, work: () => Promise<T>): Promise<T | undefined>;
+}
+function browserCoordination(): ShellRunCoordination | null {
+  const locks = globalThis.navigator?.locks;
+  return locks
+    ? {
+        exclusive: (name, work) => locks.request(name, work),
+        tryExclusive: (name, work) =>
+          locks.request(name, { ifAvailable: true }, (lock) => (lock ? work() : undefined)),
+      }
+    : null;
+}
+
 export class ShellRunStore {
   private runs = new Map<string, ShellRun>();
   private listeners = new Set<() => void>();
+  private active = new Set<string>();
   constructor(
     private readonly storage: Storage | null,
     private readonly now = Date.now,
+    private readonly coordination: ShellRunCoordination | null = browserCoordination(),
   ) {
-    try {
-      const raw = storage?.getItem(SHELL_RUN_STORAGE_KEY);
-      const values: unknown = raw && raw.length <= 1_200_000 ? JSON.parse(raw) : [];
-      if (Array.isArray(values))
-        for (const value of values.slice(-MAX_RUNS)) {
-          if (!isRun(value, now())) continue;
-          const { key, environmentId, terminalId, cwd, phase, updatedAt } = value;
-          this.runs.set(key, {
-            key,
-            environmentId,
-            terminalId,
-            cwd,
-            updatedAt,
-            phase: phase === "opening" || phase === "writing" ? "writeUnknown" : phase,
-          });
-        }
-    } catch {
-      /* Invalid or unavailable client storage cannot establish a prior run. */
+    this.observe();
+  }
+  private read(): Map<string, ShellRun> {
+    if (!this.storage) throw new Error("Run tracking storage is unavailable; no command was sent.");
+    const raw = this.storage.getItem(SHELL_RUN_STORAGE_KEY);
+    if (raw && raw.length > MAX_STORAGE_LENGTH) throw new Error("Run tracking storage is invalid.");
+    const values: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(values)) throw new Error("Run tracking storage is invalid.");
+    const runs = new Map<string, ShellRun>();
+    for (const value of values) {
+      if (!isRun(value, this.now())) continue;
+      const { key, environmentId, terminalId, cwd, phase, updatedAt } = value;
+      runs.set(key, { key, environmentId, terminalId, cwd, phase, updatedAt });
     }
+    if (runs.size > MAX_RUNS) throw new Error("Run tracking storage is full.");
+    return runs;
+  }
+  private adopt(runs: Map<string, ShellRun>): void {
+    let changed = runs.size !== this.runs.size;
+    for (const [key, value] of runs) {
+      const run =
+        !this.active.has(key) && (value.phase === "opening" || value.phase === "writing")
+          ? { ...value, phase: "writeUnknown" as const }
+          : value;
+      const old = this.runs.get(key);
+      if (old && JSON.stringify(old) === JSON.stringify(run)) runs.set(key, old);
+      else {
+        runs.set(key, run);
+        changed = true;
+      }
+    }
+    this.runs = runs;
+    if (changed) this.emit();
+  }
+  // Observers never replace shared state with their private snapshot.
+  observe = (): void => {
+    try {
+      this.adopt(this.read());
+    } catch {
+      // Retain conservative local evidence. Execution rereads strictly under a lock.
+    }
+  };
+  async withRunLock<T>(key: string, work: () => Promise<T>, wait = true): Promise<T | undefined> {
+    if (!this.coordination) throw new Error("Cross-tab run coordination is unavailable.");
+    const acquire = wait ? this.coordination.exclusive : this.coordination.tryExclusive;
+    return acquire(`${SHELL_RUN_STORAGE_KEY}:run:${key}`, async () => {
+      this.adopt(this.read());
+      this.active.add(key);
+      try {
+        return await work();
+      } finally {
+        this.active.delete(key);
+      }
+    });
   }
   get = (key: string): ShellRun | null => {
     const run = this.runs.get(key);
@@ -105,29 +160,43 @@ export class ShellRunStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
-  save(run: ShellRun): void {
-    const next = new Map(this.runs);
-    for (const [key, value] of next)
-      if (this.now() - value.updatedAt >= SHELL_RUN_TTL) next.delete(key);
-    next.delete(run.key);
-    next.set(run.key, run);
-    while (next.size > MAX_RUNS) next.delete(next.keys().next().value!);
-    if (!this.storage) throw new Error("Run tracking storage is unavailable; no command was sent.");
-    this.storage.setItem(SHELL_RUN_STORAGE_KEY, JSON.stringify([...next.values()]));
-    this.runs = next;
-    this.emit();
+  private async update(change: (runs: Map<string, ShellRun>) => void): Promise<void> {
+    if (!this.coordination) throw new Error("Cross-tab run coordination is unavailable.");
+    await this.coordination.exclusive(`${SHELL_RUN_STORAGE_KEY}:storage`, async () => {
+      const next = this.read();
+      change(next);
+      const serialized = JSON.stringify([...next.values()]);
+      if (serialized.length > MAX_STORAGE_LENGTH) throw new Error("Run tracking storage is full.");
+      this.storage!.setItem(SHELL_RUN_STORAGE_KEY, serialized);
+      this.adopt(next);
+    });
   }
-  mark(key: string, phase: RunPhase): void {
-    const previous = this.get(key);
-    if (!previous) return;
-    const next = { ...previous, phase, updatedAt: this.now() };
+  async save(run: ShellRun): Promise<void> {
+    await this.update((next) => {
+      if (!next.has(run.key) && next.size >= MAX_RUNS) {
+        // Evicting an unclosed association could turn an unknown delivery into a new Play.
+        const closed = [...next.values()].find((value) => value.phase === "closed");
+        if (!closed) throw new Error("Run tracking storage is full; close a previous run first.");
+        next.delete(closed.key);
+      }
+      next.set(run.key, run);
+    });
+  }
+  async mark(key: string, phase: RunPhase, terminalId = this.get(key)?.terminalId): Promise<void> {
     try {
-      this.save(next);
+      await this.update((next) => {
+        const previous = next.get(key);
+        if (previous?.phase === "writeUnknown" && phase === "exited") return;
+        if (previous && previous.terminalId === terminalId)
+          next.set(key, { ...previous, phase, updatedAt: this.now() });
+      });
     } catch {
-      // Keep the UI conservative even if storage fails after an RPC. Its last
-      // durable opening/writing record also recovers as unknown on reload.
-      this.runs.set(key, next);
-      this.emit();
+      // A durable opening/writing record recovers as unknown after storage failure.
+      const previous = this.get(key);
+      if (previous && previous.terminalId === terminalId) {
+        this.runs.set(key, { ...previous, phase: "writeUnknown" });
+        this.emit();
+      }
     }
   }
   private emit(): void {
@@ -145,6 +214,11 @@ export function shellRunStore(): ShellRunStore {
       /* Fail closed at save. */
     }
     clientStore = new ShellRunStore(storage);
+    const store = clientStore;
+    globalThis.addEventListener?.("storage", (event) => {
+      if (event.key === SHELL_RUN_STORAGE_KEY || event.key === null) store.observe();
+    });
+    globalThis.addEventListener?.("focus", store.observe);
   }
   return clientStore;
 }

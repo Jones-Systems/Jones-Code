@@ -24,7 +24,9 @@ describe("shell destination instructions", () => {
       label: "Destination machine",
       title: "Check working directory",
     });
-    expect(JONES_SHELL_DESTINATION_INSTRUCTIONS).toContain("placeholder, not a real environment ID");
+    expect(JONES_SHELL_DESTINATION_INSTRUCTIONS).toContain(
+      "placeholder, not a real environment ID",
+    );
     expect(JONES_SHELL_DESTINATION_INSTRUCTIONS).toContain("`environment=<exact ID>` exactly once");
   });
 
@@ -73,8 +75,12 @@ describe("shell destination instructions", () => {
   it("retains existing MCP and repeat-injection gates", () => {
     const prompt = "Continue.";
     expect(t3OrchestrationSystemPrompt(false)).toBeUndefined();
-    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 1, hasT3Mcp: false })).toBe(prompt);
-    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 2, hasT3Mcp: true })).toBe(prompt);
+    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 1, hasT3Mcp: false })).toBe(
+      prompt,
+    );
+    expect(t3OrchestrationPromptForFirstRun({ prompt, runOrdinal: 2, hasT3Mcp: true })).toBe(
+      prompt,
+    );
     expect(
       t3AcpPromptWithInstructions({
         prompt,

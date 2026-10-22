@@ -97,12 +97,15 @@ export function ShellDestinationCodeBlock({
     (session) => session.threadId === SHELL_RUN_THREAD_ID && session.terminalId === run?.terminalId,
   );
   useEffect(() => {
-    if (!run || !sessions.isSuccess || sessions.isPending || !sessions.data) return;
+    // Streaming queries keep waiting=true while subscribed, even after a valid snapshot.
+    if (!run || !sessions.isSuccess || !sessions.data) return;
     if (!matchingSession && sessions.dataUpdatedAt < run.updatedAt) return;
-    controller.reconcile(
-      key,
-      sessions.data.filter((session) => session.threadId === SHELL_RUN_THREAD_ID),
-    );
+    void controller
+      .reconcile(
+        key,
+        sessions.data.filter((session) => session.threadId === SHELL_RUN_THREAD_ID),
+      )
+      .catch(() => setError("Run coordination is unavailable. No command will be sent."));
   }, [
     controller,
     key,
@@ -110,7 +113,6 @@ export function ShellDestinationCodeBlock({
     matchingSession,
     sessions.data,
     sessions.dataUpdatedAt,
-    sessions.isPending,
     sessions.isSuccess,
   ]);
 
@@ -125,14 +127,25 @@ export function ShellDestinationCodeBlock({
     setFocusRequestId((value) => value + 1);
     if (run && !again) return;
     void controller
-      .run({ key, code, complete, destination: current, terminal, again })
-      .catch(() => {
-        setError("Run tracking is unavailable. No command was sent.");
+      .run({
+        key,
+        code,
+        complete,
+        destination: current,
+        terminal,
+        again,
+        ...(run ? { expectedTerminalId: run.terminalId } : {}),
+      })
+      .catch((error: unknown) => {
+        setError(
+          error instanceof Error && error.message.includes("storage is full")
+            ? "Run tracking is full. Close an earlier terminal before starting another. No command was sent."
+            : "Run tracking or cross-tab coordination is unavailable. No command was sent.",
+        );
       });
   };
   const isPending = run?.phase === "opening" || run?.phase === "writing";
-  const sessionConfirmed =
-    sessions.isSuccess && !sessions.isPending && matchingSession !== undefined;
+  const sessionConfirmed = sessions.isSuccess && matchingSession !== undefined;
   const runStatus = !run
     ? null
     : run.phase === "closed" || isPending
@@ -227,11 +240,15 @@ export function ShellDestinationCodeBlock({
                 onClick={() => {
                   setClosing(true);
                   void controller
-                    .close(key, terminal, () =>
-                      readEnvironmentScope(
-                        EnvironmentId.make(run.environmentId),
-                        AuthTerminalOperateScope,
-                      ),
+                    .close(
+                      key,
+                      terminal,
+                      () =>
+                        readEnvironmentScope(
+                          EnvironmentId.make(run.environmentId),
+                          AuthTerminalOperateScope,
+                        ),
+                      run.terminalId,
                     )
                     .then((closed) => {
                       if (!closed)
@@ -294,7 +311,8 @@ export function ShellDestinationCodeBlock({
                 attachExistingOnly
                 advancedTypography={false}
                 onSessionExited={() => {
-                  if (run.phase !== "writeUnknown") controller.store.mark(key, "exited");
+                  if (run.phase !== "writeUnknown")
+                    void controller.store.mark(key, "exited", run.terminalId);
                 }}
                 focusRequestId={focusRequestId}
                 autoFocus

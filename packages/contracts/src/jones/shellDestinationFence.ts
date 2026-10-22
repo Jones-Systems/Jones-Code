@@ -35,7 +35,10 @@ export function parseShellDestinationFence(meta: string | null | undefined): She
     }
     const [, key, raw] = match;
     if (key !== "environment" && key !== "label" && key !== "title") {
-      return { _tag: "Invalid", reason: "Only environment, label, and title options are supported." };
+      return {
+        _tag: "Invalid",
+        reason: "Only environment, label, and title options are supported.",
+      };
     }
     if (values[key] !== undefined) {
       return { _tag: "Invalid", reason: "Each shell destination option must appear only once." };
@@ -60,7 +63,10 @@ export function parseShellDestinationFence(meta: string | null | undefined): She
   // EnvironmentId is a trimmed nonempty string, not a UUID or a machine-name prefix.
   // Reject surrounding whitespace instead of silently changing the requested destination.
   if (environmentId !== environmentId.trim() || environmentId.length > 1024) {
-    return { _tag: "Invalid", reason: "The environment ID must be exact and at most 1024 characters." };
+    return {
+      _tag: "Invalid",
+      reason: "The environment ID must be exact and at most 1024 characters.",
+    };
   }
   return {
     _tag: "Valid",
