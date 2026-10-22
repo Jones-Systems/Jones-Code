@@ -10,6 +10,85 @@ const request = (origin, authFp) => ({ generation: 0, kind: "request", origin, a
 const ticket = (origin, ticketFp) => ({ generation: 0, kind: "websocket", origin, ticketFp });
 
 NodeTest.test(
+  "never-settling headers fail closed within the drain budget",
+  { timeout: 250 },
+  async (t) => {
+    // Keep the pre-fix pending promise alive until the explicit test timeout reports the defect.
+    const alive = setInterval(() => {}, 1000);
+    const page = new NodeEvents.EventEmitter();
+    const trace = new EndpointTrace("t", { drainTimeoutMs: 10 });
+    t.after(() => {
+      clearInterval(alive);
+      trace.dispose();
+    });
+    trace.attach(page);
+    page.emit("request", {
+      url: () => A,
+      allHeaders: () => new Promise(() => {}),
+    });
+    await NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+    await NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+    await NodeAssert.rejects(trace.checkpoint(), /renderer-trace-drain-timeout/);
+    NodeAssert.equal(trace.summary().incomplete, true);
+    NodeAssert.equal(trace.summary().pendingAtTimeout, 1);
+    NodeAssert.equal(page.listenerCount("request"), 0);
+    NodeAssert.deepEqual(trace.entries, []);
+  },
+);
+
+NodeTest.test("late headers cannot append or fingerprint after timeout or disposal", async () => {
+  for (const finish of ["timeout", "dispose"]) {
+    const page = new NodeEvents.EventEmitter();
+    const trace = new EndpointTrace("t", { drainTimeoutMs: 10 });
+    let resolve;
+    trace.attach(page);
+    page.emit("request", {
+      url: () => `${B}/api?token=private`,
+      method: () => "GET",
+      allHeaders: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    if (finish === "timeout") await NodeAssert.rejects(trace.flush(), /drain-timeout/);
+    trace.dispose();
+    const before = trace.summary();
+    let fingerprints = 0;
+    trace.fingerprint = () => {
+      fingerprints++;
+      return "invalid";
+    };
+    resolve({ authorization: "Bearer late-secret" });
+    await new Promise((done) => setImmediate(done));
+    NodeAssert.deepEqual(trace.entries, []);
+    NodeAssert.equal(fingerprints, 0);
+    NodeAssert.deepEqual(trace.summary().fingerprints, before.fingerprints);
+    NodeAssert.equal(trace.summary().failure, before.failure);
+    NodeAssert.equal(trace.summary().incomplete, true);
+    await NodeAssert.rejects(trace.checkpoint(), /drain-timeout|trace-disposed/);
+  }
+});
+
+NodeTest.test("late catalog replies cannot qualify a disposed trace", async () => {
+  const trace = new EndpointTrace("t");
+  let reply;
+  const catalog = trace.catalog(
+    {
+      evaluate: () =>
+        new Promise((resolve) => {
+          reply = resolve;
+        }),
+    },
+    "b",
+  );
+  trace.dispose();
+  reply({ a: "a", b: "b" });
+  await NodeAssert.rejects(catalog, /trace-disposed/);
+  NodeAssert.deepEqual(trace.summary().fingerprints, {});
+  NodeAssert.throws(() => trace.fingerprint("secret"), /trace-disposed/);
+});
+
+NodeTest.test(
   "the crossover oracle rejects either misplaced bearer and cross-origin ticket reuse",
   () => {
     const clean = [

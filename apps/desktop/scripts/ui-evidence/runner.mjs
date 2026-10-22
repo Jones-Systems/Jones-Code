@@ -21,6 +21,64 @@ import {
 } from "./runtime.mjs";
 import { createScenarioContext, loadScenario } from "./scenario-api.mjs";
 
+export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
+  return async (generation, phase, work) => {
+    if (
+      !Number.isSafeInteger(generation) ||
+      generation < 0 ||
+      ![
+        "identify-before-close",
+        "close",
+        "diagnostics",
+        "launch",
+        "window",
+        "bridge",
+        "setup",
+        "identity",
+      ].includes(phase)
+    )
+      throw new Error("restart-progress-invalid");
+    const record = (state) =>
+      appendFile(
+        `${artifacts}/restart-progress.ndjson`,
+        `${JSON.stringify({ generation, phase, state })}\n`,
+        { mode: 0o600, flush: true },
+      );
+    // The launch ordinal is intended only; requested does not prove a process was spawned.
+    await record(phase === "launch" ? "requested" : "entered");
+    const result = await work();
+    await record(phase === "launch" ? "returned" : "completed");
+    return result;
+  };
+}
+
+export async function launchWithProgress({ index, progress, launch, window, bridge, setup }) {
+  const generation = await progress(index, "launch", launch);
+  await progress(index, "window", window);
+  await progress(index, "bridge", bridge);
+  return progress(index, "setup", () => setup(generation));
+}
+
+export async function restartWithProgress({
+  previous,
+  progress,
+  identify,
+  close,
+  diagnostics,
+  launch,
+  assertIdentity,
+}) {
+  await progress(previous.index, "identify-before-close", () => identify(previous));
+  await progress(previous.index, "close", () => close(previous));
+  await progress(previous.index, "diagnostics", () => diagnostics(previous));
+  const replacement = await launch();
+  await progress(replacement.generation.index, "identity", async () => {
+    await identify(replacement.generation);
+    assertIdentity(previous, replacement.generation);
+  });
+  return replacement;
+}
+
 async function startXvfb(size) {
   const child = NodeChildProcess.spawn(
     "/usr/bin/Xvfb",
@@ -110,82 +168,94 @@ export async function runInner() {
     const scenario = await loadScenario("/harness/scenario.mjs");
     xvfb = await startXvfb(configuration.size);
     const { _electron } = await import("playwright-core");
-    const launchApplication = async () => {
-      phase = "electron-launch";
-      const generation = await launchManagedElectron({
-        service: secretService,
-        pending: (value) => {
-          result.pendingElectronLaunch = value;
+    const progress = generationProgress("/artifacts");
+    const launchApplication = () =>
+      launchWithProgress({
+        index: generations.length,
+        progress,
+        launch: async () => {
+          phase = "electron-launch";
+          return launchManagedElectron({
+            service: secretService,
+            pending: (value) => {
+              result.pendingElectronLaunch = value;
+            },
+            launch: (serviceEnvironment) =>
+              _electron.launch({
+                executablePath: "/electron/electron",
+                args: [
+                  "/app/apps/desktop/dist-electron/boot.cjs",
+                  `--force-device-scale-factor=${configuration.scale}`,
+                  ...(secretService ? ["--password-store=gnome-libsecret"] : []),
+                ],
+                env: { ...process.env, DISPLAY: xvfb.display, ...serviceEnvironment },
+                chromiumSandbox: true,
+                timeout: 60000,
+              }),
+            register: (launched) => {
+              app = launched;
+              processCapture = captureProcess(app.process());
+              const owned = { index: generations.length, app, processCapture, closed: false };
+              generations.push(owned);
+              return owned;
+            },
+            close: closeApplicationGeneration,
+          });
         },
-        launch: (serviceEnvironment) =>
-          _electron.launch({
-            executablePath: "/electron/electron",
-            args: [
-              "/app/apps/desktop/dist-electron/boot.cjs",
-              `--force-device-scale-factor=${configuration.scale}`,
-              ...(secretService ? ["--password-store=gnome-libsecret"] : []),
-            ],
-            env: { ...process.env, DISPLAY: xvfb.display, ...serviceEnvironment },
-            chromiumSandbox: true,
-            timeout: 60000,
-          }),
-        register: (launched) => {
-          app = launched;
-          processCapture = captureProcess(app.process());
-          const owned = { index: generations.length, app, processCapture, closed: false };
-          generations.push(owned);
-          return owned;
+        window: async () => {
+          phase = "first-window";
+          page = await managedWait(app.firstWindow({ timeout: 60000 }));
         },
-        close: closeApplicationGeneration,
+        bridge: async () => {
+          phase = "desktop-bridge";
+          if (secretService) await secretService.assertBackend(app);
+          await managedWait(
+            page.waitForFunction(() => Boolean(window.desktopBridge), undefined, {
+              timeout: 60000,
+            }),
+          );
+        },
+        setup: async (generation) => {
+          phase = "scenario-setup";
+          const generationPage = page;
+          const networkState = await app.context().newCDPSession(generationPage);
+          await networkState.send("Network.enable");
+          result.isolation.browserConnectivity ??= {
+            kind: "CDP navigator state only",
+            latencyMarkerMs: 1,
+            externalNetwork: "unavailable in private namespace",
+            readbacks: [],
+          };
+          const restoreConnectivity = async () => {
+            const onlineBefore = await generationPage.evaluate(() => navigator.onLine);
+            // A nonneutral CDP state enables local-only connectivity without adding a network interface.
+            await networkState.send("Network.overrideNetworkState", {
+              offline: false,
+              latency: 1,
+              downloadThroughput: -1,
+              uploadThroughput: -1,
+              connectionType: "ethernet",
+            });
+            await generationPage.waitForFunction(() => navigator.onLine === true);
+            result.isolation.browserConnectivity.readbacks.push({ onlineBefore, onlineAfter: true });
+          };
+          await restoreConnectivity();
+          const paths = await app.evaluate(({ app }) => ({
+            userData: app.getPath("userData"),
+            home: app.getPath("home"),
+            t3home: process.env.T3CODE_HOME,
+          }));
+          if (
+            !paths.userData.startsWith("/scratch/xdg-config/") ||
+            paths.home !== "/scratch/home" ||
+            paths.t3home !== "/scratch/t3home"
+          )
+            throw new Error("Electron wrote outside its private data roots");
+          result.isolation.assertedPaths = paths;
+          generation.paths = paths;
+          return { electronApp: app, page, restoreConnectivity, generation };
+        },
       });
-      phase = "first-window";
-      page = await managedWait(app.firstWindow({ timeout: 60000 }));
-      if (secretService) await secretService.assertBackend(app);
-      phase = "desktop-bridge";
-      await managedWait(
-        page.waitForFunction(() => Boolean(window.desktopBridge), undefined, {
-          timeout: 60000,
-        }),
-      );
-      phase = "scenario-setup";
-      const generationPage = page;
-      const networkState = await app.context().newCDPSession(generationPage);
-      await networkState.send("Network.enable");
-      result.isolation.browserConnectivity ??= {
-        kind: "CDP navigator state only",
-        latencyMarkerMs: 1,
-        externalNetwork: "unavailable in private namespace",
-        readbacks: [],
-      };
-      const restoreConnectivity = async () => {
-        const onlineBefore = await generationPage.evaluate(() => navigator.onLine);
-        // A nonneutral CDP state enables local-only connectivity without adding a network interface.
-        await networkState.send("Network.overrideNetworkState", {
-          offline: false,
-          latency: 1,
-          downloadThroughput: -1,
-          uploadThroughput: -1,
-          connectionType: "ethernet",
-        });
-        await generationPage.waitForFunction(() => navigator.onLine === true);
-        result.isolation.browserConnectivity.readbacks.push({ onlineBefore, onlineAfter: true });
-      };
-      await restoreConnectivity();
-      const paths = await app.evaluate(({ app }) => ({
-        userData: app.getPath("userData"),
-        home: app.getPath("home"),
-        t3home: process.env.T3CODE_HOME,
-      }));
-      if (
-        !paths.userData.startsWith("/scratch/xdg-config/") ||
-        paths.home !== "/scratch/home" ||
-        paths.t3home !== "/scratch/t3home"
-      )
-        throw new Error("Electron wrote outside its private data roots");
-      result.isolation.assertedPaths = paths;
-      generation.paths = paths;
-      return { electronApp: app, page, restoreConnectivity, generation };
-    };
     const identifyGeneration = async (generation) => {
       generation.processes = await captureApplicationProcesses(generation.app);
       const path = "/scratch/t3home/userdata/statev2.sqlite";
@@ -195,21 +265,28 @@ export async function runInner() {
     };
     const restartApplication = async () => {
       const previous = generations.at(-1);
-      await identifyGeneration(previous);
-      phase = "application-restart-close";
-      await closeApplicationGeneration(previous);
-      const artifacts = `/artifacts/generation-${previous.index}`;
-      await NodeFSP.mkdir(artifacts, { mode: 0o700 });
-      previous.diagnostics = await writeStartupDiagnostics({
-        artifacts,
-        processCapture: previous.processCapture,
-        logs: await captureSyntheticLogs(),
-        readiness: { status: "scenario-restart" },
-        phase,
+      const replacement = await restartWithProgress({
+        previous,
+        progress,
+        identify: identifyGeneration,
+        close: async (generation) => {
+          phase = "application-restart-close";
+          await closeApplicationGeneration(generation);
+        },
+        diagnostics: async (generation) => {
+          const artifacts = `/artifacts/generation-${generation.index}`;
+          await NodeFSP.mkdir(artifacts, { mode: 0o700 });
+          generation.diagnostics = await writeStartupDiagnostics({
+            artifacts,
+            processCapture: generation.processCapture,
+            logs: await captureSyntheticLogs(),
+            readiness: { status: "scenario-restart" },
+            phase,
+          });
+        },
+        launch: launchApplication,
+        assertIdentity: assertRestartIdentity,
       });
-      const replacement = await launchApplication();
-      await identifyGeneration(replacement.generation);
-      assertRestartIdentity(previous, replacement.generation);
       return {
         ...replacement,
         evidence: {

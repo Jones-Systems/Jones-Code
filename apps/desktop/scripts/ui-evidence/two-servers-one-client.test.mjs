@@ -1,5 +1,7 @@
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
+import * as NodeEvents from "node:events";
+import { EndpointTrace } from "./support/endpoint-trace.mjs";
 import {
   canonical,
   selectedSnapshot,
@@ -9,6 +11,8 @@ import {
   assertRowCounts,
   assertPinSnapshot,
   inspectEncryptedCatalog,
+  finalizeEvidence,
+  recordRestartStep,
 } from "./scenarios/two-servers-one-client.mjs";
 
 const fixture = { projectId: "p", threadId: "t", controlThreadId: "c", liveThreadId: "live" };
@@ -26,6 +30,194 @@ const snapshot = () => ({
   })),
   archivedThreads: [],
 });
+
+function finalizationFixture({
+  pending = false,
+  primary,
+  writeFailure,
+  cleanupFailure,
+  scanFailure,
+} = {}) {
+  const page = new NodeEvents.EventEmitter();
+  const trace = new EndpointTrace("t", { drainTimeoutMs: 10 });
+  trace.attach(page);
+  if (pending)
+    page.emit("request", {
+      url: () => "http://127.0.0.1:43773/api",
+      allHeaders: () => new Promise(() => {}),
+    });
+  const writes = [],
+    events = [];
+  let stops = 0,
+    attempts = 0;
+  const secondary = {
+    evidence: { stop: { outcome: "not-requested" } },
+    assertSafeEvidence(value) {
+      events.push("scan");
+      NodeAssert.equal(JSON.stringify(value).includes("private-secret"), false);
+      if (scanFailure) throw new Error("private-secret");
+    },
+    async stop() {
+      events.push("stop");
+      stops++;
+      this.evidence = { stop: { outcome: cleanupFailure ? "unknown" : "stopped" } };
+      if (cleanupFailure) throw new Error("private-secret");
+    },
+  };
+  const evidence = {
+    status: primary ? "failed" : "passed",
+    steps: [{ name: "restart-disabled-b", status: primary ? "failed" : "passed" }],
+  };
+  const run = () =>
+    finalizeEvidence({
+      evidence,
+      trace,
+      secondary,
+      path: "/synthetic/je03-evidence.json",
+      failed: primary ? new Error(primary) : undefined,
+      writeFile: async (path, bytes, options) => {
+        attempts++;
+        events.push("write");
+        if (attempts === writeFailure) throw new Error("private-secret");
+        writes.push({ path, value: JSON.parse(bytes), options });
+      },
+    });
+  return { run, trace, page, evidence, writes, events, stops: () => stops };
+}
+
+NodeTest.test(
+  "primary failure is persisted before a stuck drain and survives cleanup failure",
+  { timeout: 250 },
+  async () => {
+    const f = finalizationFixture({
+      pending: true,
+      primary: "restart-disabled-b-timeout",
+      cleanupFailure: true,
+    });
+    const flushing = f.trace.flush.bind(f.trace);
+    f.trace.flush = async () => {
+      NodeAssert.equal(f.writes.length, 1);
+      NodeAssert.equal(f.writes[0].value.failure, "restart-disabled-b-timeout");
+      NodeAssert.equal(f.writes[0].value.finalization.drain, "pending");
+      NodeAssert.equal(f.writes[0].options.flag, "wx");
+      NodeAssert.equal(f.writes[0].options.flush, true);
+      return flushing();
+    };
+    const failed = await f.run();
+    NodeAssert.equal(failed.message, "restart-disabled-b-timeout");
+    NodeAssert.equal(f.stops(), 1);
+    const final = f.writes.at(-1).value;
+    NodeAssert.equal(final.status, "failed");
+    NodeAssert.equal(final.failure, "restart-disabled-b-timeout");
+    NodeAssert.equal(final.trace.incomplete, true);
+    NodeAssert.equal(final.trace.pendingAtTimeout, 1);
+    NodeAssert.deepEqual(final.finalization, { drain: "failed", cleanup: "failed" });
+  },
+);
+
+NodeTest.test(
+  "a successful scenario cannot pass when trace draining fails",
+  { timeout: 250 },
+  async () => {
+    const f = finalizationFixture({ pending: true });
+    NodeAssert.equal((await f.run()).message, "renderer-network-unobservable");
+    NodeAssert.equal(f.stops(), 1);
+    NodeAssert.ok(f.writes.every(({ value }) => value.status === "failed"));
+    NodeAssert.equal(f.writes.at(-1).value.finalization.cleanup, "completed");
+  },
+);
+
+NodeTest.test(
+  "evidence rejection still performs one cleanup and keeps the earlier failure",
+  async () => {
+    for (const fault of [{ writeFailure: 1 }, { writeFailure: 2 }, { scanFailure: true }]) {
+      for (const primary of [undefined, "restart-disabled-b-timeout", "Error https://private-secret"]) {
+        const f = finalizationFixture({ ...fault, primary });
+        const failed = await f.run();
+        NodeAssert.equal(f.stops(), 1);
+        NodeAssert.equal(f.evidence.status, "failed");
+        NodeAssert.equal(JSON.stringify(f.evidence).includes("private-secret"), false);
+        if (primary) NodeAssert.equal(failed.message, primary.includes(" ") ? "je03-failed" : primary);
+        else NodeAssert.match(failed.message, /evidence.*failed/);
+        NodeAssert.throws(() => f.trace.fingerprint("secret"), /trace-disposed/);
+        if (fault.writeFailure === 1 || fault.scanFailure) NodeAssert.equal(f.writes.length, 0);
+      }
+    }
+  },
+);
+
+NodeTest.test("only completed drain, cleanup and evidence can finalize success", async () => {
+  const f = finalizationFixture();
+  NodeAssert.equal(await f.run(), undefined);
+  NodeAssert.equal(f.writes[0].value.status, "failed");
+  NodeAssert.equal(f.writes[1].value.status, "passed");
+  NodeAssert.deepEqual(f.writes[1].value.finalization, { drain: "completed", cleanup: "completed" });
+  NodeAssert.equal(f.stops(), 1);
+  NodeAssert.deepEqual(f.events, ["scan", "write", "scan", "stop", "write"]);
+  const cleanup = finalizationFixture({ cleanupFailure: true });
+  NodeAssert.equal((await cleanup.run()).message, "secondary-stop-unknown");
+  NodeAssert.equal(cleanup.writes.at(-1).value.status, "failed");
+});
+
+NodeTest.test(
+  "observations completed during drain are secret-scanned before cleanup wipes matchers",
+  async () => {
+    const f = finalizationFixture();
+    let resolve;
+    f.page.emit("request", {
+      url: () => "http://private-secret/api",
+      method: () => "GET",
+      allHeaders: () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    });
+    const flush = f.trace.flush.bind(f.trace);
+    f.trace.flush = () => {
+      resolve({});
+      return flush();
+    };
+    NodeAssert.equal((await f.run()).message, "secret-in-evidence-or-write-failed");
+    NodeAssert.equal(f.stops(), 1);
+    NodeAssert.equal(f.writes.length, 1);
+    NodeAssert.equal(f.writes[0].value.status, "failed");
+    NodeAssert.equal(JSON.stringify(f.writes).includes("private-secret"), false);
+    NodeAssert.deepEqual(f.events, ["scan", "write", "scan", "stop"]);
+  },
+);
+
+NodeTest.test(
+  "restart, reload and trace checkpoint retain the last entered boundary",
+  { timeout: 250 },
+  async () => {
+    for (const phase of ["restart", "reload", "checkpoint"]) {
+      const records = [];
+      const f = finalizationFixture({ pending: phase === "checkpoint" });
+      try {
+        await NodeAssert.rejects(
+          recordRestartStep(
+            "/synthetic",
+            phase,
+            async () => {
+              NodeAssert.deepEqual(records, [{ phase, state: "entered" }]);
+              if (phase === "checkpoint") return f.trace.checkpoint();
+              throw new Error("synthetic-boundary-failure");
+            },
+            async (path, bytes, options) => {
+              NodeAssert.equal(path, "/synthetic/je03-restart-progress.ndjson");
+              NodeAssert.equal(options.flush, true);
+              records.push(JSON.parse(bytes));
+            },
+          ),
+          /synthetic-boundary-failure|drain-timeout/,
+        );
+        NodeAssert.deepEqual(records, [{ phase, state: "entered" }]);
+      } finally {
+        f.trace.dispose();
+      }
+    }
+  },
+);
 
 NodeTest.test(
   "identical native IDs have disjoint exact environment selectors on both shelves",
