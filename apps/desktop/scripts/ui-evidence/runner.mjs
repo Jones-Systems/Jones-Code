@@ -8,6 +8,11 @@ import {
   probeReadiness,
   writeStartupDiagnostics,
 } from "./startup-diagnostics.mjs";
+import {
+  createManagedSecretService,
+  preserveAndCloseSecretService,
+  launchManagedElectron,
+} from "./support/secret-service.mjs";
 import { isolationProbe } from "./probe.mjs";
 import {
   captureApplicationProcesses,
@@ -74,7 +79,8 @@ async function sampleResources() {
 }
 export async function runInner() {
   const configuration = JSON.parse(await NodeFSP.readFile("/harness/config.json", "utf8"));
-  let app, page, xvfb, ctx, timer, processCapture;
+  let app, page, xvfb, ctx, timer, processCapture, secretService;
+  const managedWait = (promise) => (secretService ? secretService.wait(promise) : promise);
   const generations = [];
   let phase = "isolation";
   let readiness = { status: "not-requested" };
@@ -96,30 +102,51 @@ export async function runInner() {
   let code = 2;
   try {
     result.isolation = await isolationProbe(configuration.realHome);
+    if (configuration.managedSecretService) {
+      phase = "secret-service-setup";
+      secretService = createManagedSecretService(configuration.managedSecretService);
+      await secretService.start();
+    }
     const scenario = await loadScenario("/harness/scenario.mjs");
     xvfb = await startXvfb(configuration.size);
     const { _electron } = await import("playwright-core");
     const launchApplication = async () => {
       phase = "electron-launch";
-      app = await _electron.launch({
-        executablePath: "/electron/electron",
-        args: [
-          "/app/apps/desktop/dist-electron/boot.cjs",
-          `--force-device-scale-factor=${configuration.scale}`,
-        ],
-        env: { ...process.env, DISPLAY: xvfb.display },
-        chromiumSandbox: true,
-        timeout: 60000,
+      const generation = await launchManagedElectron({
+        service: secretService,
+        pending: (value) => {
+          result.pendingElectronLaunch = value;
+        },
+        launch: (serviceEnvironment) =>
+          _electron.launch({
+            executablePath: "/electron/electron",
+            args: [
+              "/app/apps/desktop/dist-electron/boot.cjs",
+              `--force-device-scale-factor=${configuration.scale}`,
+              ...(secretService ? ["--password-store=gnome-libsecret"] : []),
+            ],
+            env: { ...process.env, DISPLAY: xvfb.display, ...serviceEnvironment },
+            chromiumSandbox: true,
+            timeout: 60000,
+          }),
+        register: (launched) => {
+          app = launched;
+          processCapture = captureProcess(app.process());
+          const owned = { index: generations.length, app, processCapture, closed: false };
+          generations.push(owned);
+          return owned;
+        },
+        close: closeApplicationGeneration,
       });
-      processCapture = captureProcess(app.process());
-      const generation = { index: generations.length, app, processCapture, closed: false };
-      generations.push(generation);
       phase = "first-window";
-      page = await app.firstWindow({ timeout: 60000 });
+      page = await managedWait(app.firstWindow({ timeout: 60000 }));
+      if (secretService) await secretService.assertBackend(app);
       phase = "desktop-bridge";
-      await page.waitForFunction(() => Boolean(window.desktopBridge), undefined, {
-        timeout: 60000,
-      });
+      await managedWait(
+        page.waitForFunction(() => Boolean(window.desktopBridge), undefined, {
+          timeout: 60000,
+        }),
+      );
       phase = "scenario-setup";
       const generationPage = page;
       const networkState = await app.context().newCDPSession(generationPage);
@@ -253,7 +280,8 @@ export async function runInner() {
         sampling = false;
       }
     }, 1000);
-    await new Promise((resolve) => setTimeout(resolve, 20000));
+    if (secretService) await secretService.sleep(20000);
+    else await new Promise((resolve) => setTimeout(resolve, 20000));
     const settled = await sampleResources();
     result.resources.settledCpuPercent = Math.max(
       0,
@@ -268,7 +296,7 @@ export async function runInner() {
     code = 1;
     const captureStart = performance.now();
     phase = "scenario";
-    await scenario.run(ctx);
+    await managedWait(scenario.run(ctx));
     result.resources.scenarioSeconds = (performance.now() - captureStart) / 1000;
     result.window = await app.evaluate(({ BrowserWindow, nativeTheme }) => ({
       bounds: BrowserWindow.getAllWindows()[0].getBounds(),
@@ -286,8 +314,26 @@ export async function runInner() {
     code = 0;
   } catch (error) {
     result.error = error.message;
+    if (secretService) {
+      try {
+        await NodeFSP.writeFile(
+          "/artifacts/secret-service-failure.json",
+          JSON.stringify(secretService.snapshot(), null, 2),
+          { mode: 0o600 },
+        );
+      } catch {
+        result.secretServiceFailureEvidence = "unavailable";
+      }
+      if (secretService.snapshot().cancelled) {
+        try {
+          await secretService.close();
+        } catch {
+          result.secretServiceCancellationCleanup = "unproved";
+        }
+      }
+    }
     if (app && error.name === "TimeoutError") readiness = await probeReadiness(app);
-    if (ctx)
+    if (ctx && !secretService?.snapshot().cancelled)
       try {
         await ctx.capture("failure");
       } catch {
@@ -295,67 +341,93 @@ export async function runInner() {
       }
   } finally {
     clearInterval(timer);
-    if (ctx) Object.assign(result, ctx.results());
-    const teardown = performance.now();
-    const logs = await captureSyntheticLogs();
-    for (const generation of generations) {
-      if (generation.closed) continue;
+    try {
+      if (ctx) Object.assign(result, ctx.results());
+      const teardown = performance.now();
+      const logs = await captureSyntheticLogs();
+      for (const generation of generations) {
+        if (generation.closed) continue;
+        try {
+          await closeApplicationGeneration(generation);
+        } catch (error) {
+          generation.closeError = error.message;
+          result.closeError = error.message;
+          if (code === 0) {
+            code = 1;
+            result.status = "failed";
+          }
+        }
+      }
+      result.processGenerations = generations.map(
+        ({
+          index,
+          processes,
+          paths,
+          database,
+          closeAttempted,
+          closed,
+          exit,
+          closeError,
+          diagnostics,
+        }) => ({
+          index,
+          processes,
+          paths,
+          database,
+          closeAttempted,
+          closed,
+          exit,
+          closeError,
+          diagnostics,
+        }),
+      );
       try {
-        await closeApplicationGeneration(generation);
+        result.startupDiagnostics = await writeStartupDiagnostics({
+          artifacts: "/artifacts",
+          processCapture,
+          logs,
+          readiness,
+          phase,
+        });
       } catch (error) {
-        generation.closeError = error.message;
-        result.closeError = error.message;
+        result.startupDiagnosticsError = error.message;
         if (code === 0) {
           code = 1;
           result.status = "failed";
         }
+      } finally {
+        for (const generation of generations) generation.processCapture.dispose();
       }
-    }
-    result.processGenerations = generations.map(
-      ({
-        index,
-        processes,
-        paths,
-        database,
-        closeAttempted,
-        closed,
-        exit,
-        closeError,
-        diagnostics,
-      }) => ({
-        index,
-        processes,
-        paths,
-        database,
-        closeAttempted,
-        closed,
-        exit,
-        closeError,
-        diagnostics,
-      }),
-    );
-    try {
-      result.startupDiagnostics = await writeStartupDiagnostics({
-        artifacts: "/artifacts",
-        processCapture,
-        logs,
-        readiness,
-        phase,
-      });
-    } catch (error) {
-      result.startupDiagnosticsError = error.message;
-      if (code === 0) {
-        code = 1;
-        result.status = "failed";
-      }
+      await stop(xvfb?.child);
+      result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
     } finally {
-      for (const generation of generations) generation.processCapture.dispose();
+      if (secretService) {
+        try {
+          await preserveAndCloseSecretService(secretService, (evidence) =>
+            NodeFSP.writeFile(
+              "/artifacts/secret-service-before-cleanup.json",
+              JSON.stringify(evidence, null, 2),
+              { mode: 0o600 },
+            ),
+          );
+        } catch (error) {
+          result.secretServiceTeardownError = error.message;
+          if (code === 0) {
+            code = 1;
+            result.status = "failed";
+          }
+        } finally {
+          result.secretService = secretService.snapshot();
+          if (result.secretService.cancelled) {
+            code = result.secretService.cancelled === "SIGINT" ? 130 : 143;
+            result.status = "failed";
+          }
+        }
+      }
+      await NodeFSP.writeFile("/artifacts/inner.json", JSON.stringify(result, null, 2), {
+        mode: 0o600,
+      });
     }
-    await stop(xvfb?.child);
-    result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
-    await NodeFSP.writeFile("/artifacts/inner.json", JSON.stringify(result, null, 2), {
-      mode: 0o600,
-    });
   }
   return code;
 }
