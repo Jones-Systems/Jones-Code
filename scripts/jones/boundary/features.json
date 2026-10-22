@@ -1462,6 +1462,14 @@
       "id": "composer-attachment-capacity",
       "tests": ["apps/web/src/jones/composer/attachmentCapacity.test.ts"],
       "scope": "Composer stash and context attachments reserve the actual remaining attachment capacity before import, preserving existing drafts and bounded attachment limits."
+    },
+    {
+      "id": "mobile-showcase-metro",
+      "tests": [
+        "scripts/jones/mobile/showcase-metro.node-test.mjs",
+        "scripts/mobile-showcase.test.ts"
+      ],
+      "scope": "Showcase Metro uses a run-selected available port, preserves intentional config and environment overrides, rejects busy explicit ports, and requires child liveness, Metro status and successful bundle warming. The shared runner passes the selected port to both platforms and retains explicit reuse and keep-running modes. Jones-owned socket and child lifecycle tests cover unrelated listeners, dead children, startup errors, timeouts and cleanup isolation. The scripts package registers the focused Node tests alongside its existing Node suite; the existing showcase tests retain CLI and capture-planning coverage."
     }
   ]
 }

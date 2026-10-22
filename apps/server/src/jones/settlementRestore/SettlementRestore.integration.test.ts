@@ -472,6 +472,118 @@ it.layer(TestLayer)("settlement restore", (it) => {
     }),
   );
 
+  it.effect("self-settles after the owner cancels queued work before it starts", () =>
+    Effect.gen(function* () {
+      const prefix = "cancelled-successor";
+      const { orchestrator, threadId } = yield* createThread(prefix);
+      yield* send(threadId, `${prefix}-pin`, { type: "thread.pin", orderKey: "t" });
+      for (const [suffix, type] of [
+        ["start", "start_immediately"],
+        ["queue", "queue_after_active"],
+      ] as const)
+        yield* send(threadId, `${prefix}-${suffix}`, {
+          type: "message.dispatch",
+          createdBy: "user",
+          creationSource: "web",
+          messageId: MessageId.make(`${prefix}-${suffix}-message`),
+          text: suffix === "start" ? "Finish this task" : "Then this",
+          attachments: [],
+          dispatchMode: { type },
+        });
+      const initial = yield* orchestrator.getThreadProjection(threadId);
+      const [run, queued] = initial.runs.toSorted((a, b) => a.ordinal - b.ordinal);
+      assert.equal(queued?.status, "queued");
+      yield* send(threadId, `${prefix}-cancel-queued`, {
+        type: "queued-run.cancel",
+        runId: queued!.id,
+      });
+      const cancelled = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (candidate) => candidate.id === queued!.id,
+      );
+      assert.equal(cancelled?.status, "cancelled");
+      assert.isNull(cancelled?.startedAt ?? null);
+
+      const provider = initial.providerThreads[0]!;
+      const sink = yield* EventSink.EventSinkV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const now = yield* DateTime.now;
+      const spy = vi
+        .spyOn(sessions, "isMcpCallerAttached")
+        .mockImplementation((input) =>
+          Effect.succeed(
+            input.threadId === threadId &&
+              input.mcpCredentialId === "self-credential" &&
+              input.providerSessionId === provider.providerSessionId,
+          ),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => spy.mockRestore()));
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${prefix}-attached`),
+            type: "provider-session.attached",
+            threadId,
+            occurredAt: now,
+            payload: {
+              id: provider.providerSessionId!,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              status: "running",
+              cwd: process.cwd(),
+              model: modelSelection.model,
+              capabilities: CodexProviderCapabilitiesV2,
+              createdAt: now,
+              updatedAt: now,
+              lastError: null,
+            },
+          },
+        ],
+      });
+      const intent = yield* orchestrator.requestSelfSettlement({
+        threadId,
+        commandId: CommandId.make(`${prefix}-request`),
+        mcpCredentialId: "self-credential",
+        providerInstanceId: modelSelection.instanceId,
+      });
+      assert.equal(intent.runId, run!.id);
+
+      // Settling emits thread.settled before clearing the intent; cancelling only clears it.
+      const outcomes = yield* Queue.unbounded<string>();
+      yield* sink
+        .stream({ threadId, afterSequence: yield* orchestrator.getThreadEventSequence(threadId) })
+        .pipe(
+          Stream.runForEach((stored) =>
+            stored.event.type === "thread.settled" ||
+            (stored.event.type === "thread.metadata-updated" &&
+              stored.event.payload.selfSettlement == null)
+              ? Queue.offer(outcomes, stored.event.type)
+              : Effect.void,
+          ),
+          Effect.forkScoped,
+        );
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${prefix}-completed`),
+            type: "run.updated",
+            threadId,
+            runId: run!.id,
+            occurredAt: now,
+            payload: { ...run!, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      assert.equal(yield* Queue.take(outcomes), "thread.settled");
+      assert.equal((yield* placement(threadId)).settledOverride, "settled");
+      assert.equal((yield* rowFor(threadId))?.settle_command_id, `${prefix}-request:settle`);
+      assert.equal(
+        (yield* restore(threadId, `${prefix}-request:settle`, `${prefix}-restore`)).outcome,
+        "restored",
+      );
+      assert.equal((yield* placement(threadId)).pinOrderKey, "t");
+    }),
+  );
+
   it.effect("a no-op re-settle keeps the original record", () =>
     Effect.gen(function* () {
       const { threadId } = yield* createThread("noop");
