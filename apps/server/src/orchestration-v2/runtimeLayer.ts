@@ -1,3 +1,4 @@
+import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
@@ -209,6 +210,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 );
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(layerProviderSwitchServiceProvided),
   Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(
     Layer.mergeAll(
@@ -427,6 +429,17 @@ export const layer = Layer.mergeAll(
   layerEventSinkProvided,
   currentRuntimeStopProvided,
   providerConversationReselectionProvided,
+  ThreadSelfConfiguration.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerEventSinkProvided,
+        ProjectionStore.layer,
+        layerProviderSessionManagerProvided,
+        ThreadCommandExecutor.layer,
+        layerProviderSwitchServiceProvided,
+      ),
+    ),
+  ),
   layerCommandOutputHubProvided,
   layerOrchestratorProvided,
   layerMcpAppRequestsProvided,

@@ -1431,6 +1431,29 @@
         "apps/web/src/threadRoutes.test.ts"
       ],
       "scope": "Web child-input title links and Open question/Open approval actions navigate with the selected child environment and thread identity; mobile child-input navigation uses the same scoped identity. The tiny callback edits remain in the existing accepted-shared ChatView and ThreadDetailScreen files because extracting navigation would add an unnecessary adapter. Their hook paths remain owned by composer-shortcuts-extraction and thread-read-dwell respectively. Existing selector tests cover local descendants, remote linked tasks and nested remote children; route tests cover scoped route resolution. Browser interaction evidence covers actual banner controls and the destination view; those unit tests alone do not prove click wiring. Existing ID-only related-thread callbacks keep their same-environment contract. No provider, selector, wire, stored-state or missing-thread fallback changes."
+    },
+    {
+      "id": "thread-self-configuration",
+      "tests": [
+        "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
+        "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+        "apps/server/src/mcp/McpToolAccess.race.test.ts",
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts"
+      ],
+      "scope": "Self-only MCP saves validated future defaults under the thread command lock and transactional execution/revision revalidation. Fingerprinted durable receipts preserve retry identity. Current attached execution owns caller authorization and normal safe-start transitions; queued and recovery selections never overwrite newer defaults. Registered-tool and actual Codex outbound replay tests cover continued execution and later admission."
     }
   ]
 }

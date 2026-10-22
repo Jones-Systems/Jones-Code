@@ -210,6 +210,7 @@ export interface ProviderSessionManagerV2Shape {
   >;
   readonly get: (
     providerSessionId: ProviderSessionId,
+    options?: { readonly touchActivity: boolean },
   ) => Effect.Effect<
     Option.Option<ProviderAdapter.ProviderAdapterV2SessionRuntime>,
     ProviderSessionManagerV2Error
@@ -3054,13 +3055,13 @@ export const layerWithOptions = (
           Ref.get(sessions).pipe(
             Effect.map((current) => current.has(sessionKey(providerSessionId))),
           ),
-        get: (providerSessionId) =>
+        get: (providerSessionId, options) =>
           Effect.gen(function* () {
             const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
             if (entry === undefined) {
               return Option.none<ProviderAdapter.ProviderAdapterV2SessionRuntime>();
             }
-            yield* touchActivity(providerSessionId);
+            if (options?.touchActivity !== false) yield* touchActivity(providerSessionId);
             return Option.some(entry.exposedRuntime);
           }).pipe(
             Effect.mapError(

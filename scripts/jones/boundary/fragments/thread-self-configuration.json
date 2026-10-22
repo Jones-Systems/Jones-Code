@@ -1,0 +1,70 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "thread-self-configuration",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/threadConfiguration/testkit.ts",
+    "apps/server/src/jones/threadConfiguration/executionSelection.ts",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts",
+    "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+    "apps/server/src/jones/threadConfiguration/tools.ts",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/mcp/threadAccess.ts",
+    "apps/server/src/mcp/toolkits/thread/handlers.ts",
+    "apps/server/src/mcp/toolkits/thread/tools.ts",
+    "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+    "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+    "packages/shared/src/t3McpToolPresentation.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/threadConfiguration/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/handlers.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/thread/handlers.ts",
+      "to": "apps/server/src/jones/threadConfiguration/tools.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadConfiguration/executionSelection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+      "to": "apps/server/src/jones/threadConfiguration/executionSelection.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/threadSelfConfiguration.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts"
+    }
+  ]
+}

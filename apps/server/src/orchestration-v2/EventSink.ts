@@ -1,3 +1,4 @@
+import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
@@ -336,6 +337,7 @@ export interface EventSinkV2Shape {
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
@@ -1136,6 +1138,8 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (input.threadSelfConfiguration)
+            input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
 

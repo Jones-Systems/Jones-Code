@@ -2361,6 +2361,34 @@
         "node scripts/mobile-native-static-check.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-thread-self-configuration",
+      "tests": [
+        "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
+        "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+        "apps/server/src/mcp/McpToolAccess.race.test.ts",
+        "apps/server/src/mcp/McpToolAccess.test.ts",
+        "apps/server/src/mcp/toolkits/core.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts",
+        "apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/QueueCompatibility.test.ts",
+        "apps/server/src/orchestration-v2/QueuedRunOrder.test.ts",
+        "apps/server/src/orchestration-v2/RestartContinuation.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
+        "packages/provider-core/src/server/orchestrationInstructions.test.ts",
+        "packages/shared/src/t3McpToolPresentation.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.regression.test.ts apps/server/src/orchestration-v2/ProviderRuntimeRecoveryService.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderSwitchService.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/QueueCompatibility.test.ts apps/server/src/orchestration-v2/QueuedRunOrder.test.ts apps/server/src/orchestration-v2/RestartContinuation.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts packages/provider-core/src/server/orchestrationInstructions.test.ts packages/shared/src/t3McpToolPresentation.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/contracts typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

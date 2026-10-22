@@ -1,3 +1,4 @@
+import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
 import {
   ModelSelection,
   OrchestrationV2ThreadProjection,
@@ -41,7 +42,8 @@ export interface ProviderSwitchServiceV2Shape {
     readonly projection: Pick<
       OrchestrationV2ThreadProjection,
       "thread" | "providerSessions" | "providerThreads"
-    >;
+    > &
+      Partial<Pick<OrchestrationV2ThreadProjection, "runs">>;
     readonly targetModelSelection: ModelSelection;
   }) => Effect.Effect<ProviderSwitchPlanV2, ProviderSwitchPlanError>;
 }
@@ -66,6 +68,7 @@ export const layer: Layer.Layer<
     return ProviderSwitchServiceV2.of({
       plan: ({ projection, targetModelSelection }) =>
         Effect.gen(function* () {
+          projection = executionProjection(projection);
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
           const modelChanged = current.model !== targetModelSelection.model;
@@ -93,15 +96,26 @@ export const layer: Layer.Layer<
               (left, right) =>
                 DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
             );
-          const currentSession = currentSessions.find(isLiveProviderSession);
-          const negotiatedCapabilities =
-            currentSession?.capabilities ?? currentSessions[0]?.capabilities;
-          const currentProviderThread = projection.providerThreads.find(
+          const boundProviderThread = projection.providerThreads.find(
             (thread) =>
               thread.id === projection.thread.activeProviderThreadId &&
-              thread.providerInstanceId === current.instanceId &&
-              thread.nativeThreadRef !== null,
+              thread.providerInstanceId === current.instanceId,
           );
+          const boundSession = currentSessions.find(
+            (session) => session.id === boundProviderThread?.providerSessionId,
+          );
+          const currentSession =
+            boundProviderThread === undefined
+              ? currentSessions.find(isLiveProviderSession)
+              : boundSession !== undefined && isLiveProviderSession(boundSession)
+                ? boundSession
+                : undefined;
+          const negotiatedCapabilities =
+            currentSession?.capabilities ??
+            boundSession?.capabilities ??
+            (boundProviderThread === undefined ? currentSessions[0]?.capabilities : undefined);
+          const currentProviderThread =
+            boundProviderThread?.nativeThreadRef != null ? boundProviderThread : undefined;
           const currentDriver = Option.isSome(currentInstance)
             ? currentInstance.value.driver
             : (projection.providerThreads.find(

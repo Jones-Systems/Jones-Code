@@ -195,6 +195,7 @@ export function runOrchestratorV2ProviderReplayScenario<
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -237,6 +238,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -258,6 +260,20 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 }
 
 export function layerWithRegistry<Error>(
+  ...args: Parameters<typeof layerWithRegistryAndServices<Error>>
+): Layer.Layer<
+  | Orchestrator.OrchestratorV2
+  | EffectWorker.OrchestrationEffectWorkerV2
+  | EventSink.EventSinkV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | CommandOutputRecorder.CommandOutputRecorder,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+> {
+  return layerWithRegistryAndServices(...args);
+}
+
+/** Exposes domain services for registered-tool tests without broadening existing harness contracts. */
+export function layerWithRegistryAndServices<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<
     ProviderAdapterRegistry.ProviderAdapterRegistryV2,
@@ -276,11 +292,18 @@ export function layerWithRegistry<Error>(
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
   } = {},
 ): Layer.Layer<
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSwitchService.ProviderSwitchServiceV2
+  | ServerSettings.ServerSettingsService
+  | SqlClient.SqlClient
+  | ThreadCommandExecutor.ThreadCommandExecutor
+  | ThreadManagementService.ThreadManagementService
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
   | EventSink.EventSinkV2
@@ -372,7 +395,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerEventSinkProvided, layerStores)),
   );
   const layerProviderSessionManagerProvided = ProviderSessionManager.layerWithOptions({
-    configureMcp: false,
+    configureMcp: options.configureMcp ?? false,
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -382,6 +405,7 @@ export function layerWithRegistry<Error>(
         IdAllocator.layer,
         McpProviderSessions.layer,
         McpSessionRegistryTestkit.layer,
+        layerServerSettings,
         layerProviderEventIngestorProvided,
         layerStores,
       ),
@@ -403,6 +427,7 @@ export function layerWithRegistry<Error>(
     ),
   );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+    Layer.provide(layerProviderSwitchServiceProvided),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -488,6 +513,9 @@ export function layerWithRegistry<Error>(
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
         dispatch: orchestrator.dispatch,
+        getThreadShell: orchestrator.getThreadShell,
+        getProjectThreadRecords: ({ threadId }, fields, filter) =>
+          orchestrator.getThreadRecords(threadId, fields, filter).pipe(Effect.orDie),
         getThreadRecords: orchestrator.getThreadRecords,
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
@@ -526,6 +554,12 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    layerDatabase,
+    layerStores,
+    layerServerSettings,
+    layerThreadManagementProvided,
+    layerProviderSwitchServiceProvided,
+    ThreadCommandExecutor.layer,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,

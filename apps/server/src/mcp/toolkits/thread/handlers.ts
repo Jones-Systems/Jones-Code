@@ -1,3 +1,7 @@
+import * as Option from "effect/Option";
+import * as ThreadSelfConfiguration from "../../../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as Invocation from "../../McpInvocationContext.ts";
+import { toMcpFailure } from "../../../jones/threadConfiguration/tools.ts";
 import {
   type CommandId,
   type RuntimeRequestId,
@@ -186,12 +190,20 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       const {
         projection: { thread },
       } = yield* readThread(input.threadId);
+      const configuration = yield* Effect.serviceOption(
+        ThreadSelfConfiguration.ThreadSelfConfiguration,
+      );
       return {
         threadId: thread.id,
         modelSelection: thread.modelSelection,
         runtimeMode: thread.runtimeMode,
         interactionMode: thread.interactionMode,
         threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
+        ...(Option.isNone(configuration)
+          ? {}
+          : yield* configuration.value
+              .read(thread.id, yield* Invocation.McpInvocationContext)
+              .pipe(Effect.mapError(toMcpFailure))),
       };
     }),
   ),
@@ -201,6 +213,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         threads,
         projection: { thread },
       } = yield* readThread(input.threadId);
+      const scope = yield* Invocation.McpInvocationContext;
+      if (scope.thread?.threadId === thread.id)
+        return yield* new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "Use t3_thread_self_configure with the revision and execution precondition from t3_thread_configuration to safely change your own thread.",
+        });
       const type = modelSelectionCommandType(thread.providerInstanceId, input.modelSelection);
       const result = yield* threads
         .dispatch({

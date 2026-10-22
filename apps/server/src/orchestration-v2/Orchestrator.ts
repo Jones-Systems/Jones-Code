@@ -1,3 +1,4 @@
+import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
 import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import {
   queuedSteerBatchCandidates,
@@ -1640,7 +1641,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         CommandId.make(`command:system:start-queued:${queuedRun.id}`);
       const now = yield* DateTime.now;
       const selectionChanged = !modelSelectionsEqual(
-        projection.thread.modelSelection,
+        executionProjection(projection).thread.modelSelection,
         queuedRun.modelSelection,
       );
       const switchPlan = selectionChanged
@@ -1983,12 +1984,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               },
             ]
           : [];
-      const sessionsToDetach = projection.providerSessions.filter(
-        (session) =>
-          switchPlan?.releaseProviderSessionIds.includes(session.id) &&
-          session.status !== "stopped" &&
-          session.status !== "error",
-      );
       const recordPreparation = (
         plannedEvents: ReadonlyArray<Omit<OrchestrationV2DomainEvent, "id">>,
         plannedEffects: ReadonlyArray<PendingOrchestrationEffectV2>,
@@ -2003,25 +1998,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         });
       yield* recordPreparation(
         [
-          ...(selectionChanged
-            ? [
-                {
-                  type:
-                    queuedRun.providerInstanceId === projection.thread.providerInstanceId
-                      ? ("thread.model-selection-updated" as const)
-                      : ("thread.provider-switched" as const),
-                  threadId,
-                  providerInstanceId: queuedRun.providerInstanceId,
-                  occurredAt: now,
-                  payload: {
-                    ...projection.thread,
-                    providerInstanceId: queuedRun.providerInstanceId,
-                    modelSelection: queuedRun.modelSelection,
-                    updatedAt: now,
-                  },
-                },
-              ]
-            : []),
           ...(handoff === null || transferId === null || latestHandoffRun === undefined
             ? []
             : [
@@ -2092,18 +2068,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   payload: handoffTurnItem,
                 },
               ]),
-          ...sessionsToDetach.map((session) => ({
-            type: "provider-session.detached" as const,
-            threadId,
-            driver: session.driver,
-            providerInstanceId: session.providerInstanceId,
-            occurredAt: now,
-            payload: {
-              providerSessionId: session.id,
-              detachedAt: now,
-              reason: "Provider or model selection changed.",
-            },
-          })),
           ...checkpointEvents,
           {
             type: "provider-thread.updated",
@@ -2132,16 +2096,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
         ],
         [
-          ...sessionsToDetach.map((session) => ({
-            id: `effect:${commandId}:provider-session.detach:${session.id}`,
-            commandId,
-            threadId,
-            request: {
-              type: "provider-session.detach" as const,
-              providerSessionId: session.id,
-              detail: "Provider or model selection changed.",
-            },
-          })),
           {
             id: `effect:${commandId}:provider-turn.start:${queuedRun.id}`,
             commandId,
@@ -4345,26 +4299,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
 
       if (steeringPolicy === "active_steering") {
-        const instanceChanged =
-          input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
-        if (
-          input.delegatedCompletion === undefined &&
-          (instanceChanged ||
-            !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
-        ) {
-          yield* emitEvent({
-            type: instanceChanged ? "thread.provider-switched" : "thread.model-selection-updated",
-            threadId: input.command.threadId,
-            providerInstanceId: input.modelSelection.instanceId,
-            occurredAt: now,
-            payload: {
-              ...input.projection.thread,
-              providerInstanceId: input.modelSelection.instanceId,
-              modelSelection: input.modelSelection,
-              updatedAt: now,
-            },
-          });
-        }
         yield* appendSteeringMessage({
           runId: targetRun.id,
           nodeId: rootNodeId,
@@ -4687,22 +4621,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           payload: { ...currentRootNode, status: "interrupted", completedAt: now },
         });
       }
-      if (selectionChanged) {
-        yield* emitEvent({
-          type: providerInstanceChanged
-            ? "thread.provider-switched"
-            : "thread.model-selection-updated",
-          threadId: input.command.threadId,
-          providerInstanceId: input.modelSelection.instanceId,
-          occurredAt: now,
-          payload: {
-            ...input.projection.thread,
-            providerInstanceId: input.modelSelection.instanceId,
-            modelSelection: input.modelSelection,
-            updatedAt: now,
-          },
-        });
-      }
       if (requiresProviderThreadHandoff || requiresProviderSessionRestart) {
         yield* emitEvent({
           type: "provider-thread.updated",
@@ -5018,6 +4936,32 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
       const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+      if (
+        command.modelSelection !== undefined &&
+        command.creationSource !== "server" &&
+        command.restartContinuationOfRunId === undefined &&
+        !modelSelectionsEqual(projection.thread.modelSelection, command.modelSelection)
+      ) {
+        const now = yield* DateTime.now;
+        yield* emit(
+          events,
+          command,
+        )({
+          type:
+            projection.thread.providerInstanceId === command.modelSelection.instanceId
+              ? "thread.model-selection-updated"
+              : "thread.provider-switched",
+          threadId: command.threadId,
+          providerInstanceId: command.modelSelection.instanceId,
+          occurredAt: now,
+          payload: {
+            ...projection.thread,
+            providerInstanceId: command.modelSelection.instanceId,
+            modelSelection: command.modelSelection,
+            updatedAt: now,
+          },
+        });
+      }
       let dispatchMode = resolveMessageDispatchIntent(
         projection,
         command.dispatchMode,
@@ -5196,7 +5140,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           effects,
           projection,
           modelSelection:
-            delegatedCompletion === undefined
+            delegatedCompletion === undefined && command.modelSelection !== undefined
               ? modelSelection
               : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)
                   ?.modelSelection ?? modelSelection),
@@ -5541,29 +5485,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (transfer) => transfer.id !== pendingMergeBackTransfer?.id,
       );
       const now = yield* DateTime.now;
-      if (
-        !modelSelectionsEqual(projection.thread.modelSelection, modelSelection) ||
-        projection.thread.providerInstanceId !== modelSelection.instanceId
-      ) {
-        yield* emit(
-          events,
-          command,
-        )({
-          type:
-            projection.thread.providerInstanceId === modelSelection.instanceId
-              ? "thread.model-selection-updated"
-              : "thread.provider-switched",
-          threadId: command.threadId,
-          providerInstanceId: modelSelection.instanceId,
-          occurredAt: now,
-          payload: {
-            ...projection.thread,
-            providerInstanceId: modelSelection.instanceId,
-            modelSelection,
-            updatedAt: now,
-          },
-        });
-      }
       const ordinal = nextRunOrdinal(projection);
       const runId = idAllocator.derive.run({ threadId: command.threadId, ordinal });
       const latestCompletedRun = projection.runs.findLast((run) => run.status === "completed");

@@ -1,3 +1,4 @@
+import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import { expect, it, vi } from "vite-plus/test";
@@ -128,6 +129,18 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ProviderSwitchService.ProviderSwitchServiceV2)({
+        plan: () =>
+          Effect.succeed({
+            instanceChanged: false,
+            modelChanged: false,
+            targetProviderThreadId: null,
+            releaseProviderSessionIds: [],
+            transition: { type: "reuse" },
+          }),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
@@ -732,6 +745,18 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(
+      Layer.mock(ProviderSwitchService.ProviderSwitchServiceV2)({
+        plan: () =>
+          Effect.succeed({
+            instanceChanged: false,
+            modelChanged: false,
+            targetProviderThreadId: null,
+            releaseProviderSessionIds: [],
+            transition: { type: "reuse" },
+          }),
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)({

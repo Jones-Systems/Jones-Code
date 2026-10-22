@@ -1548,7 +1548,18 @@
     "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
-    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned"
+    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/testkit.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/executionSelection.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/tools.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts": "jones-owned",
+    "packages/contracts/src/jones/threadSelfConfiguration.ts": "jones-owned",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts": "jones-owned",
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-self-configuration.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
