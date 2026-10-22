@@ -131,6 +131,9 @@ export async function requestLocalBackend(
   if (typeof ticket !== "string" || !ticket)
     throw new Error("WebSocket authorization missing ticket");
   const url = new URL(endpoint.wsBaseUrl);
+  if (url.pathname === "" || url.pathname === "/") {
+    url.pathname = "/ws";
+  }
   url.searchParams.set("wsTicket", ticket);
   url.searchParams.set("orchestrationProtocol", "2");
   return new Promise((resolve, reject) => {

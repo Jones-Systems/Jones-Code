@@ -2,6 +2,12 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodeURL from "node:url";
+import {
+  captureProcess,
+  captureSyntheticLogs,
+  probeReadiness,
+  writeStartupDiagnostics,
+} from "./startup-diagnostics.mjs";
 import { isolationProbe } from "./probe.mjs";
 import { createScenarioContext, loadScenario } from "./scenario-api.mjs";
 
@@ -63,7 +69,9 @@ async function sampleResources() {
 }
 export async function runInner() {
   const configuration = JSON.parse(await NodeFSP.readFile("/harness/config.json", "utf8"));
-  let app, xvfb, ctx, timer;
+  let app, xvfb, ctx, timer, processCapture;
+  let phase = "isolation";
+  let readiness = { status: "not-requested" };
   const start = performance.now();
   const result = {
     status: "failed",
@@ -85,6 +93,7 @@ export async function runInner() {
     const scenario = await loadScenario("/harness/scenario.mjs");
     xvfb = await startXvfb(configuration.size);
     const { _electron } = await import("playwright-core");
+    phase = "electron-launch";
     app = await _electron.launch({
       executablePath: "/electron/electron",
       args: [
@@ -95,8 +104,12 @@ export async function runInner() {
       chromiumSandbox: true,
       timeout: 60000,
     });
+    processCapture = captureProcess(app.process());
+    phase = "first-window";
     const page = await app.firstWindow({ timeout: 60000 });
+    phase = "desktop-bridge";
     await page.waitForFunction(() => Boolean(window.desktopBridge), undefined, { timeout: 60000 });
+    phase = "scenario-setup";
     const networkState = await app.context().newCDPSession(page);
     await networkState.send("Network.enable");
     result.isolation.browserConnectivity = {
@@ -202,6 +215,7 @@ export async function runInner() {
       result.resources.settledCpuPercent / configuration.hostEffectiveCores;
     code = 1;
     const captureStart = performance.now();
+    phase = "scenario";
     await scenario.run(ctx);
     result.resources.scenarioSeconds = (performance.now() - captureStart) / 1000;
     result.window = await app.evaluate(({ BrowserWindow, nativeTheme }) => ({
@@ -220,6 +234,7 @@ export async function runInner() {
     code = 0;
   } catch (error) {
     result.error = error.message;
+    if (app && error.name === "TimeoutError") readiness = await probeReadiness(app);
     if (ctx)
       try {
         await ctx.capture("failure");
@@ -230,6 +245,7 @@ export async function runInner() {
     clearInterval(timer);
     if (ctx) Object.assign(result, ctx.results());
     const teardown = performance.now();
+    const logs = await captureSyntheticLogs();
     if (app)
       try {
         await app.close();
@@ -240,6 +256,23 @@ export async function runInner() {
           result.status = "failed";
         }
       }
+    try {
+      result.startupDiagnostics = await writeStartupDiagnostics({
+        artifacts: "/artifacts",
+        processCapture,
+        logs,
+        readiness,
+        phase,
+      });
+    } catch (error) {
+      result.startupDiagnosticsError = error.message;
+      if (code === 0) {
+        code = 1;
+        result.status = "failed";
+      }
+    } finally {
+      processCapture?.dispose();
+    }
     await stop(xvfb?.child);
     result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
     await NodeFSP.writeFile("/artifacts/inner.json", JSON.stringify(result, null, 2), {

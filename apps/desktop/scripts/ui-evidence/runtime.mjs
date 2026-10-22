@@ -194,7 +194,10 @@ export async function packageAt(name, from) {
       if (error.code !== "ENOENT") throw error;
     }
     const parent = NodePath.dirname(current);
-    if (parent === current) throw new Error(`Missing runtime package: ${name}`);
+    if (parent === current)
+      throw Object.assign(new Error(`Missing runtime package: ${name}`), {
+        code: "RUNTIME_PACKAGE_MISSING",
+      });
     current = parent;
   }
 }
@@ -215,6 +218,27 @@ export async function runtimeExternalDependencies(source, app, dependencies) {
     throw new Error("Cannot resolve canonical runtime external policy");
   return Object.keys(select(dependencies));
 }
+export async function resolvedPackageDependencies(root, metadata) {
+  const dependencies = [];
+  for (const name of new Set([
+    ...Object.keys(metadata.dependencies || {}),
+    ...Object.keys(metadata.optionalDependencies || {}),
+    ...Object.keys(metadata.peerDependencies || {}),
+  ])) {
+    const optional =
+      Object.hasOwn(metadata.optionalDependencies || {}, name) ||
+      (!Object.hasOwn(metadata.dependencies || {}, name) &&
+        metadata.peerDependenciesMeta?.[name]?.optional === true);
+    try {
+      dependencies.push({ name, root: await packageAt(name, root) });
+    } catch (error) {
+      if (optional && error.code === "RUNTIME_PACKAGE_MISSING") continue;
+      throw error;
+    }
+  }
+  return dependencies;
+}
+
 export async function dependencyClosure(source) {
   const roots = [];
   const links = new Map();
@@ -243,17 +267,7 @@ export async function dependencyClosure(source) {
       throw new Error("Runtime dependency escaped package storage");
     const pkg = JSON.parse(await NodeFSP.readFile(NodePath.join(root, "package.json"), "utf8"));
     packages.set(root, { name: pkg.name, version: pkg.version });
-    for (const name of new Set([
-      ...Object.keys(pkg.dependencies || {}),
-      ...Object.keys(pkg.optionalDependencies || {}),
-    ])) {
-      let dependency;
-      try {
-        dependency = await packageAt(name, root);
-      } catch (error) {
-        if (pkg.optionalDependencies?.[name]) continue;
-        throw error;
-      }
+    for (const { name, root: dependency } of await resolvedPackageDependencies(root, pkg)) {
       let lexical = root;
       while (true) {
         const candidate = NodePath.join(lexical, "node_modules", name);

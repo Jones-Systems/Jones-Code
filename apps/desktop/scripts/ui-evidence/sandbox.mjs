@@ -1,6 +1,6 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import { packageAt } from "./runtime.mjs";
+import { resolvedPackageDependencies } from "./runtime.mjs";
 
 const writableNames = ["home", "xdg-config", "xdg-data", "xdg-cache", "t3home", "workspace", "tmp"];
 export function sandboxEnvironment() {
@@ -94,27 +94,26 @@ export async function stageRun({ run, source, harness, scenario, closure, config
     const metadata = JSON.parse(
       await NodeFSP.readFile(NodePath.join(pkg.root, "package.json"), "utf8"),
     );
-    for (const name of new Set([
-      ...Object.keys(metadata.dependencies || {}),
-      ...Object.keys(metadata.optionalDependencies || {}),
-    ])) {
-      let resolved;
-      try {
-        resolved = await packageAt(name, pkg.root);
-      } catch (error) {
-        if (metadata.optionalDependencies?.[name]) continue;
-        throw error;
-      }
+    for (const { name, root: resolved } of await resolvedPackageDependencies(pkg.root, metadata)) {
       if (!mapped.has(resolved)) throw new Error("Incomplete dependency closure");
       const destination = NodePath.join(stage, target, "node_modules", name);
       await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true });
-      await NodeFSP.symlink(mapped.get(resolved), destination);
+      await NodeFSP.symlink(
+        NodePath.relative(
+          NodePath.dirname(destination),
+          NodePath.join(stage, mapped.get(resolved)),
+        ),
+        destination,
+      );
     }
   }
   for (const root of closure.roots) {
     const destination = NodePath.join(stage, root.destination.slice(1));
     await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true });
-    await NodeFSP.symlink(mapped.get(root.root), destination);
+    await NodeFSP.symlink(
+      NodePath.relative(NodePath.dirname(destination), NodePath.join(stage, mapped.get(root.root))),
+      destination,
+    );
   }
   // Synthetic git metadata contains no copied repository history or credentials.
   const gitDir = NodePath.join(stage, "writable/workspace/.git");
