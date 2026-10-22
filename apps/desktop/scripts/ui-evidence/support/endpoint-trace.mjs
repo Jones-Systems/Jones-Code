@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 const A = "http://127.0.0.1:43773";
 const B = "http://127.0.0.1:43774";
@@ -30,9 +30,13 @@ export function assertCrossover(entries, expectedByGeneration) {
 
 export function assertPinRouting(entries, from, through, generation) {
   const pins = entries.filter(
-    (entry) => entry.sequence >= from && entry.sequence < through &&
-      entry.generation === generation && entry.kind === "frame" &&
-      entry.direction === "sent" && entry.tag === "orchestration.dispatchCommand" &&
+    (entry) =>
+      entry.sequence >= from &&
+      entry.sequence < through &&
+      entry.generation === generation &&
+      entry.kind === "frame" &&
+      entry.direction === "sent" &&
+      entry.tag === "orchestration.dispatchCommand" &&
       entry.commandType === "thread.pin",
   );
   if (pins.length !== 1 || pins[0].origin !== B || !pins[0].threadMatch)
@@ -53,7 +57,7 @@ export class EndpointTrace {
   #limit;
   #localAssetRequests = 0;
 
-  constructor(threadId, { key = randomBytes(32), limit = 5000 } = {}) {
+  constructor(threadId, { key = NodeCrypto.randomBytes(32), limit = 5000 } = {}) {
     if (key.length !== 32 || !Number.isInteger(limit) || limit < 1 || limit > 5000)
       throw new Error("invalid-trace-bounds");
     this.#key = Buffer.from(key);
@@ -62,11 +66,17 @@ export class EndpointTrace {
   }
 
   fingerprint(value) {
-    return createHmac("sha256", this.#key).update(value).digest("hex").slice(0, 16);
+    return NodeCrypto.createHmac("sha256", this.#key).update(value).digest("hex").slice(0, 16);
   }
-  get generation() { return this.#generation; }
-  get entries() { return structuredClone(this.#entries).sort((a, b) => a.sequence - b.sequence); }
-  mark() { return this.#sequence; }
+  get generation() {
+    return this.#generation;
+  }
+  get entries() {
+    return structuredClone(this.#entries).sort((a, b) => a.sequence - b.sequence);
+  }
+  mark() {
+    return this.#sequence;
+  }
 
   #reserve() {
     if (this.#sequence >= this.#limit) {
@@ -96,10 +106,17 @@ export class EndpointTrace {
           this.#localAssetRequests++;
           return;
         }
-        this.#entries.push({ ...slot, kind: "request", method: request.method(),
-          origin: url.origin, pathname: url.pathname,
-          authFp: auth ? this.fingerprint(auth) : null });
-      })().catch(() => { this.#failure = "renderer-network-unobservable"; });
+        this.#entries.push({
+          ...slot,
+          kind: "request",
+          method: request.method(),
+          origin: url.origin,
+          pathname: url.pathname,
+          authFp: auth ? this.fingerprint(auth) : null,
+        });
+      })().catch(() => {
+        this.#failure = "renderer-network-unobservable";
+      });
       this.#pending.add(pending);
       void pending.finally(() => this.#pending.delete(pending));
     });
@@ -111,20 +128,34 @@ export class EndpointTrace {
         const slot = this.#reserve();
         if (!slot) return;
         if (!ticket) this.#failure = "renderer-network-unobservable";
-        this.#entries.push({ ...slot, kind: "websocket", origin, pathname: url.pathname,
-          ticketFp: ticket ? this.fingerprint(ticket) : null });
-        for (const [event, direction] of [["framesent", "sent"], ["framereceived", "received"]]) {
+        this.#entries.push({
+          ...slot,
+          kind: "websocket",
+          origin,
+          pathname: url.pathname,
+          ticketFp: ticket ? this.fingerprint(ticket) : null,
+        });
+        for (const [event, direction] of [
+          ["framesent", "sent"],
+          ["framereceived", "received"],
+        ]) {
           listen(socket, event, ({ payload }) => {
             const frameSlot = this.#reserve();
             if (!frameSlot) return;
             const frame = { ...frameSlot, kind: "frame", origin, direction };
             if (direction === "sent") {
               try {
-                const value = JSON.parse(typeof payload === "string" ? payload : payload.toString());
+                const value = JSON.parse(
+                  typeof payload === "string" ? payload : payload.toString(),
+                );
                 if (value._tag === "Request") {
-                  if (typeof value.tag !== "string" || !/^[a-zA-Z0-9_.-]{1,128}$/.test(value.tag) ||
-                      (value.payload?.type !== undefined && (typeof value.payload.type !== "string" ||
-                        !/^[a-zA-Z0-9_.-]{1,128}$/.test(value.payload.type)))) {
+                  if (
+                    typeof value.tag !== "string" ||
+                    !/^[a-zA-Z0-9_.-]{1,128}$/.test(value.tag) ||
+                    (value.payload?.type !== undefined &&
+                      (typeof value.payload.type !== "string" ||
+                        !/^[a-zA-Z0-9_.-]{1,128}$/.test(value.payload.type)))
+                  ) {
                     this.#failure = "renderer-frame-unreadable";
                   } else {
                     frame.tag = value.tag;
@@ -132,7 +163,9 @@ export class EndpointTrace {
                   }
                   frame.threadMatch = value.payload?.threadId === this.#threadId;
                 }
-              } catch { this.#failure = "renderer-frame-unreadable"; }
+              } catch {
+                this.#failure = "renderer-frame-unreadable";
+              }
             }
             this.#entries.push(frame);
           });
@@ -141,44 +174,78 @@ export class EndpointTrace {
           const closeSlot = this.#reserve();
           if (closeSlot) this.#entries.push({ ...closeSlot, kind: "close", origin });
         });
-      } catch { this.#failure = "renderer-network-unobservable"; }
+      } catch {
+        this.#failure = "renderer-network-unobservable";
+      }
     });
   }
 
   async flush() {
-    await Promise.all([...this.#pending]);
+    await Promise.all(this.#pending);
     if (this.#failure) throw new Error(this.#failure);
   }
 
   async catalog(page, environmentId) {
-    const value = await page.evaluate(async ({ keyBytes, environmentId, origin }) => {
-      const key = await crypto.subtle.importKey("raw", new Uint8Array(keyBytes),
-        { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-      const fp = async (text) => Array.from(new Uint8Array(await crypto.subtle.sign(
-        "HMAC", key, new TextEncoder().encode(text),
-      ))).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 16);
-      const a = await window.desktopBridge.getLocalEnvironmentBearerToken();
-      const raw = await window.desktopBridge.getConnectionCatalogSnapshot();
-      if (typeof a !== "string" || !a || typeof raw !== "string")
-        throw new Error("catalog-credential-unbound");
-      const document = JSON.parse(raw);
-      const id = `bearer:${environmentId}:${origin}`;
-      const targets = document.targets.filter((target) => target.connectionId === id &&
-        target.environmentId === environmentId && target._tag === "BearerConnectionTarget");
-      const profiles = document.profiles.filter((profile) => profile.connectionId === id &&
-        profile.environmentId === environmentId && profile._tag === "BearerConnectionProfile" &&
-        new URL(profile.httpBaseUrl).origin === origin &&
-        new URL(profile.wsBaseUrl).host === new URL(origin).host &&
-        new URL(profile.wsBaseUrl).protocol === "ws:");
-      const credentials = document.credentials.filter((entry) => entry.connectionId === id &&
-        entry.credential?._tag === "BearerConnectionCredential");
-      if (targets.length !== 1 || profiles.length !== 1 || credentials.length !== 1 ||
-          typeof credentials[0].credential.token !== "string" || !credentials[0].credential.token)
-        throw new Error("catalog-credential-unbound");
-      return { a: await fp(`Bearer ${a}`), b: await fp(`Bearer ${credentials[0].credential.token}`),
-        target: true, profile: true, credential: true,
-        disabled: document.disabledEnvironmentIds.includes(environmentId) };
-    }, { keyBytes: [...this.#key], environmentId, origin: B });
+    const value = await page.evaluate(
+      async ({ keyBytes, environmentId, origin }) => {
+        const key = await crypto.subtle.importKey(
+          "raw",
+          new Uint8Array(keyBytes),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        );
+        const fp = async (text) =>
+          Array.from(
+            new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text))),
+          )
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 16);
+        const a = await window.desktopBridge.getLocalEnvironmentBearerToken();
+        const raw = await window.desktopBridge.getConnectionCatalogSnapshot();
+        if (typeof a !== "string" || !a || typeof raw !== "string")
+          throw new Error("catalog-credential-unbound");
+        const document = JSON.parse(raw);
+        const id = `bearer:${environmentId}:${origin}`;
+        const targets = document.targets.filter(
+          (target) =>
+            target.connectionId === id &&
+            target.environmentId === environmentId &&
+            target._tag === "BearerConnectionTarget",
+        );
+        const profiles = document.profiles.filter(
+          (profile) =>
+            profile.connectionId === id &&
+            profile.environmentId === environmentId &&
+            profile._tag === "BearerConnectionProfile" &&
+            new URL(profile.httpBaseUrl).origin === origin &&
+            new URL(profile.wsBaseUrl).host === new URL(origin).host &&
+            new URL(profile.wsBaseUrl).protocol === "ws:",
+        );
+        const credentials = document.credentials.filter(
+          (entry) =>
+            entry.connectionId === id && entry.credential?._tag === "BearerConnectionCredential",
+        );
+        if (
+          targets.length !== 1 ||
+          profiles.length !== 1 ||
+          credentials.length !== 1 ||
+          typeof credentials[0].credential.token !== "string" ||
+          !credentials[0].credential.token
+        )
+          throw new Error("catalog-credential-unbound");
+        return {
+          a: await fp(`Bearer ${a}`),
+          b: await fp(`Bearer ${credentials[0].credential.token}`),
+          target: true,
+          profile: true,
+          credential: true,
+          disabled: document.disabledEnvironmentIds.includes(environmentId),
+        };
+      },
+      { keyBytes: [...this.#key], environmentId, origin: B },
+    );
     const previous = this.#expected[this.#generation];
     if (previous && (previous.a !== value.a || previous.b !== value.b))
       throw new Error("catalog-credential-changed");
@@ -198,12 +265,19 @@ export class EndpointTrace {
       const key = `${entry.generation} ${entry.origin} ${entry.kind} ${entry.tag ?? ""}`;
       counts[key] = (counts[key] ?? 0) + 1;
     }
-    return { count: this.#entries.length, localAssetRequests: this.#localAssetRequests,
-      counts, fingerprints: structuredClone(this.#expected),
-      failure: this.#failure };
+    return {
+      count: this.#entries.length,
+      localAssetRequests: this.#localAssetRequests,
+      counts,
+      fingerprints: structuredClone(this.#expected),
+      failure: this.#failure,
+    };
   }
   detach() {
     for (const off of this.#detach.splice(0)) off();
   }
-  dispose() { this.detach(); this.#key.fill(0); }
+  dispose() {
+    this.detach();
+    this.#key.fill(0);
+  }
 }
