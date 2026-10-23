@@ -321,6 +321,10 @@ import { isPreviewFocused } from "../lib/previewFocus";
 import { getTerminalFocusOwner } from "../lib/terminalFocus";
 import { resolveNewDraftStartFromOrigin } from "../lib/chatThreadActions";
 import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../jones/threadConfiguration/composerSelection";
+import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
 } from "../logicalProject";
@@ -7103,7 +7107,7 @@ export default function ChatView(props: ChatViewProps) {
         input: {
           threadId: threadIdForSend,
           message: { messageId: newMessageId(), role: "user", text: "/compact", attachments: [] },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           runtimeMode,
           interactionMode: sendInteractionMode,
         },
@@ -7187,7 +7191,7 @@ export default function ChatView(props: ChatViewProps) {
               return { context };
             })(),
           },
-          modelSelection: ctxSelectedModelSelection,
+          ...composerSelectionForDispatch(ctxSelectedModelSelection, submittedComposerDraft),
           titleSeed: title,
           runtimeMode,
           interactionMode: sendInteractionMode,
@@ -7225,6 +7229,7 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        acknowledgeComposerSelection(composerDraftTarget, submittedComposerDraft);
         setKeepFullHistory(routeThreadKey, false);
         clearUsageLimitsFor(routeThreadKey);
         if (turnUsesAttachmentUploads) {

@@ -10,7 +10,9 @@
     "apps/server/src/jones/threadConfiguration/tools.ts",
     "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.ts",
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts",
-    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts"
+    "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
+    "apps/web/src/jones/threadConfiguration/composerSelection.ts",
+    "apps/web/src/jones/threadConfiguration/composerSelection.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/threadAccess.ts",
@@ -65,6 +67,10 @@
     {
       "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
       "to": "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
     }
   ]
 }

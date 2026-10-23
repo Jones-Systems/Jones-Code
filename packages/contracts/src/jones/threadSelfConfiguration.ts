@@ -63,3 +63,16 @@ export const ThreadSelfConfigurationResult = Schema.Struct({
   freshObservation: ThreadConfigurationEvidence,
 });
 export type ThreadSelfConfigurationResult = typeof ThreadSelfConfigurationResult.Type;
+
+// An inherited composer snapshot is display state; the server owns current saved defaults.
+export function resolveMessageModelSelection(
+  command: {
+    readonly modelSelection?: ModelSelection | undefined;
+    readonly modelSelectionExplicit?: boolean | undefined;
+  },
+  savedSelection: ModelSelection,
+): ModelSelection {
+  return command.modelSelectionExplicit === false
+    ? savedSelection
+    : (command.modelSelection ?? savedSelection);
+}

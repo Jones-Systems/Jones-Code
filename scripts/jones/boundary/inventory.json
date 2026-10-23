@@ -7,6 +7,10 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/web/src/jones/threadConfiguration/composerSelection.ts": "jones-owned",
+    "apps/web/src/jones/threadConfiguration/composerSelection.test.ts": "jones-owned",
+    "packages/contracts/src/jones/threadSelfConfiguration.test.ts": "jones-owned",
+
     "scripts/mobile-showcase.ts": "hook",
     "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
     "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",
@@ -1580,6 +1584,10 @@
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
       "to": "apps/web/src/components/files/PdfPreview.tsx"

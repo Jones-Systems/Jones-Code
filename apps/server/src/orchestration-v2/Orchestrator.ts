@@ -26,7 +26,10 @@ import type * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as NativeStage from "../jones/nativeCreation/NativeCreationStageDispatch.ts";
 import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
 import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
-import { OrchestrationV2Command as NativeWireCommand } from "@t3tools/contracts";
+import {
+  resolveMessageModelSelection,
+  OrchestrationV2Command as NativeWireCommand,
+} from "@t3tools/contracts";
 import {
   EnvironmentAuthenticatedPrincipal,
   ImportedHistoryStart,
@@ -4935,9 +4938,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ]);
         projection = yield* getProjectionWithPendingEvents(command.threadId, events);
       }
-      const modelSelection = command.modelSelection ?? projection.thread.modelSelection;
+      const modelSelection = resolveMessageModelSelection(
+        command,
+        projection.thread.modelSelection,
+      );
       if (
         command.modelSelection !== undefined &&
+        command.modelSelectionExplicit !== false &&
         command.creationSource !== "server" &&
         command.restartContinuationOfRunId === undefined &&
         !modelSelectionsEqual(projection.thread.modelSelection, command.modelSelection)
@@ -5140,7 +5147,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           effects,
           projection,
           modelSelection:
-            delegatedCompletion === undefined && command.modelSelection !== undefined
+            delegatedCompletion === undefined &&
+            command.modelSelection !== undefined &&
+            command.modelSelectionExplicit !== false
               ? modelSelection
               : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)
                   ?.modelSelection ?? modelSelection),
@@ -14324,7 +14333,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const projection = yield* readCommandProjection(threadId);
       const model =
         delivery.type === "message" && delivery.command.type === "message.dispatch"
-          ? (delivery.command.modelSelection ?? projection.thread.modelSelection)
+          ? resolveMessageModelSelection(delivery.command, projection.thread.modelSelection)
           : delivery.type === "queued_run"
             ? (projection.runs.find((run) => run.id === delivery.runId)?.modelSelection ??
               projection.thread.modelSelection)

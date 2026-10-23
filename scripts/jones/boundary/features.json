@@ -1456,7 +1456,20 @@
         "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
         "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
         "packages/provider-core/src/server/orchestrationInstructions.test.ts",
-        "packages/shared/src/t3McpToolPresentation.test.ts"
+        "packages/shared/src/t3McpToolPresentation.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/client-runtime/src/t3ToolSummary.test.ts",
+        "packages/client-runtime/src/work-log/presentation.test.ts",
+        "packages/contracts/src/jones/threadSelfConfiguration.test.ts",
+        "apps/web/src/jones/threadConfiguration/composerSelection.test.ts",
+        "apps/web/src/lib/chatThreadActions.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "apps/web/src/components/chat/composerSendRecovery.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts"
       ],
       "scope": "Self-only MCP saves validated future defaults under the thread command lock and transactional execution/revision revalidation. Fingerprinted durable receipts preserve retry identity. Current attached execution owns caller authorization and normal safe-start transitions; queued and recovery selections never overwrite newer defaults. Registered-tool and actual Codex outbound replay tests cover continued execution and later admission."
     }

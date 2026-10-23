@@ -13,6 +13,7 @@ import {
   type ServerProvider,
   ThreadConfigurationEvidence,
   ThreadSelfConfigurationResult,
+  OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -696,6 +697,8 @@ it.live("owner edit wins over retry; detached runtime cannot authorize a new sav
 
 it.live.each([
   { driver: "codex", compatible: true },
+  { driver: "codex", compatible: true, explicit: true },
+  { driver: "codex", compatible: true, explicit: undefined },
   { driver: "codex", compatible: false },
   { driver: "claude-code", compatible: false },
   { driver: "claude-code", compatible: false, enabled: false },
@@ -744,6 +747,48 @@ it.live.each([
           assert.deepEqual(receipt.acceptance.committedSelection, selection);
           assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
           assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+          if (target.driver === "codex" && target.compatible) {
+            // The web composer includes its inherited selection even without a picker change.
+            const explicit = "explicit" in target ? target.explicit : false;
+            yield* orchestrator.dispatch(
+              yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+                type: "message.dispatch",
+                commandId: CommandId.make("ordinary-follow-up:" + threadId),
+                threadId,
+                messageId: MessageId.make("ordinary-follow-up:" + threadId),
+                text: "ordinary web follow-up",
+                attachments: [],
+                createdBy: "user",
+                creationSource: "web",
+                modelSelection: selection,
+                ...(explicit === undefined ? {} : { modelSelectionExplicit: explicit }),
+                deliveryIntent: "auto",
+                dispatchMode: { type: "start_immediately" },
+              }),
+            );
+            yield* worker.drain();
+            const afterFollowUp = yield* orchestrator.getThreadProjection(threadId);
+            assert.equal(afterFollowUp.runs[0]?.id, before.executionPrecondition!.runId);
+            if (explicit !== false) {
+              assert.notEqual(
+                afterFollowUp.runs[0]?.activeAttemptId,
+                before.executionPrecondition!.attemptId,
+              );
+              assert.lengthOf(afterFollowUp.attempts, 2);
+              assert.deepEqual(afterFollowUp.runs[0]?.modelSelection, selection);
+              assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, selection);
+              return;
+            }
+            assert.equal(
+              afterFollowUp.runs[0]?.activeAttemptId,
+              before.executionPrecondition!.attemptId,
+            );
+            assert.lengthOf(afterFollowUp.attempts, 1);
+            assert.equal(afterFollowUp.runs[0]?.status, "running");
+            assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+            assert.lengthOf((yield* Ref.get(state)).opened, 1);
+            assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
+          }
           const firstDone = yield* sink.stream({ threadId }).pipe(
             Stream.filter(
               ({ event }) =>
@@ -758,6 +803,17 @@ it.live.each([
           yield* finishActive(state);
           yield* Fiber.join(firstDone);
           yield* worker.drain();
+          const completed = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(completed.runs[0]?.id, before.executionPrecondition!.runId);
+          assert.equal(completed.runs[0]?.activeAttemptId, before.executionPrecondition!.attemptId);
+          assert.equal(completed.attempts[0]?.status, "completed");
+          assert.isTrue(
+            completed.turnItems.some(
+              (item) =>
+                item.type === "assistant_message" &&
+                item.text === "continued-after-self-configuration",
+            ),
+          );
           const nextDone = yield* sink.stream({ threadId }).pipe(
             Stream.filter(
               ({ event }) =>
@@ -776,6 +832,8 @@ it.live.each([
             messageId: MessageId.make("target-next:" + threadId),
             text: "inherit target",
             attachments: [],
+            modelSelection: initialSelection,
+            modelSelectionExplicit: false,
             createdBy: "user",
             creationSource: "web",
             dispatchMode: { type: "start_immediately" },

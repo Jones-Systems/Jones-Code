@@ -269,7 +269,23 @@ export function layerWithRegistry<Error>(
   | CommandOutputRecorder.CommandOutputRecorder,
   Error | MigrationError | PlatformError.PlatformError | SqlError
 > {
-  return layerWithRegistryAndServices(...args);
+  // Narrow the runtime context too: leaked mocks override consumers' real services.
+  return Layer.mergeAll(
+    Layer.effect(Orchestrator.OrchestratorV2, Orchestrator.OrchestratorV2),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectWorkerV2,
+      EffectWorker.OrchestrationEffectWorkerV2,
+    ),
+    Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2),
+    Layer.effect(
+      ProviderSessionManager.ProviderSessionManagerV2,
+      ProviderSessionManager.ProviderSessionManagerV2,
+    ),
+    Layer.effect(
+      CommandOutputRecorder.CommandOutputRecorder,
+      CommandOutputRecorder.CommandOutputRecorder,
+    ),
+  ).pipe(Layer.provide(layerWithRegistryAndServices(...args)));
 }
 
 /** Exposes domain services for registered-tool tests without broadening existing harness contracts. */
