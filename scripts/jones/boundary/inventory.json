@@ -1554,7 +1554,11 @@
     "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
-    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned"
+    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
