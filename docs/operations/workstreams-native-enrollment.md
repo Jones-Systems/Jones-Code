@@ -70,9 +70,14 @@ server.
 The native-enrollment CI jobs exercise both exact Node 26 pairs on Linux x64
 and macOS arm64, record the test and subprocess executable identities, and check
 escaped file URIs, missing-file non-creation, read-only writes, disabled
-extension loading, WAL visibility and transaction-bound authority. The separate
-26.12.1 workflow also checks SQLite engine behavior in a disposable SEA fixture;
-this does not replace the ordinary Jones artifact version and serve smoke tests.
+extension loading, WAL visibility and transaction-bound authority. The 26.8.2
+Linux job runs on every CI run. Its macOS job, which needs a scarce hosted
+runner, runs when the enrollment, store-authority or SQLite client sources, the
+CI workflow, or the dependency manifests and root test configuration change; a
+manual CI run can request it. The separate 26.12.1 workflow runs on pull
+requests that change its sources and also checks SQLite engine behavior in a
+disposable SEA fixture; this does not replace the ordinary Jones artifact
+version and serve smoke tests.
 Existing Node 24 CI remains in place. A newer runtime needs these checks before
 its exact Node/SQLite pair is added; a release label or successful server startup
 alone is insufficient. Unlisted pairs continue to fail closed.

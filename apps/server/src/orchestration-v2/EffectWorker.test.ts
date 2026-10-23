@@ -4,6 +4,7 @@ import {
   findSteerFailure,
 } from "../jones/orchestration/LateSteer.ts";
 import { ControlAdmissionHeld } from "../jones/orchestration/ControlAdmission.ts";
+import { GoalNotificationDeliveryUnknown } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -40,6 +41,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import { OrchestratorProjectionError } from "./Orchestrator.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -99,8 +101,8 @@ function layerExecutorFor(input: {
   readonly failFirstStart?: Ref.Ref<boolean>;
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
-  readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
+  readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -1057,7 +1059,175 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
     }),
 );
 
-it.effect.each(["single", "batch"] as const)(
+it.effect(
+  "requeues a definitively undelivered notification with stable message and command identity",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const messageId = MessageId.make("notification-steer-race");
+      const notification = {
+        source: { kind: "monitor" as const },
+        outcome: "updated",
+        summary: "PR ready",
+      };
+      const commands: unknown[] = [];
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        id: "effect:notification-steer-race",
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        },
+      };
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute(effect);
+        yield* executor.execute(effect);
+        assert.lengthOf(commands, 2);
+        assert.deepEqual(commands[0], commands[1]);
+        assert.nestedPropertyVal(commands[0], "dispatchMode.type", "queue_after_active");
+        assert.propertyVal(commands[0], "messageId", messageId);
+        assert.deepEqual((commands[0] as { notification: unknown }).notification, notification);
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            steer: () =>
+              Effect.fail(
+                new ProviderTurnControlService.ProviderTurnControlError({
+                  threadId,
+                  operation: "steer",
+                  providerTurnId,
+                  turnCompleted: true,
+                }),
+              ),
+            threads: {
+              getThreadRecords: () =>
+                Effect.succeed({
+                  messages: [
+                    {
+                      id: messageId,
+                      runId,
+                      text: "PR ready",
+                      attachments: [],
+                      createdBy: "agent",
+                      creationSource: "server",
+                      notification,
+                    },
+                  ],
+                  runs: [
+                    {
+                      id: runId,
+                      status: "completed",
+                      modelSelection: { instanceId: "codex", model: "test" },
+                    },
+                  ],
+                } as never),
+              dispatch: (command) =>
+                Effect.sync(() => {
+                  commands.push(command);
+                  return {} as never;
+                }),
+            },
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["success", "unknown"] as const)(
+  "retains notification delivery evidence when metadata becomes unavailable after %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const now = yield* DateTime.now;
+      const messageId = MessageId.make("notification-post-send-read-failure");
+      let sent = false;
+      let sends = 0;
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        id: "effect:notification-post-send-read-failure",
+        request: {
+          type: "provider-turn.steer",
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+        },
+      };
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        const result = yield* executor.execute(effect).pipe(Effect.result);
+        assert.equal(sends, 1);
+        if (outcome === "success") assert.equal(result._tag, "Success");
+        else {
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.nestedPropertyVal(
+              result.failure,
+              "cause._tag",
+              "GoalNotificationDeliveryUnknown",
+            );
+        }
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            steer: () =>
+              Effect.gen(function* () {
+                sent = true;
+                sends++;
+                if (outcome === "unknown")
+                  return yield* new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                    cause: "Response unavailable after send",
+                  });
+              }),
+            threads: {
+              getThreadRecords: () =>
+                Effect.suspend(() =>
+                  sent
+                    ? Effect.fail(
+                        new OrchestratorProjectionError({
+                          threadId,
+                          cause: "Metadata unavailable after send",
+                        }),
+                      )
+                    : Effect.succeed({
+                        messages: [
+                          {
+                            id: messageId,
+                            runId,
+                            text: "PR ready",
+                            attachments: [],
+                            createdBy: "agent",
+                            creationSource: "server",
+                            notification: {
+                              source: { kind: "monitor" },
+                              outcome: "updated",
+                              summary: "PR ready",
+                            },
+                          },
+                        ],
+                        runs: [
+                          { id: runId, modelSelection: { instanceId: "codex", model: "test" } },
+                        ],
+                      } as never),
+                ),
+            },
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect.each(["single", "batch", "notification"] as const)(
   "typed unknown and held %s steering never becomes a completed-turn follow-up",
   (kind) =>
     Effect.gen(function* () {
@@ -1105,9 +1275,47 @@ it.effect.each(["single", "batch"] as const)(
                     operation: "steer",
                     providerTurnId,
                     turnCompleted: true,
-                    cause: failure,
+                    cause:
+                      kind === "notification"
+                        ? new GoalNotificationDeliveryUnknown({ cause: failure })
+                        : failure,
                   }),
                 ),
+              threads: {
+                getThreadRecords: () =>
+                  Effect.succeed({
+                    messages: [
+                      {
+                        id: messageId,
+                        runId,
+                        text: "Steering message",
+                        attachments: [],
+                        createdBy: "agent",
+                        creationSource: "server",
+                        ...(kind === "notification"
+                          ? {
+                              notification: {
+                                source: { kind: "monitor" },
+                                outcome: "updated",
+                                summary: "Steering message",
+                              },
+                            }
+                          : {}),
+                      },
+                    ],
+                    runs: [
+                      {
+                        id: runId,
+                        status: "completed",
+                        modelSelection: { instanceId: "codex", model: "test" },
+                      },
+                    ],
+                  } as never),
+                dispatch: () =>
+                  Ref.update(events, (current) => [...current, "unexpected-follow-up"]).pipe(
+                    Effect.as({} as never),
+                  ),
+              },
             }),
           ),
         );

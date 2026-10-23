@@ -17,6 +17,7 @@ import { HttpBody, HttpClient, HttpRouter } from "effect/http";
 import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as GitWorkflowService from "../../../git/GitWorkflowService.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
+import * as ProviderSessionManager from "../../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
@@ -53,6 +54,9 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(ThreadManagementService.ThreadManagementService)({}),
   Layer.mock(ProviderRegistry.ProviderRegistry)({}),
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
+  Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+    isMcpCallerAttached: () => Effect.succeed(false),
+  }),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(PeerForwarding.PeerForwarding)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
