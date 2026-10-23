@@ -289,6 +289,161 @@ async function validateMacApp(
   };
 }
 
+/** An unindexed attempt may still have a mount or writer. Preserve it and stop allocating. */
+async function requireNoIncompleteMacAttempts(root: string): Promise<void> {
+  try {
+    const rootInfo = await NodeFSP.lstat(root);
+    const requireReceipt = async (directory: string, handle: string) => {
+      const file = NodePath.join(directory, "mac-app-receipt.json");
+      const info = await NodeFSP.lstat(file);
+      if (
+        !info.isFile() ||
+        info.size > 131072 ||
+        info.dev !== rootInfo.dev ||
+        info.uid !== rootInfo.uid
+      )
+        throw new Error("Unknown Mac stage receipt.");
+      const receipt = decodeAppReceipt(JSON.parse(await NodeFSP.readFile(file, "utf8")));
+      if (
+        receipt.app.handle !== handle ||
+        receipt.app.receiptPath !== file ||
+        NodePath.dirname(receipt.app.appPath) !== directory
+      )
+        throw new Error("The Mac receipt does not bind its stage.");
+    };
+    const entries = await NodeFSP.readdir(root);
+    if (entries.length > 1000) throw new Error("Too many Mac staging records.");
+    for (const name of entries) {
+      const path = NodePath.join(root, name);
+      const info = await NodeFSP.lstat(path);
+      if (
+        !info.isDirectory() ||
+        info.dev !== rootInfo.dev ||
+        info.uid !== rootInfo.uid ||
+        (await NodeFSP.realpath(path)) !== path
+      )
+        throw new Error("Unknown Mac stage directory.");
+      if (name === "completed") {
+        const indexes = await NodeFSP.readdir(path);
+        if (indexes.length > 1000) throw new Error("Too many Mac completion indexes.");
+        for (const index of indexes) {
+          if (!/^[a-f0-9]{64}\.json$/.test(index)) throw new Error("Unknown Mac completion index.");
+          const handle = index.slice(0, -5);
+          const directory = await findJonesCompletedStage(root, handle, "mac-app-receipt.json");
+          if (directory === undefined) throw new Error("Missing completed Mac stage.");
+          await requireReceipt(directory, handle);
+        }
+        continue;
+      }
+      if (name !== "attempts") {
+        if (
+          !/^[a-f0-9]{64}$/.test(name) ||
+          (await findJonesCompletedStage(root, name, "mac-app-receipt.json")) !== path
+        )
+          throw new Error("Unknown legacy Mac stage.");
+        await requireReceipt(path, name);
+        continue;
+      }
+      const attempts = await NodeFSP.readdir(path);
+      if (attempts.length > 1000) throw new Error("Too many Mac stage attempts.");
+      for (const name of attempts) {
+        const attempt = NodePath.join(path, name);
+        const info = await NodeFSP.lstat(attempt);
+        if (
+          !/^stage-[a-zA-Z0-9]+$/.test(name) ||
+          !info.isDirectory() ||
+          info.dev !== rootInfo.dev ||
+          info.uid !== rootInfo.uid ||
+          (await NodeFSP.realpath(attempt)) !== attempt
+        )
+          throw new Error("Unknown Mac stage attempt.");
+        const children = await NodeFSP.readdir(attempt);
+        const handle = children.find((entry) => /^[a-f0-9]{64}$/.test(entry));
+        if (
+          children.length !== 2 ||
+          !children.includes("completion.json") ||
+          handle === undefined ||
+          (await findJonesCompletedStage(root, handle, "mac-app-receipt.json")) !==
+            NodePath.join(attempt, handle)
+        )
+          throw new Error("Unindexed Mac stage attempt.");
+        await requireReceipt(NodePath.join(attempt, handle), handle);
+      }
+    }
+  } catch (cause) {
+    throw new Error(
+      "An incomplete or unknown Mac stage needs exact cleanup before preparing another app.",
+      { cause },
+    );
+  }
+}
+
+/** A command callback alone is insufficient when the owned copier's exit is unknown. */
+function copyMacStage(source: string, target: string, proof: { stopped: boolean }): Promise<void> {
+  proof.stopped = false;
+  return new Promise((resolve, reject) => {
+    let child: NodeChildProcess.ChildProcess | undefined;
+    child = NodeChildProcess.execFile(
+      "/usr/bin/ditto",
+      [source, target],
+      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: 120000 },
+      (error) => {
+        proof.stopped =
+          child !== undefined &&
+          (typeof child.exitCode === "number" || typeof child.signalCode === "string");
+        if (error) reject(new Error("Native updater operation ditto failed."));
+        else if (!proof.stopped)
+          reject(new Error("Native updater operation ditto exit is unknown."));
+        else resolve();
+      },
+    );
+  });
+}
+
+/** Only this invocation's unselected, same-device attempt is eligible for removal. */
+async function removeFailedMacAttempt(
+  root: string,
+  handle: string,
+  attempt: { readonly directory: string; readonly attemptRoot: string },
+  identity: NodeFS.Stats,
+): Promise<void> {
+  if ((await findJonesCompletedStage(root, handle, "mac-app-receipt.json")) === attempt.directory)
+    return;
+  const fs = bundleFileSystem().promises;
+  const current = await fs.lstat(attempt.attemptRoot);
+  if (
+    !current.isDirectory() ||
+    current.dev !== identity.dev ||
+    current.ino !== identity.ino ||
+    (await fs.realpath(attempt.attemptRoot)) !== attempt.attemptRoot
+  )
+    throw new Error("The failed Mac attempt's ownership changed.");
+  let entries = 0;
+  const inspect = async (path: string): Promise<void> => {
+    if (++entries > 200_000) throw new Error("The failed Mac attempt exceeds its entry bound.");
+    const info = await fs.lstat(path);
+    if (info.dev !== identity.dev || info.uid !== identity.uid)
+      throw new Error("The failed Mac attempt contains a mount or foreign entry.");
+    if (info.isSymbolicLink() || info.isFile()) return;
+    if (!info.isDirectory()) throw new Error("Unknown failed Mac attempt entry.");
+    for (const name of await fs.readdir(path)) await inspect(NodePath.join(path, name));
+  };
+  await inspect(attempt.attemptRoot);
+  await fs.rm(attempt.attemptRoot, { recursive: true });
+  try {
+    await fs.lstat(attempt.attemptRoot);
+    throw new Error("The failed Mac attempt remains after cleanup.");
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+  }
+  const parent = await fs.open(NodePath.dirname(attempt.attemptRoot), "r");
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
+}
+
 /** Download calls this only: mounting and copying never launch the candidate or use live state. */
 export async function stageJonesMacApp(
   artifact: JonesStagedArtifact,
@@ -321,13 +476,18 @@ export async function stageJonesMacApp(
     receiptName,
   );
   if (completed !== undefined) return readCompleted(completed);
+  await requireNoIncompleteMacAttempts(canonicalRoot);
   const attempt = await createJonesStageAttempt(canonicalRoot, artifact.stagedHandle);
+  const identity = await NodeFSP.lstat(attempt.attemptRoot);
   const directory = attempt.directory;
   const receiptPath = NodePath.join(directory, receiptName);
   const mount = NodePath.join(directory, "mount");
-  await NodeFSP.mkdir(mount, { mode: 0o700 });
-  let mounted = false;
+  const copier = { stopped: true };
+  let detachProved = true;
+  let failure: unknown;
   try {
+    await NodeFSP.mkdir(mount, { mode: 0o700 });
+    detachProved = false;
     await runNativeCommand("/usr/bin/hdiutil", [
       "attach",
       "-readonly",
@@ -337,7 +497,6 @@ export async function stageJonesMacApp(
       mount,
       artifact.payloadPath,
     ]);
-    mounted = true;
     const apps = (await NodeFSP.readdir(mount, { withFileTypes: true })).filter(
       (entry) => entry.isDirectory() && entry.name.endsWith(".app"),
     );
@@ -346,7 +505,7 @@ export async function stageJonesMacApp(
     const source = NodePath.join(mount, apps[0].name);
     await hashMacApp(source); // Reject escaping links before copying.
     const appPath = NodePath.join(directory, apps[0].name);
-    await runNativeCommand("/usr/bin/ditto", [source, appPath]);
+    await copyMacStage(source, appPath, copier);
     const { executablePath, asarPath, bundleIdentifier, startupGateProtocol } =
       await validateMacApp(appPath, artifact);
     const app: StagedMacApp = {
@@ -369,16 +528,48 @@ export async function stageJonesMacApp(
       JSON.stringify({ app, artifact, candidate: artifact.candidate }) + "\n",
       0o600,
     );
-  } finally {
-    if (mounted) await runNativeCommand("/usr/bin/hdiutil", ["detach", mount]);
-    // Failed attempts remain unselected, so retry never reuses a partial copy or an uncertain mount.
-    await NodeFSP.rmdir(mount).catch(() => undefined);
+  } catch (cause) {
+    failure = cause;
   }
-  const selected = await publishJonesCompletedStage(
-    canonicalRoot,
-    artifact.stagedHandle,
-    directory,
-    receiptName,
-  );
-  return readCompleted(selected);
+  if (!detachProved) {
+    try {
+      // Even a failed attach can have mounted the image before losing its response.
+      await runNativeCommand("/usr/bin/hdiutil", ["detach", mount]);
+      await NodeFSP.rmdir(mount).catch((cause: unknown) => {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+      });
+      detachProved = true;
+    } catch (cleanup) {
+      failure =
+        failure === undefined
+          ? cleanup
+          : new AggregateError([failure, cleanup], "Mac staging and detach failed.");
+    }
+  }
+  if (failure === undefined) {
+    try {
+      const selected = await publishJonesCompletedStage(
+        canonicalRoot,
+        artifact.stagedHandle,
+        directory,
+        receiptName,
+      );
+      return await readCompleted(selected);
+    } catch (cause) {
+      failure = cause;
+    }
+  }
+  if (!detachProved || !copier.stopped)
+    throw new AggregateError(
+      failure instanceof AggregateError ? failure.errors : [failure],
+      "Mac staging failed; the exact attempt is held until its mount and copier exit are proved.",
+    );
+  try {
+    await removeFailedMacAttempt(canonicalRoot, artifact.stagedHandle, attempt, identity);
+  } catch (cleanup) {
+    throw new AggregateError([failure, cleanup], "Mac staging and exact attempt cleanup failed.", {
+      cause: cleanup,
+    });
+  }
+  throw failure;
 }
