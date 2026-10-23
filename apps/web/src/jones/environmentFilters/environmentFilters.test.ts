@@ -48,6 +48,9 @@ describe("sidebar environment filters", () => {
     const catalog = [
       ...identities,
       { environmentId: "other", label: "My VPS" },
+      { environmentId: "custom-test", label: "My Test Server" },
+      { environmentId: "backup", label: "Test Server Backup" },
+      { environmentId: "contest", label: "Contest Server" },
       { environmentId: "blank", label: "  " },
       { environmentId: "missing" },
       { environmentId: "null", label: null },
@@ -56,10 +59,20 @@ describe("sidebar environment filters", () => {
     const excluded = excludedSidebarEnvironmentIds(catalog, allOff);
     expect(
       filterSidebarEnvironmentThreads(inventory, excluded).map((row) => row.environmentId),
-    ).toEqual(["other", "blank", "missing", "null", "not-in-catalog"]);
+    ).toEqual([
+      "other",
+      "custom-test",
+      "backup",
+      "contest",
+      "blank",
+      "missing",
+      "null",
+      "not-in-catalog",
+    ]);
   });
 
   it.each([
+    ["Test", " tEsT SeRvEr "],
     ["Laptop", " Home "],
     ["Laptop", " Laptop "],
     ["Mini", " Mac Mini "],
@@ -110,10 +123,10 @@ describe("sidebar environment filters", () => {
     ]).toEqual([]);
   });
 
-  it("keeps explicit categories ahead of machine kinds", () => {
+  it.each(["Test", "Test Server"])("keeps %s ahead of machine kinds", (label) => {
     const catalog = [
-      { environmentId: "test-mini", label: "Test" },
-      { environmentId: "test-laptop", label: "Test" },
+      { environmentId: "test-mini", label },
+      { environmentId: "test-laptop", label },
       { environmentId: "vps", label: "VPS" },
       { environmentId: "home", label: "Laptop" },
     ];
@@ -137,6 +150,13 @@ describe("sidebar environment filters", () => {
         machines,
       ),
     ]).toEqual(["test-mini", "test-laptop"]);
+    expect([
+      ...excludedSidebarEnvironmentIds(
+        catalog,
+        { ...DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, Laptop: false },
+        machines,
+      ),
+    ]).toEqual(["home"]);
   });
 
   it("updates exclusions and reset keys when machine metadata arrives or changes", () => {
@@ -150,17 +170,33 @@ describe("sidebar environment filters", () => {
     expect(key("mac-mini")).toBe(key("server"));
   });
 
-  it("groups duplicate normalized labels by stable ID even when disconnected", () => {
-    const catalog = [
-      { environmentId: "first", label: " vPs ", connection: { phase: "disconnected" } },
-      { environmentId: "second", label: "VPS", connection: { phase: "connected" } },
-      { environmentId: "third", label: "VPS test", connection: { phase: "disconnected" } },
-    ];
-    const filters = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, "VPS");
-    const excluded = excludedSidebarEnvironmentIds(catalog, filters);
-    expect([...excluded]).toEqual(["first", "second"]);
-    expect(filterSidebarEnvironmentThreads(catalog, excluded)).toEqual([catalog[2]]);
-  });
+  it.each([
+    ["VPS", " vPs ", "VPS", "VPS test"],
+    ["Test", " tEsT SeRvEr ", "Test Server", "Test Server Backup"],
+  ] as const)(
+    "groups %s labels by stable ID even when disconnected",
+    (filter, first, second, other) => {
+      const catalog = [
+        { environmentId: "first", label: first, connection: { phase: "disconnected" } },
+        { environmentId: "second", label: second, connection: { phase: "connected" } },
+        { environmentId: "third", label: other, connection: { phase: "disconnected" } },
+      ];
+      const filters = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, filter);
+      const excluded = excludedSidebarEnvironmentIds(catalog, filters);
+      expect([...excluded]).toEqual(["first", "second"]);
+      const inventory = [...catalog, { environmentId: "first" }];
+      expect(filterSidebarEnvironmentThreads(inventory, excluded)).toEqual([catalog[2]]);
+      const restored = excludedSidebarEnvironmentIds(
+        catalog,
+        toggleSidebarEnvironmentFilter(filters, filter),
+      );
+      expect(filterSidebarEnvironmentThreads(inventory, restored)).toBe(inventory);
+      expect(sidebarEnvironmentExclusionKey(excluded)).not.toBe(
+        sidebarEnvironmentExclusionKey(restored),
+      );
+      expect(sidebarEnvironmentExclusionKey(restored)).toBe("[]");
+    },
+  );
 
   it("changes the reset key on label reassignment but not catalog reordering", () => {
     const filters = toggleSidebarEnvironmentFilter(DEFAULT_SIDEBAR_ENVIRONMENT_FILTERS, "VPS");

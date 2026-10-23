@@ -7,6 +7,11 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/provider-switch-before-start.json": "jones-owned",
     "scripts/jones/signing/admission.node-test.mjs": "jones-owned",
     ".github/workflows/jones-desktop-signing.yml": "jones-owned",
     "apps/desktop/src/jones/updates/jonesSigningSource.ts": "jones-owned",

@@ -2,6 +2,22 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-provider-switch-before-start",
+      "tests": [
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/ProviderSwitchService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-desktop-signing",
       "tests": [
         "packages/shared/src/jones/jonesActions.test.ts",

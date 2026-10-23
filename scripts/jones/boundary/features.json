@@ -4,6 +4,17 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "provider-switch-before-start",
+      "tests": [
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
+      ],
+      "scope": "A Jones guard accepts only a recorded interruption before any provider start, with no native history or session. The existing shared Orchestrator hook and accepted-shared provider-switch service load candidate evidence and record ownership of the same pending provider thread through the existing event path. Saved model options, modes, terminal runs and messages remain unchanged. Started or uncertain histories retain the missing-cursor rejection. Jones integration tests exercise real dispatch after retiring the unused alias; no schema, migration, native resume or automatic execution change."
+    },
+    {
       "id": "macos-signing",
       "tests": [
         "packages/shared/src/jones/jonesActions.test.ts",
