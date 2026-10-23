@@ -460,13 +460,3 @@ export const WorkstreamSetupStatus = closed(
 );
 export type WorkstreamSetupStatus = typeof WorkstreamSetupStatus.Type;
 export const parseWorkstreamSetupStatus = Schema.decodeUnknownSync(WorkstreamSetupStatus);
-
-export const parseWorkstreamOperationSubmitRequest = Schema.decodeUnknownSync(
-  WorkstreamOperationSubmitRequest,
-);
-export const parseWorkstreamOperationReadRequest = Schema.decodeUnknownSync(
-  WorkstreamOperationReadRequest,
-);
-export const parseWorkstreamOperationReadResponse = Schema.decodeUnknownSync(
-  WorkstreamOperationReadResponse,
-);

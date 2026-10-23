@@ -39,7 +39,15 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { AppState, Pressable, Text } from "react-native";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentCatalog } from "../../connection/catalog";
 import { runtime } from "../../lib/runtime";
@@ -274,7 +282,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     const abort = new AbortController();
     controllers.current.add(abort);
     setOperationStatus("Saving Workstream change…");
-    try {
+    return await (async () => {
       const result = await operationClient(snapshot).run(key, make, {
         signal: abort.signal,
         retry: true,
@@ -283,21 +291,21 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       if (!operationSucceeded(result)) throw new WorkstreamOperationError(result);
       refreshMountedWorkstreams();
       return result;
-    } finally {
+    })().finally(() => {
       controllers.current.delete(abort);
       if (!abort.signal.aborted) setOperationWatchRevision((value) => value + 1);
-    }
+    });
   };
   const operationRegistry = async (snapshot: MobileWorkstreamSnapshot) => {
     const abort = new AbortController();
     controllers.current.add(abort);
-    try {
+    return await (async () => {
       const status = await operationClient(snapshot).transport.setup(abort.signal);
       assertCurrent(snapshot);
       return operationRegistryIdentity(status, snapshot.data.binding.ownerId);
-    } finally {
+    })().finally(() => {
       controllers.current.delete(abort);
-    }
+    });
   };
   const assignOperation: NonNullable<MobileOperationActions["assignOperation"]> = async (
     snapshot,
@@ -666,6 +674,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     };
   }, [connections, request]);
 
+  const operationClientsForWatch = useEffectEvent(() =>
+    snapshotsRef.current
+      .filter((snapshot) => supportsOperations(snapshot.prepared.environmentId) && !snapshot.stale)
+      .map(operationClient),
+  );
   const operationBindingKey = snapshots
     .map((snapshot) =>
       JSON.stringify([
@@ -683,9 +696,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     setOperationStatus(null);
     const seen = new Set<string>();
     const subscriptions: (() => void)[] = [];
-    for (const snapshot of snapshotsRef.current) {
-      if (!supportsOperations(snapshot.prepared.environmentId) || snapshot.stale) continue;
-      const client = operationClient(snapshot);
+    for (const client of operationClientsForWatch()) {
       subscriptions.push(
         client.subscribe(() => {
           if (abort.signal.aborted) return;
@@ -710,7 +721,6 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       for (const unsubscribe of subscriptions) unsubscribe();
     };
     // A connection/binding change replaces the polling lifetime, never the retained request.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [operationBindingKey, request, operationWatchRevision]);
   const assertCurrent = (snapshot: MobileWorkstreamSnapshot) => {
     if (

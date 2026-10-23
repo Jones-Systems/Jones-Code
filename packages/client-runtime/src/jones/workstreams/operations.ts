@@ -57,7 +57,7 @@ export const operationOpen = (result: OperationResult) =>
   result.state === "in_progress" || result.state === "reconciling";
 export const operationSucceeded = (result: OperationResult) =>
   result.state === "committed" || result.state === "already_satisfied";
-export const operationConfigFailure = (result: OperationResult) =>
+const operationConfigFailure = (result: OperationResult) =>
   (result.state === "rejected" &&
     ["foreign_thread", "registry_mismatch", "permission_denied"].includes(result.reason)) ||
   (result.state === "unavailable" &&

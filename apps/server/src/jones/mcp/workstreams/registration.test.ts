@@ -151,9 +151,12 @@ it.effect(
       });
       expect(cp.state.creates).toBe(1);
     }).pipe(
-      Effect.provide(registration),
       Effect.provide(
-        Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) }),
+        registration.pipe(
+          Layer.provideMerge(
+            Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) }),
+          ),
+        ),
       ),
     );
   },
