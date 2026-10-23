@@ -63,6 +63,9 @@ const makeCheckpointWorkspaceEffect = Effect.fn("makeCheckpointWorkspace")(
               path.join(primary, ".git", "info", "exclude"),
               "/.fixture-primary/\n",
             );
+            // Commits start detached auto-maintenance; since Git 2.54 it prunes the index-less
+            // --no-checkout worktree below while its .git file is being relocated.
+            yield* runGit(primary, ["config", "maintenance.auto", "false"]);
             yield* fs.writeFileString(path.join(primary, "README.md"), `# ${fixtureName}\n`);
             for (const [relativePath, contents] of Object.entries(files)) {
               const filePath = path.join(primary, relativePath);
