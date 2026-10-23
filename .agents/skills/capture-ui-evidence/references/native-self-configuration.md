@@ -58,7 +58,7 @@ Use the parent's final integrated source, not the harness-only branch. Create a
 new private parent evidence directory before running this capsule; never reuse
 existing output names. Set these to the frozen candidate and a new private evidence directory:
 
-~~~sh
+```sh
 SC_SOURCE=/absolute/path/to/integrated-candidate
 SC_HARNESS="$SC_SOURCE"
 SC_EVIDENCE=/absolute/private/evidence/native-self-configuration
@@ -74,14 +74,14 @@ pnpm exec vp lint \
   apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs \
   apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs
 node scripts/jones/check-boundary.ts --strict
-~~~
+```
 
 After fresh build admission, build and create the correspondence receipt. This
 requires clean, frozen source and rejects drift. Existing lockfile dependencies,
 Electron 44.4.5, Playwright 1.60.0, Xvfb, Git and rootless Bubblewrap must already
 be available; doctor reports missing prerequisites without installing them.
 
-~~~sh
+```sh
 node --input-type=module <<'JS'
 import * as fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -120,7 +120,7 @@ await fs.writeFile(evidence + "/build-receipt.json", JSON.stringify({
 }, null, 2), { flag: "wx", mode: 0o600 });
 JS
 node "$SC_HARNESS/apps/desktop/scripts/ui-evidence.mjs" doctor --source "$SC_SOURCE"
-~~~
+```
 
 The build itself is not exact-harness qualification. Run the existing
 sidebar-rename qualification with the same harness, candidate and receipt, then
@@ -128,7 +128,7 @@ the lifecycle scenario cold and warm, serially with fresh telemetry before each.
 No caches are deleted: cold means the first candidate/fixture run, warm means the
 repeated candidate with host caches retained; every run gets a new profile and DB.
 
-~~~sh
+```sh
 timeout --foreground --signal=TERM --kill-after=15s 240s \
   env XDG_STATE_HOME="$SC_EVIDENCE/state" \
   node "$SC_HARNESS/apps/desktop/scripts/ui-evidence.mjs" run \
@@ -142,7 +142,7 @@ timeout --foreground --signal=TERM --kill-after=15s 240s \
   --scenario "$SC_HARNESS/apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs" \
   --comparison 31a37d0b4196ae2c1800e92e5e6c964d128672e1 \
   --build-receipt "$SC_EVIDENCE/build-receipt.json" --out "$SC_EVIDENCE/positive-cold"
-~~~
+```
 
 Repeat the second command with output positive-warm. Retain timings separately,
 including the existing 20-second resource settling interval. The proposed

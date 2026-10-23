@@ -98,13 +98,17 @@ export async function requestLocalBackend(
     )
       throw new Error("Fixture thread must use the private project without a worktree");
   }
-  if (method === "fixtureThread" &&
-      (Object.keys(payload ?? {}).join() !== "threadId" ||
-       !/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId)))
+  if (
+    method === "fixtureThread" &&
+    (Object.keys(payload ?? {}).join() !== "threadId" ||
+      !/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId))
+  )
     throw new Error("Readback is limited to native self-configuration fixture threads");
   if (method === "registerSyntheticProvider") {
-    if (Object.keys(payload ?? {}).join() !== "instanceId" ||
-        !["native-fixture-a", "native-fixture-b"].includes(payload.instanceId))
+    if (
+      Object.keys(payload ?? {}).join() !== "instanceId" ||
+      !["native-fixture-a", "native-fixture-b"].includes(payload.instanceId)
+    )
       throw new Error("Only the fixed synthetic provider fixtures may be registered");
     const letter = payload.instanceId.endsWith("-a") ? "A" : "B";
     payload = {
@@ -127,12 +131,19 @@ export async function requestLocalBackend(
   const token = await desktopBridge.getLocalEnvironmentBearerToken();
   const headers = { authorization: `Bearer ${token}` };
   if (method === "snapshot" || method === "fixtureThread") {
-    const response = await fetch(new URL(method === "snapshot" ? "/api/orchestration/shell" :
-      "/api/orchestration/threads/" + encodeURIComponent(payload.threadId), endpoint.httpBaseUrl), {
-      headers: { ...headers, "x-t3-orchestration-protocol": "2" },
-      credentials: "omit",
-      signal: AbortSignal.timeout(15000),
-    });
+    const response = await fetch(
+      new URL(
+        method === "snapshot"
+          ? "/api/orchestration/shell"
+          : "/api/orchestration/threads/" + encodeURIComponent(payload.threadId),
+        endpoint.httpBaseUrl,
+      ),
+      {
+        headers: { ...headers, "x-t3-orchestration-protocol": "2" },
+        credentials: "omit",
+        signal: AbortSignal.timeout(15000),
+      },
+    );
     if (!response.ok) throw new Error(`Snapshot HTTP status ${response.status}`);
     return response.json();
   }
@@ -179,8 +190,10 @@ export async function requestLocalBackend(
           JSON.stringify({
             _tag: "Request",
             id: "0",
-            tag: method === "registerSyntheticProvider"
-              ? "server.updateSettings" : "orchestration.dispatchCommand",
+            tag:
+              method === "registerSyntheticProvider"
+                ? "server.updateSettings"
+                : "orchestration.dispatchCommand",
             payload,
             headers: [],
           }),
