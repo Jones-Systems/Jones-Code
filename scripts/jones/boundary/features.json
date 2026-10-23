@@ -5,9 +5,7 @@
   "features": [
     {
       "id": "experimental-typecheck",
-      "tests": [
-        "scripts/jones/experimental-typecheck/runner.test.mjs"
-      ],
+      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
       "scope": "Explicit opt-in tsrs TypeScript-only checking; existing authoritative checks retain Effect diagnostics. The Jones runner discovers pnpm workspaces, validates the existing noEmit script shape, uses the pinned local compiler serially, and owns signal forwarding and isolated build-info cleanup. Root package script and exact dependency/lock entries are minimal shared integration; development documents narrower coverage."
     },
     {

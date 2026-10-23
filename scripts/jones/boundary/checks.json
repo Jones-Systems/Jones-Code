@@ -3,9 +3,7 @@
   "groups": [
     {
       "id": "jones-experimental-typecheck",
-      "tests": [
-        "scripts/jones/experimental-typecheck/runner.test.mjs"
-      ],
+      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
       "commands": [
         "vp test run scripts/jones/experimental-typecheck/runner.test.mjs --maxWorkers=1 --no-file-parallelism",
         "vp lint scripts/jones/experimental-typecheck/*.mjs",
