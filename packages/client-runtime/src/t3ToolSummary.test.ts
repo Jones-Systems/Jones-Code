@@ -7,6 +7,36 @@ function completed(input: unknown, output?: unknown): T3ToolSummaryCall {
 }
 
 describe("summarizeT3ToolCalls", () => {
+  it("reports saved future defaults without claiming the active runtime changed", () => {
+    expect(
+      summarizeT3ToolCalls("thread-self-configure", [
+        completed(
+          { clientRequestId: "save" },
+          { acceptance: { application: "subsequently_admitted_inheriting_runs" } },
+        ),
+      ]),
+    ).toEqual({ label: "Saved thread defaults for future runs 1 time", failedCount: 0 });
+    expect(
+      summarizeT3ToolCalls("thread-self-configure", [
+        {
+          input: {},
+          output: undefined,
+          outcome: "unfinished",
+        },
+      ]),
+    ).toEqual({ label: "Tried to save thread defaults for future runs 1 time", failedCount: 0 });
+    expect(
+      summarizeT3ToolCalls("thread-self-configure", [
+        completed(
+          {},
+          {
+            isError: true,
+          },
+        ),
+      ]),
+    ).toEqual({ label: "Tried to save thread defaults for future runs 1 time", failedCount: 1 });
+  });
+
   it("counts accepted self-settlement targets across replay without claiming settlement completed", () => {
     const accepted = completed(
       { clientRequestId: "request-1" },

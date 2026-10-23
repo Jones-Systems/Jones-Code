@@ -1,3 +1,4 @@
+import { ThreadConfigurationEvidence } from "@t3tools/contracts";
 import {
   OrchestratorMcpEnvironmentTarget,
   ScheduledTaskId,
@@ -218,6 +219,14 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
     runtimeMode: RuntimeMode,
     interactionMode: ProviderInteractionMode,
     threadMessagesBlocked: Schema.Boolean,
+    configurationRevision: Schema.optional(
+      ThreadConfigurationEvidence.fields.configurationRevision,
+    ),
+    savedSelection: Schema.optional(ThreadConfigurationEvidence.fields.savedSelection),
+    executionPrecondition: Schema.optional(
+      ThreadConfigurationEvidence.fields.executionPrecondition,
+    ),
+    currentExecution: Schema.optional(ThreadConfigurationEvidence.fields.currentExecution),
   }),
 })
   .annotate(Tool.Readonly, true)
@@ -225,7 +234,7 @@ const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
-    "Set a thread's provider, model and options with the existing selection command. Omit threadId for this thread. This does not change permission modes. Use orchestrator_capabilities to choose a selection.",
+    "Set a thread's provider, model and options with the existing selection command. Self-targets are refused: use t3_thread_self_configure after reading t3_thread_configuration. This does not change permission modes. Use orchestrator_capabilities to choose a selection.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
