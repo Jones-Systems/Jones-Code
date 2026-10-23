@@ -132,8 +132,12 @@ export interface AdmissionWaitOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-// Only a fully validated CPU-busy sample may wait. Collector and other resource
-// failures stop immediately; the deadline also cancels an in-flight collector.
+class CpuSampleOutOfRangeError extends Error {
+  override readonly name = "CpuSampleOutOfRangeError";
+}
+
+// Fully validated CPU-busy samples and finite out-of-range CPU parser failures may
+// wait. Other failures stop immediately; the deadline cancels in-flight collection.
 export async function waitForResourceAdmission(options: AdmissionWaitOptions) {
   const now = options.now ?? Date.now,
     monotonicNow = options.monotonicNow ?? (() => NodePerfHooks.performance.now()),
@@ -158,7 +162,17 @@ export async function waitForResourceAdmission(options: AdmissionWaitOptions) {
     await record("started");
     while (true) {
       check();
-      const value = await options.sample(signal);
+      let value: unknown;
+      try {
+        value = await options.sample(signal);
+      } catch (error) {
+        if (!(error instanceof CpuSampleOutOfRangeError)) throw error;
+        check();
+        await record("held", { reason: error.message });
+        check();
+        await wait(Math.min(20_000, 120_000 - elapsed()), signal);
+        continue;
+      }
       await record("sample", { sample: value });
       check();
       const admission = assertAdmissionEvidence(value, options.sourceSha, now(), options.env);
@@ -291,12 +305,14 @@ export function cpuSample(top: string): number {
   );
   const last = samples.at(-1)!;
   const used = Number(last[1]) + Number(last[2]);
-  const valid = Number.isFinite(used) && used >= 0 && used <= 100;
+  if (Number.isFinite(used) && (used < 0 || used > 100)) {
+    throw new CpuSampleOutOfRangeError(`CPU sample unavailable: ${diagnostic("out_of_range")}`);
+  }
   NodeAssert.ok(
-    valid,
-    valid
+    Number.isFinite(used),
+    Number.isFinite(used)
       ? "CPU sample unavailable"
-      : `CPU sample unavailable: ${diagnostic(Number.isFinite(used) ? "out_of_range" : "nonfinite")}`,
+      : `CPU sample unavailable: ${diagnostic("nonfinite")}`,
   );
   return used;
 }
