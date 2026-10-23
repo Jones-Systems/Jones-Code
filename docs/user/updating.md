@@ -88,9 +88,13 @@ were built from different source revisions. Its update action targets the build
 running in your app, even if a newer desktop update has already downloaded.
 Mac and Linux build version numbers can differ while their source matches.
 Download the matching server build, then confirm installation when you are ready
-for that server to restart. A build staged from another source is not installed
-from this notice. Offline, unsupported, or newer servers show why the action is
-unavailable; the notice does not substitute the latest build.
+for that server to restart. If another source is already downloaded, this notice
+will not replace or install it. Open **Settings → Connections** to review that
+host's downloaded update: the separate host control can offer a different build
+because it follows the host's update channel, not this app's source. Installing
+that different build there does not make the server match this app.
+Offline, unsupported, or newer servers show why the action is unavailable; the
+notice does not substitute the latest build.
 
 ## Update a connected server
 

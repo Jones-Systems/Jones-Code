@@ -354,6 +354,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hangSessionScopeClose?: boolean;
     readonly sessionCloseDelayMs?: number;
     readonly startTurn?: Effect.Effect<void>;
+    readonly compactForContextHandoff?: ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
     readonly beforeUnload?: Effect.Effect<void>;
     readonly eventOriginMode?: "captured";
     readonly beforeEventDelivery?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
@@ -466,6 +467,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               ...current,
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
+          ...(options.compactForContextHandoff === undefined
+            ? {}
+            : { compactForContextHandoff: options.compactForContextHandoff }),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -522,6 +526,7 @@ function layerTest(input: {
   readonly hangSessionScopeClose?: boolean;
   readonly sessionCloseDelayMs?: number;
   readonly startTurn?: Effect.Effect<void>;
+  readonly compactForContextHandoff?: ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
   readonly beforeUnload?: Effect.Effect<void>;
   readonly eventOriginMode?: "captured";
   readonly beforeEventDelivery?: (event: ProviderAdapterV2Event) => Effect.Effect<void>;
@@ -569,6 +574,9 @@ function layerTest(input: {
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+      ...(input.compactForContextHandoff === undefined
+        ? {}
+        : { compactForContextHandoff: input.compactForContextHandoff }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
       ...(input.eventOriginMode === undefined ? {} : { eventOriginMode: input.eventOriginMode }),
       ...(input.beforeEventDelivery === undefined
@@ -4451,6 +4459,10 @@ function runIdleThreadUnloadScenario<E>(
     readonly providerThreadOf: (threadId: ThreadId) => OrchestrationV2ProviderThread;
     /** Starts run `ordinal` on a thread and returns once the provider accepted it. */
     readonly startTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
+    readonly compact: (
+      threadId: ThreadId,
+      ordinal: number,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     readonly endTurn: (threadId: ThreadId, ordinal: number) => Effect.Effect<void>;
     readonly resume: (threadId: ThreadId) => Effect.Effect<void>;
   }) => Effect.Effect<
@@ -4518,11 +4530,11 @@ function runIdleThreadUnloadScenario<E>(
             runtimePolicy,
           })
           .pipe(Effect.asVoid, Effect.orDie);
-      const startTurn = (threadId: ThreadId, ordinal: number) =>
+      const makeTurnInput = (threadId: ThreadId, ordinal: number) =>
         Effect.gen(function* () {
           yield* resume(threadId);
           const runId = idAllocator.derive.run({ threadId, ordinal });
-          yield* runtime.startTurn({
+          return {
             appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
             threadId,
             runId,
@@ -4540,8 +4552,16 @@ function runIdleThreadUnloadScenario<E>(
             },
             modelSelection,
             runtimePolicy,
-          });
+          } satisfies ProviderAdapter.ProviderAdapterV2TurnInput;
         }).pipe(Effect.orDie);
+      const startTurn = (threadId: ThreadId, ordinal: number) =>
+        makeTurnInput(threadId, ordinal).pipe(Effect.flatMap(runtime.startTurn), Effect.orDie);
+      const compact = (threadId: ThreadId, ordinal: number) =>
+        makeTurnInput(threadId, ordinal).pipe(
+          Effect.flatMap(runtime.compactForContextHandoff!),
+          Effect.asVoid,
+          Effect.orDie,
+        );
       const subscribe = runtime.subscribeEvents;
       assert.isDefined(subscribe);
       const endTurn = (threadId: ThreadId, ordinal: number) =>
@@ -4581,6 +4601,7 @@ function runIdleThreadUnloadScenario<E>(
         threadB,
         providerThreadOf,
         startTurn,
+        compact,
         endTurn,
         resume,
       });
@@ -4589,6 +4610,7 @@ function runIdleThreadUnloadScenario<E>(
         layerTest({
           state,
           idleTimeoutMs: 1000,
+          compactForContextHandoff: () => Effect.succeed({ usedTokens: 1000, maxTokens: 200000 }),
           ...(options.workMode
             ? { serverSettingsLayer: ServerSettings.layerTest({ workModeEnabled: true }) }
             : {}),
@@ -4607,6 +4629,33 @@ function runIdleThreadUnloadScenario<E>(
     );
   });
 }
+
+it.effect.each(["dispatch", "failure"] as const)(
+  "keeps handoff maintenance loaded through delivery and releases its lease: %s",
+  (outcome) =>
+    runIdleThreadUnloadScenario(
+      `handoff-${outcome}`,
+      ({ state, threadA, compact, startTurn, endTurn }) =>
+        Effect.gen(function* () {
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* compact(threadA, 1);
+              yield* TestClock.adjust("2 seconds");
+              assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+              if (outcome === "dispatch") yield* startTurn(threadA, 1);
+              else return yield* Effect.fail("synthetic delivery failure");
+            }),
+          ).pipe(Effect.ignore);
+          yield* TestClock.adjust("2 seconds");
+          if (outcome === "dispatch") {
+            assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+            yield* endTurn(threadA, 1);
+            yield* TestClock.adjust("2 seconds");
+          }
+          assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [`native-${threadA}`]);
+        }),
+    ),
+);
 
 it.effect(
   "ProviderSessionManagerV2 unloads a shared-runtime thread left idle, and reloads it on its next turn",

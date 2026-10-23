@@ -53,7 +53,7 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import { deliverWithHandoffRecovery } from "../jones/provider/codex/ContextHandoffRecovery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
@@ -1462,52 +1462,104 @@ export const layer: Layer.Layer<
                     createdAt: yield* DateTime.now,
                   }),
                 ];
-          const delivery = yield* deliverContextHandoffs({
-            handoffs: [...effectiveHandoffs, ...retryHandoff],
-            deferInline: compact,
-            providerThread: runningProviderThread,
-            budget: Effect.gen(function* () {
-              return handoffBudget({
-                tokenCap,
-                modelContextWindow,
-                userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
-                attachments: message.attachments,
-                providerThread: budgetProviderThread,
-                nativeContextEstimate:
-                  budgetProviderThread.contextUsage?.usedTokens === undefined
-                    ? yield* nativeContextEstimate
-                    : 0,
+          const revalidateHandoff = Effect.gen(function* () {
+            if (!(yield* isCurrentAttemptInStatus("running")))
+              return yield* new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                runId,
               });
-            }),
-            alreadyDeliveredItemIds: deliveredItemIds,
-            ...(session.injectHistory === undefined
-              ? {}
-              : {
-                  inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
-                    session.injectHistory!({
-                      providerThread: runningProviderThread,
-                      ...history,
-                    }),
+            if (eventSink.assertRuntimeStopStartAllowed)
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: input.threadId,
+                runId,
+                providerThreadId: providerThread.id,
+                ...(loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration }),
+              });
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterTurnStartError({
+                  driver: session.driver,
+                  threadId: input.threadId,
+                  providerThreadId: providerThread.id,
+                  runId,
+                  cause,
                 }),
-            persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
-              const updatedAt = yield* DateTime.now;
-              yield* eventSink.write({
-                events: [
-                  {
-                    id: yield* idAllocator.allocate.event({
+            ),
+          );
+          const budgetAfter = (
+            contextUsage: NonNullable<OrchestrationV2ProviderThread["contextUsage"]>,
+          ) =>
+            handoffBudget({
+              tokenCap,
+              modelContextWindow,
+              userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+              attachments: message.attachments,
+              providerThread: { ...budgetProviderThread, contextUsage },
+              nativeContextEstimate: 0,
+            });
+          const delivery = yield* deliverWithHandoffRecovery(
+            {
+              handoffs: [...effectiveHandoffs, ...retryHandoff],
+              deferInline: compact,
+              providerThread: runningProviderThread,
+              budget: Effect.gen(function* () {
+                return handoffBudget({
+                  tokenCap,
+                  modelContextWindow,
+                  userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+                  attachments: message.attachments,
+                  providerThread: budgetProviderThread,
+                  nativeContextEstimate:
+                    budgetProviderThread.contextUsage?.usedTokens === undefined
+                      ? yield* nativeContextEstimate
+                      : 0,
+                });
+              }),
+              alreadyDeliveredItemIds: deliveredItemIds,
+              ...(session.injectHistory === undefined
+                ? {}
+                : {
+                    inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
+                      session.injectHistory!({
+                        providerThread: runningProviderThread,
+                        ...history,
+                      }),
+                  }),
+              persist: Effect.fn("ProviderTurnStartService.persist")(function* (handoff) {
+                const updatedAt = yield* DateTime.now;
+                yield* eventSink.write({
+                  events: [
+                    {
+                      id: yield* idAllocator.allocate.event({
+                        threadId: projection.thread.id,
+                      }),
+                      type: "context-handoff.updated",
                       threadId: projection.thread.id,
-                    }),
-                    type: "context-handoff.updated",
-                    threadId: projection.thread.id,
-                    runId: run.id,
-                    providerInstanceId: run.providerInstanceId,
-                    occurredAt: updatedAt,
-                    payload: { ...handoff, updatedAt },
-                  },
-                ],
-              });
-            }),
-          });
+                      runId: run.id,
+                      providerInstanceId: run.providerInstanceId,
+                      occurredAt: updatedAt,
+                      payload: { ...handoff, updatedAt },
+                    },
+                  ],
+                });
+              }),
+            },
+            {
+              input: turnInput,
+              compact: compact ? undefined : session.compactForContextHandoff,
+              revalidate: revalidateHandoff,
+              budgetAfter,
+              reclaimableBudget: budgetAfter({
+                ...budgetProviderThread.contextUsage,
+                usedTokens: 0,
+              }),
+            },
+          );
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
           const context = [delivery.context, restartNote]
             .filter((part) => part !== "")
@@ -1548,6 +1600,7 @@ export const layer: Layer.Layer<
               )
             : delivery.delivered;
         },
+        Effect.scoped,
         Effect.mapError((cause) =>
           cause._tag === "ProviderAdapterTurnStartError"
             ? cause

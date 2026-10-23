@@ -102,18 +102,63 @@ async function setup(home: string) {
   return { home, directory, selectionPath, claimPath, claim, input, prepares: () => prepares };
 }
 
-it("prepares once only after the durable helper claim and backend dispatch record", async () =>
-  fixture(async ({ directory, claim, input, prepares }) => {
-    await prepareNativeContinuationReceipt(input);
-    await prepareNativeContinuationReceipt(input);
-    expect(prepares()).toBe(1);
-    expect(
-      JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "continuation.json"), "utf8")),
-    ).toEqual({ ...claim, prepared: true });
+it.each([2, 3])(
+  "prepares claim protocol %s once after the durable dispatch record",
+  async (protocol) =>
+    fixture(async ({ directory, claim, input, prepares }) => {
+      claim.preparationClaimProtocol = protocol;
+      await NodeFSP.writeFile(
+        NodePath.join(directory, "prepare-intent.json"),
+        JSON.stringify(claim),
+      );
+      await prepareNativeContinuationReceipt(input);
+      await prepareNativeContinuationReceipt(input);
+      expect(prepares()).toBe(1);
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "continuation.json"), "utf8")),
+      ).toEqual({ ...claim, prepared: true });
+      await expect(
+        prepareNativeContinuationReceipt({ ...input, environmentId: "wrong" }),
+      ).rejects.toThrow("manifest");
+      expect(prepares()).toBe(1);
+    }),
+);
+
+it.each(["before-dispatch", "after-receipt"])(
+  "refuses a withdrawn preparation %s without another side effect",
+  async (phase) =>
+    fixture(async ({ directory, input, prepares }) => {
+      if (phase === "after-receipt") await prepareNativeContinuationReceipt(input);
+      await NodeFSP.writeFile(NodePath.join(directory, "preparation-withdrawal.json"), "held");
+      await expect(prepareNativeContinuationReceipt(input)).rejects.toThrow("withdrawn");
+      expect(prepares()).toBe(phase === "after-receipt" ? 1 : 0);
+    }),
+);
+
+it("clears returned continuation markers when withdrawal races preparation", async () =>
+  fixture(async ({ directory, input, prepares }) => {
+    const cleared: Array<ReadonlyArray<string>> = [];
     await expect(
-      prepareNativeContinuationReceipt({ ...input, environmentId: "wrong" }),
-    ).rejects.toThrow("manifest");
+      prepareNativeContinuationReceipt({
+        ...input,
+        prepare: async () => {
+          const marked = await input.prepare();
+          await NodeFSP.writeFile(NodePath.join(directory, "preparation-withdrawal.json"), "held");
+          return marked;
+        },
+        clear: async (threadIds) => {
+          cleared.push(threadIds);
+        },
+      }),
+    ).rejects.toThrow("withdrawn");
     expect(prepares()).toBe(1);
+    expect(cleared).toEqual([["thread"]]);
+    await expect(NodeFSP.stat(NodePath.join(directory, "continuation.json"))).rejects.toMatchObject(
+      { code: "ENOENT" },
+    );
+    await expect(
+      NodeFSP.stat(NodePath.join(directory, "prepare-refused.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   }));
 
 it("retains uncertain preparation dispatch and refuses replay", async () =>

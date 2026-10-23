@@ -4,6 +4,7 @@ import {
   SHELL_RUN_STORAGE_KEY,
   SHELL_RUN_TTL,
   ShellRunStore,
+  legacyShellRunKey,
   shellRunKey,
   type ShellRun,
   type ShellRunCoordination,
@@ -12,7 +13,7 @@ import type { ShellDestination } from "./model";
 
 const now = 1_000_000_000;
 const id = "00000000-0000-4000-8000-000000000001";
-const key = shellRunKey("source", "thread", 42, "destination", "pwd\n");
+const key = shellRunKey("source", "thread", 42, "destination", "pwd\n", "message");
 const destination: ShellDestination = {
   status: "ready",
   environmentId: "destination",
@@ -74,6 +75,89 @@ function deferred() {
 }
 
 describe("native destination run controller", () => {
+  it("keeps identical blocks in distinct native messages independent across Close and reload", async () => {
+    const a = setup();
+    const firstKey = shellRunKey("source", "thread", 42, "destination", "pwd\n", "message-a");
+    const secondKey = shellRunKey("source", "thread", 42, "destination", "pwd\n", "message-b");
+    expect(firstKey).not.toBe(secondKey);
+    const b = new ShellRunController(
+      a.store,
+      () => "00000000-0000-4000-8000-000000000002",
+      () => now,
+    );
+    await a.controller.run({ ...a.input, key: firstKey });
+    await b.run({ ...a.input, key: secondKey });
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+    await a.controller.close(firstKey, a.terminal, () => true);
+    expect(a.store.get(secondKey)?.phase).toBe("running");
+    const restored = new ShellRunStore(a.storage, () => now, a.coordination);
+    expect(restored.get(firstKey)?.phase).toBe("closed");
+    expect(restored.get(secondKey)?.terminalId).toBe("run-00000000-0000-4000-8000-000000000002");
+    await new ShellRunController(
+      restored,
+      () => id,
+      () => now,
+    ).run({ ...a.input, key: secondKey });
+    expect(a.terminal.write).toHaveBeenCalledTimes(2);
+  });
+  it.each(["opening", "writing", "writeUnknown", "running", "closed"] as const)(
+    "preserves legacy %s evidence and requires deliberate Run again after upgrade",
+    async (phase) => {
+      const legacy = {
+        key: "33ec979ce54b3e4f035e512116d723ef8e1d8fe8d016a1a71c025e84a3341b32",
+        environmentId: "destination",
+        terminalId: `run-${id}`,
+        cwd: "/destination/server-cwd",
+        phase,
+        updatedAt: now,
+      };
+      expect(legacyShellRunKey(key)).toBe(legacy.key);
+      const a = setup(JSON.stringify([legacy]));
+      const bStore = new ShellRunStore(a.storage, () => now, a.coordination);
+      await a.controller.run(a.input);
+      expect(a.terminal.open).not.toHaveBeenCalled();
+      expect(a.store.get(key)).toBeNull();
+      expect(JSON.parse(a.storage.getItem(SHELL_RUN_STORAGE_KEY)!)).toEqual([legacy]);
+      await a.controller.run({ ...a.input, again: true });
+      expect(a.terminal.write).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(a.storage.getItem(SHELL_RUN_STORAGE_KEY)!)).toContainEqual(legacy);
+      const b = new ShellRunController(
+        bStore,
+        () => id,
+        () => now,
+      );
+      await b.run(a.input);
+      expect(a.terminal.write).toHaveBeenCalledTimes(1);
+      const otherMessage = shellRunKey("source", "thread", 42, "destination", "pwd\n", "other");
+      await b.run({ ...a.input, key: otherMessage });
+      expect(a.terminal.write).toHaveBeenCalledTimes(1);
+      expect(bStore.get(otherMessage)).toBeNull();
+    },
+  );
+  it("rereads legacy evidence under the lock even when the observing tab is stale", async () => {
+    const a = setup();
+    const raw = JSON.stringify([
+      {
+        key: legacyShellRunKey(key),
+        environmentId: "destination",
+        terminalId: `run-${id}`,
+        cwd: "/destination/server-cwd",
+        phase: "writing",
+        updatedAt: now,
+      },
+    ]);
+    a.storage.setItem(SHELL_RUN_STORAGE_KEY, raw);
+    await a.controller.run(a.input);
+    expect(a.terminal.write).not.toHaveBeenCalled();
+    expect(a.storage.getItem(SHELL_RUN_STORAGE_KEY)).toBe(raw);
+  });
+  it("refuses keys without native message identity, including legacy keys", async () => {
+    const a = setup();
+    expect(shellRunKey("source", "thread", 42, "destination", "pwd\n", "")).toBe("");
+    await a.controller.run({ ...a.input, key: "" });
+    await a.controller.run({ ...a.input, key: legacyShellRunKey(key)! });
+    expect(a.terminal.open).not.toHaveBeenCalled();
+  });
   it("preserves unknown delivery when a stale tab runs another block, including reload", async () => {
     const a = setup();
     const bStore = new ShellRunStore(a.storage, () => now, a.coordination);
@@ -84,7 +168,10 @@ describe("native destination run controller", () => {
     );
     a.terminal.write.mockResolvedValueOnce(false);
     await a.controller.run(a.input);
-    await b.run({ ...a.input, key: shellRunKey("source", "thread", 43, "destination", "pwd\n") });
+    await b.run({
+      ...a.input,
+      key: shellRunKey("source", "thread", 43, "destination", "pwd\n", "message"),
+    });
     const restored = new ShellRunStore(a.storage, () => now, a.coordination);
     expect(restored.get(key)?.phase).toBe("writeUnknown");
     await new ShellRunController(
@@ -121,7 +208,7 @@ describe("native destination run controller", () => {
     });
     const pending = a.controller.run(a.input);
     await entered.promise;
-    const otherKey = shellRunKey("source", "thread", 45, "destination", "pwd\n");
+    const otherKey = shellRunKey("source", "thread", 45, "destination", "pwd\n", "message");
     await b.run({ ...a.input, key: otherKey });
     // Unrelated keys finish even while A holds its lifecycle lock.
     expect(bStore.get(otherKey)?.phase).toBe("running");
@@ -397,7 +484,7 @@ describe("bounded local run associations", () => {
     for (let index = 0; index < 32; index++)
       await store.save({
         ...run,
-        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n", "message"),
       });
     await expect(store.save(run)).rejects.toThrow("full");
     expect(JSON.parse(storage.getItem(SHELL_RUN_STORAGE_KEY)!)).toHaveLength(32);
@@ -425,12 +512,25 @@ describe("bounded local run associations", () => {
       await a.store.save({
         ...run,
         phase: index === 0 ? "closed" : "writeUnknown",
-        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n", "message"),
       });
     await a.store.save(run);
     const records: ShellRun[] = JSON.parse(a.storage.getItem(SHELL_RUN_STORAGE_KEY)!);
     expect(records).toHaveLength(32);
     expect(records.filter((record) => record.phase === "writeUnknown")).toHaveLength(31);
+  });
+  it("does not reclaim ambiguous legacy evidence even when its old phase was closed", async () => {
+    const legacyRuns = Array.from({ length: 32 }, (_, index) => ({
+      ...run,
+      phase: "closed" as const,
+      key: legacyShellRunKey(
+        shellRunKey("source", "thread", index, "destination", "pwd\n", "message"),
+      )!,
+    }));
+    const raw = JSON.stringify(legacyRuns);
+    const a = setup(raw);
+    await expect(a.store.save(run)).rejects.toThrow("full");
+    expect(a.storage.getItem(SHELL_RUN_STORAGE_KEY)).toBe(raw);
   });
   it("refuses oversized storage before losing existing unknown tracking", async () => {
     const a = setup();
@@ -440,13 +540,13 @@ describe("bounded local run associations", () => {
       await a.store.save({
         ...run,
         cwd: longCwd,
-        key: shellRunKey("source", "thread", index, "destination", "pwd\n"),
+        key: shellRunKey("source", "thread", index, "destination", "pwd\n", "message"),
       });
     await expect(
       a.store.save({
         ...run,
         cwd: longCwd,
-        key: shellRunKey("source", "thread", 7, "destination", "pwd\n"),
+        key: shellRunKey("source", "thread", 7, "destination", "pwd\n", "message"),
       }),
     ).rejects.toThrow("full");
     const reloaded = new ShellRunStore(a.storage, () => now, a.coordination);
@@ -454,13 +554,13 @@ describe("bounded local run associations", () => {
   });
   it("separates source, thread, position, destination and command without persisting their contents", () => {
     const values = [
-      shellRunKey("other", "thread", 42, "destination", "pwd\n"),
-      shellRunKey("source", "other", 42, "destination", "pwd\n"),
-      shellRunKey("source", "thread", 43, "destination", "pwd\n"),
-      shellRunKey("source", "thread", 42, "other", "pwd\n"),
-      shellRunKey("source", "thread", 42, "destination", "whoami\n"),
+      shellRunKey("other", "thread", 42, "destination", "pwd\n", "message"),
+      shellRunKey("source", "other", 42, "destination", "pwd\n", "message"),
+      shellRunKey("source", "thread", 43, "destination", "pwd\n", "message"),
+      shellRunKey("source", "thread", 42, "other", "pwd\n", "message"),
+      shellRunKey("source", "thread", 42, "destination", "whoami\n", "message"),
     ];
     expect(new Set([key, ...values]).size).toBe(6);
-    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(key).toMatch(/^m1:[a-f0-9]{64}:[a-f0-9]{64}$/);
   });
 });

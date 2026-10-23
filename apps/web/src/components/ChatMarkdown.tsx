@@ -226,6 +226,7 @@ interface ChatMarkdownProps {
   /** Compact markdown transforms remove blocks before rendering inside a label. */
   inline?: boolean;
   text: string;
+  messageId?: string | undefined;
   cwd: string | undefined;
   threadRef?: ScopedThreadRef | undefined;
   pullRequestPanelRef?: ScopedThreadRef | undefined;
@@ -443,6 +444,7 @@ const markdownServerConfigFieldsAtom = Atom.family((environmentId: EnvironmentId
 function useChatMarkdownState({
   text,
   inline = false,
+  messageId,
   cwd,
   threadRef,
   pullRequestPanelRef,
@@ -905,6 +907,7 @@ function useChatMarkdownState({
     isStreaming,
     linkTargetPreference,
     markdownFileLinkMetaByHref,
+    messageId,
     onTaskListChange,
     onUseArtifactTemplate,
     onRunShellCommand,
@@ -1497,6 +1500,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       threadRef,
       inline,
       mathEnabled,
+      messageId,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const codeBlock = extractCodeBlock(children);
@@ -1545,6 +1549,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
           meta={meta}
           complete={!isStreaming && isClosedCodeFence(node, text, codeBlock.code)}
           blockPosition={node?.position?.start.offset}
+          messageId={messageId}
           threadRef={threadRef ?? null}
           onRunShellCommand={onRunShellCommand}
         >

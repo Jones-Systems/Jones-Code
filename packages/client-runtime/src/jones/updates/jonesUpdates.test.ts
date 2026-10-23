@@ -646,6 +646,23 @@ describe("exact-source action resolution", () => {
       reason: "staged-other",
       message: expect.stringContaining(offered.sourceSha.slice(0, 7)),
     });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain(`this app needs ${target.slice(0, 7)}`);
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("Installing it there will not match this app");
+  });
+
+  it("directs an unknown staged source to review without claiming it matches the app", () => {
+    const decision = resolve(hostState({ phase: "staged", stagedHandle: "handle-1" }));
+    expect(decision).toMatchObject({ status: "unavailable", reason: "staged-other" });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain("no reported source");
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("cannot confirm it matches this app");
   });
 
   it("lets an older host download only an offer that already is the target", () => {

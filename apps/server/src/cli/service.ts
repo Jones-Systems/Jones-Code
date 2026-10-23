@@ -13,6 +13,7 @@ import { compareExactServiceVersions } from "../cloud/serviceProtocol.ts";
 import type * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as HostServiceConfig from "../jones/hostService/HostServiceConfig.ts";
+import * as SystemBootService from "../jones/hostService/systemBootService.ts";
 import { JONES_BOOT_SERVICE_IDENTITY } from "../jones/hostService/identity.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 
@@ -25,6 +26,8 @@ export const jonesBootServiceLayer = (input: {
 }) =>
   Layer.unwrap(
     Effect.gen(function* () {
+      const adopted = yield* SystemBootService.make(input);
+      if (adopted !== undefined) return Layer.succeed(BootService.BootService, adopted);
       const configService = yield* HostServiceConfig.HostServiceConfig;
       const config = yield* configService
         .read(input.baseDir)

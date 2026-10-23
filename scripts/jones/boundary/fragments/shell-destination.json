@@ -8,7 +8,9 @@
   ],
   "hookPaths": [
     "apps/web/src/components/ChatMarkdown.tsx",
-    "apps/web/src/components/ThreadTerminalDrawer.tsx"
+    "apps/web/src/components/chat/MessagesTimeline.tsx",
+    "apps/web/src/components/ThreadTerminalDrawer.tsx",
+    "apps/web/src/components/chat/TimelineAssistantRows.tsx"
   ],
   "tombstones": [],
   "allowedImports": [

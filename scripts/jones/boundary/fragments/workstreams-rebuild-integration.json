@@ -2,6 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-rebuild-integration",
   "jonesOwnedPaths": [
+    "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx",
     "apps/web/src/test/reactHookHarness.ts",
     "apps/web/src/test/reactElementTree.ts",
     "apps/mobile/src/features/workstreams/Controls.tsx",

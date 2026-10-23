@@ -4,6 +4,22 @@
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "features": [
     {
+      "id": "provider-switch-before-start",
+      "tests": [
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
+      ],
+      "scope": "A Jones guard accepts only a recorded interruption before any provider start, with no native history or session. The existing shared Orchestrator hook and accepted-shared provider-switch service load candidate evidence and record ownership of the same pending provider thread through the existing event path. Saved model options, modes, terminal runs and messages remain unchanged. Started or uncertain histories retain the missing-cursor rejection. Jones integration tests exercise real dispatch after retiring the unused alias; no schema, migration, native resume or automatic execution change."
+    },
+    {
+      "id": "workstreams-sidebar-assignment",
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
+      "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
+    },
+    {
       "id": "agent-message-header",
       "tests": [
         "apps/server/src/jones/mcp/agentMessageHeader.test.ts",
@@ -651,7 +667,9 @@
         "apps/server/src/jones/hostService/adoption.test.ts",
         "apps/server/src/jones/hostService/privateSetupCompatibility.test.ts",
         "apps/server/src/jones/hostService/systemServiceControl.test.ts",
-        "apps/server/src/jones/hostService/systemAdoption.test.ts"
+        "apps/server/src/jones/hostService/systemAdoption.test.ts",
+        "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts",
+        "apps/server/src/jones/hostService/systemBootService.test.ts"
       ],
       "scope": "Host-owned Jones service identity and stable loopback configuration, verified local runtime staging, guarded persistent Tailscale pairing/removal, read-only host status, and bounded system-service native adoption through the fixed root-owned controller. Clients retain the existing direct transport and reconnect owner; live host rollout requires separate verification."
     },
@@ -857,7 +875,8 @@
         "apps/web/src/jones/fleetUpdates/JonesBlockedHostUpdates.browser.test.tsx",
         "packages/contracts/src/jones/ipcUpdateReports.test.ts",
         "apps/server/src/environment/ServerEnvironment.test.ts",
-        "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx"
+        "apps/web/src/jones/fleetUpdates/EnvironmentRow.browser.test.tsx",
+        "apps/server/src/jones/updates/preparation/stage.test.ts"
       ]
     },
     {
@@ -919,9 +938,14 @@
         "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
         "apps/desktop/src/jones/updates/updateChannels.test.ts",
         "apps/mobile/src/jones/updates/environmentMaintenance.test.ts",
-        "apps/mobile/src/features/settings/environment-maintenance.test.ts"
+        "apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "apps/server/src/jones/cloud/qualifiedDarwinRuntime.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/server/src/jones/updates/nativePreparation.test.ts",
+        "scripts/jones/updates/desktop-worker-smoke.test.ts"
       ],
-      "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held. Owned extraction scratch uses the Electron-aware raw bundle filesystem; cleanup diagnostics preserve successful durable staging and primary failures. Native Electron ASAR coverage complements plain Node lifecycle tests. Connections independently labels installed and candidate sources relative to the same verified laptop receipt; equality and exact-pair ancestry order commits rather than artifact display suffixes, with unknown/stale comparisons kept explicit. The read-scoped fixed-repository relation endpoint is additive, binds full commit pairs, bounds GitHub lookup lifetime/cache/concurrency, and degrades to an unknown ordering on old servers or lookup failure; no install action is used to establish ancestry."
+      "scope": "The standalone launcher shares the server lifetime SQLite ownership lock before snapshot and restore, releases it before spawning, and retains captured-child exit and commit uncertainty barriers. Current-attempt recovery payload and transient advanced state are removed after a durable terminal result; the directory, resume guard and timing receipts remain compatible with existing candidates. Cleanup failure preserves the durable result and remaining files. Captured process transport remains shared with the system adoption worker. Desktop cold custody retains captured candidate and backend process handles, preserves one packaged private runtime instance, and holds incomplete closure and replacement admission. Configuration and Manager integration cases remain in upstream test files because they exercise real configuration, scoped process lifetime, descriptor consumers, and two-instance admission; packaged boot tests cover the shared runtime artifact. DesktopBackendManager remains a shared hook registered by preview-companion-host. These source checks do not qualify production cold admission, native identity, installation, or activation; those paths remain held. Owned extraction scratch uses the Electron-aware raw bundle filesystem; cleanup diagnostics preserve successful durable staging and primary failures. Native Electron ASAR coverage complements plain Node lifecycle tests. Connections independently labels installed and candidate sources relative to the same verified laptop receipt; equality and exact-pair ancestry order commits rather than artifact display suffixes, with unknown/stale comparisons kept explicit. The read-scoped fixed-repository relation endpoint is additive, binds full commit pairs, bounds GitHub lookup lifetime/cache/concurrency, and degrades to an unknown ordering on old servers or lookup failure; no install action is used to establish ancestry. Desktop manual preparation uses explicitly withdrawable claims, with helper-locked withdrawal proof before retry; legacy uncertain claims remain held. Successful activation releases only its owned recovery reserves. Failed Mac app attempts are reclaimed only after owned mount and copier exit proof; uncertain attempts block allocation. Darwin preparation cancellation has independent bounded detach cleanup. The hosted Mac artifact job exercises the packaged desktop worker separately from the server worker; it does not qualify automatic activation, signing trust or the held supervisor cancellation behavior."
     },
     {
       "id": "server-shard-weights",
@@ -1485,7 +1509,7 @@
         "apps/web/src/components/ThreadTerminalDrawer.test.ts",
         "apps/web/src/state/terminalSessions.test.ts"
       ],
-      "scope": "Dedicated jones-shell metadata resolves exact client-known destination IDs; label hints only corroborate identity. Jones modules own command guards, bounded local run associations, one-shot native terminal delivery, and inline attachment. ChatMarkdown dispatches dedicated fences through the extracted MarkdownCodeBlock optional toolbar hooks. Source-environment commands retain the existing callback. C1 owns the contracts subpath export and shared orchestration instruction hook; these accepted shared surfaces avoid provider-specific copies. Browser tests retain the real Markdown/toolbar with synthetic connection and terminal adapters; native two-environment runtime verification remains separately required. No server transport, wire schema or persisted event change. The necessary optional TerminalViewport attachExistingOnly prop omits cwd and disables restart for known runs; a session-list check alone cannot prevent a reconnect race. All existing callers retain the original open/attach behavior."
+      "scope": "Dedicated jones-shell metadata resolves exact client-known destination IDs; label hints only corroborate identity. Jones modules own command guards, bounded local run associations, one-shot native terminal delivery, and inline attachment. ChatMarkdown dispatches dedicated fences through the extracted MarkdownCodeBlock optional toolbar hooks. The extracted TimelineAssistantRows component passes the native assistant message ID through ChatMarkdown; the narrow shared prop hook binds associations to message and block across rerenders/reloads. The Jones browser fixture exercises the production timeline, two identical messages, repeated blocks and independent Close. Missing identity disables execution. Legacy v1 associations remain ambiguous evidence: no automatic attachment or ordinary Play, only explicit Run again without rewriting the old record. The ChatMarkdown browser test is an accepted integration exception proving that callback consumers without identity fail closed. Source-environment commands retain the existing callback. C1 owns the contracts subpath export and shared orchestration instruction hook; these accepted shared surfaces avoid provider-specific copies. Browser tests retain the real Markdown/toolbar with synthetic connection and terminal adapters; native two-environment runtime verification remains separately required. No server transport, wire schema or persisted event change. The necessary optional TerminalViewport attachExistingOnly prop omits cwd and disables restart for known runs; a session-list check alone cannot prevent a reconnect race. All existing callers retain the original open/attach behavior."
     },
     {
       "id": "ci-dependency-setup",
@@ -1500,6 +1524,16 @@
         "apps/web/src/threadRoutes.test.ts"
       ],
       "scope": "Web child-input title links and Open question/Open approval actions navigate with the selected child environment and thread identity; mobile child-input navigation uses the same scoped identity. The web callback lives in the extracted useThreadLifecycle hook and ThreadActivityBanners receives a scoped child reference; the mobile callback stays in ThreadDetailScreen. The three tiny shared edits preserve their surrounding upstream behavior. ThreadDetailScreen remains owned by thread-read-dwell. Existing selector tests cover local descendants, remote linked tasks and nested remote children; route tests cover scoped route resolution. Browser interaction evidence covers actual banner controls and the destination view; those unit tests alone do not prove click wiring. Existing ID-only related-thread callbacks keep their same-environment contract. No provider, selector, wire, stored-state or missing-thread fallback changes."
+    },
+    {
+      "id": "context-handoff-recovery",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
+      ],
+      "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics."
     }
   ]
 }

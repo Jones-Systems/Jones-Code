@@ -142,6 +142,29 @@ const jonesConfigurationTestLayer = Layer.mergeAll(
 );
 
 it.layer(jonesConfigurationTestLayer)("Jones CLI service configuration", (it) => {
+  it.effect(
+    "refuses a damaged existing system adoption receipt before selecting a user service",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-cli-system-binding-" });
+        yield* fs.makeDirectory(`${baseDir}/runtime`);
+        yield* fs.writeFileString(`${baseDir}/runtime/jones-system-adoption.json`, "{broken\n");
+        const { service } = makeTestService(status);
+        const layerSpy = vi
+          .spyOn(BootService, "layer")
+          .mockReturnValue(Layer.succeed(BootService.BootService, service));
+        const result = yield* BootService.BootService.pipe(
+          Effect.provide(
+            jonesBootServiceLayer({ baseDir, logsDir: `${baseDir}/logs`, cliVersion: "1.2.3" }),
+          ),
+          Effect.result,
+        );
+        expect(result._tag).toBe("Failure");
+        expect(layerSpy).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect("uses Jones identity without inventing a port when config is missing", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

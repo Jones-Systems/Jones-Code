@@ -7,6 +7,20 @@
   },
   "baseline": "05b697f6a2012497ae790425e197fbd1fcef7de7",
   "paths": {
+    "apps/server/src/jones/hostService/linuxPriorityPolicy.ts": "jones-owned",
+    "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemBootService.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts": "jones-owned",
+    "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/provider-switch-before-start.json": "jones-owned",
+    "apps/web/src/components/ChatMarkdown.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
     "scripts/mobile-showcase.ts": "hook",
     "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
     "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",
@@ -1648,7 +1662,8 @@
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
     "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
-    "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx": "jones-tests-in-upstream"
+    "apps/web/src/components/chat/ThreadActivityBanners.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/TimelineAssistantRows.tsx": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
