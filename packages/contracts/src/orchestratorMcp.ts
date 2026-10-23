@@ -605,6 +605,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
+    remoteTaskObservationVersion: Schema.optional(Schema.String),
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
     cancellation: Schema.Boolean,

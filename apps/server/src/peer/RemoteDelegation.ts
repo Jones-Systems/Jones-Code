@@ -44,6 +44,7 @@ import * as PeerLinks from "./PeerLinks.ts";
 import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
 import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
+import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
@@ -594,7 +595,8 @@ const make = Effect.gen(function* () {
           timeoutMs: FOLLOW_WAIT_MS,
           // A thread there whose run ended may still be waiting on its own
           // tasks to wake it for the answer, which a task here waits for too.
-          // The observation version below distinguishes unsupported older peers.
+          // Observation support is required for new launches. Existing tasks on
+          // older peers still get one bounded chance to return their final result.
           untilDelegatedWorkSettled: true,
           observeBlockingQuestions: true,
           ...(previousObservation === undefined
@@ -604,12 +606,16 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.raceFirst(endedHere));
       // The next look reads the result and stops it there.
       if ("endedHere" in waited) return false;
-      if (waited.remoteObservation === undefined)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message:
-            "Remote question observation is unsupported by this linked environment. Upgrade the receiving server to follow this task.",
-        });
+      if (
+        waited.remoteObservation === undefined &&
+        (waited.timedOut ||
+          waited.observationChanged === true ||
+          waited.threadId !== remote.threadId ||
+          waited.runId !== remote.runId ||
+          !isTerminal(waited.status) ||
+          (waited.resultRun !== undefined && !isTerminal(waited.resultRun.status)))
+      )
+        return yield* ObservationSupport.unsupported();
       if (waited.remoteObservation !== undefined) {
         const observation = waited.remoteObservation;
         if (

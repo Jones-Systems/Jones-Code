@@ -1198,8 +1198,9 @@ it.effect.each(["completed", "failed"] as const)(
         );
         expect(completed).toMatchObject({ status, result });
         expect(waits).toBe(1);
-        expect(yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId))
-          .toBeUndefined();
+        expect(
+          yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId),
+        ).toBeUndefined();
         const freshStatus = yield* after.call("task_status", { taskId: delegated.taskId });
         expect(freshStatus.isError).toBe(true);
         expect(JSON.stringify(freshStatus.content)).toContain("unsupported");
@@ -1259,11 +1260,13 @@ it.effect("CSR-F1 fails and stops nonterminal legacy work after one bounded wait
       yield* Deferred.await(thread.interruptedOnce).pipe(Effect.timeout(Duration.seconds(8)));
       expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
       expect(waits).toHaveLength(1);
-      const current = (yield* after.orchestrator.getThreadProjection(parentThreadId)).subagents
-        .find((task) => task.id === delegated.taskId);
+      const current = (yield* after.orchestrator.getThreadProjection(
+        parentThreadId,
+      )).subagents.find((task) => task.id === delegated.taskId);
       expect(current?.result).toBe(failed?.result);
-      expect(yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId))
-        .toBeUndefined();
+      expect(
+        yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId),
+      ).toBeUndefined();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
 );

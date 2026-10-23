@@ -65,6 +65,7 @@ import {
 } from "../jones/remoteDelegation/ChildProgress.ts";
 export { hasPendingChildRuns } from "../jones/remoteDelegation/ChildProgress.ts";
 import { blockingQuestions } from "../jones/remoteDelegation/BlockingQuestions.ts";
+import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
 import type { RemoteTaskObservation } from "@t3tools/contracts";
 import {
   IncomingLinkedMessage,
@@ -2042,6 +2043,7 @@ const make = Effect.gen(function* () {
             };
           }),
           features: {
+            remoteTaskObservationVersion: ObservationSupport.version,
             appOwnedSubagents: true,
             asyncPolling: true,
             cancellation: true,
