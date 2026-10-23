@@ -9,6 +9,9 @@ import {
   WorkstreamsNativeContextResponse,
   WorkstreamsNativeAttestationResponse,
   WorkstreamsNativeSettlementResponse,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -31,6 +34,7 @@ import {
   requestText,
   attestationRequest,
 } from "../nativeProvider/testFixtures.ts";
+import { makeWorkstreamsNativeProvider } from "../nativeProvider/service.ts";
 import { NativeWorkstreamsRuntime, nativeWorkstreamsHttpApiLayer } from "./native.ts";
 
 class NativeTestApi extends HttpApi.make("environment").add(
@@ -58,7 +62,11 @@ const authLayer = Layer.succeed(EnvironmentAuthenticatedAuth, (handler) =>
         scopes: new Set<AuthEnvironmentScope>(
           credential === "Bearer browser"
             ? ["orchestration:read"]
-            : Object.values(NATIVE_PROVIDER_SCOPES),
+            : credential === "Bearer partial"
+              ? [NATIVE_PROVIDER_SCOPES.context]
+              : credential === "Bearer extra"
+                ? [...Object.values(NATIVE_PROVIDER_SCOPES), "orchestration:read"]
+                : Object.values(NATIVE_PROVIDER_SCOPES),
         ),
       }),
     );
@@ -75,6 +83,7 @@ const makeApp = (enrolled = true) => {
         Layer.succeed(NativeWorkstreamsRuntime, {
           ownerOperations: () => Effect.die("Native-provider tests must not invoke owner setup."),
           provider: fixture.provider(),
+          providerV2: makeWorkstreamsNativeProvider(fixture.ports, "v2"),
           enrollments: {
             getBySessionId: () =>
               Effect.sync(() => {
@@ -196,6 +205,61 @@ it("rejects query selectors and excessive raw bodies without reserving a command
     ).toBe(400);
     expect(app.fixture.calls).toHaveLength(0);
     expect(app.fixture.attempts.size).toBe(0);
+  } finally {
+    await app.dispose();
+  }
+});
+
+it("v2 mounts all operations with the exact bearer subject and three-scope filter", async () => {
+  const app = makeApp();
+  const v2Request = (operation: string, credential = "Bearer enrolled", body?: string) =>
+    new Request(`http://local/api/workstreams/native/v2/${operation}`, {
+      method: operation === "context" ? "GET" : "POST",
+      headers: { authorization: credential, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body }),
+    });
+  try {
+    for (const credential of [
+      "Bearer browser",
+      "Bearer partial",
+      "Bearer extra",
+      "Bearer wrong-subject",
+      "Bearer cookie",
+    ])
+      for (const operation of ["context", "attestations", "settlements", "settlements/lookup"])
+        expect((await app.handler(v2Request(operation, credential))).status).toBe(403);
+    expect(app.fixture.attempts.size).toBe(0);
+    expect(
+      (await app.handler(new Request("http://local/api/workstreams/native/v2/context"))).status,
+    ).toBe(401);
+    const context = await app.handler(v2Request("context"));
+    expect(
+      Schema.decodeUnknownSync(WorkstreamsNativeContextResponseV2)(await context.json()).state,
+    ).toBe("ready");
+    const attest = await app.handler(
+      v2Request(
+        "attestations",
+        "Bearer enrolled",
+        Schema.encodeSync(Schema.fromJsonString(WorkstreamsNativeAttestationRequest))(
+          attestationRequest,
+        ),
+      ),
+    );
+    expect(
+      Schema.decodeUnknownSync(WorkstreamsNativeAttestationResponseV2)(await attest.json()).state,
+    ).toBe("attested");
+    const settled = await app.handler(v2Request("settlements", "Bearer enrolled", requestText));
+    const terminal = Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponseV2)(
+      await settled.json(),
+    );
+    expect(terminal.state).toBe("terminal");
+    const lookup = await app.handler(
+      v2Request("settlements/lookup", "Bearer enrolled", requestText),
+    );
+    expect(
+      Schema.decodeUnknownSync(WorkstreamsNativeSettlementResponseV2)(await lookup.json()),
+    ).toEqual(terminal);
+    expect(app.fixture.calls).toHaveLength(1);
   } finally {
     await app.dispose();
   }
