@@ -96,7 +96,11 @@ NodeTest.test(
         state: entered.phase === "launch" ? "returned" : "completed",
       });
     }
-    NodeAssert.deepEqual(f.records.at(-1), { generation: 1, phase: "identity", state: "completed" });
+    NodeAssert.deepEqual(f.records.at(-1), {
+      generation: 1,
+      phase: "identity",
+      state: "completed",
+    });
   },
 );
 

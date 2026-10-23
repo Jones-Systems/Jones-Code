@@ -237,7 +237,10 @@ export async function runInner() {
               connectionType: "ethernet",
             });
             await generationPage.waitForFunction(() => navigator.onLine === true);
-            result.isolation.browserConnectivity.readbacks.push({ onlineBefore, onlineAfter: true });
+            result.isolation.browserConnectivity.readbacks.push({
+              onlineBefore,
+              onlineAfter: true,
+            });
           };
           await restoreConnectivity();
           const paths = await app.evaluate(({ app }) => ({

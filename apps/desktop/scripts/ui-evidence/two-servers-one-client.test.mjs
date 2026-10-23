@@ -131,13 +131,18 @@ NodeTest.test(
   "evidence rejection still performs one cleanup and keeps the earlier failure",
   async () => {
     for (const fault of [{ writeFailure: 1 }, { writeFailure: 2 }, { scanFailure: true }]) {
-      for (const primary of [undefined, "restart-disabled-b-timeout", "Error https://private-secret"]) {
+      for (const primary of [
+        undefined,
+        "restart-disabled-b-timeout",
+        "Error https://private-secret",
+      ]) {
         const f = finalizationFixture({ ...fault, primary });
         const failed = await f.run();
         NodeAssert.equal(f.stops(), 1);
         NodeAssert.equal(f.evidence.status, "failed");
         NodeAssert.equal(JSON.stringify(f.evidence).includes("private-secret"), false);
-        if (primary) NodeAssert.equal(failed.message, primary.includes(" ") ? "je03-failed" : primary);
+        if (primary)
+          NodeAssert.equal(failed.message, primary.includes(" ") ? "je03-failed" : primary);
         else NodeAssert.match(failed.message, /evidence.*failed/);
         NodeAssert.throws(() => f.trace.fingerprint("secret"), /trace-disposed/);
         if (fault.writeFailure === 1 || fault.scanFailure) NodeAssert.equal(f.writes.length, 0);
@@ -151,7 +156,10 @@ NodeTest.test("only completed drain, cleanup and evidence can finalize success",
   NodeAssert.equal(await f.run(), undefined);
   NodeAssert.equal(f.writes[0].value.status, "failed");
   NodeAssert.equal(f.writes[1].value.status, "passed");
-  NodeAssert.deepEqual(f.writes[1].value.finalization, { drain: "completed", cleanup: "completed" });
+  NodeAssert.deepEqual(f.writes[1].value.finalization, {
+    drain: "completed",
+    cleanup: "completed",
+  });
   NodeAssert.equal(f.stops(), 1);
   NodeAssert.deepEqual(f.events, ["scan", "write", "scan", "stop", "write"]);
   const cleanup = finalizationFixture({ cleanupFailure: true });
