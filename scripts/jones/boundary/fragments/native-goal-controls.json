@@ -50,6 +50,10 @@
       "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
     },
     {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
       "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
     },
