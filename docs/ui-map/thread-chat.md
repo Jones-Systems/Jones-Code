@@ -50,7 +50,9 @@ Known shared consumers:
   [thread attention](../../packages/shared/src/jones/threadAttention.ts) through
   [the status-filter model](../../apps/web/src/jones/threadStatusFilter/model.ts).
   A proposed plan alone creates no input status; explicit own/child requests and
-  native approvals retain precedence. Existing user-input cards render the
+  native approvals retain precedence. Working includes displayed Waiting rows in
+  its count and selection; double-click Hide working excludes both. Filtering
+  preserves the roster order, including pin order. Existing user-input cards render the
   instruction, optional choices and open response for `t3_request_user_response`.
 - [RightPanelTabs](../../apps/web/src/components/RightPanelTabs.tsx) also serves
   [Pull requests](../../apps/web/src/routes/_chat.pull-requests.tsx), outside
@@ -163,6 +165,24 @@ The primary verification owner must supply those prerequisites and record
 expected versus observed outcomes for each exercised row. Native, provider,
 remote-connection and deeper panel states remain gaps. This is a partial map
 addition, not a full maintenance pass or a product defect finding.
+
+### Working includes Waiting
+
+Use the common isolated-home recipe with two connected-idle Waiting threads
+pinned in distinct order and an ordinary idle control. On All, record their
+order and the Working count. Click the status pill once: both Waiting rows must
+remain in pin order and count as Working. Double-click within 250 ms: both must
+vanish while the idle control remains. Click once to return to All and verify
+the original order. Projection fixtures prove renderer behavior only.
+
+The primary Browser check verified this journey on October 23, 2026 using
+base `7f5caa1eb1255e228d44a88c37f5a9d78227cd19` plus the Working/Waiting
+classifier change, at 1280×800 CSS pixels, device scale 2, light theme and default
+text size. Before the change the two Waiting rows counted as zero and vanished
+on Working; afterward they counted as two, stayed in pin order, and were hidden
+by double-click. Both filter variants and input/approval precedence have focused
+model and browser tests. The live journey used the current sidebar; legacy,
+native mobile, packaged desktop and provider execution were not exercised.
 
 ### Needs input filter and open response
 

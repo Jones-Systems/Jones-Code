@@ -19,6 +19,7 @@ interface Binding {
 interface Request extends Binding {
   readonly done: Deferred.Deferred<ThreadTokenUsageSnapshot, HandoffCompactionError>;
   nativeTurnId?: string;
+  dispatched: boolean;
   acknowledged: boolean;
   compacted: boolean;
   completed: boolean;
@@ -102,6 +103,7 @@ export function makeCodexHandoffCompaction() {
         const request: Request = {
           ...binding,
           done: yield* Deferred.make<ThreadTokenUsageSnapshot, HandoffCompactionError>(),
+          dispatched: false,
           acknowledged: false,
           compacted: false,
           completed: false,
@@ -113,6 +115,25 @@ export function makeCodexHandoffCompaction() {
         pending = request;
         return {
           cancel: cancelRequest(request, "cancelled"),
+          // Only an unsent reservation can be discarded without native evidence.
+          // Keep its consumed attempt so cancellation cannot replay the same input.
+          cancelIfUndispatched: Effect.suspend(() => {
+            if (
+              pending === request &&
+              !request.dispatched &&
+              !request.acknowledged &&
+              request.nativeTurnId === undefined &&
+              !request.restorationPending
+            )
+              pending = undefined;
+            return cancelRequest(request, "cancelled");
+          }),
+          beginDispatch: Effect.suspend(() => {
+            if (pending !== request || request.failed)
+              return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
+            request.dispatched = true;
+            return Effect.void;
+          }),
           assertActive: Effect.suspend(() =>
             request.failed
               ? Effect.fail(new HandoffCompactionError({ reason: "cancelled" }))
