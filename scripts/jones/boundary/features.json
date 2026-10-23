@@ -647,6 +647,8 @@
     {
       "id": "persistent-private-services",
       "tests": [
+        "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts",
+        "apps/server/src/jones/hostService/systemBootService.test.ts",
         "apps/server/src/jones/hostService/HostService.test.ts",
         "apps/server/src/jones/hostService/cli.test.ts",
         "apps/server/src/jones/hostService/artifactVerification.test.ts",
