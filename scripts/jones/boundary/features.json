@@ -1494,9 +1494,7 @@
     },
     {
       "id": "timeline-payload-batching",
-      "tests": [
-        "apps/server/src/jones/orchestration/threadReferenceTail.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/orchestration/threadReferenceTail.test.ts"],
       "scope": "Batch selected canonical timeline payloads into one query while retaining history wire projection, page ordering, synthetic rows and missing/decode errors. One private helper stays beside its shared SQL types and transaction callers; Jones tests cover query counts and existing tail/fork behavior."
     }
   ]
