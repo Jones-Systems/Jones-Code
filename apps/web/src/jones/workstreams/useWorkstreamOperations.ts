@@ -1,5 +1,5 @@
 import { useAtomValue } from "@effect/atom-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { EnvironmentId, type T3WorkstreamListResult } from "@t3tools/contracts";
 import {
   WORKSTREAM_OPERATIONS_CONTRACT,
@@ -41,7 +41,10 @@ export function useWorkstreamOperations(input: {
   const [watchRevision, setWatchRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const refreshRef = useRef(input.refresh);
-  refreshRef.current = input.refresh;
+  useEffect(() => {
+    refreshRef.current = input.refresh;
+  }, [input.refresh]);
+  const refresh = useEffectEvent(() => input.refresh());
   const authority =
     input.data &&
     JSON.stringify([
@@ -52,7 +55,7 @@ export function useWorkstreamOperations(input: {
   const capableIds = configs
     .filter((entry) => supportsWorkstreamOperations(entry.config?.environment.capabilities))
     .map((entry) => entry.environmentId);
-  const capabilityKey = JSON.stringify(capableIds);
+  const watchKey = JSON.stringify([authority, capableIds, watchRevision]);
   const clientFor = (environmentId: string, newId?: () => Promise<string>) => {
     if (!authority) throw new Error("Workstream registry is unavailable.");
     const key = JSON.stringify([environmentId, authority]);
@@ -78,24 +81,33 @@ export function useWorkstreamOperations(input: {
     }
     return client;
   };
-  useEffect(() => {
-    setEntries([]);
-    setError(null);
-    if (!authority) return;
+  const startWatch = useEffectEvent((key: string) => {
+    const [watchAuthority, watchCapableIds] = JSON.parse(key) as [string | null, string[], number];
     const controller = new AbortController();
-    const active = capableIds.map((id) => clientFor(id));
-    const completed = new Set<string>();
-    const update = () => {
+    queueMicrotask(() => {
       if (controller.signal.aborted) return;
-      const next = active.flatMap((client) => client.snapshot());
-      setEntries(next);
-      for (const entry of next) {
-        if (entry.result && operationSucceeded(entry.result) && !completed.has(entry.operationId)) {
-          completed.add(entry.operationId);
-          refreshRef.current();
+      setEntries([]);
+      setError(null);
+    });
+    if (!watchAuthority) return () => controller.abort();
+    const active = watchCapableIds.map((id) => clientFor(id));
+    const completed = new Set<string>();
+    const update = () =>
+      queueMicrotask(() => {
+        if (controller.signal.aborted) return;
+        const next = active.flatMap((client) => client.snapshot());
+        setEntries(next);
+        for (const entry of next) {
+          if (
+            entry.result &&
+            operationSucceeded(entry.result) &&
+            !completed.has(entry.operationId)
+          ) {
+            completed.add(entry.operationId);
+            refresh();
+          }
         }
-      }
-    };
+      });
     const unsubscribes = active.map((client) => client.subscribe(update));
     for (const client of active)
       void client.watch(controller.signal).catch(() => {
@@ -109,9 +121,9 @@ export function useWorkstreamOperations(input: {
       controller.abort();
       for (const unsubscribe of unsubscribes) unsubscribe();
     };
-    // Each binding and live capability set owns exactly one polling lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authority, capabilityKey, watchRevision]);
+  });
+  // Each binding, live capability set and explicit retry owns one polling lifetime.
+  useEffect(() => startWatch(watchKey), [watchKey]);
   const registryFor = async (environmentId: string, signal?: AbortSignal) => {
     const status = await environmentOperationsTransport(environmentId).setup(signal);
     if (!input.data) throw new Error("Workstreams unavailable.");
@@ -128,17 +140,21 @@ export function useWorkstreamOperations(input: {
     },
   ) => {
     setError(null);
-    try {
-      const result = await clientFor(environmentId, options.commandId).run(key, make, {
-        ...options,
-        waitBudgetMs: 3000,
+    return Promise.resolve()
+      .then(() =>
+        clientFor(environmentId, options.commandId).run(key, make, {
+          ...options,
+          waitBudgetMs: 3000,
+        }),
+      )
+      .then((result) => {
+        if (!operationSucceeded(result)) throw new WorkstreamOperationError(result);
+        refreshRef.current();
+        return result;
+      })
+      .finally(() => {
+        if (!options.signal?.aborted) setWatchRevision((value) => value + 1);
       });
-      if (!operationSucceeded(result)) throw new WorkstreamOperationError(result);
-      refreshRef.current();
-      return result;
-    } finally {
-      if (!options.signal?.aborted) setWatchRevision((value) => value + 1);
-    }
   };
   return {
     entries,

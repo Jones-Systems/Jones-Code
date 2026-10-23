@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import {
   operationOpen,
   operationSucceeded,
@@ -19,6 +19,35 @@ import {
 } from "../../components/ui/dialog";
 
 type Choice = { kind: "existing"; id: string | null } | { kind: "create"; name: string };
+async function applyChoice(
+  selected: Choice,
+  controller: WorkstreamListView,
+  thread: { environmentId: string; id: string; title?: string },
+  commandId: () => Promise<string>,
+  signal: AbortSignal,
+  retry: boolean,
+) {
+  let destination =
+    selected.kind === "existing"
+      ? selected.id
+      : controller.data?.items.find((item) => item.name === selected.name)?.workstreamId;
+  if (selected.kind === "create" && !destination) {
+    if (!controller.createWorkstream)
+      throw new Error("Create a Workstream first on this server, then choose it here.");
+    destination = await controller.createWorkstream(selected.name, {
+      commandId,
+      signal,
+    });
+  }
+  signal.throwIfAborted();
+  if (destination === undefined || !controller.assignNativeThread)
+    throw new Error("Assignment is unavailable.");
+  await controller.assignNativeThread(thread, destination, {
+    commandId,
+    signal,
+    retry,
+  });
+}
 export function WorkstreamPicker({
   controller,
   thread,
@@ -38,7 +67,6 @@ export function WorkstreamPicker({
   const [joinedId, setJoinedId] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const running = useRef(false);
-  const retryRef = useRef<() => void>(() => {});
   useEffect(
     () => () => {
       request.current?.abort();
@@ -53,19 +81,6 @@ export function WorkstreamPicker({
   const waiting = controller.operationEntries?.find(
     (entry) => entry.operationId === (joinedId ?? waitingId),
   )?.result;
-  useEffect(() => {
-    if (!waiting || operationOpen(waiting)) return;
-    if (joinedId) {
-      setJoinedId(null);
-      setMessage(`${operationMessage(waiting)} Retry your choice to apply it.`);
-      return;
-    }
-    if (operationSucceeded(waiting)) {
-      setWaitingId(null);
-      if (waiting.kind === "create_workstream") retryRef.current();
-      else onClose();
-    } else setMessage(operationMessage(waiting));
-  }, [waiting, joinedId, onClose]);
   const run = async (selected: Choice, retry = false) => {
     if (running.current) return;
     running.current = true;
@@ -76,45 +91,52 @@ export function WorkstreamPicker({
     setJoinedId(null);
     const abort = new AbortController();
     request.current = abort;
-    try {
-      let destination =
-        selected.kind === "existing"
-          ? selected.id
-          : controller.data?.items.find((item) => item.name === selected.name)?.workstreamId;
-      if (selected.kind === "create" && !destination) {
-        if (!controller.createWorkstream)
-          throw new Error("Create a Workstream first on this server, then choose it here.");
-        destination = await controller.createWorkstream(selected.name, {
-          commandId,
-          signal: abort.signal,
-        });
-      }
-      abort.signal.throwIfAborted();
-      if (destination === undefined || !controller.assignNativeThread)
-        throw new Error("Assignment is unavailable.");
-      await controller.assignNativeThread(thread, destination, {
-        commandId,
-        signal: abort.signal,
-        retry,
+    return applyChoice(selected, controller, thread, commandId, abort.signal, retry)
+      .then(() => {
+        if (!abort.signal.aborted) onClose();
+      })
+      .catch((cause: unknown) => {
+        if (abort.signal.aborted) return;
+        if (cause instanceof WorkstreamOperationError) setWaitingId(cause.result.operation_id);
+        if (cause instanceof WorkstreamOperationJoined) setJoinedId(cause.operationId);
+        setMessage(
+          cause instanceof Error
+            ? cause.message
+            : "Outcome unknown. Retry checks the retained request.",
+        );
+      })
+      .finally(() => {
+        running.current = false;
+        if (!abort.signal.aborted) setBusy(false);
       });
-      if (!abort.signal.aborted) onClose();
-    } catch (cause) {
-      if (abort.signal.aborted) return;
-      if (cause instanceof WorkstreamOperationError) setWaitingId(cause.result.operation_id);
-      if (cause instanceof WorkstreamOperationJoined) setJoinedId(cause.operationId);
-      setMessage(
-        cause instanceof Error
-          ? cause.message
-          : "Outcome unknown. Retry checks the retained request.",
-      );
-    } finally {
-      running.current = false;
-      if (!abort.signal.aborted) setBusy(false);
-    }
   };
-  retryRef.current = () => {
+  const retryChoice = useEffectEvent(() => {
     if (choice) void run(choice, true);
-  };
+  });
+  const settleWaiting = useEffectEvent(
+    (result: NonNullable<typeof waiting>, joined: string | null, close: () => void) => {
+      if (joined) {
+        setJoinedId(null);
+        setMessage(`${operationMessage(result)} Retry your choice to apply it.`);
+        return;
+      }
+      if (operationSucceeded(result)) {
+        setWaitingId(null);
+        if (result.kind === "create_workstream") retryChoice();
+        else close();
+      } else setMessage(operationMessage(result));
+    },
+  );
+  useEffect(() => {
+    if (!waiting || operationOpen(waiting)) return;
+    let active = true;
+    queueMicrotask(() => {
+      if (active) settleWaiting(waiting, joinedId, onClose);
+    });
+    return () => {
+      active = false;
+    };
+  }, [waiting, joinedId, onClose]);
   const pending = busy || (waiting != null && operationOpen(waiting));
   return (
     <Dialog

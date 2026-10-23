@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import "../../index.css";
 import {
   WORKSTREAM_OPERATIONS_CONTRACT,
@@ -38,128 +38,140 @@ const initial: Authority = {
 };
 const loadAuthority = (): Authority =>
   JSON.parse(sessionStorage.getItem(authorityKey) ?? JSON.stringify(initial));
+type ScenarioMode = "commit" | "pending" | "conflict" | "config" | "lost-reply";
+function createScenarioRuntime() {
+  let authority = loadAuthority();
+  let mode: ScenarioMode = "commit";
+
+  const results = new Map<string, WorkstreamOperationResult>();
+  const requests = new Map<string, WorkstreamOperationRequest>();
+  const submit = async ({
+    request,
+  }: {
+    request: WorkstreamOperationRequest;
+  }): Promise<WorkstreamOperationResult> => {
+    requests.set(request.operation_id, request);
+    const old = results.get(request.operation_id);
+    if (old && operationSucceeded(old)) return old;
+    const base = {
+      contract: WORKSTREAM_OPERATIONS_CONTRACT,
+      operation_id: request.operation_id,
+      kind: request.kind,
+      request_sha256: "a".repeat(64),
+      origin: { kind: "app" as const },
+      children: [],
+      accepted_at: "2026-10-23T00:00:00Z",
+      updated_at: "2026-10-23T00:00:00Z",
+      observed: null,
+      detail: null,
+    } satisfies Partial<WorkstreamOperationResult>;
+    if (mode === "pending") {
+      const result: WorkstreamOperationResult = {
+        ...base,
+        state: "reconciling",
+        reason:
+          request.kind === "create_workstream"
+            ? "create_effect_unknown"
+            : "membership_effect_unknown",
+        result: null,
+        poll_after_ms: 1000,
+      };
+      results.set(request.operation_id, result);
+      return result;
+    }
+    if (mode === "config")
+      return {
+        ...base,
+        state: "unavailable",
+        reason: "not_configured",
+        result: null,
+        poll_after_ms: null,
+      };
+    if (mode === "conflict" && request.kind === "set_primary")
+      return {
+        ...base,
+        kind: "set_primary",
+        state: "conflict",
+        reason: "precondition_failed",
+        result: null,
+        poll_after_ms: null,
+        observed: { kind: "primary", workstream_id: "beta", name: "Beta" },
+      };
+    const next = { ...authority, names: [...authority.names] };
+    let id: string | null;
+    if (request.kind === "create_workstream") {
+      id = `created-${request.operation_id}`;
+      if (!next.names.some((item) => item.id === id)) {
+        next.names.push({ id, name: request.workstream.name });
+        next.creates += 1;
+      }
+    } else {
+      id = request.target.kind === "workstream" ? request.target.workstream_id : null;
+      next.placement = id;
+    }
+    authority = next;
+    sessionStorage.setItem(authorityKey, JSON.stringify(next));
+    const result: WorkstreamOperationResult = {
+      ...base,
+      state: "committed",
+      reason: null,
+      poll_after_ms: null,
+      result: {
+        workstream_id: id,
+        membership_id: request.kind === "set_primary" ? "membership" : null,
+        registry_version: 12,
+      },
+    };
+    results.set(request.operation_id, result);
+    if (mode === "lost-reply") {
+      mode = "commit";
+      throw new Error("Synthetic lost reply. Retry the retained operation.");
+    }
+    return result;
+  };
+  const client = new WorkstreamOperationsClient(
+    {
+      submit,
+      read: async (payload) => {
+        if (!("operation_id" in payload)) return { operations: [] };
+        const result = results.get(payload.operation_id) ?? null;
+        const retained = requests.get(payload.operation_id);
+        return {
+          operation:
+            result?.state === "reconciling" && retained && mode !== "pending"
+              ? await submit({ request: retained })
+              : result,
+        };
+      },
+      setup: async () => setupFixture,
+    },
+    {
+      load: async () => sessionStorage.getItem(recoveryKey),
+      save: async (value) => {
+        sessionStorage.setItem(recoveryKey, value);
+      },
+    },
+    fixtureId,
+  );
+  return {
+    operations: client,
+    setMode: (next: ScenarioMode) => {
+      mode = next;
+    },
+  };
+}
 function Scenario() {
-  const authority = useRef(loadAuthority());
-  const [snapshot, setSnapshot] = useState(authority.current);
+  const [snapshot, setSnapshot] = useState(loadAuthority);
   const [mode, setMode] = useState<"commit" | "pending" | "conflict" | "config" | "lost-reply">(
     "commit",
   );
-  const modeRef = useRef(mode);
-  modeRef.current = mode;
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<readonly RetainedOperation[]>([]);
   const [reason, setReason] = useState<keyof typeof sourceReasonLabels | "ready">("ready");
-  const [client] = useState(() => {
-    const results = new Map<string, WorkstreamOperationResult>();
-    const requests = new Map<string, WorkstreamOperationRequest>();
-    const submit = async ({
-      request,
-    }: {
-      request: WorkstreamOperationRequest;
-    }): Promise<WorkstreamOperationResult> => {
-      requests.set(request.operation_id, request);
-      const old = results.get(request.operation_id);
-      if (old && operationSucceeded(old)) return old;
-      const base = {
-        contract: WORKSTREAM_OPERATIONS_CONTRACT,
-        operation_id: request.operation_id,
-        kind: request.kind,
-        request_sha256: "a".repeat(64),
-        origin: { kind: "app" as const },
-        children: [],
-        accepted_at: "2026-10-23T00:00:00Z",
-        updated_at: "2026-10-23T00:00:00Z",
-        observed: null,
-        detail: null,
-      } satisfies Partial<WorkstreamOperationResult>;
-      if (modeRef.current === "pending") {
-        const result: WorkstreamOperationResult = {
-          ...base,
-          state: "reconciling",
-          reason:
-            request.kind === "create_workstream"
-              ? "create_effect_unknown"
-              : "membership_effect_unknown",
-          result: null,
-          poll_after_ms: 1000,
-        };
-        results.set(request.operation_id, result);
-        return result;
-      }
-      if (modeRef.current === "config")
-        return {
-          ...base,
-          state: "unavailable",
-          reason: "not_configured",
-          result: null,
-          poll_after_ms: null,
-        };
-      if (modeRef.current === "conflict" && request.kind === "set_primary")
-        return {
-          ...base,
-          kind: "set_primary",
-          state: "conflict",
-          reason: "precondition_failed",
-          result: null,
-          poll_after_ms: null,
-          observed: { kind: "primary", workstream_id: "beta", name: "Beta" },
-        };
-      const next = { ...authority.current, names: [...authority.current.names] };
-      let id: string | null;
-      if (request.kind === "create_workstream") {
-        id = `created-${request.operation_id}`;
-        if (!next.names.some((item) => item.id === id)) {
-          next.names.push({ id, name: request.workstream.name });
-          next.creates += 1;
-        }
-      } else {
-        id = request.target.kind === "workstream" ? request.target.workstream_id : null;
-        next.placement = id;
-      }
-      authority.current = next;
-      sessionStorage.setItem(authorityKey, JSON.stringify(next));
-      const result: WorkstreamOperationResult = {
-        ...base,
-        state: "committed",
-        reason: null,
-        poll_after_ms: null,
-        result: {
-          workstream_id: id,
-          membership_id: request.kind === "set_primary" ? "membership" : null,
-          registry_version: 12,
-        },
-      };
-      results.set(request.operation_id, result);
-      if (modeRef.current === "lost-reply") {
-        modeRef.current = "commit";
-        throw new Error("Synthetic lost reply. Retry the retained operation.");
-      }
-      return result;
-    };
-    return new WorkstreamOperationsClient(
-      {
-        submit,
-        read: async (payload) => {
-          if (!("operation_id" in payload)) return { operations: [] };
-          const result = results.get(payload.operation_id) ?? null;
-          const retained = requests.get(payload.operation_id);
-          return {
-            operation:
-              result?.state === "reconciling" && retained && modeRef.current !== "pending"
-                ? await submit({ request: retained })
-                : result,
-          };
-        },
-        setup: async () => setupFixture,
-      },
-      {
-        load: async () => sessionStorage.getItem(recoveryKey),
-        save: async (value) => {
-          sessionStorage.setItem(recoveryKey, value);
-        },
-      },
-      fixtureId,
-    );
+  const [runtime] = useState(createScenarioRuntime);
+  const client = runtime.operations;
+  useEffect(() => {
+    runtime.setMode(mode);
   });
   useEffect(() => {
     const abort = new AbortController();
@@ -261,7 +273,11 @@ function Scenario() {
         <select
           aria-label="Operation scenario"
           value={mode}
-          onChange={(event) => setMode(event.target.value as typeof mode)}
+          onChange={(event) => {
+            const next = event.target.value as typeof mode;
+            runtime.setMode(next);
+            setMode(next);
+          }}
         >
           {["commit", "pending", "conflict", "config", "lost-reply"].map((item) => (
             <option key={item}>{item}</option>

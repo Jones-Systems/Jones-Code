@@ -346,11 +346,6 @@ export function WorkstreamNativeSidebar({
         : undefined) ?? [];
     return {
       items: [
-        {
-          id: "assign-workstream:picker",
-          label: "Search or create Workstream…",
-          disabled: !canMove(thread),
-        },
         ...(!sourceAvailable(thread) || conflicted(thread) || !checked
           ? [
               {
@@ -367,6 +362,11 @@ export function WorkstreamNativeSidebar({
               },
             ]
           : []),
+        {
+          id: "assign-workstream:picker",
+          label: "Search or create Workstream…",
+          disabled: !canMove(thread),
+        },
         ...(controller.data?.items ?? []).map((item) => ({
           id: `assign-workstream:group:${item.workstreamId}` as const,
           label: `${item.name}${item.workstreamId === workstreamId ? " (primary)" : secondary.includes(item.workstreamId) ? " (secondary)" : ""}`,
@@ -380,8 +380,9 @@ export function WorkstreamNativeSidebar({
         },
       ],
       onAction: (action) => {
-        if (action === "assign-workstream:picker") setPickerThread(thread);
-        else if (action === "assign-workstream:remove") run(() => move(thread, null));
+        if (action === "assign-workstream:picker") {
+          if (canMove(thread)) setPickerThread(thread);
+        } else if (action === "assign-workstream:remove") run(() => move(thread, null));
         else {
           const destination = controller.data?.items.find(
             (item) => `assign-workstream:group:${item.workstreamId}` === action,
