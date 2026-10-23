@@ -9861,6 +9861,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   "thread/compact/start",
                   undefined,
                 ).pipe(
+                  Effect.andThen(prepared.request.beginDispatch),
                   Effect.andThen(
                     prepared.producer.client.request("thread/compact/start", {
                       threadId: prepared.binding.nativeThreadId,
@@ -9913,7 +9914,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   duration: "2 minutes",
                   orElse: () => Effect.fail(new HandoffCompactionError({ reason: "timeout" })),
                 }),
-                Effect.onError(() => prepared.request.cancel),
+                Effect.onError(() => prepared.request.cancelIfUndispatched),
               );
             }).pipe(
               Effect.mapError(

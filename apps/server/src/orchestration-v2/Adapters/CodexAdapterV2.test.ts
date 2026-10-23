@@ -7388,10 +7388,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
             scenario: nativeThreadId,
-            entries: codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "unsent" }).slice(
-              0,
-              5,
-            ),
+            entries: codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "unsent" }),
           }),
           undefined,
           (method) =>
@@ -7436,6 +7433,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         yield* harness.controlAdmission
           .assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID)
           .pipe(Effect.flip);
+        assert.isTrue(yield* harness.controlAdmission.acknowledge(dispatch, dispatch.binding));
+        yield* harness.controlAdmission.assertOpen(CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID);
+        const freshStart = yield* harness.runtime
+          .startTurn(
+            makeCodexTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make(`fresh-after-held-compaction-${phase}`),
+              text: "unsent",
+            }),
+          )
+          .pipe(Effect.exit);
+        assert.equal(
+          freshStart._tag,
+          "Success",
+          "exact steer acknowledgement must reopen fresh work after unsent compaction",
+        );
+        assert.equal(requests.filter((method) => method === "turn/start").length, 1);
       }).pipe(
         Effect.scoped,
         Effect.provide(
