@@ -473,12 +473,12 @@ export function resolveJonesExactSourceAction(
     if (provenance === undefined)
       return unavailable(
         "staged-other",
-        "This host has a downloaded update with no reported source, so it will not be installed from this notice.",
+        "This host has a downloaded update with no reported source, so it will not be installed from this notice. Open Settings → Connections to review this host's downloaded update; we cannot confirm it matches this app.",
       );
     if (provenance.sourceSha !== targetSource)
       return unavailable(
         "staged-other",
-        `This host already has source ${shortJonesSource(provenance.sourceSha)} downloaded. It will not be installed from this notice.`,
+        `This host has source ${shortJonesSource(provenance.sourceSha)} downloaded; this app needs ${short}. It will not be installed from this notice. Open Settings → Connections to review this host's downloaded update. Installing it there will not match this app.`,
       );
     if (!state.capability.install || state.currentVersion === undefined)
       return unavailable("unavailable", capabilityRefusal(state, "install"));

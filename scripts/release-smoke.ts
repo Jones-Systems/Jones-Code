@@ -236,15 +236,19 @@ try {
     },
   );
 
-  NodeFS.rmSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
-
-  NodeChildProcess.execFileSync("vp", ["install", "--lockfile-only", "--ignore-scripts"], {
-    cwd: tempRoot,
-    stdio: "inherit",
-  });
+  // Seed the release lockfile refresh with the reviewed graph, including patched versions.
+  // Resolving from an empty lockfile instead tests registry drift and can orphan versioned patches.
+  NodeChildProcess.execFileSync(
+    "vp",
+    ["install", "--lockfile-only", "--ignore-scripts", "--no-frozen-lockfile"],
+    {
+      cwd: tempRoot,
+      stdio: "inherit",
+    },
+  );
 
   const lockfile = NodeFS.readFileSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), "utf8");
-  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be regenerated.");
+  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be refreshed.");
 
   for (const relativePath of [
     "apps/server/package.json",
