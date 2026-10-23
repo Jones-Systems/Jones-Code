@@ -26,7 +26,13 @@ import gnomeCaptureBundle from "../apps/desktop/gnome-extension/bundle.json" wit
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { requireProductionProfile } from "./jones/signing/profile.ts";
-import { desktopAppId, nativePasskeysEnabled, productionSigning, requireProductionBuild, requireProductionPasskeys } from "./jones/signing/policy.ts";
+import {
+  desktopAppId,
+  nativePasskeysEnabled,
+  productionSigning,
+  requireProductionBuild,
+  requireProductionPasskeys,
+} from "./jones/signing/policy.ts";
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
   applyCompanionPackageVariant,
@@ -3749,7 +3755,10 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
 
   const configuredMacPasskeySigning =
-    options.variant !== "preview-companion" && options.platform === "mac" && options.signed && nativePasskeysEnabled(loadRepoEnv({ repoRoot }))
+    options.variant !== "preview-companion" &&
+    options.platform === "mac" &&
+    options.signed &&
+    nativePasskeysEnabled(loadRepoEnv({ repoRoot }))
       ? yield* Effect.try({
           try: () => resolveMacPasskeySigningConfiguration(loadRepoEnv({ repoRoot })),
           catch: MacPasskeySigningConfigurationResolutionError.fromCause,
@@ -3776,10 +3785,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     }
     const macProfile = yield* fs.readFileString(macPasskeySigning.provisioningProfilePath);
     requireProductionProfile(process.env, macProfile, macPasskeySigning.rpDomains);
-    macWebAuthn = resolveMacWebAuthnEntitlements(
-      macProfile,
-      macPasskeySigning,
-    );
+    macWebAuthn = resolveMacWebAuthnEntitlements(macProfile, macPasskeySigning);
     requireProductionPasskeys(process.env, macWebAuthn);
     yield* Effect.log(
       `[desktop-artifact] In-app browser passkeys: Touch ID ${macWebAuthn.touchIdKeychainAccessGroup ? "enabled" : "disabled"}, browser passkeys ${macWebAuthn.browserPasskeys ? "enabled" : "disabled"}.`,

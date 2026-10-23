@@ -5,7 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { sign as signApplication, type SignOptions } from "@electron/osx-sign";
-import { componentIdentifier, JONES_MACOS_APP_ID, JONES_MACOS_IDENTITY, productionSigning, signingRequirement } from "./policy.ts";
+import {
+  componentIdentifier,
+  JONES_MACOS_APP_ID,
+  JONES_MACOS_IDENTITY,
+  productionSigning,
+  signingRequirement,
+} from "./policy.ts";
 
 const exec = promisify(execFile);
 async function run(command: string, args: string[]): Promise<void> {
@@ -35,7 +41,11 @@ export function productionSignOptions(options: SignOptions, env: NodeJS.ProcessE
         hardenedRuntime: true,
         timestamp: "http://timestamp.apple.com/ts01",
         requirements: `=designated => ${signingRequirement(identifier)}`,
-        additionalArguments: [...(inherited?.additionalArguments ?? []), "--identifier", identifier],
+        additionalArguments: [
+          ...(inherited?.additionalArguments ?? []),
+          "--identifier",
+          identifier,
+        ],
       };
     },
     batchCodesignCalls: true,
@@ -52,12 +62,32 @@ export async function signMac(options: SignOptions): Promise<void> {
   const issuer = process.env.APPLE_NOTARY_ISSUER_ID;
   if (!key || !keyId || !issuer) throw new Error("Production notarization configuration missing.");
   await signApplication(productionSignOptions(options, process.env));
-  await run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", signingRequirement(JONES_MACOS_APP_ID), options.app]);
+  await run("/usr/bin/codesign", [
+    "--verify",
+    "--deep",
+    "--strict",
+    "-R",
+    `=${signingRequirement(JONES_MACOS_APP_ID)}`,
+    options.app,
+  ]);
   const scratch = await mkdtemp(join(tmpdir(), "jones-notarize-"));
   try {
     const archive = join(scratch, "application.zip");
     await run("/usr/bin/ditto", ["-c", "-k", "--keepParent", options.app, archive]);
-    await run("/usr/bin/xcrun", ["notarytool", "submit", archive, "--key", key, "--key-id", keyId, "--issuer", issuer, "--wait", "--output-format", "json"]);
+    await run("/usr/bin/xcrun", [
+      "notarytool",
+      "submit",
+      archive,
+      "--key",
+      key,
+      "--key-id",
+      keyId,
+      "--issuer",
+      issuer,
+      "--wait",
+      "--output-format",
+      "json",
+    ]);
     await run("/usr/bin/xcrun", ["stapler", "staple", options.app]);
     await run("/usr/bin/xcrun", ["stapler", "validate", options.app]);
     await run("/usr/sbin/spctl", ["--assess", "--type", "execute", options.app]);

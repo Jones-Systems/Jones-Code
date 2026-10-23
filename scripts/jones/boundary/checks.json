@@ -13,11 +13,12 @@
         "scripts/jones/signing/sign.test.ts",
         "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "scripts/build-desktop-artifact.test.ts"
       ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/signing/admission.node-test.mjs",
-        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/sign-macos.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts scripts/build-desktop-artifact.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/sign-macos.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts scripts/build-desktop-artifact.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/shared typecheck",
         "vp run --filter @t3tools/scripts typecheck",
         "vp run --filter @t3tools/desktop typecheck",

@@ -31,13 +31,21 @@ function pairedFragments(pairedSource) {
   return fragments;
 }
 
-export function materializePairedExecutor(executorSource, pairedSource) {
+export function materializePairedExecutor(executorSource, pairedSource, signingSource) {
   NodeAssert.ok(
     executorSource.includes(
       'import { jonesPairedStateSource } from "./jonesPairedStateSource.ts";',
     ),
   );
+  NodeAssert.ok(
+    executorSource.includes('import { jonesSigningSource } from "./jonesSigningSource.ts";'),
+  );
   let executor = literal(executorSource);
+  const signingReference = "${jonesSigningSource}";
+  NodeAssert.equal(executor.split(signingReference).length, 2);
+  const signing = literal(signingSource);
+  NodeAssert.ok(!signing.includes("${") && !signing.includes("`"));
+  executor = executor.replace(signingReference, () => signing);
   for (const [name, fragment] of Object.entries(pairedFragments(pairedSource))) {
     const reference = "${jonesPairedStateSource." + name + "}";
     NodeAssert.equal(executor.split(reference).length, 2);
@@ -51,7 +59,7 @@ export function materializePairedExecutor(executorSource, pairedSource) {
 }
 
 export async function readPairedExecutorSource() {
-  const [executorSource, pairedSource] = await Promise.all([
+  const [executorSource, pairedSource, signingSource] = await Promise.all([
     NodeFSP.readFile(
       new URL(
         "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
@@ -63,6 +71,10 @@ export async function readPairedExecutorSource() {
       new URL("../../../apps/desktop/src/jones/updates/jonesPairedStateSource.ts", import.meta.url),
       "utf8",
     ),
+    NodeFSP.readFile(
+      new URL("../../../apps/desktop/src/jones/updates/jonesSigningSource.ts", import.meta.url),
+      "utf8",
+    ),
   ]);
-  return materializePairedExecutor(executorSource, pairedSource);
+  return materializePairedExecutor(executorSource, pairedSource, signingSource);
 }

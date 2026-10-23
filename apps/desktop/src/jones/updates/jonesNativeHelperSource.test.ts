@@ -1229,14 +1229,9 @@ assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profi
 `;
         NodeChildProcess.execFileSync(
           "python3",
-          [
-            "-c",
-            `${nativeFunctions}\n${runtime}\n${scenario}`,
-            f.directory,
-            "trial-mismatch",
-            fault,
-          ],
+          ["-", f.directory, "trial-mismatch", fault],
           {
+            input: `${nativeFunctions}\n${runtime}\n${scenario}`,
             encoding: "utf8",
             timeout: 10000,
             maxBuffer: 1024 * 1024,
@@ -1403,8 +1398,9 @@ if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').r
 `;
       NodeChildProcess.execFileSync(
         "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault],
+        ["-", f.directory, "trial-mismatch", fault],
         {
+          input: `${nativeFunctions}\n${runtime}\n${scenario}`,
           encoding: "utf8",
           timeout: 10000,
           maxBuffer: 1024 * 1024,

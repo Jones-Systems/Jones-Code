@@ -4,21 +4,9 @@
   "jonesOwnedPaths": [
     ".github/workflows/jones-desktop-signing.yml",
     "apps/desktop/src/jones/updates/jonesSigningSource.ts",
-    "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
-    "scripts/jones/boundary/fragments/macos-signing.json",
-    "scripts/jones/signing/import-identity.m",
-    "scripts/jones/signing/policy.test.ts",
-    "scripts/jones/signing/policy.ts",
-    "scripts/jones/signing/production-build.ts",
-    "scripts/jones/signing/profile.test.ts",
-    "scripts/jones/signing/profile.ts",
-    "scripts/jones/signing/sign.test.ts",
-    "scripts/jones/signing/sign.ts",
-    "scripts/jones/signing/admission.node-test.mjs"
+    "apps/desktop/src/jones/updates/jonesSigningSource.test.ts"
   ],
-  "hookPaths": [
-    "scripts/sign-macos.ts"
-  ],
+  "hookPaths": ["scripts/sign-macos.ts"],
   "tombstones": [],
   "allowedImports": [
     {

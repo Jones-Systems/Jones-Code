@@ -213,7 +213,8 @@ async function fixture(
       let bundleIdentifier = "com.t3tools.t3code";
       try {
         const xml = await NodeFSP.readFile(NodePath.join(app, "Contents", "Info.plist"), "utf8");
-        bundleIdentifier = xml.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
+        bundleIdentifier =
+          xml.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
@@ -1892,19 +1893,27 @@ describe("Jones desktop updates", () => {
   });
 });
 
-it.each(["", "com.jonessystems.jonescode"])("does not discover preview updates for missing or unadmitted production identity %s", async (bundleIdentifier) => {
-  const f = await fixture();
-  try {
-    const check = vi.fn(async () => ({ state: "no-new" as const }));
-    const controller = new JonesDesktopUpdateController({
-      ...f.options,
-      client: { check, stage: f.options.client!.stage },
-      readInstalledBundleIdentity: async () => ({ bundleIdentifier, version: f.active.version, executablePath: f.active.executablePath }),
-    });
-    await controller.configure();
-    expect(await controller.check()).toBe(false);
-    expect(check).not.toHaveBeenCalled();
-  } finally {
-    await f.cleanup();
-  }
-});
+it.each(["", "com.jonessystems.jonescode"])(
+  "does not discover preview updates for missing or unadmitted production identity %s",
+  async (bundleIdentifier) => {
+    const f = await fixture();
+    try {
+      const check = vi.fn(async () => ({ state: "no-new" as const }));
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        client: { check, stage: f.options.client!.stage },
+        readInstalledBundleIdentity: async () => ({
+          bundleIdentifier,
+          version: f.active.version,
+          executablePath: f.active.executablePath,
+        }),
+      });
+      await controller.configure();
+      expect(await controller.check()).toBe(true);
+      expect(controller.state.status).toBe("error");
+      expect(check).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  },
+);

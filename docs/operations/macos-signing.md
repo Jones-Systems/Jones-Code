@@ -1,18 +1,20 @@
 # Production macOS signing
 
 Production desktop signing is a separate, fail-closed build mode. Development
-and unsigned preview builds retain `com.t3tools.t3code`. The proposed production
-identity is `com.jonessystems.jonescode`, Developer ID team `2CUPSQS986`.
-Owner acceptance of that bundle-ID migration is still pending. Adding this
-source does not enable a signing workflow, migrate an installed app or enroll
-credentials.
+and unsigned preview builds retain `com.t3tools.t3code`. The owner-approved
+production identity is `com.jonessystems.jonescode`, Developer ID team `2CUPSQS986`.
+Identity approval settles the source mapping. Workflow activation, signing,
+installation and identity migration remain separate held operations; adding this
+source does not enable them or enroll credentials.
 
 The `macos-signing` GitHub environment must restrict deployment to `main` in
 `Jones-Systems/Jones-Code`. Review that environment before enabling the workflow.
-Set its `JONES_MACOS_PRODUCTION_ID` variable only after owner acceptance. A manual
-run signs the exact canonical main event commit; it accepts no input ref.
-`JONES_MACOS_SIGNING_ENABLED=true` at repository scope enables subsequent main
-push builds. Production artifacts retain the existing preview-version convention
+Set its `JONES_MACOS_PRODUCTION_ID` variable to the approved identity only during
+a separately authorized signing setup. Both manual runs and main push builds
+require `JONES_MACOS_SIGNING_ENABLED=true` at repository scope. Keep it unset
+through partial credential enrollment; missing credentials are not the activation
+control. A manual run signs the exact canonical main event commit and accepts
+no input ref. Production artifacts retain the existing preview-version convention
 for source/run provenance; the production artifact name and workflow are distinct.
 An admitted installed production bundle selects only that production workflow.
 Legacy callers retain preview discovery; unknown IDs fail closed. Push provenance

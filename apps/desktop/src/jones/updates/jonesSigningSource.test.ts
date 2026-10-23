@@ -5,8 +5,23 @@ import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 
 const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
 
-it.each(["valid", "wrong-team", "adhoc", "tampered", "not-notarized", "wrong-id", "legacy-bootstrap", "rollback", "rollback-tampered", "rollback-adhoc"])("native signing admission: %s", (scenario) => {
-  const result = spawnSync("python3", ["-c", `${definitions}
+it.each([
+  "valid",
+  "wrong-team",
+  "adhoc",
+  "tampered",
+  "not-notarized",
+  "wrong-id",
+  "legacy-bootstrap",
+  "rollback",
+  "rollback-tampered",
+  "rollback-adhoc",
+])("native signing admission: %s", (scenario) => {
+  const result = spawnSync(
+    "python3",
+    [
+      "-c",
+      `${definitions}
 import tempfile
 from types import SimpleNamespace
 scenario = sys.argv[1]
@@ -25,6 +40,8 @@ with tempfile.TemporaryDirectory(prefix='jones-signing-test-') as temporary:
     commands = []
     def command(argv, **kwargs):
         commands.append(argv)
+        if argv[0] == "/usr/bin/codesign":
+            assert argv[argv.index("-R") + 1].startswith("="), "codesign -R requires literal source prefix"
         selected = str(previous if rollback else incoming) == argv[-1]
         invalid = selected and ((scenario in ('wrong-team', 'adhoc', 'tampered', 'rollback-tampered', 'rollback-adhoc') and argv[0] == '/usr/bin/codesign') or (scenario == 'not-notarized' and 'stapler' in argv))
         return SimpleNamespace(returncode=1 if invalid else 0)
@@ -43,7 +60,11 @@ with tempfile.TemporaryDirectory(prefix='jones-signing-test-') as temporary:
             requirement = command[command.index('-R') + 1]
             assert '2CUPSQS986' in requirement and PRODUCTION_BUNDLE_ID in requirement
             assert '1.2.840.113635.100.6.1.13' in requirement
-`, scenario], { encoding: "utf8", timeout: 10_000 });
+`,
+      scenario,
+    ],
+    { encoding: "utf8", timeout: 10_000 },
+  );
   expect(result.stderr).toBe("");
   expect(result.status).toBe(0);
 });

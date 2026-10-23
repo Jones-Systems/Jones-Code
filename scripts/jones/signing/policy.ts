@@ -44,14 +44,23 @@ export function nativePasskeysEnabled(env: Environment): boolean {
   const mode = env.JONES_MACOS_NATIVE_PASSKEYS ?? "disabled";
   if (mode !== "enabled" && mode !== "disabled") throw new Error("Unknown native passkey mode.");
   if (mode === "disabled") {
-    if (env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() || env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim()) {
-      throw new Error("Native passkey configuration requires explicit opt-in; refusing silent fallback.");
+    if (
+      env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ||
+      env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim()
+    ) {
+      throw new Error(
+        "Native passkey configuration requires explicit opt-in; refusing silent fallback.",
+      );
     }
     return false;
   }
-  if (!env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ||
-      !(env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() || env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim())) {
-    throw new Error("Enabled native passkeys require a provisioning profile and Clerk RP configuration.");
+  if (
+    !env.T3CODE_MACOS_PROVISIONING_PROFILE?.trim() ||
+    !(env.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() || env.T3CODE_CLERK_PASSKEY_RP_DOMAINS?.trim())
+  ) {
+    throw new Error(
+      "Enabled native passkeys require a provisioning profile and Clerk RP configuration.",
+    );
   }
   return true;
 }
@@ -60,7 +69,13 @@ export function requireProductionPasskeys(
   env: Environment,
   capabilities: { touchIdKeychainAccessGroup: string | undefined; browserPasskeys: boolean },
 ): void {
-  if (productionSigning(env) && nativePasskeysEnabled(env) && (capabilities.touchIdKeychainAccessGroup !== `${JONES_MACOS_TEAM}.${JONES_MACOS_APP_ID}.webauthn` || !capabilities.browserPasskeys)) {
+  if (
+    productionSigning(env) &&
+    nativePasskeysEnabled(env) &&
+    (capabilities.touchIdKeychainAccessGroup !==
+      `${JONES_MACOS_TEAM}.${JONES_MACOS_APP_ID}.webauthn` ||
+      !capabilities.browserPasskeys)
+  ) {
     throw new Error("Production provisioning profile must preserve Touch ID and browser passkeys.");
   }
 }
@@ -73,7 +88,8 @@ export function componentIdentifier(app: string, file: string): string {
     throw new Error("Signing component escapes the application bundle.");
   }
   // Dependency versions and framework version directories must not rotate code identity.
-  relative = relative.replaceAll(path.sep, "/")
+  relative = relative
+    .replaceAll(path.sep, "/")
     .replace(/node_modules\/\.pnpm\/[^/]+\/node_modules\//g, "node_modules/")
     .replace(/\.framework\/Versions\/[^/]+\//g, ".framework/");
   return `${JONES_MACOS_APP_ID}.component.${createHash("sha256").update(relative).digest("hex")}`;

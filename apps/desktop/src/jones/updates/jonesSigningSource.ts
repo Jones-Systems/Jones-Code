@@ -15,7 +15,7 @@ def verify_production_signature(app):
         'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists '
         'and certificate leaf[subject.OU] = "' + PRODUCTION_TEAM_ID + '"')
     for command in (
-        ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', requirement, str(app)],
+        ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', '=' + requirement, str(app)],
         ['/usr/bin/xcrun', 'stapler', 'validate', str(app)],
         ['/usr/sbin/spctl', '--assess', '--type', 'execute', str(app)],
     ):

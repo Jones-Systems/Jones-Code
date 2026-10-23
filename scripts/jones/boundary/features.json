@@ -15,9 +15,10 @@
         "scripts/jones/signing/sign.test.ts",
         "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
         "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "scripts/build-desktop-artifact.test.ts"
       ],
-      "scope": "Explicit production Developer ID identity, component signing, protected default-branch workflow and credential lifecycle; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. Legacy default identity and bootstrap activation remain held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+      "scope": "Explicit production Developer ID identity, component signing, protected default-branch workflow and credential lifecycle; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
     },
     {
       "id": "workstreams-sidebar-assignment",
