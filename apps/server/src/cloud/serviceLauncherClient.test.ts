@@ -79,6 +79,26 @@ const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
     Effect.provideService(HostProcess.Environment, host.env),
   );
 
+it.effect("reports launcher and child versions separately without inferring missing metadata", () =>
+  Effect.gen(function* () {
+    for (const protocol of [LEGACY_SERVICE_LAUNCHER_PROTOCOL, SERVICE_LAUNCHER_PROTOCOL]) {
+      for (const launcherVersion of ["0.1.0", undefined, "invalid", null]) {
+        const host = new FakeLauncherProcess({
+          protocol,
+          childVersion: "1.0.0",
+          launcherVersion,
+        });
+        const client = yield* makeClient(host, "1.0.0");
+        expect(client.managed).toBe(true);
+        expect(client.currentVersion).toBe("1.0.0");
+        expect(client.launcherVersion).toBe(launcherVersion === "0.1.0" ? "0.1.0" : undefined);
+        expect(host.sent).toEqual([]);
+        expect(host.listenerCount()).toBe(0);
+      }
+    }
+  }),
+);
+
 it.effect("gates both settlement requests without sending IPC to an older launcher", () =>
   Effect.gen(function* () {
     for (const capability of [undefined, 2]) {

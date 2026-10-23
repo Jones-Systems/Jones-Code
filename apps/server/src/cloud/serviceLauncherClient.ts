@@ -170,6 +170,7 @@ export class ServiceLauncherClient extends Context.Service<
       ServiceLauncherClientError
     >;
     readonly currentVersion?: string;
+    readonly launcherVersion?: string;
     /** Last durable terminal result; reading it never sends a prepared IPC message. */
     readonly qualifiedStartupOutcome?: ServerSelfUpdateOutcome | undefined;
     readonly qualifiedUpdateMigrationPlan?: MigrationPlan | undefined;
@@ -562,6 +563,7 @@ export const make = Effect.fn("cloud.service_launcher_client.make")(function* (o
             }),
           ),
     ...(context === undefined ? {} : { currentVersion: context.childVersion }),
+    ...(context?.launcherVersion === undefined ? {} : { launcherVersion: context.launcherVersion }),
     requestUpdate,
     get qualifiedUpdateMigrationPlan() {
       return acceptedMigrationPlan;

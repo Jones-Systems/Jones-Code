@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { vi } from "vite-plus/test";
+import packageJson from "../package.json" with { type: "json" };
 
 import {
   configuredDatabasePathForBaseDir,
@@ -386,6 +387,7 @@ process.exit(0);
       const context = decodeServiceLauncherContext(observed.context ?? "");
       assert.equal(context?.protocol, SERVICE_LAUNCHER_PROTOCOL);
       assert.equal(context?.childVersion, "1.0.0");
+      assert.equal(context?.launcherVersion, packageJson.version);
     }),
   );
 

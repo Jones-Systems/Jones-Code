@@ -59,6 +59,8 @@ export interface ServiceState {
 export interface ServiceLauncherContext {
   readonly protocol: typeof SERVICE_LAUNCHER_PROTOCOL | typeof LEGACY_SERVICE_LAUNCHER_PROTOCOL;
   readonly childVersion: string;
+  /** The running launcher's own version; absence does not imply it matches the child. */
+  readonly launcherVersion?: string;
   readonly qualifiedUpdatesProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
   readonly updateRetirementProtocol?: 1;
@@ -379,6 +381,9 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   return {
     protocol: parsed.protocol,
     childVersion: parsed.childVersion,
+    ...(typeof parsed.launcherVersion === "string" && isExactServiceVersion(parsed.launcherVersion)
+      ? { launcherVersion: parsed.launcherVersion }
+      : {}),
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
