@@ -4,6 +4,15 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "remote-agent-lineage",
+      "tests": [
+        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+        "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
+        "apps/web/src/components/BranchToolbar.panel.browser.test.tsx"
+      ],
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Lineage. The shared relationship panel combines local and remote rows before its existing group/window rendering. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation and unavailable parents. No server, schema, authentication or lifecycle changes."
+    },
+    {
       "id": "native-self-configuration-harness",
       "tests": [
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
@@ -1157,7 +1166,7 @@
         "apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx",
         "apps/web/src/components/chat/QueuedRunsControl.browser.test.tsx"
       ],
-      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup."
+      "scope": "Capability-negotiated atomic queue promotion retains original message identity and order while emitting one provider input per bounded prefix. Shared planner enforces text, image and attachment limits. Explicit manual promotion uses the unchanged active configuration even for messages queued before account or model changes; automatic tool-boundary delivery retains historical configuration matching. MCP queue sends gain safe-boundary eligibility with strict separate_turn opt-out. Codex and Claude batch safely; other providers keep the existing automatic path. Web/desktop and mobile share client command/controller. Existing queue browser and Jones runtime harnesses retain integration coverage rather than duplicate their setup."
     },
     {
       "id": "client-launch",
@@ -1248,7 +1257,7 @@
         "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
         "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts"
       ],
-      "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement. Jones-owned goal notification policy steers eligible retained runs while preserving notification metadata, run model, Stop holds and definitive-versus-unknown delivery evidence. Existing orchestration and adapter harnesses qualify these lifecycle hooks."
+      "scope": "Native Codex goal read, graceful pause/clear, objective-only replacement, guarded durable idle resume and session-bound idempotency through MCP. Claude exposes transcript projections and unsupported mutation. Optional detail/list fields preserve older decoding and the provider-goal HTTP contract remains unchanged. Adapter/MCP integration cases stay in existing upstream harnesses to verify real registration and goal-run settlement. Jones-owned goal notification policy steers eligible retained runs while preserving notification metadata, run model, Stop holds and definitive-versus-unknown delivery evidence. Existing orchestration and adapter harnesses qualify these lifecycle hooks. Goal resume observation admits only the proved parent follow-up trio through a small call in the existing Jones-owned CommandObservation module. Strong same-conversation identity evidence retains receipts across evidence-revision rebinding while rotating control tokens; changed ownership retires old keys. The goal-start in-memory fixture covers parent/child correlation and negative guards."
     },
     {
       "id": "cross-host-integration",
@@ -1446,7 +1455,7 @@
         "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with injected synthetic authentication, HTTPS registry identity, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
     },
     {
       "id": "native-enrollment-runtime",
@@ -1602,6 +1611,48 @@
       "id": "timeline-payload-batching",
       "tests": ["apps/server/src/jones/orchestration/threadReferenceTail.test.ts"],
       "scope": "Batch selected canonical timeline payloads into one query while retaining history wire projection, page ordering, synthetic rows and missing/decode errors. One private helper stays beside its shared SQL types and transaction callers; Jones tests cover query counts and existing tail/fork behavior."
+    },
+    {
+      "id": "workstreams-durable-native-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/operations.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+      ],
+      "scope": "Provider v2 reports immutable enrolled provenance separately from the observed build while sharing the original request identity, attempt store, receipt/event rules and authority fences. Existing v1 behavior stays strict. Synthetic native tests cover compatible-build recovery and compaction without redispatch, profile-specific HTTP/authentication and historical enrollment readback; plan/apply and installation custody keep current-build qualification. Registration v3 and operational adoption are separate slices."
+    },
+    {
+      "id": "ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
+    },
+    {
+      "id": "workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "scope": "Independently pinned registry identity separates canonical HTTPS metadata from literal-loopback transport. Strict activation tokens, request HMAC and bounded exact response proofs cover all signed families without altering legacy manifests or native provider identity. A joined real HTTP client/hook ledger test proves the authenticated pre-dispatch refusal mapping and unknown-effect receipt-only recovery. Synthetic authority, build and authentication remain explicit test seams; no installed or PostgreSQL qualification is claimed."
+    },
+    {
+      "id": "workstreams-durable-registration-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts"
+      ],
+      "scope": "Opt-in registration v3 carries immutable enrolled provenance and explicit native profile policy. Jones qualifies the local source independently of routine build drift only when provider v2 is accepted, then translates the result into the existing client v2 response with the observed local build. Strict selectors and authority fences remain intact. Transport retains canonical registry binding and authenticated response proof. Synthetic tests cover selector, contract, transport, qualification and client compatibility; installed adoption remains separate."
     },
     {
       "id": "pr-cache-scope-locks",

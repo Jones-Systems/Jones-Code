@@ -59,6 +59,32 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Queued-message batch steering
+
+The active thread composer exposes
+[QueuedRunsControl](../../apps/web/src/components/chat/QueuedRunsControl.tsx).
+Its header uses the [batch action](../../apps/web/src/jones/queue/QueuedSteerBatchAction.tsx)
+and the [shared selector](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.ts);
+native mobile consumes the same selector through its own queue sheet.
+
+For the account-change journey, start a synthetic active Codex turn and queue
+four ordinary messages whose saved account, provider thread and model differ
+from that turn. With no pending request or edit, **Steer all (4)** must be
+enabled. Click once: one command must contain all four ordered message IDs.
+Server readback must retain the four original messages and create one combined
+provider input. Automatic tool-boundary delivery must still reject mismatched
+queued configurations. Pending requests, stale message versions, maintenance
+commands, ended turns and input limits retain their own guards.
+
+The adjacent [browser regression](../../apps/web/src/jones/queue/QueuedSteerBatch.browser.test.tsx),
+[client tests](../../packages/client-runtime/src/jones/queue/queuedSteerBatch.test.ts)
+and [server integration](../../apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts)
+cover those layers separately. Use the Browser-panel workflow for interactive
+candidate evidence and retain its exact fixture, source and captures with the
+PR. Synthetic component evidence does not qualify a live provider, packaged
+desktop shell or native mobile interaction. Reset only the task-owned fixture;
+do not consume or remove messages in another thread to reproduce this case.
+
 ### Destination shell blocks
 
 The accepted code-block toolbar also hosts the destination chip and Play control

@@ -354,6 +354,8 @@ video. For each evidence set, record:
 
 Refresh exact-head claims after the PR head changes. Upload PR evidence to
 GitHub; never commit PR-only screenshots or assets such as `.github/pr-assets/`.
+Use the [CLI attachment workflow](../../.agents/skills/capture-ui-evidence/references/runner-output-and-limits.md#sharing-evidence)
+with existing GitHub CLI authentication before requesting browser sign-in.
 
 Do not invoke automated PR review services or reviewer bots for Jones-Systems
 PRs, including `@codex review`, Codex Code Review, or Copilot PR review.

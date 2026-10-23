@@ -69,6 +69,9 @@ import {
 import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
   WorkstreamsNativeAttestationRequest,
   WorkstreamsNativeAttestationResponse,
   WorkstreamsNativeSettlementRequest,
@@ -417,6 +420,53 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: WorkstreamsNativeSettlementRequest,
         success: WorkstreamsNativeSettlementResponse,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("contextV2", "/api/workstreams/native/v2/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestationsV2", "/api/workstreams/native/v2/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementsV2", "/api/workstreams/native/v2/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookupV2", "/api/workstreams/native/v2/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
         error: [
           EnvironmentScopeRequiredError,
           EnvironmentInternalError,
