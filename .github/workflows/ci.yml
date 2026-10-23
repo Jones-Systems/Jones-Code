@@ -8,6 +8,13 @@ on:
   # Manual runs compare server and web shard counts against a fixed weights source.
   workflow_dispatch:
     inputs:
+      measurement_scope:
+        description: Full qualification or partial Linux measurements without the two CI macOS jobs
+        type: choice
+        options:
+          - full
+          - linux-measurement
+        default: full
       server_shards:
         description: Number of server test shards (1 is a measurement-only baseline)
         type: choice
@@ -37,13 +44,19 @@ on:
 permissions:
   contents: read
 
+env:
+  CI_MEASUREMENT_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement' && 'linux-measurement' || 'full' }}
+  CI_SERVER_SHARDS: ${{ inputs.server_shards || '6' }}
+  CI_WEB_SHARDS: ${{ inputs.web_shards || '2' }}
+  CI_REQUESTED_WEIGHTS_SOURCE_RUN_ID: ${{ inputs.weights_source_run_id }}
+
 # A newer pull request or manual run cancels the one it supersedes; manual runs
 # with different shard inputs still run side by side. Main pushes share one
 # group without cancelling: the running push finishes, since it records shard
 # weights and is the CI result an update candidate's source needs, and GitHub
 # replaces a still-pending push with the newest one.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}-{3}', github.ref, inputs.server_shards, inputs.web_shards, inputs.weights_source_run_id)) || github.ref }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}-{3}-{4}', github.ref, inputs.server_shards, inputs.web_shards, inputs.weights_source_run_id, inputs.measurement_scope)) || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
@@ -272,6 +285,12 @@ jobs:
             eventCommit: env.GITHUB_SHA, run: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
             job: env.GITHUB_JOB, command: env.CI_TEST_COMMAND, outcome: env.TEST_OUTCOME,
             workspace: env.GITHUB_WORKSPACE,
+            measurementScope: env.CI_MEASUREMENT_SCOPE,
+            serverShardCount: Number(env.CI_SERVER_SHARDS),
+            webShardCount: Number(env.CI_WEB_SHARDS),
+            requestedWeightsSourceRunId: env.CI_REQUESTED_WEIGHTS_SOURCE_RUN_ID || null,
+            intentionallyOmittedJobs: env.CI_MEASUREMENT_SCOPE === 'linux-measurement'
+              ? ['mobile_native_static_analysis', 'native_enrollment_qualification_macos'] : [],
             node: process.version, platform: process.platform, architecture: process.arch,
             vitePlus: require('vite-plus/package.json').version,
             vitest: vpRequire('vitest/package.json').version,
@@ -719,7 +738,7 @@ jobs:
   # The macOS jobs below need a scarce hosted runner shared across the
   # organization, so each is gated on the files it checks. Detection is
   # API-only (no checkout) and fails open: if the diff cannot be resolved,
-  # every gated job runs.
+  # every gated job runs in full qualification.
   native_changes:
     name: Native Changes
     runs-on: ubuntu-24.04
@@ -754,6 +773,11 @@ jobs:
           count_rows() {
             printf '%s\n' "$1" | grep -c . || true
           }
+
+          if [[ "${CI_MEASUREMENT_SCOPE}" == "linux-measurement" && "${FORCE_NATIVE}" == "true" ]]; then
+            echo "linux-measurement cannot be combined with native_jobs=true." >&2
+            exit 1
+          fi
 
           if [[ "${FORCE_NATIVE}" == "true" ]]; then
             fail_open "The manual run asked for the native jobs."
@@ -834,11 +858,11 @@ jobs:
             '^apps/server/src/jones/workstreams/enrollment/|^apps/server/src/environment/[Nn]ativeStoreAuthority|^packages/shared/src/nodeSqliteClient|^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|vite\.config\.ts)$|^\.github/workflows/ci\.yml$'
 
   mobile_native_static_analysis:
-    name: Mobile Native Static Analysis
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement' && 'Mobile Native Static Analysis (omitted for Linux measurement)' || 'Mobile Native Static Analysis' }}
     needs: native_changes
-    # Skip only on an explicit "no": a gate job that failed or errored leaves the
-    # output empty, and that must run the lint rather than silently skip it.
-    if: ${{ !cancelled() && needs.native_changes.outputs.mobile != 'false' }}
+    # Full qualification skips only on an explicit "no"; classifier failure
+    # runs the lint. Manual Linux measurement explicitly omits this macOS job.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement') && !cancelled() && needs.native_changes.outputs.mobile != 'false' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -930,10 +954,10 @@ jobs:
             packages/shared/src/nodeSqliteClient.test.ts
 
   native_enrollment_qualification_macos:
-    name: Native Enrollment (macos-15, Node 26.8.2)
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement' && 'Native Enrollment (macos-15, Node 26.8.2; omitted for Linux measurement)' || 'Native Enrollment (macos-15, Node 26.8.2)' }}
     needs: native_changes
-    # Skip only on an explicit "no", as for the mobile lint.
-    if: ${{ !cancelled() && needs.native_changes.outputs.enrollment != 'false' }}
+    # Full qualification skips only on an explicit "no", as for the mobile lint.
+    if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement') && !cancelled() && needs.native_changes.outputs.enrollment != 'false' }}
     runs-on: macos-15
     timeout-minutes: 15
     env:
@@ -971,8 +995,9 @@ jobs:
   # or resharding jobs needs no ruleset change. Add every new job to `needs`.
   # `always()` rather than `!cancelled()`: a skipped job reports success to
   # branch protection, so a cancelled run must still produce a failing check.
+  # Partial manual measurements use a different name and cannot satisfy Check.
   check:
-    name: Check
+    name: ${{ github.event_name == 'workflow_dispatch' && inputs.measurement_scope == 'linux-measurement' && 'Linux measurement (partial)' || 'Check' }}
     if: ${{ always() }}
     needs:
       [
@@ -998,15 +1023,44 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Report qualification scope
+        env:
+          SELECTED_SERVER_SHARDS: ${{ needs.server_weights.outputs.shard_count }}
+          SELECTED_WEIGHTS_MODE: ${{ needs.server_weights.outputs.mode }}
+          SELECTED_WEIGHTS_SOURCE_RUN_ID: ${{ needs.server_weights.outputs.source_run_id }}
+          SELECTED_WEIGHTS_DIGEST: ${{ needs.server_weights.outputs.digest }}
+        run: |
+          {
+            printf '### Qualification scope: %s\n\n' "$CI_MEASUREMENT_SCOPE"
+            printf -- '- Server shards: %s (selected: %s); web shards: %s\n' "$CI_SERVER_SHARDS" "${SELECTED_SERVER_SHARDS:-unavailable}" "$CI_WEB_SHARDS"
+            printf -- '- Requested weights run: %s\n' "${CI_REQUESTED_WEIGHTS_SOURCE_RUN_ID:-latest main}"
+            printf -- '- Selected weights mode: %s; run: %s; digest: %s\n' "${SELECTED_WEIGHTS_MODE:-unavailable}" "${SELECTED_WEIGHTS_SOURCE_RUN_ID:-none}" "${SELECTED_WEIGHTS_DIGEST:-none}"
+            if [[ "$CI_MEASUREMENT_SCOPE" == "linux-measurement" ]]; then
+              echo '- Intentionally omitted: mobile_native_static_analysis, native_enrollment_qualification_macos'
+              echo '- Partial Linux measurement only; not full native or full-graph qualification.'
+            else
+              echo '- Measurement omissions: none. Normal changed-path native gates apply.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Require every job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # Only the macOS jobs skip on purpose, each when Native Changes found
-          # none of the files it checks.
-          echo "$RESULTS" | jq -e '.native_changes.outputs as $changed | all(to_entries[];
-            .value.result == "success"
-            or (.value.result == "skipped" and (
-              (.key == "mobile_native_static_analysis" and $changed.mobile == "false")
-              or (.key == "native_enrollment_qualification_macos" and $changed.enrollment == "false"))))' > /dev/null
+          if [[ "$CI_MEASUREMENT_SCOPE" == "linux-measurement" ]]; then
+            echo "$RESULTS" | jq -e '
+              .mobile_native_static_analysis.result == "skipped"
+              and .native_enrollment_qualification_macos.result == "skipped"
+              and all(to_entries[];
+                if (.key == "mobile_native_static_analysis" or .key == "native_enrollment_qualification_macos")
+                then .value.result == "skipped"
+                else .value.result == "success" end)' > /dev/null
+          else
+            # Full qualification permits only changed-path native skips.
+            echo "$RESULTS" | jq -e '.native_changes.outputs as $changed | all(to_entries[];
+              .value.result == "success"
+              or (.value.result == "skipped" and (
+                (.key == "mobile_native_static_analysis" and $changed.mobile == "false")
+                or (.key == "native_enrollment_qualification_macos" and $changed.enrollment == "false"))))' > /dev/null
+          fi
