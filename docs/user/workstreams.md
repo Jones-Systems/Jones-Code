@@ -23,3 +23,9 @@ Each group shows running threads out of its total known primary members, includi
 A completed turn or settled thread does not complete a Workstream. Open its details and change **Owner-declared workstream lifecycle** to record completion. Completion is shown as verified only when its owner declaration is present in the permanent history. Owner statements add context separately. T3 settlement and restore requests are explicit, separate actions.
 
 The lifecycle is a tracking status: **planned** means intended work, **active** means in progress, **paused** means temporarily stopped, **completed** means finished, **deferred** means postponed, and **abandoned** means no longer pursued. **Record member completed** records the progress of that member; it does not move the thread or complete the whole Workstream. **Remove** removes that membership, while **Record statement** saves a note.
+
+In **Prompts → Queued**, queue samples can show assignment status, its reason,
+and the desired and last observed Workstream. Names appear when they are already
+loaded for that environment; otherwise the app shows IDs. Missing assignment
+information or **Not observed** does not mean the thread is unassigned. These
+read-only samples can be stale and do not change or retry an assignment.

@@ -1,5 +1,10 @@
-import type { WorkQueueMetadataResult } from "@t3tools/contracts";
-import { useEffect, useRef, useState } from "react";
+import {
+  readWorkQueueLocalNames,
+  subscribeWorkQueueLocalNames,
+  workQueueDestinationLabel,
+} from "@t3tools/client-runtime/work-queue-metadata";
+import type { WorkQueueAssignment, WorkQueueMetadataResult } from "@t3tools/contracts";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../../components/ui/button";
 
 export type WorkQueueMetadataLoader = (signal: AbortSignal) => Promise<WorkQueueMetadataResult>;
@@ -13,7 +18,8 @@ const timeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   timeZoneName: "short",
 });
-const formatTime = (time: number) => timeFormatter.format(time);
+const formatTime = (time: number) =>
+  Number.isFinite(new Date(time).getTime()) ? timeFormatter.format(time) : "Not available";
 const unavailableMessages = {
   source_unavailable: "the source cannot be read",
   invalid_artifact: "the source data is invalid",
@@ -34,6 +40,38 @@ const bindingLabels: Record<string, string> = {
   expires_at: "Binding expires at",
 };
 
+const assignmentStates: Record<WorkQueueAssignment["state"], string> = {
+  issued: "Issued", pending: "Pending", satisfied: "Satisfied", conflict: "Conflict",
+  rejected: "Rejected", unavailable: "Unavailable", unsupported: "Unsupported",
+  permanent: "Permanent hold", excluded: "Excluded", cancelled: "Cancelled",
+};
+const assignmentReasons: Record<WorkQueueAssignment["reason"], string> = {
+  assignment_pending: "Assignment pending",
+  assignment_satisfied: "Assignment satisfied",
+  assignment_conflict: "Thread belongs to another workstream",
+  assignment_slot_excluded: "Thread excluded from this assignment",
+  assignment_unsupported: "Assignment is not supported",
+  assignment_cancelled: "Assignment cancelled",
+  "assignment_rejected:foreign_thread": "Thread belongs to another environment",
+  "assignment_rejected:thread_not_found": "Thread not found",
+  "assignment_rejected:registry_mismatch": "Workstream registry does not match",
+  "assignment_rejected:permission_denied": "Assignment permission denied",
+  "assignment_rejected:workstream_not_found": "Workstream not found",
+  "assignment_rejected:identity_conflict": "Thread identity conflicts",
+  "assignment_rejected:verification_rejected": "Thread verification rejected",
+  "assignment_rejected:registry_rejected": "Workstream registry rejected the assignment",
+  "assignment_rejected:operation_id_conflict": "Assignment operation ID conflicts",
+  "assignment_unavailable:not_configured": "Workstreams are not configured",
+  "assignment_unavailable:offline": "Workstreams are offline",
+  "assignment_unavailable:registration_unavailable": "Thread registration unavailable",
+  "assignment_unavailable:placements_not_ready": "Thread assignments are not ready",
+  "assignment_unavailable:contention": "Another assignment is in progress",
+  "assignment_unavailable:backpressure": "Assignment service is busy",
+  "assignment_unavailable:verification_pending": "Thread verification pending",
+  "assignment_unavailable:verification_unresolved": "Thread verification unresolved",
+  "assignment_unavailable:destination_scan_bound": "Destination could not be fully checked",
+};
+
 export function WorkQueueMetadataPanel({
   load,
   onResult,
@@ -43,6 +81,11 @@ export function WorkQueueMetadataPanel({
   onResult?: (result: WorkQueueMetadataResult | null) => void;
   excludedRequests?: ReadonlySet<string>;
 }) {
+  const localNames = useSyncExternalStore(
+    subscribeWorkQueueLocalNames,
+    readWorkQueueLocalNames,
+    readWorkQueueLocalNames,
+  );
   const [result, setResult] = useState<WorkQueueMetadataResult | null>(null);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -212,6 +255,25 @@ export function WorkQueueMetadataPanel({
                     </td>
                     <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
                       {item.queue_state}
+                      {"assignment" in item && (
+                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                          {item.assignment ? (
+                            <>
+                              <div>Assignment: {assignmentStates[item.assignment.state]}</div>
+                              <div>Reason: {assignmentReasons[item.assignment.reason]}</div>
+                              <div>Desired workstream: {workQueueDestinationLabel(
+                                item.assignment.workstream_id, snapshot.source.environment_ref, localNames,
+                              )}</div>
+                              <div>Observed workstream: {item.assignment.observed_workstream_id === null
+                                ? "Not observed"
+                                : workQueueDestinationLabel(item.assignment.observed_workstream_id,
+                                  snapshot.source.environment_ref, localNames)}</div>
+                              <div>Result updated: {item.assignment.updated_at === null
+                                ? "Not available" : formatTime(item.assignment.updated_at)}</div>
+                            </>
+                          ) : "Assignment information unavailable"}
+                        </div>
+                      )}
                     </td>
                     <td className="max-w-48 border-b p-3 text-muted-foreground">
                       Handoff: unconfirmed in this sample

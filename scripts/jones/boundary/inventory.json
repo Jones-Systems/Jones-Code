@@ -922,6 +922,7 @@
     "packages/contracts/src/jones/environmentHttpGroups.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/environmentHttpGroups.ts": "jones-owned",
     "packages/contracts/src/jones/fixtures/work_queue_metadata_v1.json.fixture": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture": "jones-owned",
     "packages/contracts/src/jones/organizationMetadata.test.ts": "jones-tests-in-upstream",
     "packages/contracts/src/jones/organizationMetadata.ts": "jones-owned",
     "packages/contracts/src/jones/providerRuntimeIdentity.test.ts": "jones-tests-in-upstream",
@@ -1589,6 +1590,10 @@
     "apps/web/src/components/voiceReview/VoiceReviewDeviceSetup.browser.test.tsx"
   ],
   "allowedImports": [
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "packages/client-runtime/src/jones/workQueueMetadata.ts"
+    },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
       "to": "apps/web/src/components/files/PdfPreview.tsx"

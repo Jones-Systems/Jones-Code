@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - Pin the producer fixture bytes with SHA-256.
+import { createHash } from "node:crypto";
+import producerV4Raw from "./fixtures/work_queue_metadata_v4.json.fixture?raw";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
 import producerRaw from "./fixtures/work_queue_metadata_v1.json.fixture?raw";
@@ -246,5 +249,51 @@ describe("v3 recorded handoff metadata", () => {
       expect(() => decode({ ...v3, items: [{ ...v3.items[0], ...change }] })).toThrow();
     }
     expect(() => decode({ ...v3, text: "private" })).toThrow();
+  });
+});
+
+const v4 = JSON.parse(producerV4Raw);
+describe("v4 assignment metadata", () => {
+  it("mirrors the frozen producer bytes and preserves all states and absent intents", () => {
+    expect(new TextEncoder().encode(producerV4Raw).byteLength).toBe(7483);
+    expect(createHash("sha256").update(producerV4Raw).digest("hex")).toBe(
+      "17ae0653442857991848476847676481fee5c593f88a1056a4ff3f275cbbac1b",
+    );
+    expect(decode(v4)).toEqual(v4);
+    expect(Schema.encodeSync(WorkQueueMetadata)(decode(v4))).toEqual(v4);
+    expect(v4.items.map((row: { assignment: { state: string } | null }) => row.assignment?.state ?? null).sort()).toEqual(
+      [null, "issued", "pending", "satisfied", "conflict", "rejected", "unavailable", "unsupported", "permanent", "excluded", "cancelled"].sort(),
+    );
+  });
+  it("preserves old versions and rejects v4 fields on their closed items", () => {
+    for (const old of [fixture, v2, v3]) {
+      expect(Schema.encodeSync(WorkQueueMetadata)(decode(old))).toEqual(old);
+      expect(() => decode({ ...old, items: old.items.map((row) => ({ ...row, assignment: null })) })).toThrow();
+    }
+  });
+  it("rejects missing, private, unsafe and future assignment data", () => {
+    const row = v4.items.find((value: { assignment: unknown }) => value.assignment !== null);
+    const assignment = row.assignment;
+    const withAssignment = (value: unknown) => ({ ...v4, items: [{ ...row, assignment: value }] });
+    for (const change of [
+      { name: "private" }, { prompt: "private" }, { state: "committed" },
+      { reason: "assignment_rejected:arbitrary detail" }, { reason: "assignment_unavailable:unknown" },
+      { workstream_id: "unsafe name" }, { workstream_id: null },
+      { observed_workstream_id: "bad\nvalue" }, { operation_id: "x".repeat(129) },
+      { updated_at: -1 }, { updated_at: 0.5 }, { updated_at: "1970-01-01T00:00:00Z" },
+      { updated_at: v4.observed_at_ms + 1 }, { updated_at: Number.MAX_SAFE_INTEGER + 1 },
+    ]) expect(() => decode(withAssignment({ ...assignment, ...change }))).toThrow();
+    for (const key of Object.keys(assignment)) {
+      const incomplete = { ...assignment };
+      delete incomplete[key];
+      expect(() => decode(withAssignment(incomplete))).toThrow();
+    }
+    const { assignment: _assignment, ...missing } = row;
+    expect(() => decode({ ...v4, items: [missing] })).toThrow();
+    expect(() => decode({ ...v4, private: "secret" })).toThrow();
+    expect(decode(withAssignment(null))).toMatchObject({ items: [{ assignment: null }] });
+    for (const updated_at of [null, 0, v4.observed_at_ms]) {
+      expect(decode(withAssignment({ ...assignment, updated_at }))).toMatchObject({ items: [{ assignment: { updated_at } }] });
+    }
   });
 });
