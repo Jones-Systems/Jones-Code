@@ -103,6 +103,8 @@
         "scripts/ui-evidence/runner.mjs",
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
+        "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
+        "scripts/ui-evidence/thread-self-configure-support.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.

@@ -54,8 +54,15 @@ export default async function threadSelfConfigure(ctx) {
       savedRequestedObserved: "separate fields in sidecar",
     };
   };
-  const open = async (name) => {
-    await ctx.page.getByRole("button", { name, exact: true }).first().click();
+  const open = async (name, target) => {
+    await ctx.page
+      .getByRole("button", { name: new RegExp("^" + name + "(?:,|$)") })
+      .first()
+      .click();
+    await ctx.page.waitForFunction(
+      (id) => location.pathname.includes(id) || location.hash.includes(id),
+      target,
+    );
     await ctx.page.getByTestId("composer-editor").waitFor();
   };
   const send = async (text) => {
@@ -121,7 +128,7 @@ export default async function threadSelfConfigure(ctx) {
           worktreePath: null,
         });
       evidence.controlBefore = await snapshot(controlId);
-      await open(title);
+      await open(title, threadId);
       await picker().filter({ hasText: "Synthetic model A" }).waitFor();
       await picker().click();
       await ctx.page.getByRole("option").filter({ hasText: "Synthetic model B" }).waitFor();
@@ -252,7 +259,7 @@ export default async function threadSelfConfigure(ctx) {
     await ctx.capture("fresh-b-completed");
     await ctx.step("Reload saved B and verify untouched control", async () => {
       await ctx.reload();
-      await open(title);
+      await open(title, threadId);
       await picker().filter({ hasText: "Synthetic model B" }).waitFor();
       evidence.reloaded = await snapshot();
       ctx.assert(
@@ -267,7 +274,7 @@ export default async function threadSelfConfigure(ctx) {
     });
     await ctx.capture("reloaded-b");
     await ctx.step("Actual explicit UI picker change still transitions once", async () => {
-      await open(pickerTitle);
+      await open(pickerTitle, pickerId);
       await send("NATIVE_PICKER_START");
       const control = await waitForFixture(() => fixtureRecord("picker-held"), "picker A running");
       evidence.pickerBefore = await snapshot(pickerId);
