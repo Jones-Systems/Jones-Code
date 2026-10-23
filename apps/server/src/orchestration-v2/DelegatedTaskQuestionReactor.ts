@@ -60,11 +60,20 @@ const make = Effect.gen(function* () {
 
   const handle: DelegatedTaskQuestionReactor["Service"]["handle"] = (event) =>
     Effect.gen(function* () {
+      if (event.type === "subagent.updated" && event.payload.remoteChild !== undefined) {
+        if (engine.reconcileRemoteTaskQuestions !== undefined)
+          yield* engine.reconcileRemoteTaskQuestions(event.threadId, event.payload.id);
+        return;
+      }
       if (event.type === "run.updated") {
         if (!["completed", "failed", "waiting"].includes(event.payload.status)) return;
         const parent = yield* projections.getThreadRecords(event.threadId, ["subagents"]);
         if (parent.thread.archivedAt !== null || parent.thread.deletedAt !== null) return;
         for (const task of parent.subagents) {
+          if (task.remoteChild !== undefined && engine.reconcileRemoteTaskQuestions !== undefined) {
+            yield* engine.reconcileRemoteTaskQuestions(event.threadId, task.id);
+            continue;
+          }
           if (
             task.origin !== "app_owned" ||
             task.runId !== event.payload.id ||

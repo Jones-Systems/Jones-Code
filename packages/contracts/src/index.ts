@@ -116,3 +116,4 @@ export * from "./jones/remoteAdmission.ts";
 export * from "./jones/remoteAdmissionHttp.ts";
 
 export * from "./jones/threadSelfConfiguration.ts";
+export * from "./jones/remoteTaskObservation.ts";

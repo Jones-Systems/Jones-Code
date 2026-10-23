@@ -249,6 +249,8 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
@@ -266,6 +268,8 @@ export function layerWithRegistry<Error>(
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder,
@@ -278,6 +282,11 @@ export function layerWithRegistry<Error>(
       EffectWorker.OrchestrationEffectWorkerV2,
       EffectWorker.OrchestrationEffectWorkerV2,
     ),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2,
+    ),
+    Layer.effect(EffectOutbox.EffectOutboxV2, EffectOutbox.EffectOutboxV2),
     Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2),
     Layer.effect(
       ProviderSessionManager.ProviderSessionManagerV2,
@@ -324,6 +333,8 @@ export function layerWithRegistryAndServices<Error>(
   | ThreadManagementService.ThreadManagementService
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder,
@@ -587,6 +598,8 @@ export function layerWithRegistryAndServices<Error>(
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
+    layerEffectExecutorProvided,
+    EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
     layerEventSinkProvided,
     layerContinuationWorkerProvided,
     layerCommandOutputHubProvided,

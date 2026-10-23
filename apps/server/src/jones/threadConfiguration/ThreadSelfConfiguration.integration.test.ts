@@ -545,87 +545,137 @@ it.live(
     ),
 );
 
-it.live("old captured queue delivery and implicit steering preserve newer saved defaults", () =>
-  scenario("self-configure-queue", false, ({ threadId, call, state }) =>
-    Effect.gen(function* () {
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const worker = yield* Worker.OrchestrationEffectWorkerV2;
-      const sink = yield* Sink.EventSinkV2;
-      const dispatch = (
-        id: string,
-        dispatchMode:
-          | { type: "queue_after_active" }
-          | { type: "steer_active"; targetRunId: import("@t3tools/contracts").RunId },
-      ) =>
-        orchestrator.dispatch({
-          type: "message.dispatch",
-          commandId: CommandId.make(id),
-          threadId,
-          messageId: MessageId.make(id),
-          text: id,
-          attachments: [],
-          createdBy: "system",
-          creationSource: "server",
-          dispatchMode,
+it.live.each(["implicit", "notification"] as const)(
+  "old captured queue delivery and %s steering preserve newer saved defaults",
+  (steeringSource) =>
+    scenario("self-configure-queue-" + steeringSource, false, ({ threadId, call, state }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* Worker.OrchestrationEffectWorkerV2;
+        const sink = yield* Sink.EventSinkV2;
+        const dispatch = (
+          id: string,
+          dispatchMode:
+            | { type: "queue_after_active" }
+            | { type: "steer_active"; targetRunId: import("@t3tools/contracts").RunId },
+        ) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(id),
+            threadId,
+            messageId: MessageId.make(id),
+            text: id,
+            attachments: [],
+            createdBy: "system",
+            creationSource: "server",
+            ...(dispatchMode.type === "steer_active" && steeringSource === "notification"
+              ? {
+                  modelSelection: replacement,
+                  createdBy: "agent" as const,
+                  modelSelectionExplicit: true,
+                  notification: {
+                    source: { kind: "monitor" as const },
+                    outcome: "updated" as const,
+                    summary: "Synthetic notification after saved selection changed",
+                  },
+                }
+              : {}),
+            dispatchMode:
+              dispatchMode.type === "steer_active" && steeringSource === "notification"
+                ? { type: "queue_after_active" }
+                : dispatchMode,
+          });
+        yield* dispatch("old-system-completion", { type: "queue_after_active" });
+        const before = yield* decodeEvidence(
+          (yield* call("t3_thread_configuration")).structuredContent,
+        );
+        yield* call("t3_thread_self_configure", {
+          clientRequestId: "queue-save",
+          modelSelection: replacement,
+          expectedConfigurationRevision: before.configurationRevision,
+          executionPrecondition: before.executionPrecondition,
         });
-      yield* dispatch("old-system-completion", { type: "queue_after_active" });
-      const before = yield* decodeEvidence(
-        (yield* call("t3_thread_configuration")).structuredContent,
-      );
-      yield* call("t3_thread_self_configure", {
-        clientRequestId: "queue-save",
-        modelSelection: replacement,
-        expectedConfigurationRevision: before.configurationRevision,
-        executionPrecondition: before.executionPrecondition,
-      });
-      yield* dispatch("implicit-steer", {
-        type: "steer_active",
-        targetRunId: before.executionPrecondition!.runId,
-      });
-      yield* worker.drain();
-      let projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.lengthOf(projection.runs, 2);
-      assert.deepEqual(projection.runs[0]?.modelSelection, initialSelection);
-      assert.deepEqual(projection.runs[1]?.modelSelection, initialSelection);
-      assert.deepEqual(projection.thread.modelSelection, replacement);
-      yield* dispatch("new-system-completion", { type: "queue_after_active" });
-      const oldStarted = yield* sink.stream({ threadId }).pipe(
-        Stream.filter(
-          ({ event }) =>
-            event.type === "provider-turn.updated" &&
-            event.payload.runAttemptId === projection.runs[1]?.activeAttemptId &&
-            event.payload.status === "running",
-        ),
-        Stream.take(1),
-        Stream.runDrain,
-        Effect.forkScoped,
-      );
-      yield* finishActive(state);
-      yield* Fiber.join(oldStarted);
-      yield* worker.drain();
-      projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.deepEqual(projection.thread.modelSelection, replacement);
-      assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, initialSelection);
-      const finalDone = yield* sink.stream({ threadId }).pipe(
-        Stream.filter(
-          ({ event }) =>
-            event.type === "run.updated" &&
-            event.payload.ordinal === 3 &&
-            event.payload.status === "completed",
-        ),
-        Stream.take(1),
-        Stream.runDrain,
-        Effect.forkScoped,
-      );
-      yield* finishActive(state);
-      yield* Fiber.join(finalDone);
-      yield* worker.drain();
-      projection = yield* orchestrator.getThreadProjection(threadId);
-      assert.deepEqual(projection.thread.modelSelection, replacement);
-      assert.deepEqual((yield* Ref.get(state)).started[2]?.selection, replacement);
-      assert.isTrue(projection.runs.every((run) => run.status === "completed"));
-    }),
-  ),
+        if (steeringSource === "notification") {
+          const active = yield* orchestrator.getThreadProjection(threadId);
+          const providerThread = active.providerThreads[0]!;
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("self-configure-active-goal"),
+                type: "provider-thread.updated",
+                threadId,
+                occurredAt: yield* DateTime.now,
+                payload: {
+                  ...providerThread,
+                  goal: { objective: "Synthetic goal", status: "active", tokensUsed: 0 },
+                },
+              },
+            ],
+          });
+        }
+        yield* dispatch("implicit-steer", {
+          type: "steer_active",
+          targetRunId: before.executionPrecondition!.runId,
+        });
+        yield* worker.drain();
+        let projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.lengthOf(projection.runs, 2);
+        assert.equal(projection.runs[0]?.activeAttemptId, before.executionPrecondition!.attemptId);
+        assert.lengthOf(
+          projection.attempts.filter(
+            (attempt) => attempt.runId === before.executionPrecondition!.runId,
+          ),
+          1,
+        );
+        assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+        assert.equal(
+          projection.messages.find((message) => message.id === "implicit-steer")?.notification
+            ?.summary,
+          steeringSource === "notification"
+            ? "Synthetic notification after saved selection changed"
+            : undefined,
+        );
+        assert.deepEqual(projection.runs[0]?.modelSelection, initialSelection);
+        assert.deepEqual(projection.runs[1]?.modelSelection, initialSelection);
+        assert.deepEqual(projection.thread.modelSelection, replacement);
+        yield* dispatch("new-system-completion", { type: "queue_after_active" });
+        const oldStarted = yield* sink.stream({ threadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "provider-turn.updated" &&
+              event.payload.runAttemptId === projection.runs[1]?.activeAttemptId &&
+              event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* finishActive(state);
+        yield* Fiber.join(oldStarted);
+        yield* worker.drain();
+        projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(projection.thread.modelSelection, replacement);
+        assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, initialSelection);
+        const finalDone = yield* sink.stream({ threadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.ordinal === 3 &&
+              event.payload.status === "completed",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* finishActive(state);
+        yield* Fiber.join(finalDone);
+        yield* worker.drain();
+        projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(projection.thread.modelSelection, replacement);
+        assert.deepEqual((yield* Ref.get(state)).started[2]?.selection, replacement);
+        assert.isTrue(projection.runs.every((run) => run.status === "completed"));
+      }),
+    ),
 );
 
 it.live("owner edit wins over retry; detached runtime cannot authorize a new save", () =>

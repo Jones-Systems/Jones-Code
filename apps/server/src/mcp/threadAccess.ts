@@ -227,8 +227,8 @@ export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThrea
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
   const context = yield* readThread(threadId, fields);
   if (
-    context.caller !== undefined &&
-    context.caller.id !== context.projection.thread.id &&
+    (context.scope.client?.linked === true ||
+      (context.caller !== undefined && context.caller.id !== context.projection.thread.id)) &&
     context.projection.thread.threadMessagesBlocked === true
   ) {
     return yield* new OrchestratorMcpFailure({

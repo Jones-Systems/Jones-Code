@@ -1,6 +1,10 @@
 import * as ThreadSelfConfigurationService from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as ThreadSelfConfigurationTools from "../jones/threadConfiguration/tools.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
+import {
+  LINKED_MESSAGE_ORIGIN_HEADER,
+  withLinkedMessageOrigin,
+} from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
 import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
 import { UserResponseRequestToolkit } from "../jones/mcp/userResponseRequest/tools.ts";
@@ -221,8 +225,20 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     }
     const limited = withModeLimit(invocation, request);
     if (limited === undefined) return invalidModeLimit;
+    const attributed = withLinkedMessageOrigin(
+      limited,
+      request.headers[LINKED_MESSAGE_ORIGIN_HEADER],
+    );
+    if (attributed === undefined)
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "invalid_linked_message_origin",
+          message: "The linked message origin is malformed or this credential is not a peer link.",
+        },
+        { status: 400, headers: { "cache-control": "no-store" } },
+      );
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, limited),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
