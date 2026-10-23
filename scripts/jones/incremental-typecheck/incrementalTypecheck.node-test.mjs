@@ -309,6 +309,52 @@ NodeTest.test(
       if (before) write(filename, before);
       else NodeFS.rmSync(filename);
     }
+    // Cross the bounded I/O batch boundary with multiple bindings to one manifest.
+    const packageDirectory = NodePath.join(f.root, "node_modules", "example");
+    const manifest = NodePath.join(packageDirectory, "package.json");
+    const originalManifest = Buffer.from('{"name":"example","version":"1"}');
+    write(manifest, originalManifest);
+    const withoutBindings = await shared();
+    const aliases = Array.from({ length: 12 }, (_, index) =>
+      NodePath.join(f.root, "node_modules", `alias-${String(index).padStart(2, "0")}`),
+    );
+    for (const alias of aliases) NodeFS.symlinkSync(packageDirectory, alias, "dir");
+    const withBindings = await shared();
+    NodeAssert.notEqual(
+      withBindings,
+      withoutBindings,
+      "every logical binding contributes identity",
+    );
+    NodeAssert.equal(
+      await shared(),
+      withBindings,
+      "concurrent read completion cannot reorder identity",
+    );
+    write(manifest, "changed bytes between fresh sweeps");
+    NodeAssert.notEqual(await shared(), withBindings, "manifest memoization ends with each sweep");
+    write(manifest, originalManifest);
+    NodeAssert.equal(await shared(), withBindings);
+    NodeFS.unlinkSync(manifest);
+    NodeAssert.notEqual(await shared(), withBindings, "missing optional manifests are re-observed");
+    write(manifest, originalManifest);
+    const alternate = NodePath.join(f.root, "alternate-package");
+    write(NodePath.join(alternate, "package.json"), originalManifest);
+    NodeFS.unlinkSync(aliases[9]);
+    NodeFS.symlinkSync(alternate, aliases[9], "dir");
+    NodeAssert.notEqual(
+      await shared(),
+      withBindings,
+      "same bytes at a changed binding still invalidate",
+    );
+    NodeFS.unlinkSync(aliases[9]);
+    NodeFS.symlinkSync(NodePath.join(f.root, "missing-package"), aliases[9], "dir");
+    await NodeAssert.rejects(shared, (error) => error.reason?._tag === "NotFound");
+    NodeFS.unlinkSync(aliases[9]);
+    NodeAssert.notEqual(
+      await shared(),
+      withBindings,
+      "removed bindings cannot survive a failed sweep",
+    );
     const config = {
       compilerOptions: {
         plugins: [

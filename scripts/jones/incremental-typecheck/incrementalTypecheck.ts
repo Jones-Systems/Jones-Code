@@ -591,68 +591,97 @@ export async function sharedIdentity(
   workspaces: Workspace[],
   compiler: Compiler,
 ): Promise<string> {
+  // Acquire the CLI's stateless adapters once per sweep. Every publication
+  // revalidation calls this afresh; no metadata or bindings survive a sweep.
+  const path = hostPath();
+  const fs = Effect.runSync(Effect.provide(FileSystem.FileSystem, NodeFileSystem.layer));
+  const crypto = Effect.runSync(Effect.provide(Crypto.Crypto, NodeCrypto.layer));
+  const hash = (bytes: string | Uint8Array) =>
+    Buffer.from(
+      Effect.runSync(
+        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
+      ),
+    ).toString("hex");
+  const row = (label: string, valueHash: string) => `${JSON.stringify(label)}\0${valueHash}\n`;
   const chunks: string[] = [];
-  const add = (label: string, value: string | Buffer) => {
-    chunks.push(`${JSON.stringify(label)}\0${digest(value)}\n`);
+  // Many pnpm bindings name the same physical manifest. Read those bytes once
+  // within this snapshot, while still resolving and recording EVERY binding.
+  const manifests = new Map<string, Promise<string>>();
+  const fileHash = (filename: string, optional = false): Promise<string> => {
+    const key = `${optional ? "optional" : "required"}:${filename}`;
+    let pending = manifests.get(key);
+    if (!pending) {
+      pending = Effect.runPromise(fs.readFile(filename)).then(hash, (error: unknown) => {
+        if (optional && errorCode(error) === "ENOENT") return hash("<absent>");
+        throw error;
+      });
+      manifests.set(key, pending);
+    }
+    return pending;
   };
   const file = async (filename: string, optional = false) => {
-    try {
-      add(filename, Buffer.from(await hostFileSystem((fs) => fs.readFile(filename))));
-    } catch (error) {
-      if (optional && errorCode(error) === "ENOENT") add(filename, "<absent>");
-      else throw error;
-    }
+    chunks.push(row(filename, await fileHash(filename, optional)));
   };
   for (const filename of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"])
-    await file(hostPath().join(root, filename));
-  for (const workspace of workspaces)
-    await file(hostPath().join(workspace.directory, "package.json"));
+    await file(path.join(root, filename));
+  for (const workspace of workspaces) await file(path.join(workspace.directory, "package.json"));
   for (const filename of [".modules.yaml", ".pnpm/lock.yaml", ".pnpm-workspace-state-v1.json"])
-    await file(hostPath().join(root, "node_modules", filename), true);
+    await file(path.join(root, "node_modules", filename), true);
   await file(compiler.wrapper);
   await file(compiler.nativeManifest);
   await file(compiler.executable);
-  const libraries = hostPath().dirname(compiler.executable);
-  for (const name of (await hostFileSystem((fs) => fs.readDirectory(libraries))).sort())
-    if (/^lib.*\.d\.ts$/.test(name)) await file(hostPath().join(libraries, name));
-  if (!(await hostFileSystem((fs) => fs.exists(hostPath().join(libraries, "lib.d.ts")))))
+  const libraries = path.dirname(compiler.executable);
+  for (const name of (await Effect.runPromise(fs.readDirectory(libraries))).sort())
+    if (/^lib.*\.d\.ts$/.test(name)) await file(path.join(libraries, name));
+  if (!(await Effect.runPromise(fs.exists(path.join(libraries, "lib.d.ts")))))
     throw new Error("Native adjacent standard library is missing.");
 
   const seen = new Set<string>();
+  const entries: Array<{ path: string; absent: boolean }> = [];
   const modules = async (directory: string): Promise<void> => {
     if (seen.has(directory)) return;
     seen.add(directory);
     let names: string[];
     try {
-      names = (await hostFileSystem((fs) => fs.readDirectory(directory))).sort();
+      names = (await Effect.runPromise(fs.readDirectory(directory))).sort();
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
-        add(directory, "<absent>");
+        entries.push({ path: directory, absent: true });
         return;
       }
       throw error;
     }
     for (const name of names) {
       if (name.startsWith(".")) continue;
-      const target = hostPath().join(directory, name);
-      if (name.startsWith("@")) {
-        await modules(target);
-        continue;
-      }
-      const resolved = await hostFileSystem((fs) => fs.realPath(target));
-      add(target, resolved);
-      await file(hostPath().join(resolved, "package.json"), true);
+      const target = path.join(directory, name);
+      if (name.startsWith("@")) await modules(target);
+      else entries.push({ path: target, absent: false });
     }
   };
-  for (const workspace of workspaces)
-    await modules(hostPath().join(workspace.directory, "node_modules"));
-  const store = hostPath().join(root, "node_modules", ".pnpm");
-  for (const name of (await hostFileSystem((fs) => fs.readDirectory(store))).sort()) {
-    if (name === "node_modules") await modules(hostPath().join(store, name));
-    else if ((await fileInfo(hostPath().join(store, name))).type === "Directory")
-      await modules(hostPath().join(store, name, "node_modules"));
+  for (const workspace of workspaces) await modules(path.join(workspace.directory, "node_modules"));
+  const store = path.join(root, "node_modules", ".pnpm");
+  for (const name of (await Effect.runPromise(fs.readDirectory(store))).sort()) {
+    if (name === "node_modules") await modules(path.join(store, name));
+    else if ((await fileInfo(path.join(store, name))).type === "Directory")
+      await modules(path.join(store, name, "node_modules"));
   }
-  return digest(chunks.join(""));
+  // Eight metadata operations at most; append only in the original traversal
+  // order. Drain each batch even on failure, before returning to the caller.
+  for (let offset = 0; offset < entries.length; offset += 8) {
+    const batch = await Promise.allSettled(
+      entries.slice(offset, offset + 8).map(async (entry) => {
+        if (entry.absent) return row(entry.path, hash("<absent>"));
+        const resolved = await Effect.runPromise(fs.realPath(entry.path));
+        const manifest = path.join(resolved, "package.json");
+        return row(entry.path, hash(resolved)) + row(manifest, await fileHash(manifest, true));
+      }),
+    );
+    for (const result of batch) {
+      if (result.status === "rejected") throw result.reason;
+      chunks.push(result.value);
+    }
+  }
+  return hash(chunks.join(""));
 }
 
 export async function effectiveConfig(
