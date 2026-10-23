@@ -4,6 +4,9 @@ import { resolveMessageModelSelection } from "./threadSelfConfiguration.ts";
 import { ProviderInstanceId } from "../providerInstance.ts";
 import { OrchestrationV2Command } from "../orchestrationV2.ts";
 
+const decodeCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
+const encodeCommand = Schema.encodeSync(OrchestrationV2Command);
+
 describe("composer selection intent compatibility", () => {
   const message = {
     type: "message.dispatch",
@@ -25,13 +28,13 @@ describe("composer selection intent compatibility", () => {
         ...message,
         ...(explicit === undefined ? {} : { modelSelectionExplicit: explicit }),
       };
-      const decoded = Schema.decodeUnknownSync(OrchestrationV2Command)(input);
-      expect(Schema.encodeSync(OrchestrationV2Command)(decoded)).toEqual(input);
+      const decoded = decodeCommand(input);
+      expect(encodeCommand(decoded)).toEqual(input);
     },
   );
   it("rejects malformed selection intent", () => {
     expect(() =>
-      Schema.decodeUnknownSync(OrchestrationV2Command)({
+      decodeCommand({
         ...message,
         modelSelectionExplicit: "false",
       }),

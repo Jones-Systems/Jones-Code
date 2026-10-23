@@ -4,6 +4,8 @@ import { ProviderInstanceId, OrchestrationV2Command } from "@t3tools/contracts";
 import { useComposerDraftStore, DraftId } from "../../composerDraftStore";
 import { acknowledgeComposerSelection, composerSelectionForDispatch } from "./composerSelection";
 
+const decodeCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
+
 describe("web composer selection dispatch contract", () => {
   const initialState = useComposerDraftStore.getState();
   afterEach(() => useComposerDraftStore.setState(initialState, true));
@@ -20,7 +22,7 @@ describe("web composer selection dispatch contract", () => {
         modelSelectionByProvider: { [selection.instanceId]: selection },
         ...(explicit === undefined ? {} : { modelSelectionExplicit: explicit }),
       });
-      const wire = Schema.decodeUnknownSync(OrchestrationV2Command)({
+      const wire = decodeCommand({
         type: "message.dispatch",
         commandId: "composer",
         threadId: "thread",

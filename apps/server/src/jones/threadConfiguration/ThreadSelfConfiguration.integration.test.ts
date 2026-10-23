@@ -110,6 +110,8 @@ const catalog: ServerProvider = {
   slashCommands: [],
   skills: [],
 };
+const decodeCommand = Schema.decodeUnknownEffect(OrchestrationV2Command);
+
 const decodeEvidence = Schema.decodeUnknownEffect(ThreadConfigurationEvidence);
 const decodeReceipt = Schema.decodeUnknownEffect(ThreadSelfConfigurationResult);
 const failure = (result: McpSchema.CallToolResult) =>
@@ -751,7 +753,7 @@ it.live.each([
             // The web composer includes its inherited selection even without a picker change.
             const explicit = "explicit" in target ? target.explicit : false;
             yield* orchestrator.dispatch(
-              yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+              yield* decodeCommand({
                 type: "message.dispatch",
                 commandId: CommandId.make("ordinary-follow-up:" + threadId),
                 threadId,
