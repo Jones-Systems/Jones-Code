@@ -29,10 +29,11 @@
         "apps/server/src/orchestration-v2/EffectWorker.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
-        "apps/server/src/jones/runtime/RuntimeStop.test.ts"
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/ControlAdmission.test.ts apps/server/src/jones/orchestration/LateSteer.test.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/ControlAdmission.test.ts apps/server/src/jones/orchestration/LateSteer.test.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

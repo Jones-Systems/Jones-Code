@@ -26,7 +26,8 @@
         "apps/server/src/orchestration-v2/EffectWorker.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
-        "apps/server/src/jones/runtime/RuntimeStop.test.ts"
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts"
       ],
       "scope": "Exact committed restart history preserves the old captured terminal while fencing replacement state. Codex steering has a bounded acknowledgement wait with producer-owned late reconciliation and per-instance admission holds; worker integration releases shared capacity without replaying uncertain native actions. Server integration tests use synthetic state and native protocol fixtures."
     },
