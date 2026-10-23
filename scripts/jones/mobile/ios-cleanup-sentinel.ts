@@ -5,8 +5,7 @@ import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
-import { collectAdmission } from "./ios-admission.ts";
-import { jobInputs } from "./ios-native-build.ts";
+import { admitBuildBoundary, jobInputs } from "./ios-native-build.ts";
 import { acceptCreatedDevice } from "./ios-pin-workflow.ts";
 import { fileDigest, nativeEnvironment, object, ownedCommand } from "./xcuitest.ts";
 import type { ChildReceipt } from "./xcuitest.ts";
@@ -91,6 +90,30 @@ async function portClosed(port: number) {
   });
 }
 
+const defaultDependencies = {
+  jobInputs,
+  controller: () => new AbortController(),
+  ownedCommand,
+  fileDigest,
+  admission: {} as NonNullable<Parameters<typeof admitBuildBoundary>[2]>,
+  wait: () => NodeTimersPromises.setTimeout(50),
+  groupsGone,
+  absent,
+  portClosed,
+};
+type Dependencies = typeof defaultDependencies;
+export interface JourneyAttempt {
+  name: string;
+  receiptPath: string;
+  state: "not-launched" | "launch-unresolved" | "cleanup-proved";
+  runner?: ChildReceipt;
+  cleanup?: Awaited<ReturnType<typeof verifyJourney>>;
+  cleanupFailure?: string;
+}
+function journeyAttempt(output: string, name: string): JourneyAttempt {
+  return { name, receiptPath: NodePath.join(output, `${name}.json`), state: "not-launched" };
+}
+
 interface NativeOptions {
   source: string;
   sourceSha: string;
@@ -101,19 +124,27 @@ interface NativeOptions {
   buildRecord: string;
   children: ChildReceipt[];
   signal: AbortSignal;
+  devices: (teardown?: boolean) => Promise<{ udid: string; state: string }[]>;
+  dependencies: Dependencies;
 }
 export async function runJourney(
   options: NativeOptions,
   name: string,
   extra: string[],
   cancelAtTest = false,
+  attempt = journeyAttempt(options.output, name),
 ) {
   const { source, sourceSha, root, output, tooling, children, signal } = options;
   const receiptPath = NodePath.join(output, `${name}.json`),
     progress = NodePath.join(root, `${name}.ndjson`);
-  const admissionPath = NodePath.join(root, `${name}-admission.json`);
-  const admission = await collectAdmission(sourceSha, options.serialSlot, root, children, signal);
-  await NodeFSP.writeFile(admissionPath, JSON.stringify(admission), { flag: "wx", mode: 0o600 });
+  const deps = options.dependencies;
+  NodeAssert.equal(attempt.state, "not-launched");
+  NodeAssert.equal(attempt.receiptPath, receiptPath);
+  NodeAssert.ok(await absent(receiptPath), "Journey receipt already exists");
+  NodeAssert.ok(await absent(progress), "Journey progress already exists");
+  const build = object(JSON.parse(await NodeFSP.readFile(options.buildRecord, "utf8")));
+  const admission = await admitBuildBoundary(options, name, deps.admission);
+  const admissionPath = NodePath.join(output, `${name}-admission.json`);
   const args = [
     NodePath.join(source, "scripts/jones/mobile/ios-pin-workflow.ts"),
     "--execute",
@@ -139,14 +170,19 @@ export async function runJourney(
     progress,
     ...extra,
   ];
-  const runner = ownedCommand(process.execPath, args, {
+  signal.throwIfAborted();
+  attempt.state = "launch-unresolved";
+  const runner = deps.ownedCommand(process.execPath, args, {
     cwd: source,
     env: { ...process.env },
     timeoutMs: 12 * 60_000,
     receipts: children,
   });
+  attempt.runner = runner.receipt;
   void runner.result.catch(() => {});
-  let cancellationSent = false;
+  let cancellationSent = false,
+    cancellationAtTest = false;
+  let primary: unknown;
   try {
     while (runner.child.exitCode === null && runner.child.signalCode === null) {
       const started = await NodeFSP.readFile(progress, "utf8").then(
@@ -160,38 +196,82 @@ export async function runJourney(
         NodeAssert.ok(runner.child.pid, "Captured runner PID unavailable");
         runner.child.kill("SIGTERM");
         cancellationSent = true;
+        cancellationAtTest = started;
       }
-      await NodeTimersPromises.setTimeout(50);
+      await deps.wait();
     }
+    const result = await runner.result;
+    const receipt = object(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
+    if (cancelAtTest) {
+      NodeAssert.ok(
+        cancellationSent && cancellationAtTest,
+        "Cancellation did not reach test-started",
+      );
+      NodeAssert.ok(
+        Array.isArray(receipt.children) &&
+          receipt.children
+            .map(object)
+            .some(
+              (child) =>
+                Array.isArray(child.argv) &&
+                child.argv.includes("test-without-building") &&
+                Number.isSafeInteger(child.pid) &&
+                Number(child.pid) > 0,
+            ),
+        "Captured Xcode child missing at cancellation",
+      );
+    }
+    signal.throwIfAborted();
+    return { receipt, receiptPath, runnerExit: result.code };
   } catch (error) {
-    runner.child.kill("SIGTERM");
-    await runner.result;
+    primary = error;
     throw error;
+  } finally {
+    let settlementError: unknown;
+    try {
+      await runner.stop();
+    } catch (error) {
+      settlementError = error;
+    }
+    await runner.result.catch((error) => {
+      settlementError ??= error;
+    });
+    try {
+      NodeAssert.ok(
+        !settlementError &&
+          runner.receipt.groupGone === true &&
+          Number.isSafeInteger(runner.receipt.pid) &&
+          Number(runner.receipt.pid) > 0 &&
+          runner.receipt.pgid === runner.receipt.pid,
+        "Journey runner settlement unresolved",
+      );
+      const receipt = object(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
+      NodeAssert.equal(receipt.schema, "jones-ios-workflow-receipt/2");
+      NodeAssert.equal(receipt.sourceSha, sourceSha);
+      NodeAssert.deepEqual(receipt.build, build, "Journey build mismatch");
+      NodeAssert.deepEqual(receipt.admission, admission, "Journey admission mismatch");
+      NodeAssert.ok(receipt.outcome === "pass" || receipt.outcome === "fail", "Incomplete receipt");
+      NodeAssert.equal(receipt.retainScratch, false, "Runner cleanup unresolved");
+      NodeAssert.ok(typeof receipt.scratch === "string");
+      const relative = NodePath.relative(await NodeFSP.realpath(root), receipt.scratch);
+      NodeAssert.ok(
+        relative && !relative.startsWith("..") && !NodePath.isAbsolute(relative),
+        "Journey scratch outside owned root",
+      );
+      attempt.cleanup = await verifyJourney(receipt, await options.devices(true), deps);
+      attempt.state = "cleanup-proved";
+    } catch (error) {
+      attempt.cleanupFailure =
+        error instanceof Error ? error.message : "Journey cleanup unresolved";
+      if (!primary) throw error;
+    }
   }
-  const result = await runner.result;
-  const receipt = object(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
-  if (cancelAtTest) {
-    NodeAssert.ok(cancellationSent, "Cancellation did not reach test-started");
-    NodeAssert.ok(
-      Array.isArray(receipt.children) &&
-        receipt.children
-          .map(object)
-          .some(
-            (child) =>
-              Array.isArray(child.argv) &&
-              child.argv.includes("test-without-building") &&
-              Number.isSafeInteger(child.pid) &&
-              Number(child.pid) > 0,
-          ),
-      "Captured Xcode child missing at cancellation",
-    );
-  }
-  return { receipt, receiptPath, runnerExit: result.code };
 }
 
 export async function verifyJourney(
   receipt: Record<string, unknown>,
   devices: { udid: string; state: string }[],
+  observations = { groupsGone, absent, portClosed },
 ) {
   const createdUdid = String(object(receipt.device).udid);
   NodeAssert.match(createdUdid, /^[0-9a-f-]{36}$/i);
@@ -199,9 +279,9 @@ export async function verifyJourney(
   const evidence = {
     createdUdid,
     createdUdidAbsent: !devices.some((device) => device.udid === createdUdid),
-    groupsGone: groupsGone(receipt.children),
-    scratchAbsent: await absent(receipt.scratch),
-    portClosed: await portClosed(Number(object(receipt.server).port)),
+    groupsGone: observations.groupsGone(receipt.children),
+    scratchAbsent: await observations.absent(receipt.scratch),
+    portClosed: await observations.portClosed(Number(object(receipt.server).port)),
   };
   assertCleanupEvidence(evidence);
   return evidence;
@@ -233,27 +313,27 @@ export function qualification(
     : "not-established";
 }
 
-export async function sentinelMain(mode: string) {
+export async function sentinelMain(mode: string, overrides: Partial<Dependencies> = {}) {
+  const deps = { ...defaultDependencies, ...overrides };
   NodeAssert.ok(
     mode === "--qualify" || mode === "--control-pinned",
     "Use --qualify or --control-pinned",
   );
-  const input = jobInputs(),
+  const input = deps.jobInputs(),
     children: ChildReceipt[] = [];
-  const controller = new AbortController(),
+  const controller = deps.controller(),
     cancel = () => controller.abort();
   const tooling = object(
     JSON.parse(await NodeFSP.readFile(NodePath.join(input.output, "tooling.json"), "utf8")),
   );
   const buildRecord = NodePath.join(input.output, "build-record.json");
-  const options = { ...input, tooling, buildRecord, children, signal: controller.signal };
   const env = nativeEnvironment(
     input.root,
     String(tooling.developerDir),
     process.env.PATH ?? "/usr/bin:/bin",
   );
   const read = async (exe: string, args: string[], teardown = false) => {
-    const result = await ownedCommand(exe, args, {
+    const result = await deps.ownedCommand(exe, args, {
       cwd: input.root,
       env,
       receipts: children,
@@ -274,13 +354,26 @@ export async function sentinelMain(mode: string) {
       });
     });
   };
+  const options = {
+    ...input,
+    tooling,
+    buildRecord,
+    children,
+    signal: controller.signal,
+    devices,
+    dependencies: deps,
+  };
+  const journeys = (mode === "--qualify" ? SENTINEL_CASES : ["control-pinned"]).map((name) =>
+    journeyAttempt(input.output, name),
+  );
   const cases: ({ case: string; passed: boolean } & Record<string, unknown>)[] = [];
   const result: Record<string, unknown> = {
     schema: mode === "--qualify" ? "jones-ios-cleanup-sentinel/1" : "jones-ios-control-pinned/1",
     sourceSha: input.sourceSha,
-    buildRecordSha256: await fileDigest(buildRecord),
+    buildRecordSha256: await deps.fileDigest(buildRecord),
     tooling,
     cases,
+    journeys,
     qualification: "not-established",
     sentinelsRemoved: false,
     cleanupKnown: false,
@@ -302,21 +395,19 @@ export async function sentinelMain(mode: string) {
       );
       NodeAssert.equal(sentinel.qualification, "established", "Sentinel qualification required");
       NodeAssert.equal(sentinel.sourceSha, input.sourceSha);
-      NodeAssert.equal(sentinel.buildRecordSha256, await fileDigest(buildRecord));
-      const run = await runJourney(options, "control-pinned", ["--control-pinned", "true"]);
-      assertCase("success", run.runnerExit, run.receipt);
-      Object.assign(result, await verifyJourney(run.receipt, await devices()), {
-        outcome: "pass",
-        cleanupKnown: true,
-      });
-    } else {
-      await collectAdmission(
-        input.sourceSha,
-        input.serialSlot,
-        input.root,
-        children,
-        controller.signal,
+      NodeAssert.equal(sentinel.buildRecordSha256, await deps.fileDigest(buildRecord));
+      const run = await runJourney(
+        options,
+        "control-pinned",
+        ["--control-pinned", "true"],
+        false,
+        journeys[0],
       );
+      assertCase("success", run.runnerExit, run.receipt);
+      Object.assign(result, journeys[0]!.cleanup, { outcome: "pass" });
+    } else {
+      await admitBuildBoundary(options, "sentinel-setup", deps.admission);
+      controller.signal.throwIfAborted();
       const previous = await devices(),
         name = `jones-ios-sentinel-${process.pid}-${Date.now()}`;
       try {
@@ -344,7 +435,7 @@ export async function sentinelMain(mode: string) {
       }
       await read("/usr/bin/xcrun", ["simctl", "boot", sentinelUdid]);
       await read("/usr/bin/xcrun", ["simctl", "bootstatus", sentinelUdid, "-b"]);
-      sleep = ownedCommand("/bin/sleep", ["3600"], {
+      sleep = deps.ownedCommand("/bin/sleep", ["3600"], {
         cwd: input.root,
         env,
         timeoutMs: 3_650_000,
@@ -361,16 +452,23 @@ export async function sentinelMain(mode: string) {
           (await devices()).find((item) => item.udid === sentinelUdid)?.state,
           "Booted",
         );
-        const run = await runJourney(options, kind, caseArguments(kind), kind === "cancellation");
+        const attempt = journeys.find((journey) => journey.name === kind)!;
+        const run = await runJourney(
+          options,
+          kind,
+          caseArguments(kind),
+          kind === "cancellation",
+          attempt,
+        );
         const row: { case: string; passed: boolean } & Record<string, unknown> = {
           case: kind,
           passed: false,
           runnerExit: run.runnerExit,
-          receiptSha256: await fileDigest(run.receiptPath),
+          receiptSha256: await deps.fileDigest(run.receiptPath),
           failureCode: run.receipt.failureCode,
         };
         cases.push(row);
-        Object.assign(row, await verifyJourney(run.receipt, await devices()));
+        Object.assign(row, attempt.cleanup);
         const after = (await devices()).find((item) => item.udid === sentinelUdid)?.state;
         const aliveAfter =
           sleep.child.exitCode === null &&
@@ -417,16 +515,10 @@ export async function sentinelMain(mode: string) {
         "Sentinel cleanup unresolved",
       );
       result.sentinelsRemoved = true;
-      if (mode === "--qualify")
-        result.cleanupKnown =
-          cases.length === 4 &&
-          cases.every(
-            (row) =>
-              row.groupsGone === true &&
-              row.scratchAbsent === true &&
-              row.createdUdidAbsent === true &&
-              row.portClosed === true,
-          );
+      result.cleanupKnown = journeys.every(
+        (journey) => journey.state === "not-launched" || journey.state === "cleanup-proved",
+      );
+      NodeAssert.ok(result.cleanupKnown, "Journey cleanup unresolved");
     } catch (error) {
       cleanupError = error;
       result.cleanupKnown = false;
