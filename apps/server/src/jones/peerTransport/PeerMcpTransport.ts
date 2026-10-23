@@ -10,9 +10,12 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import type { PeerMcpClient } from "../../peer/PeerMcpClient.ts";
+import { encodeLinkedMessageOrigin, LINKED_MESSAGE_ORIGIN_HEADER } from "./LinkedMessageOrigin.ts";
 
 /** The protocol negotiated by this client with the peer's `/mcp`. */
 const PROTOCOL_VERSION = "2025-06-18";
+// Remote waits support 50 seconds; leave 10 seconds for transport and body draining.
+const POST_TIMEOUT_MS = 60_000;
 const Envelope = Schema.Struct({
   jsonrpc: Schema.Literal("2.0"),
   id: Schema.Union([Schema.Number, Schema.String]),
@@ -158,6 +161,18 @@ export const make = Effect.gen(function* () {
             Effect.map((text) => ({ status: response.status, headers: response.headers, text })),
           ),
         ),
+        // A timeout aborts local I/O, but cannot establish whether the peer committed a mutation.
+        Effect.timeoutOrElse({
+          duration: POST_TIMEOUT_MS,
+          orElse: () =>
+            Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message:
+                  "The linked environment timed out. The call was not replayed. Reconcile its outcome before explicitly retrying with the same operation key.",
+              }),
+            ),
+        }),
         Effect.flatMap((response) => {
           if (response.status >= 300 && response.status < 400)
             return Effect.fail(
@@ -251,7 +266,16 @@ export const make = Effect.gen(function* () {
           method: "tools/call",
           params: { name: input.tool, arguments: input.arguments },
         },
-        { ...limitHeader, "mcp-session-id": session.id, "mcp-protocol-version": PROTOCOL_VERSION },
+        {
+          ...limitHeader,
+          ...(input.origin === undefined
+            ? {}
+            : {
+                [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin),
+              }),
+          "mcp-session-id": session.id,
+          "mcp-protocol-version": PROTOCOL_VERSION,
+        },
       );
       if (response.status === 404) {
         yield* Ref.update(sessions, (current) => {
