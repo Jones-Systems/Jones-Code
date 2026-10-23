@@ -1,3 +1,4 @@
+import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotificationDelivery.ts";
 import { controlCodexGoal } from "../../jones/goals/CodexGoalControl.ts";
 import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.ts";
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
@@ -8272,9 +8273,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 (candidate) => candidate.providerTurnId === providerTurnId,
               );
               if (activeTurn === undefined) {
-                return yield* toProtocolError(
-                  `Provider turn ${turnInput.providerTurnId} is not active and cannot be steered.`,
-                );
+                return yield* new GoalNotificationNotDelivered();
               }
 
               const codexInput = yield* toCodexInput(turnInput);

@@ -9,7 +9,8 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2Run,
-  type OrchestratorMcpFailure,
+  OrchestratorMcpFailure,
+  type OrchestratorMcpThreadReadResult,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -103,6 +104,7 @@ interface BoxThread {
   readonly laterError: Ref.Ref<string | null>;
   /** A later run's reply, after the task's own, as a follow-up message would leave. */
   readonly laterReply: Ref.Ref<string | null>;
+  readonly laterRun: Ref.Ref<OrchestrationV2Run | null>;
   /** The run each wait asked for, in order. */
   readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
   /** The thread's run ends with a task of its own still running, whose result wakes it again. */
@@ -146,6 +148,7 @@ const makeBoxThread = Effect.gen(function* () {
     error: yield* Ref.make<string | null>(null),
     laterError: yield* Ref.make<string | null>(null),
     laterReply: yield* Ref.make<string | null>(null),
+    laterRun: yield* Ref.make<OrchestrationV2Run | null>(null),
     waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
     nested: yield* Ref.make(false),
     nestedWaiting: yield* Deferred.make<void>(),
@@ -228,16 +231,24 @@ const boxToolkitLayer = (thread: BoxThread) => {
       modelSelection,
       requestedAt: DateTime.makeUnsafe(0),
       startedAt: DateTime.makeUnsafe(0),
-      completedAt: null,
+      completedAt: ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(
+        status,
+      )
+        ? DateTime.makeUnsafe(1_000)
+        : null,
     }) as unknown as OrchestrationV2Run;
   const projectionOf = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const shell = yield* shellOf(threadId);
       const status = yield* Ref.get(thread.status);
       const runless = yield* Ref.get(thread.runless);
+      const laterRun = yield* Ref.get(thread.laterRun);
       return shell === null
         ? (null as never)
-        : { ...idleThreadProjection(shell), runs: runless ? [] : [runOf(status)] };
+        : {
+            ...idleThreadProjection(shell),
+            runs: runless ? [] : [runOf(status), ...(laterRun === null ? [] : [laterRun])],
+          };
     });
   // One record per command id, as its receipt replays a repeat.
   const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
@@ -544,6 +555,9 @@ const makeLaptop = (
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
   observeStopFailure?: (error: OrchestratorMcpFailure) => Effect.Effect<void>,
+  transformObservation?: (
+    read: OrchestratorMcpThreadReadResult,
+  ) => Effect.Effect<OrchestratorMcpThreadReadResult, OrchestratorMcpFailure>,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -569,7 +583,7 @@ const makeLaptop = (
       Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
     );
     const layerForwarding =
-      observeStopFailure === undefined
+      observeStopFailure === undefined && transformObservation === undefined
         ? PeerForwarding.layer
         : Layer.effect(
             PeerForwarding.PeerForwarding,
@@ -577,8 +591,21 @@ const makeLaptop = (
               const forwarding = yield* PeerForwarding.PeerForwarding;
               return {
                 ...forwarding,
+                readThread: (...args: Parameters<typeof forwarding.readThread>) =>
+                  forwarding
+                    .readThread(...args)
+                    .pipe(
+                      Effect.flatMap((read) =>
+                        args[2].childProgressForRunId === undefined ||
+                        transformObservation === undefined
+                          ? Effect.succeed(read)
+                          : transformObservation(read),
+                      ),
+                    ),
                 interruptThread: (...args: Parameters<typeof forwarding.interruptThread>) =>
-                  forwarding.interruptThread(...args).pipe(Effect.tapError(observeStopFailure)),
+                  forwarding
+                    .interruptThread(...args)
+                    .pipe(Effect.tapError(observeStopFailure ?? (() => Effect.void))),
               };
             }),
           ).pipe(Layer.provide(PeerForwarding.layer));
@@ -903,6 +930,144 @@ it.effect("a task named only by environment inherits the parent's model, within 
       expect(broader.structuredContent).toMatchObject({ status: "failed" });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "task_status observes queued follow-up work and a failed provider start without replacing the original result",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        yield* Ref.set(thread.reply, "Original completed result.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        yield* taskResult(a, delegated.taskId);
+        const later = {
+          id: boxLaterRunId,
+          threadId: delegated.remoteChild.threadId,
+          ordinal: 2,
+          status: "queued",
+          queueHeld: false,
+          modelSelection,
+          requestedAt: DateTime.makeUnsafe(2_000),
+          startedAt: null,
+          completedAt: null,
+        } as OrchestrationV2Run;
+        yield* Ref.set(thread.laterRun, later);
+        const pending = yield* a.call("task_status", { taskId: delegated.taskId });
+        expect(pending.isError).not.toBe(true);
+        expect(pending.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "Original completed result.",
+          hasPendingChildRuns: true,
+          latestTerminalRunId: boxRunId,
+          latestTerminalStatus: "completed",
+          latestTerminalSummary: "Original completed result.",
+          remoteObservation: {
+            originalRunId: boxRunId,
+            threadId: delegated.remoteChild.threadId,
+            environmentId: box.environmentId,
+          },
+        });
+        yield* Ref.set(thread.laterRun, { ...later, queueHeld: true });
+        expect(
+          (yield* a.call("task_status", { taskId: delegated.taskId })).structuredContent,
+        ).toMatchObject({ hasPendingChildRuns: false });
+        yield* Ref.set(thread.laterRun, {
+          ...later,
+          status: "failed",
+          completedAt: DateTime.makeUnsafe(3_000),
+        });
+        yield* Ref.set(thread.laterReply, "Earlier partial follow-up output.");
+        yield* Ref.set(thread.laterError, "The follow-up provider failed before starting.");
+        const failed = yield* a.call("task_status", { taskId: delegated.taskId });
+        expect(failed.isError).not.toBe(true);
+        expect(failed.structuredContent).toMatchObject({
+          status: "completed",
+          summary: "Original completed result.",
+          hasPendingChildRuns: false,
+          latestTerminalRunId: boxLaterRunId,
+          latestTerminalStatus: "failed",
+          latestTerminalSummary: "The follow-up provider failed before starting.",
+        });
+        const original = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === delegated.taskId,
+        );
+        expect(original).toMatchObject({
+          status: "completed",
+          result: "Original completed result.",
+        });
+        const missing = yield* a.remote
+          .observe(parentScope as McpInvocationContext.McpThreadInvocationScope, {
+            ...original!,
+            remoteChild: { ...original!.remoteChild!, runId: undefined },
+          })
+          .pipe(Effect.flip);
+        expect(missing.message).toContain("original remote run is not attributed");
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each(["unsupported", "unavailable", "mismatched"] as const)(
+  "task_status leaves terminal delivery unacknowledged when fresh progress is %s",
+  (failure) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers, undefined, undefined, (read) => {
+          if (failure === "unavailable")
+            return Effect.fail(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "Synthetic unavailable remote observation.",
+              }),
+            );
+          if (failure === "unsupported") {
+            const { remoteObservation: _remoteObservation, ...legacy } = read;
+            return Effect.succeed(legacy);
+          }
+          return Effect.succeed({
+            ...read,
+            remoteObservation: {
+              ...read.remoteObservation!,
+              originalRunId: RunId.make("run:wrong-task"),
+            },
+          });
+        });
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        yield* Ref.set(thread.reply, "Original completed result.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        const before = yield* taskResult(a, delegated.taskId);
+        const status = yield* a.call("task_status", { taskId: delegated.taskId });
+        expect(status.isError).toBe(true);
+        expect(JSON.stringify(status.content)).toContain(
+          failure === "mismatched" ? "mismatched task binding" : failure,
+        );
+        const after = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === delegated.taskId,
+        )!;
+        expect(after.result).toBe("Original completed result.");
+        expect(after.completionDelivery).toEqual(before?.completionDelivery);
+        expect(after.completionDelivery?.state).not.toBe("acknowledged");
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("delegates worktree isolation to the destination launch defaults", () =>
@@ -1511,7 +1676,7 @@ it.effect("stopping the parent stops follow-up work on a task there that has its
       });
       expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
       expect(yield* Ref.get(thread.sent)).toEqual([
-        "**T3M** · From unavailable · Sent: 12/31 19:00:00\n\nNow run the slow suite too.",
+        "**T3M** · From Laptop parent (remote environment `environment-laptop`, thread `thread:laptop-parent`; via linked client T3 Code · Laptop) · Sent: 12/31 19:00:00\n\nNow run the slow suite too.",
       ]);
       expect(yield* Ref.get(thread.interrupted)).toBe(0);
 

@@ -1,3 +1,4 @@
+import { LinkedMessagePolicy, RemoteTaskObservation } from "./jones/remoteTaskObservation.ts";
 import { RemoteAdmissionDigest, RemoteAdmissionStatus } from "./jones/remoteAdmission.ts";
 import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";
 import * as Effect from "effect/Effect";
@@ -208,6 +209,7 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
   childThreadId: Schema.NullOr(ThreadId),
@@ -230,7 +232,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   resultContextTransferId: Schema.NullOr(ContextTransferId),
   hasPendingQuestion: Schema.Boolean.annotate({
     description:
-      "Blocking question ends mode=wait. Pass threadId=childThreadId to t3_pending_request_list, t3_pending_request_read (with requestId) and t3_pending_request_respond, or ask the user; the task's completion still wakes this thread.",
+      "Blocking question ends mode=wait. For local tasks use childThreadId with t3_pending_request_list/read/respond. For remote questions use the exact environmentId, threadId and requestId in remoteObservation. Ask the user when needed; the task's completion still wakes this thread.",
   }),
   waitTimedOut: Schema.Boolean.annotate({
     description:
@@ -388,6 +390,7 @@ export const OrchestratorMcpThreadListResult = Schema.Struct({
 export type OrchestratorMcpThreadListResult = typeof OrchestratorMcpThreadListResult.Type;
 
 export const OrchestratorMcpThreadReadInput = Schema.Struct({
+  childProgressForRunId: Schema.optional(RunId),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   itemId: Schema.optional(TurnItemId),
@@ -468,6 +471,8 @@ export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
 export type OrchestratorMcpThreadTimelineItem = typeof OrchestratorMcpThreadTimelineItem.Type;
 
 export const OrchestratorMcpThreadReadResult = Schema.Struct({
+  remoteMessagePolicy: Schema.optional(LinkedMessagePolicy),
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   thread: OrchestratorMcpThreadDetail,
   recentRuns: Schema.Array(OrchestratorMcpThreadRun),
   items: Schema.Array(OrchestratorMcpThreadTimelineItem),
@@ -496,6 +501,9 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
+  observeBlockingQuestions: Schema.optional(Schema.Boolean),
+  questionResumeToken: Schema.optional(Schema.String.check(Schema.isMaxLength(16_384))),
+  childProgressForRunId: Schema.optional(RunId),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),
@@ -510,6 +518,8 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
 export const OrchestratorMcpThreadWaitResult = Schema.Struct({
+  observationChanged: Schema.optional(Schema.Boolean),
+  remoteObservation: Schema.optional(RemoteTaskObservation),
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
   status: OrchestratorMcpThreadStatus,

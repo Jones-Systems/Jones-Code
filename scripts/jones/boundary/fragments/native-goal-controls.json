@@ -8,7 +8,8 @@
     "apps/server/src/jones/goals/GoalControl.test.ts",
     "apps/server/src/jones/goals/GoalStartDispatch.ts",
     "apps/server/src/jones/goals/tool.ts",
-    "apps/server/src/jones/goals/GoalStartDispatch.test.ts"
+    "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
+    "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",
@@ -39,6 +40,22 @@
     {
       "from": "apps/server/src/mcp/toolkits/orchestrator/handlers.ts",
       "to": "apps/server/src/jones/goals/tool.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/goals/GoalNotificationDelivery.ts"
     }
   ]
 }

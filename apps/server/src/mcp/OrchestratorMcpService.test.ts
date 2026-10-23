@@ -5,6 +5,9 @@ import {
   EnvironmentId,
   EventId,
   NodeId,
+  OrchestratorMcpFailure,
+  type OrchestrationV2Subagent,
+  type RemoteTaskObservation,
   type OrchestrationV2ThreadShell,
   type ScheduledTask,
   ScheduledTaskId,
@@ -12,6 +15,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
   type ServerProvider,
@@ -54,6 +58,141 @@ const layerOrchestratorService = OrchestratorMcpService.layer.pipe(
 );
 
 describe("OrchestratorMcpService", () => {
+  it.effect(
+    "refreshes remote follow-up progress while preserving the originally published result",
+    () =>
+      Effect.gen(function* () {
+        const parentThreadId = ThreadId.make("thread:remote-status-parent");
+        const taskId = NodeId.make("task:remote-status");
+        const originalRunId = RunId.make("run:remote-original");
+        const laterRunId = RunId.make("run:remote-followup");
+        const remoteChild = {
+          environmentId: EnvironmentId.make("environment:remote-status"),
+          threadId: ThreadId.make("thread:remote-status"),
+          runId: originalRunId,
+          label: "Remote",
+        };
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          childThreadId: null,
+          remoteChild,
+          origin: "app_owned",
+          driver: "remote",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          model: "fixture",
+          result: "The original task succeeded.",
+          status: "completed",
+          completionDelivery: { state: "pending", observedByRunId: null },
+        } as OrchestrationV2Subagent;
+        let current: RemoteTaskObservation = {
+          schemaVersion: "t3.remote-task-observation/v1",
+          environmentId: remoteChild.environmentId,
+          threadId: remoteChild.threadId,
+          originalRunId,
+          blockingQuestions: {
+            resumeToken: "question",
+            requests: [{ requestId: RuntimeRequestId.make("request:followup"), runId: laterRunId }],
+          },
+          childProgress: {
+            hasPendingChildRuns: true,
+            latestTerminalRunId: originalRunId,
+            latestTerminalStatus: "completed",
+          },
+        };
+        let latestTerminalSummary = "The original task succeeded.";
+        let reads = 0;
+        let acknowledgements = 0;
+        let available = false;
+        const scope: McpInvocationScope = {
+          environmentId: EnvironmentId.make("environment:parent"),
+          requestNamespace: "provider:remote-status",
+          thread: {
+            threadId: parentThreadId,
+            providerSessionId: "session:parent",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+        const parent = {
+          ...idleThreadProjection(liveThreadShell(parentThreadId)),
+          subagents: [task],
+        };
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: () => Effect.succeed(parent),
+            readRemoteTaskObservation: () => Effect.succeed(undefined),
+            dispatch: (command) =>
+              Effect.sync(() => {
+                assert.equal(command.type, "delegated_task.completion-delivery.acknowledge");
+                assert.isTrue(available);
+                acknowledgements++;
+                return { sequence: 1, storedEvents: [] };
+              }),
+          }),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({
+            observe: (_scope, observedTask) =>
+              Effect.gen(function* () {
+                reads++;
+                assert.equal(observedTask.remoteChild?.runId, originalRunId);
+                if (!available)
+                  return yield* new OrchestratorMcpFailure({
+                    code: "orchestration_error",
+                    message: "Remote read unavailable.",
+                  });
+                return { observation: current, latestTerminalSummary };
+              }),
+          }),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+          Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+            list: () => Effect.succeed([]),
+          }),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          assert.equal(
+            (yield* service.taskStatus(scope, taskId).pipe(Effect.flip)).code,
+            "orchestration_error",
+          );
+          assert.equal(acknowledgements, 0);
+          available = true;
+          const pending = yield* service.taskStatus(scope, taskId);
+          assert.equal(pending.status, "completed");
+          assert.equal(pending.summary, task.result);
+          assert.isTrue(pending.hasPendingChildRuns);
+          assert.isTrue(pending.hasPendingQuestion);
+          assert.deepEqual(pending.remoteObservation, current);
+          assert.equal(acknowledgements, 1);
+          current = {
+            ...current,
+            blockingQuestions: { resumeToken: "cleared", requests: [] },
+            childProgress: {
+              hasPendingChildRuns: false,
+              latestTerminalRunId: laterRunId,
+              latestTerminalStatus: "failed",
+            },
+          };
+          latestTerminalSummary = "The follow-up provider failed to start.";
+          const ended = yield* service.taskStatus(scope, taskId);
+          assert.equal(reads, 3);
+          assert.equal(ended.status, "completed");
+          assert.equal(ended.summary, task.result);
+          assert.equal(ended.latestTerminalRunId, laterRunId);
+          assert.equal(ended.latestTerminalStatus, "failed");
+          assert.equal(ended.latestTerminalSummary, latestTerminalSummary);
+          assert.isFalse(ended.hasPendingChildRuns);
+          assert.isFalse(ended.hasPendingQuestion);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+      }),
+  );
+
   it.effect("retries terminal acknowledgement with a fresh command id", () =>
     Effect.gen(function* () {
       const parentThreadId = ThreadId.make("thread:mcp-ack-parent");
