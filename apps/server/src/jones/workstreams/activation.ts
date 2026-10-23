@@ -1,3 +1,4 @@
+import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import type { WorkstreamsRegistrationContextVersion } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Startup-only private-file reads require no-follow descriptors and POSIX identity checks.
 import * as NodeFS from "node:fs";
@@ -11,6 +12,7 @@ export interface ControlPlaneWorkstreamActivation {
   readonly authorizationRevision: number;
   readonly keyId: string;
   readonly signingSecret: string;
+  readonly registryBinding?: string;
   readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion;
 }
 
@@ -23,7 +25,7 @@ export type WorkstreamActivation =
 // same host. Reaching it through the tailnet HTTPS route would pass Tailscale
 // Serve, which adds Tailscale identity headers to requests from untagged nodes;
 // the control plane refuses those alongside signed requests. HMAC request
-// signing is identical on both origins. `localhost` and other hostnames stay
+// signing for a selected binding is identical on both transports. `localhost` and other hostnames stay
 // HTTPS-only because name resolution could leave the host.
 function hasCanonicalOrigin(baseUrl: URL): boolean {
   return (
@@ -35,6 +37,19 @@ function hasCanonicalOrigin(baseUrl: URL): boolean {
 
 export function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation): boolean {
   const headerValues = [config.ownerId, config.principalId, config.keyId, config.signingSecret];
+  if (config.registryBinding !== undefined) {
+    try {
+      const pin = decodeRegistryBinding(config.registryBinding);
+      if (
+        pin.owner_id !== config.ownerId ||
+        pin.principal_id !== config.principalId ||
+        pin.authorization_revision !== config.authorizationRevision
+      )
+        return false;
+    } catch {
+      return false;
+    }
+  }
   return (
     hasCanonicalOrigin(config.baseUrl) &&
     !config.baseUrl.username &&
@@ -66,6 +81,7 @@ const ENVIRONMENT_KEYS = [
   "T3_WORKSTREAM_SIGNING_SECRET",
   "T3_WORKSTREAM_AUTHORIZATION_REVISION",
 ] as const;
+const REGISTRY_BINDING_KEY = "T3_WORKSTREAM_REGISTRY_BINDING";
 const REGISTRATION_VERSION_KEY = "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION";
 const MAX_BYTES = 65_536;
 const invalid = (): WorkstreamActivation => ({ state: "invalid" });
@@ -73,10 +89,12 @@ const invalid = (): WorkstreamActivation => ({ state: "invalid" });
 export function activationFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
 ): WorkstreamActivation {
+  const registryBinding = environment[REGISTRY_BINDING_KEY];
   const registrationContextVersion = environment[REGISTRATION_VERSION_KEY];
   if (
     ENVIRONMENT_KEYS.every((key) => environment[key] === undefined) &&
-    registrationContextVersion === undefined
+    registrationContextVersion === undefined &&
+    registryBinding === undefined
   )
     return { state: "disabled" };
   if (
@@ -98,6 +116,7 @@ export function activationFromEnvironment(
       keyId,
       signingSecret,
       authorizationRevision: Number(rawRevision),
+      ...(registryBinding === undefined ? {} : { registryBinding }),
       ...(registrationContextVersion === undefined ? {} : { registrationContextVersion }),
     };
     return hasCanonicalActivation(value) ? { state: "enabled", value } : invalid();
@@ -110,7 +129,7 @@ function parseActivation(bytes: Buffer): WorkstreamActivation {
   const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  if (lines.length !== ENVIRONMENT_KEYS.length && lines.length !== ENVIRONMENT_KEYS.length + 1)
+  if (lines.length < ENVIRONMENT_KEYS.length || lines.length > ENVIRONMENT_KEYS.length + 2)
     return invalid();
   const environment: NodeJS.ProcessEnv = {};
   for (const line of lines) {
@@ -119,7 +138,9 @@ function parseActivation(bytes: Buffer): WorkstreamActivation {
     const key = line.slice(0, equals);
     const value = line.slice(equals + 1);
     if (
-      (!ENVIRONMENT_KEYS.some((allowed) => allowed === key) && key !== REGISTRATION_VERSION_KEY) ||
+      (!ENVIRONMENT_KEYS.some((allowed) => allowed === key) &&
+        key !== REGISTRATION_VERSION_KEY &&
+        key !== REGISTRY_BINDING_KEY) ||
       Object.hasOwn(environment, key)
     )
       return invalid();
