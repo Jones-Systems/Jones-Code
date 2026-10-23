@@ -485,9 +485,16 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
       write({ id, result: { turnId: activeTurn.id } });
       save("after-steer", { observation: await read(), processId, nativeThreadId });
     } else if (method === "turn/interrupt") {
-      trace({ method });
+      trace({
+        method,
+        requestId: id,
+        threadId: params.threadId ?? null,
+        turnId: params.turnId ?? null,
+      });
       write({ id, result: {} });
+      trace({ method: "turn/interrupt/ack", requestId: id, acknowledged: true });
       complete("NATIVE_INTERRUPTED", "interrupted");
+      trace({ method: "turn/interrupt/terminal", requestId: id, turnId: activeTurn.id });
     } else if (id !== undefined) {
       trace({ method: "unsupported", requestedMethod: method });
       write({ id, error: { code: -32601, message: "Unsupported synthetic method" } });

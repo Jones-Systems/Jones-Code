@@ -205,3 +205,12 @@ failed launch is a harness qualification failure, not the required negative
 control. Preserve first failures, sidecar, assertions, screenshots, manifests,
 receipts, hashes, timings and cleanup readback privately. No native result is
 claimed until the parent executes and inspects these checks.
+
+## Explicit restart failure diagnostics
+
+The picker control retains its latest projection on every poll, including timeout.
+The synthetic wire records only the interrupt request ID, thread/turn IDs, empty
+acknowledgement ordering and terminal emission. On failure, the scenario extracts
+only recognized nested error classes and restart stages from the disposable
+server trace; raw trace lines and MCP connection configuration are not copied.
+Missing diagnostics never replace the original scenario failure.

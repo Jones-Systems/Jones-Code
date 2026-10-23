@@ -13,7 +13,8 @@
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
     "apps/web/src/jones/threadConfiguration/composerSelection.ts",
     "apps/web/src/jones/threadConfiguration/composerSelection.test.ts",
-    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts"
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+    "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/threadAccess.ts",

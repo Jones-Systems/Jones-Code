@@ -323,6 +323,7 @@ export default async function threadSelfConfigure(ctx) {
       evidence.pickerAfter = await waitForFixture(
         async () => {
           const projection = await snapshot(pickerId);
+          evidence.pickerLatest = projection;
           return projection.runs.some(
             (run) =>
               run.modelSelection.instanceId === selectionB.instanceId &&
@@ -367,6 +368,42 @@ export default async function threadSelfConfigure(ctx) {
     );
   } catch (error) {
     evidence.firstFailure = { name: error.name, message: error.message };
+    if (evidence.pickerBefore) {
+      evidence.pickerLatest = await snapshot(pickerId).catch(() => evidence.pickerLatest);
+      // Retain only failure classes/stages from the disposable server's nested cause text.
+      // Raw trace lines may contain protocol configuration and are never copied.
+      try {
+        if (process.env.T3CODE_HOME !== "/scratch/t3home")
+          throw new Error("Unexpected fixture home", { cause: error });
+        const handle = await NodeFSP.open("/scratch/t3home/userdata/logs/server.trace.ndjson", "r");
+        try {
+          const { size } = await handle.stat();
+          const buffer = Buffer.alloc(Math.min(size, 1024 * 1024));
+          await handle.read(buffer, 0, buffer.length, Math.max(0, size - buffer.length));
+          evidence.restartFailureCauses = buffer
+            .toString("utf8")
+            .split("\n")
+            .filter((line) => line.includes("RestartPreparationError"))
+            .slice(-8)
+            .map((line) => ({
+              classes: [
+                ...new Set(
+                  line.match(
+                    /\b(?:RestartPreparationError|ProviderTurnControlError|ProviderControlAdmissionError|TimeoutError|CodexAppServerRequestError|CodexAppServerReplayFrameMismatchError)\b/g,
+                  ) ?? [],
+                ),
+              ],
+              stages: [...new Set(line.match(/failed during (?:interrupt|detach|start)/g) ?? [])],
+              timeoutReported:
+                /[Tt]imed out[^\n]{0,160}(?:terminal|provider turn)|TimeoutError/.test(line),
+            }));
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        evidence.restartFailureDiagnostics = "unavailable; original failure preserved";
+      }
+    }
     throw error;
   } finally {
     await persist();

@@ -1585,7 +1585,9 @@
     "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts": "jones-owned",
     "apps/server/src/jones/hostService/systemBootService.ts": "jones-owned",
     "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned",
-    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts": "jones-owned"
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts": "jones-owned",
+    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
