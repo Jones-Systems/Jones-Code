@@ -8,7 +8,8 @@
     "apps/server/src/jones/goals/GoalControl.test.ts",
     "apps/server/src/jones/goals/GoalStartDispatch.ts",
     "apps/server/src/jones/goals/tool.ts",
-    "apps/server/src/jones/goals/GoalStartDispatch.test.ts"
+    "apps/server/src/jones/goals/GoalStartDispatch.test.ts",
+    "apps/server/src/jones/goals/GoalResumeCorrelation.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/toolkits/orchestrator/tools.ts",

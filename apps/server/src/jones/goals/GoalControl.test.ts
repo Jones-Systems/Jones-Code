@@ -8,6 +8,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ProviderDriverKind,
+  RunId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderGoal,
   type ThreadGoalInput,
@@ -41,6 +42,7 @@ function fixture(
     unknown?: boolean;
     failedCapture?: boolean;
     caller?: "self" | "other";
+    unknownStart?: boolean;
   } = {},
 ) {
   let goal: OrchestrationV2ProviderGoal | null = {
@@ -54,6 +56,23 @@ function fixture(
     providerInstanceId: instanceId,
     providerSessionId: sessionId,
     nativeThreadRef: { driver: options.driver ?? "codex", nativeId: "native", strength: "strong" },
+    appThreadId: threadId,
+    runtimeIdentity: {
+      runtimeGeneration: "generation",
+      evidenceRevision: 1,
+      requested: {
+        providerInstanceId: instanceId,
+        providerDriver: ProviderDriverKind.make("codex"),
+        model: "test",
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "unknown" },
+        model: { status: "unknown" },
+        serviceTier: { status: "unknown" },
+        account: { status: "observed", value: "account", sourceEvent: "test" },
+      },
+    },
     goal,
   } as OrchestrationV2ProviderThread;
   const callerId = options.caller === "other" ? ThreadId.make("caller-thread") : threadId;
@@ -84,6 +103,16 @@ function fixture(
   let mutationCalls = 0;
   let unknown = options.unknown ?? false;
   let starts = 0;
+  let active = options.active ?? false;
+  let startVisible = !options.unknownStart;
+  const startResult = () =>
+    startVisible
+      ? {
+          outcome: "accepted" as const,
+          reason: "durable_start_accepted_native_state_pending",
+          runId: RunId.make("owned-run"),
+        }
+      : { outcome: "unknown" as const, reason: "dispatch_readback_unresolved" };
   let runtime = {
     instanceId,
     providerSessionId: sessionId,
@@ -129,7 +158,7 @@ function fixture(
   const records = () => ({
     thread: thread(),
     providerThreads: [provider],
-    runs: options.active ? [{ status: "running" }] : [],
+    runs: active ? [{ status: "running" }] : [],
   });
   const dependencies = Layer.mergeAll(
     NodeServices.layer,
@@ -168,6 +197,7 @@ function fixture(
         ),
     }),
     Layer.mock(GoalStart.GoalStartDispatch)({
+      observe: () => Effect.sync(startResult),
       capture: () =>
         options.failedCapture
           ? Effect.fail(
@@ -180,10 +210,7 @@ function fixture(
       start: () =>
         Effect.sync(() => {
           starts++;
-          return {
-            outcome: "accepted" as const,
-            reason: "durable_start_accepted_native_state_pending",
-          };
+          return startResult();
         }),
     }),
   );
@@ -209,6 +236,41 @@ function fixture(
       }
     },
     counts: () => ({ mutations: mutationCalls, starts }),
+    resumeState: (running: boolean, visible = true) => {
+      active = running;
+      startVisible = visible;
+    },
+    rebind: (change = "revision") => {
+      const identity = provider.runtimeIdentity!;
+      provider = { ...provider, runtimeIdentity: { ...identity, evidenceRevision: 2 } };
+      if (change === "account")
+        provider = {
+          ...provider,
+          runtimeIdentity: {
+            ...identity,
+            observed: {
+              ...identity.observed,
+              account: { status: "observed", value: "other", sourceEvent: "test" },
+            },
+          },
+        };
+      if (change === "generation")
+        provider = { ...provider, runtimeIdentity: { ...identity, runtimeGeneration: "other" } };
+      if (change === "missing-generation")
+        provider = { ...provider, runtimeIdentity: { ...identity, runtimeGeneration: undefined } };
+      if (change === "owner")
+        provider = { ...provider, id: ProviderThreadId.make("other-provider") };
+      if (change === "app-thread")
+        provider = { ...provider, appThreadId: ThreadId.make("other-thread") };
+      if (change === "session")
+        provider = { ...provider, providerSessionId: ProviderSessionId.make("other-session") };
+      if (change === "weak-native")
+        provider = {
+          ...provider,
+          nativeThreadRef: { ...provider.nativeThreadRef!, strength: "weak" },
+        };
+      if (change === "runtime") runtime = { ...runtime };
+    },
     reconcile: () => {
       goal = null;
       unknown = false;
@@ -249,6 +311,89 @@ const mutate = (
   });
 
 describe("agent goal controls", () => {
+  it.effect.each([false, true])(
+    "same-conversation rebind reconciles and replays resume with unknown=%s",
+    (unknownStart) => {
+      const f = fixture({ unknownStart });
+      return Effect.gen(function* () {
+        const service = yield* GoalControl.GoalControl;
+        const before = yield* read(service);
+        const first = yield* mutate(service, before.controlToken!, "resume");
+        expect(first.outcome).toBe(unknownStart ? "unknown" : "accepted");
+        f.rebind();
+        f.resumeState(true);
+        expect(yield* mutate(service, before.controlToken!, "resume")).toMatchObject({
+          outcome: "stale",
+        });
+        const fresh = yield* read(service);
+        expect(fresh.controlToken).not.toBe(before.controlToken);
+        expect(fresh.reason).not.toBe("native_read_prior_mutation_unresolved");
+        const replay = yield* mutate(service, fresh.controlToken!, "resume");
+        expect(replay).toMatchObject({
+          outcome: "accepted",
+          runId: "owned-run",
+          replayed: true,
+          controlToken: fresh.controlToken,
+        });
+        expect(yield* mutate(service, before.controlToken!, "resume")).toMatchObject({
+          outcome: "stale",
+        });
+        f.resumeState(false);
+        yield* read(service);
+        expect(yield* mutate(service, fresh.controlToken!, "resume")).toEqual(replay);
+        expect(f.counts()).toEqual({ mutations: 0, starts: 1 });
+      }).pipe(Effect.provide(f.layer));
+    },
+  );
+  it.effect("same-conversation rebind preserves an unresolved resume fence", () => {
+    const f = fixture({ unknownStart: true });
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const before = yield* read(service);
+      yield* mutate(service, before.controlToken!, "resume");
+      f.rebind();
+      const fresh = yield* read(service);
+      expect(fresh.reason).toBe("native_read_prior_mutation_unresolved");
+      expect(yield* mutate(service, fresh.controlToken!, "resume")).toMatchObject({
+        outcome: "unknown",
+        replayed: true,
+      });
+      expect(yield* mutate(service, fresh.controlToken!, "resume", "other")).toMatchObject({
+        outcome: "unknown",
+        reason: "prior_mutation_unresolved",
+      });
+      expect(f.counts().starts).toBe(1);
+    }).pipe(Effect.provide(f.layer));
+  });
+  it.effect.each([
+    "account",
+    "generation",
+    "missing-generation",
+    "owner",
+    "app-thread",
+    "session",
+    "weak-native",
+    "runtime",
+    "native",
+  ])("changed %s rejects the old resume key after a fresh read", (change) => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const service = yield* GoalControl.GoalControl;
+      const before = yield* read(service);
+      yield* mutate(service, before.controlToken!, "resume");
+      if (change === "native") f.changeBinding();
+      else f.rebind(change);
+      const fresh = yield* read(service);
+      expect(fresh.controlToken).not.toBe(before.controlToken);
+      expect(yield* mutate(service, before.controlToken!, "resume")).toMatchObject({
+        outcome: "stale",
+      });
+      expect(yield* mutate(service, fresh.controlToken!, "resume")).toMatchObject({
+        outcome: "stale",
+      });
+      expect(f.counts().starts).toBe(1);
+    }).pipe(Effect.provide(f.layer));
+  });
   for (const caller of ["self", "other"] as const) {
     it.effect.each(["pause", "replace", "clear", "resume"] as const)(
       `${caller} thread caller controls %s with a distinct MCP credential and replays once`,
