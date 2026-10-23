@@ -5,10 +5,14 @@
       "id": "jones-native-self-configuration-harness",
       "tests": [
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
-        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs"
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs"
       ],
       "commands": [
-        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/scenario-api.test.mjs apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/scenario-api.test.mjs apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs apps/desktop/scripts/ui-evidence/runtime.test.mjs apps/desktop/scripts/ui-evidence/package-admission.test.mjs apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },

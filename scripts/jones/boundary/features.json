@@ -7,9 +7,13 @@
       "id": "native-self-configuration-harness",
       "tests": [
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
-        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs"
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs"
       ],
-      "scope": "On-demand Linux Electron lifecycle with a synthetic Codex subprocess, actual app-issued MCP authorization, composer messages, same-execution steering oracle, replay/conflict/legacy controls, ready Git checkpoints, fresh B admission and explicit picker control. Narrow setup/readback methods extend the already Jones-owned scenario API; no production hooks, runner or sandbox changes. Unit tests cover protocol decoding, allowlist refusal and oracle fault injection. Native positive/negative runs require parent qualification; no live inference or background-child continuity claim."
+      "scope": "On-demand Linux Electron synthetic Codex lifecycle with actual app-issued MCP authorization, composer messages, same-execution steering, replay/conflict/legacy controls, Git checkpoints, fresh B admission and explicit picker control. Source-bound dependency admission and peer staging retain narrow package-copy mounts; peer semantics and focused fixture reference PR507 at 238b185a9c05fccce5aedbcc485205f62b61a99f only. Unit coverage includes package containment, malformed paths, optional failures, staged peer resolution and oracle fault injection. Native positive/negative runs require exact-candidate qualification; no live inference or background-child continuity claim."
     },
     {
       "id": "workstreams-sidebar-assignment",

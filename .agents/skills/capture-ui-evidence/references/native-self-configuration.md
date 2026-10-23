@@ -46,6 +46,23 @@ exclusions: this scenario only adds its named synthetic message/lifecycle
 assertions, not general provider or network qualification. Reasoning-effort
 observation remains unavailable; outbound requested effort is separate evidence.
 
+## Source-bound native dependencies
+
+The harness binds dependency admission to the canonical tested source, including
+the unchanged comparison checkout. A source under `.t3/worktrees` is allowed;
+protected suffixes and dotenv files beneath that source remain rejected. Only
+the source's root, desktop and server `node_modules` storage can supply packages.
+Every initial, transitive, optional and peer edge is checked before metadata is
+read and checked again during staging. External worktree/store links, malformed
+names, package-container paths and escaping manifest/content links reject.
+Only individual closed package trees enter the existing narrow sandbox mounts.
+
+Required/optional peer enumeration and relative staged links preserve the
+behavior of PR507 at `238b185a9c05fccce5aedbcc485205f62b61a99f`; its focused
+peer fixture is retained. This is a narrow integration of that behavior with
+source-bound admission, not adoption or qualification of PR507/508's other
+startup, restart or workflow changes.
+
 ## Serial verification capsule
 
 Run only after both source writers are quiescent, the parent has integrated the
@@ -165,9 +182,10 @@ Build/receipt it separately, then run the identical scenario/command with the
 comparison source and receipt and a new negative-control output directory.
 The CLI stages product builds from --source and harness modules from its own
 checkout. Thus the minimum overlay on the tested old product is **zero product
-files**. The required harness delta is only scenario-api.mjs, the new scenario
-and its top-level support module; tests/docs/boundary records do not enter the
-app build. Never cherry-pick production repair files into the comparison or
+files**. The final harness includes scenario-api.mjs, the scenario and support module,
+source-bound runtime admission, matching dependency staging and canonical-source
+doctor entry points. These execute from SC_HARNESS; no harness file is overlaid
+on SC_SOURCE. Tests/docs/boundary records do not enter the app build. Never cherry-pick production repair files into the comparison or
 rebuild it from the repaired branch.
 
 Accept the negative control only when startup, authenticated save/replay controls,
