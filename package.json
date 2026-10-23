@@ -25,6 +25,7 @@
     "build:desktop": "vp run --filter @t3tools/desktop --filter t3 build",
     "build:resource-monitor": "cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml",
     "typecheck": "vp run -r --concurrency-limit 2 typecheck",
+    "typecheck:tsrs:experimental": "node scripts/jones/experimental-typecheck/cli.mjs",
     "tc": "vp run -r --concurrency-limit 2 typecheck",
     "lint": "vp lint --report-unused-disable-directives",
     "knip": "knip --preprocessor ./scripts/knip-schemas.ts",
@@ -56,6 +57,7 @@
     "@types/node": "catalog:",
     "knip": "6.34.0",
     "tsc-rs": "0.7.0",
+    "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "catalog:",
     "vite-plus": "catalog:"
   },

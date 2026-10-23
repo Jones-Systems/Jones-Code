@@ -2,32 +2,27 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
-      "id": "jones-remote-agent-lineage",
-      "tests": [
-        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
-        "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
-        "apps/web/src/components/BranchToolbar.panel.browser.test.tsx"
-      ],
+      "id": "jones-experimental-typecheck",
+      "tests": ["scripts/jones/experimental-typecheck/runner.test.mjs"],
       "commands": [
-        "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/model.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx src/components/BranchToolbar.panel.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
-        "vp run --filter @t3tools/web typecheck",
+        "vp test run scripts/jones/experimental-typecheck/runner.test.mjs --maxWorkers=1 --no-file-parallelism",
+        "vp lint scripts/jones/experimental-typecheck/*.mjs",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
-      "id": "jones-native-self-configuration-harness",
+      "id": "jones-provider-switch-before-start",
       "tests": [
-        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
-        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
-        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
-        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
-        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
-        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs"
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
+        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
+        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
       "commands": [
-        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/scenario-api.test.mjs apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs apps/desktop/scripts/ui-evidence/runtime.test.mjs apps/desktop/scripts/ui-evidence/package-admission.test.mjs apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "vp test run apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/ProviderSwitchService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ProviderSwitchService.ts",
+        "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
@@ -2453,6 +2448,48 @@
       ]
     },
     {
+      "id": "jones-context-handoff-recovery",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-worktree-setup",
+      "tests": [
+        "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
+        "scripts/jones/worktree-setup/setup.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/worktree-setup/*.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp lint scripts/setup-worktree.ts scripts/jones/worktree-setup/setup.ts",
+        "vp run --filter @t3tools/scripts typecheck"
+      ]
+    },
+    {
+      "id": "jones-native-self-configuration-harness",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "apps/desktop/scripts/ui-evidence/runtime.test.mjs",
+        "apps/desktop/scripts/ui-evidence/package-admission.test.mjs",
+        "apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs",
+        "apps/desktop/scripts/ui-evidence/sandbox.test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/scenario-api.test.mjs apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs apps/desktop/scripts/ui-evidence/runtime.test.mjs apps/desktop/scripts/ui-evidence/package-admission.test.mjs apps/desktop/scripts/ui-evidence/peer-dependency.test.mjs apps/desktop/scripts/ui-evidence/sandbox.test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-thread-self-configuration",
       "tests": [
         "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
@@ -2512,36 +2549,6 @@
       ]
     },
     {
-      "id": "jones-provider-switch-before-start",
-      "tests": [
-        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
-        "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
-        "apps/server/src/orchestration-v2/ProviderSwitchService.test.ts",
-        "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
-        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/ProviderSwitchService.test.ts apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp lint apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts apps/server/src/orchestration-v2/Orchestrator.ts apps/server/src/orchestration-v2/ProviderSwitchService.ts",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
-      "id": "jones-context-handoff-recovery",
-      "tests": [
-        "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
-      ],
-      "commands": [
-        "vp test run apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter t3 typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
-      ]
-    },
-    {
       "id": "jones-replay-fixture-diagnostics",
       "tests": [
         "packages/provider-testing/src/replayWorkspace.test.ts",
@@ -2571,25 +2578,27 @@
       ]
     },
     {
-      "id": "jones-worktree-setup",
-      "tests": [
-        "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
-        "scripts/jones/worktree-setup/setup.node-test.mjs"
-      ],
-      "commands": [
-        "node --test --test-concurrency=1 scripts/jones/worktree-setup/*.node-test.mjs",
-        "node scripts/jones/check-boundary.ts --strict",
-        "vp lint scripts/setup-worktree.ts scripts/jones/worktree-setup/setup.ts",
-        "vp run --filter @t3tools/scripts typecheck"
-      ]
-    },
-    {
       "id": "jones-vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "commands": [
         "vp test run apps/server/src/vcs/VcsStatusBroadcaster.test.ts",
         "vp lint apps/server/src/vcs/VcsStatusBroadcaster.ts apps/server/src/vcs/VcsStatusBroadcaster.test.ts",
         "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-remote-agent-lineage",
+      "tests": [
+        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+        "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
+        "apps/web/src/components/BranchToolbar.panel.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/model.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx src/components/BranchToolbar.panel.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
+        "vp run --filter @t3tools/web typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     },
