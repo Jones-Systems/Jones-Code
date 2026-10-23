@@ -1028,6 +1028,38 @@ describe("OrchestratorMcpService provider resolution", () => {
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
 
+  it.effect("CSR-F1 advertises the remote task observation version before launch", () =>
+    Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const capabilities = yield* service.capabilities(scope);
+      assert.propertyVal(
+        capabilities.features,
+        "remoteTaskObservationVersion",
+        "t3.remote-task-observation/v1",
+      );
+    }).pipe(
+      Effect.provide(
+        layerOrchestratorService.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              Layer.mock(ThreadManagementService.ThreadManagementService)({
+                getThreadRecords: () => Effect.succeed(parentProjection([])),
+              }),
+              ServerSettings.layerTest(),
+              providerRegistryLayer([]),
+              adapterRegistryLayer([]),
+              Layer.mock(ProjectService.ProjectService)({}),
+              Layer.mock(SecretRequests.SecretRequests)({}),
+              Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
   it.effect(
     "advertises orchestration capability from registered adapters rather than a driver allowlist",
     () =>
