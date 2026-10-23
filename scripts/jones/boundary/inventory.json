@@ -7,6 +7,7 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/mobile/uniwind-types.d.ts": "generated",
     "scripts/jones/mobile/ios-pin-workflow.ts": "jones-owned",
     "scripts/jones/mobile/ios-pin-workflow.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/ios-native-pin-workflow.json": "jones-owned",
