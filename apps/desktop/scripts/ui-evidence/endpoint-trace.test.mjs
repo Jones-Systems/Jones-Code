@@ -54,48 +54,51 @@ NodeTest.test(
     NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.currentGeneration, 2);
     NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.omittedCount, 0);
     const samples = summary.pendingDiagnosticsAtTimeout.samples;
-    NodeAssert.deepEqual(samples.map(({ ageMs, ...sample }) => sample), [
-      {
-        sequence: 0,
-        generation: 0,
-        originClass: "A",
-        headerState: "pending",
-        requestFinished: true,
-        requestFailed: false,
-        pageClosed: true,
-        detached: true,
-      },
-      {
-        sequence: 1,
-        generation: 1,
-        originClass: "B",
-        headerState: "pending",
-        requestFinished: false,
-        requestFailed: false,
-        pageClosed: false,
-        detached: true,
-      },
-      {
-        sequence: 2,
-        generation: 2,
-        originClass: "B",
-        headerState: "pending",
-        requestFinished: false,
-        requestFailed: false,
-        pageClosed: false,
-        detached: false,
-      },
-      {
-        sequence: 3,
-        generation: 2,
-        originClass: "packaged",
-        headerState: "pending",
-        requestFinished: false,
-        requestFailed: true,
-        pageClosed: false,
-        detached: false,
-      },
-    ]);
+    NodeAssert.deepEqual(
+      samples.map(({ ageMs, ...sample }) => sample),
+      [
+        {
+          sequence: 0,
+          generation: 0,
+          originClass: "A",
+          headerState: "pending",
+          requestFinished: true,
+          requestFailed: false,
+          pageClosed: true,
+          detached: true,
+        },
+        {
+          sequence: 1,
+          generation: 1,
+          originClass: "B",
+          headerState: "pending",
+          requestFinished: false,
+          requestFailed: false,
+          pageClosed: false,
+          detached: true,
+        },
+        {
+          sequence: 2,
+          generation: 2,
+          originClass: "B",
+          headerState: "pending",
+          requestFinished: false,
+          requestFailed: false,
+          pageClosed: false,
+          detached: false,
+        },
+        {
+          sequence: 3,
+          generation: 2,
+          originClass: "packaged",
+          headerState: "pending",
+          requestFinished: false,
+          requestFailed: true,
+          pageClosed: false,
+          detached: false,
+        },
+      ],
+    );
     for (const sample of samples) NodeAssert.ok(Number.isFinite(sample.ageMs) && sample.ageMs >= 0);
     NodeAssert.ok(samples[0].ageMs >= samples[3].ageMs);
     NodeAssert.deepEqual(trace.entries, []);
@@ -239,28 +242,25 @@ NodeTest.test(
   },
 );
 
-NodeTest.test(
-  "overlapping drains preserve the first timeout's lifecycle snapshot",
-  async (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    const trace = new EndpointTrace("t");
-    t.after(() => trace.dispose());
-    const page = new NodeEvents.EventEmitter();
-    trace.attach(page);
-    page.emit("request", pendingRequest(A).request);
-    const first = NodeAssert.rejects(trace.flush(), /drain-timeout/);
-    t.mock.timers.tick(500);
-    const second = NodeAssert.rejects(trace.flush(), /drain-timeout/);
-    t.mock.timers.tick(500);
-    await first;
-    const snapshot = trace.summary().pendingDiagnosticsAtTimeout;
-    NodeAssert.equal(snapshot.samples[0].detached, false);
-    t.mock.timers.tick(500);
-    await second;
-    NodeAssert.deepEqual(trace.summary().pendingDiagnosticsAtTimeout, snapshot);
-    NodeAssert.equal(trace.summary().failure, "renderer-trace-drain-timeout");
-  },
-);
+NodeTest.test("overlapping drains preserve the first timeout's lifecycle snapshot", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const trace = new EndpointTrace("t");
+  t.after(() => trace.dispose());
+  const page = new NodeEvents.EventEmitter();
+  trace.attach(page);
+  page.emit("request", pendingRequest(A).request);
+  const first = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+  t.mock.timers.tick(500);
+  const second = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+  t.mock.timers.tick(500);
+  await first;
+  const snapshot = trace.summary().pendingDiagnosticsAtTimeout;
+  NodeAssert.equal(snapshot.samples[0].detached, false);
+  t.mock.timers.tick(500);
+  await second;
+  NodeAssert.deepEqual(trace.summary().pendingDiagnosticsAtTimeout, snapshot);
+  NodeAssert.equal(trace.summary().failure, "renderer-trace-drain-timeout");
+});
 
 NodeTest.test(
   "settled observations retain generation, fingerprints and successful summary behavior",
@@ -285,10 +285,13 @@ NodeTest.test(
     second.emit("request", { url: () => "t3code://app/asset", allHeaders: async () => ({}) });
     old.headers.resolve({ authorization: "Bearer a" });
     NodeAssert.deepEqual(await trace.checkpoint(), { ok: true });
-    NodeAssert.deepEqual(trace.entries.map(({ generation, authFp }) => ({ generation, authFp })), [
-      { generation: 0, authFp: fingerprints.a },
-      { generation: 1, authFp: fingerprints.b },
-    ]);
+    NodeAssert.deepEqual(
+      trace.entries.map(({ generation, authFp }) => ({ generation, authFp })),
+      [
+        { generation: 0, authFp: fingerprints.a },
+        { generation: 1, authFp: fingerprints.b },
+      ],
+    );
     NodeAssert.deepEqual(trace.summary(), {
       count: 2,
       localAssetRequests: 1,
