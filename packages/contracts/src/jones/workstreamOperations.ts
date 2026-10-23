@@ -11,7 +11,7 @@ import {
 export const WORKSTREAM_OPERATIONS_FAMILY = "workstream-operations";
 export const WORKSTREAM_OPERATIONS_VERSION = "1.0.0";
 export const WORKSTREAM_OPERATIONS_MANIFEST_SHA256 =
-  "c53f6e05db9f4cbd862097b772abb5bdc7a6c20e89b49e271dc36cc7ecd5eaa2";
+  "82262f6fd0359955b78b864ae707f6875899debe608e957b963f6998b7ce9b20";
 export const WORKSTREAM_OPERATIONS_CONTRACT = "workstream-operations/1.0.0";
 
 // Validate wire keys before Effect can discard excess properties during decoding.
