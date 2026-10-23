@@ -261,6 +261,7 @@ overrides:
   "@effect/vitest": "catalog:"
   "@effect/vitest>vitest": "-"
   "@expo/dom-webview": 58.0.2
+  "@expo/fingerprint": 0.21.5
   "@expo/metro-config": 58.0.14
   expo-constants: 58.0.12
   expo-router: 58.0.20
