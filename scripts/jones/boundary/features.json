@@ -1489,7 +1489,12 @@
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
         "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
-        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts"
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.memory.test.ts",
+        "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "packages/client-runtime/src/state/orchestrationV2Projection.test.ts"
       ],
       "scope": "Self-only MCP saves validated future defaults under the thread command lock and transactional execution/revision revalidation. Fingerprinted durable receipts preserve retry identity. Current attached execution owns caller authorization and normal safe-start transitions; queued and recovery selections never overwrite newer defaults. Registered-tool and actual Codex outbound replay tests cover continued execution and later admission."
     },

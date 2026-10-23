@@ -1053,9 +1053,13 @@ it.live("restart-required selection retires only the caller attachment in a pool
             mcpCredentialId: "mcp-test:" + sibling,
           }),
         );
-        assert.notEqual(
-          (yield* orchestrator.getThreadProjection(threadId)).providerThreads[0]?.providerSessionId,
-          siblingSession,
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.notEqual(after.providerThreads[0]?.providerSessionId, siblingSession);
+        assert.isFalse(after.providerSessions.some((session) => session.id === siblingSession));
+        assert.isTrue(
+          (yield* orchestrator.getThreadProjection(sibling)).providerSessions.some(
+            (session) => session.id === siblingSession,
+          ),
         );
       }),
     undefined,

@@ -12,7 +12,8 @@
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.ts",
     "packages/provider-core/src/server/jones/ThreadSelfConfigurationInstructions.test.ts",
     "apps/web/src/jones/threadConfiguration/composerSelection.ts",
-    "apps/web/src/jones/threadConfiguration/composerSelection.test.ts"
+    "apps/web/src/jones/threadConfiguration/composerSelection.test.ts",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/mcp/threadAccess.ts",
@@ -20,7 +21,9 @@
     "apps/server/src/mcp/toolkits/thread/tools.ts",
     "apps/server/src/orchestration-v2/ProviderSwitchService.ts",
     "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
-    "packages/shared/src/t3McpToolPresentation.ts"
+    "packages/shared/src/t3McpToolPresentation.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
+    "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs"
   ],
   "tombstones": [],
   "allowedImports": [

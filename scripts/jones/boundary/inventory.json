@@ -1581,7 +1581,8 @@
     "apps/server/src/jones/hostService/linuxPriorityPolicy.ts": "jones-owned",
     "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts": "jones-owned",
     "apps/server/src/jones/hostService/systemBootService.ts": "jones-owned",
-    "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned"
+    "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
