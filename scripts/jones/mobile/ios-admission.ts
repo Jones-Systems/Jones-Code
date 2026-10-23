@@ -260,10 +260,44 @@ export function cpuSample(top: string): number {
   const samples = [
     ...top.matchAll(/CPU usage:\s*([\d.]+)% user,\s*([\d.]+)% sys,\s*([\d.]+)% idle/g),
   ];
-  NodeAssert.ok(samples.length >= 2, "Two top CPU samples required");
+  const diagnostic = (reason: "insufficient_samples" | "nonfinite" | "out_of_range") => {
+    const number = (value: number) => ({
+      value: String(value),
+      classification: Number.isFinite(value) ? "finite" : Number.isNaN(value) ? "NaN" : "infinite",
+    });
+    // Regex captures contain only digits/dots; never retain raw top process output.
+    const token = (text: string) => ({
+      text: text.slice(0, 32),
+      length: text.length,
+      truncated: text.length > 32,
+      ...number(Number(text)),
+    });
+    const selected = samples.at(-1);
+    return JSON.stringify({
+      reason,
+      matchCount: samples.length,
+      selectedIndex: selected ? samples.length - 1 : null,
+      selected: selected
+        ? { user: token(selected[1]!), sys: token(selected[2]!), idle: token(selected[3]!) }
+        : null,
+      used: selected ? number(Number(selected[1]) + Number(selected[2])) : null,
+    });
+  };
+  NodeAssert.ok(
+    samples.length >= 2,
+    samples.length >= 2
+      ? "Two top CPU samples required"
+      : `Two top CPU samples required: ${diagnostic("insufficient_samples")}`,
+  );
   const last = samples.at(-1)!;
   const used = Number(last[1]) + Number(last[2]);
-  NodeAssert.ok(Number.isFinite(used) && used >= 0 && used <= 100, "CPU sample unavailable");
+  const valid = Number.isFinite(used) && used >= 0 && used <= 100;
+  NodeAssert.ok(
+    valid,
+    valid
+      ? "CPU sample unavailable"
+      : `CPU sample unavailable: ${diagnostic(Number.isFinite(used) ? "out_of_range" : "nonfinite")}`,
+  );
   return used;
 }
 

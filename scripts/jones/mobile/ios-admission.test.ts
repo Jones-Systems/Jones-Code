@@ -10,6 +10,25 @@ import {
 } from "./ios-admission.ts";
 import type { AdmissionEvent, AdmissionWaitOptions } from "./ios-admission.ts";
 
+const firstCpuSample = "CPU usage: 80.0% user, 10.0% sys, 10.0% idle\n";
+const formatterCpuSample = "CPU usage: 20.5% user, 79.95% sys, 0.0% idle";
+const cpuDiagnostic = (message: string, prefix = "CPU sample unavailable") => {
+  expect(message.startsWith(`${prefix}: `)).toBe(true);
+  expect(message.length).toBeLessThan(1024);
+  return JSON.parse(message.slice(prefix.length + 2)) as unknown;
+};
+const cpuFailure = (text: string, prefix?: string) => {
+  let failure: unknown;
+  try {
+    cpuSample(text);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(Error);
+  if (!(failure instanceof Error)) throw new Error("Expected CPU sample failure");
+  return cpuDiagnostic(failure.message, prefix);
+};
+
 describe("macOS resource admission", () => {
   const base = () => ({
     sourceSha: "a".repeat(40),
@@ -87,6 +106,91 @@ describe("macOS resource admission", () => {
     expect(swapRate(sample, { ...sample, swap: 10 }, 2)).toBe(2 * 16384);
     expect(() => swapRate(sample, { ...sample, swap: 1 }, 2)).toThrow("invalid");
     expect(() => swapRate(sample, sample, 0)).toThrow("invalid");
+  });
+
+  it.each([
+    ["20.0", "5.0", "75.0", 25],
+    ["71.53", "28.46", "0.1", 99.99000000000001],
+    ["84.99", "0.01", "15.0", 85],
+    ["84.98", "0.01", "15.1", 84.99000000000001],
+    ["20.0", "5.0", "..", 25],
+  ])("preserves the last matched CPU value for %s + %s", (user, sys, idle, used) => {
+    expect(
+      cpuSample(firstCpuSample.repeat(2) + `CPU usage: ${user}% user, ${sys}% sys, ${idle}% idle`),
+    ).toBe(used);
+  });
+
+  it("retains tokens for an Apple-formatter-constructible overrange sum without accepting it", () => {
+    // Published top formatting can print 2005/7995/0 ticks as 20.5/79.95/0.0.
+    expect(cpuFailure(firstCpuSample + formatterCpuSample)).toMatchObject({
+      reason: "out_of_range",
+      matchCount: 2,
+      selectedIndex: 1,
+      selected: {
+        user: {
+          text: "20.5",
+          length: 4,
+          truncated: false,
+          value: "20.5",
+          classification: "finite",
+        },
+        sys: {
+          text: "79.95",
+          length: 5,
+          truncated: false,
+          value: "79.95",
+          classification: "finite",
+        },
+        idle: { text: "0.0", length: 3, truncated: false, value: "0", classification: "finite" },
+      },
+      used: { value: "100.45", classification: "finite" },
+    });
+  });
+
+  it.each([
+    ["20..5", "nonfinite", "NaN", "NaN"],
+    ["9".repeat(400), "nonfinite", "Infinity", "infinite"],
+    ["101.0", "out_of_range", "101", "finite"],
+    ["100.00000000000001", "out_of_range", "100.00000000000001", "finite"],
+  ])(
+    "keeps malformed, nonfinite and out-of-range diagnostics bounded (case %#)",
+    (user, reason, value, classification) => {
+      expect(
+        cpuFailure(
+          firstCpuSample + `CPU usage: ${user}% user, 0% sys, 0% idle\nPRIVATE PROCESS DATA`,
+        ),
+      ).toMatchObject({
+        reason,
+        selected: { user: { value, classification } },
+        used: { value, classification },
+      });
+    },
+  );
+
+  it.each([0, 1])("reports insufficient samples with %i matches", (count) => {
+    expect(cpuFailure(firstCpuSample.repeat(count), "Two top CPU samples required")).toMatchObject({
+      reason: "insufficient_samples",
+      matchCount: count,
+      selectedIndex: count === 0 ? null : 0,
+      ...(count === 0 ? { selected: null, used: null } : { selected: { user: { text: "80.0" } } }),
+    });
+  });
+
+  it("bounds every retained token and excludes surrounding process output", () => {
+    const digits = "9".repeat(400),
+      dots = ".".repeat(400);
+    const diagnostic = cpuFailure(
+      firstCpuSample +
+        `CPU usage: ${digits}% user, ${digits}% sys, ${dots}% idle\nPRIVATE PROCESS DATA`,
+    );
+    expect(diagnostic).toMatchObject({
+      selected: {
+        user: { text: "9".repeat(32), length: 400, truncated: true },
+        sys: { text: "9".repeat(32), length: 400, truncated: true },
+        idle: { text: ".".repeat(32), length: 400, truncated: true, classification: "NaN" },
+      },
+    });
+    expect(JSON.stringify(diagnostic)).not.toContain("PRIVATE PROCESS DATA");
   });
 });
 
@@ -228,6 +332,23 @@ describe("bounded CPU readiness", () => {
       expect(h.counts().heavyStarts).toBe(0);
       expect(h.events.at(-1)?.kind).toBe("aborted");
     }
+
+    const h = harness();
+    h.options.sample = async () => ({
+      ...h.sample(),
+      cpuUsed: cpuSample(firstCpuSample + formatterCpuSample),
+    });
+    await expect(h.run()).rejects.toThrow("CPU sample unavailable");
+    expect(h.waits).toEqual([]);
+    expect(h.counts()).toEqual({ calls: 1, heavyStarts: 0 });
+    expect(h.events.map((event) => event.kind)).toEqual(["started", "aborted"]);
+    expect(cpuDiagnostic(h.events.at(-1)?.reason ?? "")).toMatchObject({
+      reason: "out_of_range",
+      matchCount: 2,
+      selectedIndex: 1,
+      selected: { user: { text: "20.5" }, sys: { text: "79.95" }, idle: { text: "0.0" } },
+      used: { value: "100.45", classification: "finite" },
+    });
   });
 
   it("does not sample after cancellation and cancels during a held wait", async () => {
