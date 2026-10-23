@@ -156,9 +156,13 @@ The Control Plane enrollment CLI emits `registry_context`, `owner_grants` and
 `source_bindings`; that output is not the native descriptor. The provisioning
 CLI's `stage-runtime` stages signing keys, and `stage-jones` stages the six
 legacy activation values plus an optional seventh
-`T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=1.0.0|2.0.0` value. Explicit
+`T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=1.0.0|2.0.0|3.0.0` value. Explicit
 `--registration-context-version 2.0.0` selects fleet registration metadata;
-v1 refuses multiple active native sources. When the option is omitted,
+v1 refuses multiple active native sources. Opt-in `3.0.0` uses the enrolled
+native profile policy: accepting provider v2 permits routine build drift,
+while v1-only sources and selectors `1.0.0`/`2.0.0` retain exact build matching.
+An absent selector remains `1.0.0`; a registry rejection of v3 does not fall back.
+Jones translates v3 into the existing client v2 response with the local running build. When the option is omitted,
 staging preserves an existing selector. Changing activation bytes requires the
 exact existing-file SHA guard. Neither staging command updates native
 descriptors. Preserve the persisted selector, and do not rewrite unchanged

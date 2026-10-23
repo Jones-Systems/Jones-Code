@@ -40,7 +40,13 @@ Changes to the file during a running server do not reload activation.
 The optional activation value `T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION`
 selects the registration metadata contract. Omit it or set `1.0.0` for the
 compatibility default; set `2.0.0` explicitly to enable multiple T3 source
-descriptors. Stage it with the six required values in the private
+descriptors. Opt in to `3.0.0` for profile-aware registration: a source accepting
+native provider v2 can qualify after a routine build change; v1-only policy
+and selectors `1.0.0`/`2.0.0` retain exact build matching. V3 requires the pinned
+producer contract from merged commit `e319288320c25bd6d899b3ab8d60da549354ae6f`
+and fails closed if rejected. Jones returns the existing client v2 body with
+only the qualified local T3 source and its observed running build.
+Stage the selector with the six required values in the private
 `activation.env` file so the selection survives ordinary server-child restart.
 Existing six-value files retain their exact format and select v1.
 

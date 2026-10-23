@@ -61,7 +61,8 @@ export function hasCanonicalActivation(config: ControlPlaneWorkstreamActivation)
     config.authorizationRevision > 0 &&
     (config.registrationContextVersion === undefined ||
       config.registrationContextVersion === "1.0.0" ||
-      config.registrationContextVersion === "2.0.0") &&
+      config.registrationContextVersion === "2.0.0" ||
+      config.registrationContextVersion === "3.0.0") &&
     headerValues.every((value) => value.length > 0 && !/[\r\n]/.test(value)) &&
     decodeSigningSecret(config.signingSecret) !== null
   );
@@ -100,7 +101,8 @@ export function activationFromEnvironment(
   if (
     registrationContextVersion !== undefined &&
     registrationContextVersion !== "1.0.0" &&
-    registrationContextVersion !== "2.0.0"
+    registrationContextVersion !== "2.0.0" &&
+    registrationContextVersion !== "3.0.0"
   )
     return invalid();
   const [raw, ownerId, principalId, keyId, signingSecret, rawRevision] = ENVIRONMENT_KEYS.map(

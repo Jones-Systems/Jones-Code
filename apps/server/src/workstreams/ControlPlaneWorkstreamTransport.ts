@@ -44,11 +44,8 @@ import {
   T3PlacementPage,
   T3PlacementRequest,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
-  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+  WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS,
   type WorkstreamsRegistrationContextVersion,
-  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
 } from "@t3tools/contracts";
@@ -147,8 +144,7 @@ export function signWorkstreamRequest(input: {
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
     | typeof WORKSTREAM_APPEARANCE_CONTRACT
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL;
+    | (typeof WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS)[WorkstreamsRegistrationContextVersion]["protocol"];
   readonly registryBinding?: string;
   readonly contractManifest?: string;
   readonly requestId: string;
@@ -254,16 +250,18 @@ async function performRequest(input: {
   const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
   const registrationVersion =
     input.registrationContextVersion === undefined ? "1.0.0" : input.registrationContextVersion;
-  if (registration && registrationVersion !== "1.0.0" && registrationVersion !== "2.0.0")
+  if (
+    registration &&
+    (registrationVersion === null ||
+      !Object.hasOwn(WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS, registrationVersion))
+  )
     throw new BoundedTransportFailure("invalid_target");
-  const registrationProtocol =
-    registrationVersion === "2.0.0"
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL
-      : WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
-  const registrationManifest =
-    registrationVersion === "2.0.0"
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256
-      : WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256;
+  const registrationContract =
+    WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS[
+      registration && registrationVersion !== null ? registrationVersion : "1.0.0"
+    ];
+  const registrationProtocol = registrationContract.protocol;
+  const registrationManifest = registrationContract.manifest;
   const appearance =
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;

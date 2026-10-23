@@ -1491,6 +1491,17 @@
         "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
       ],
       "scope": "Independently pinned registry identity separates canonical HTTPS metadata from literal-loopback transport. Strict activation tokens, request HMAC and bounded exact response proofs cover all signed families without altering legacy manifests or native provider identity. A joined real HTTP client/hook ledger test proves the authenticated pre-dispatch refusal mapping and unknown-effect receipt-only recovery. Synthetic authority, build and authentication remain explicit test seams; no installed or PostgreSQL qualification is claimed."
+    },
+    {
+      "id": "workstreams-durable-registration-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts"
+      ],
+      "scope": "Opt-in registration v3 carries immutable enrolled provenance and explicit native profile policy. Jones qualifies the local source independently of routine build drift only when provider v2 is accepted, then translates the result into the existing client v2 response with the observed local build. Strict selectors and authority fences remain intact. Transport retains canonical registry binding and authenticated response proof. Synthetic tests cover selector, contract, transport, qualification and client compatibility; installed adoption remains separate."
     }
   ]
 }

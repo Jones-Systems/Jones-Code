@@ -321,14 +321,14 @@ vi.mock("node:fs", async (importOriginal) => ({
 it("retains six-value compatibility and binds an optional version to the full activation group", () => {
   const legacy = activationFromEnvironment(environment);
   expect(legacy.state === "enabled" && legacy.value.registrationContextVersion).toBeUndefined();
-  for (const version of ["1.0.0", "2.0.0"] as const) {
+  for (const version of ["1.0.0", "2.0.0", "3.0.0"] as const) {
     const selected = activationFromEnvironment({
       ...environment,
       T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: version,
     });
     expect(selected.state === "enabled" && selected.value.registrationContextVersion).toBe(version);
   }
-  for (const version of ["", "2", "3.0.0", " 2.0.0", "2.0.0\n"]) {
+  for (const version of ["", "2", "4.0.0", " 2.0.0", "2.0.0\n"]) {
     expect(
       activationFromEnvironment({
         ...environment,
@@ -403,7 +403,7 @@ it("rejects malformed staged versions and never overlays a standalone selector o
   const { base, file } = fixture();
   for (const suffix of [
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=\n",
-    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=3.0.0\n",
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=4.0.0\n",
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nT3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n",
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nUNKNOWN=value\n",
   ]) {
@@ -495,4 +495,24 @@ it("does not merge a binding-only or empty environment selection with a staged f
       `T3_WORKSTREAM_REGISTRY_BINDING=${bindingToken()}\nT3_WORKSTREAM_REGISTRY_BINDING=${bindingToken()}\n`,
   );
   expect(resolveWorkstreamActivation(base, {}).state).toBe("invalid");
+});
+
+it("persists opt-in v3 through the shared startup parser with canonical registry identity", () => {
+  const { base, file } = fixture();
+  const values = {
+    ...environment,
+    T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+    T3_WORKSTREAM_REGISTRY_BINDING: bindingToken(),
+    T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "3.0.0",
+  };
+  const bytes = staged(values);
+  NodeFS.writeFileSync(file, bytes);
+  for (let startup = 0; startup < 2; startup += 1) {
+    const resolved = resolveWorkstreamActivation(base, {});
+    expect(resolved).toEqual(activationFromEnvironment(values));
+    const configured = makeControlPlaneWorkstreamTransport(resolved);
+    expect(configured.registrationContext.registrationContextVersion).toBe("3.0.0");
+    expect(configured.binding.registryId).toBe("https://registry.synthetic.test");
+  }
+  expect(NodeFS.readFileSync(file, "utf8")).toBe(bytes);
 });
