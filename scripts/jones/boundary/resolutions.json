@@ -86,7 +86,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
+      "sourceSha256": "09ba2d9c8293d210cefd3a2419b691199cf15c9ded22891888438f54d65d2e0c",
       "expression": "NodeURL.pathToFileURL(require.resolve(\"effect/\" + name))",
       "reason": "Upstream subprocess fixture resolves Effect modules from its caller-supplied synthetic workspace; external dependency loader is unsupported.",
       "anchors": [
@@ -99,7 +99,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
+      "sourceSha256": "09ba2d9c8293d210cefd3a2419b691199cf15c9ded22891888438f54d65d2e0c",
       "expression": "NodeURL.pathToFileURL(root + \"/apps/server/src/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads a finite local module list from a caller-supplied root. Source-byte binding fixes that list; each listed target still receives boundary checking.",
       "anchors": [],
@@ -116,7 +116,9 @@
         "apps/server/src/provider/ProviderAuthService.ts",
         "apps/server/src/config.ts",
         "apps/server/src/serverSettings.ts",
-        "apps/server/src/provider/ProviderInstanceRegistry.ts"
+        "apps/server/src/provider/ProviderInstanceRegistry.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.ts",
+        "apps/server/src/jones/orchestration/ControlAdmission.ts"
       ]
     },
     {
@@ -222,7 +224,7 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/testkit/ProviderTurnStartMemory.fixture.mjs",
-      "sourceSha256": "b3d5664fc0ea24cc4b696a66546af8ed66ed71ad2faae5d5fab00498f8457c35",
+      "sourceSha256": "09ba2d9c8293d210cefd3a2419b691199cf15c9ded22891888438f54d65d2e0c",
       "expression": "NodeURL.pathToFileURL(root + \"/packages/provider-core/src/server/\" + file + \".ts\")",
       "reason": "Upstream subprocess fixture loads only IdAllocator from the extracted provider-core owner. Source-byte binding fixes that finite target; the target still receives boundary checking.",
       "anchors": [],

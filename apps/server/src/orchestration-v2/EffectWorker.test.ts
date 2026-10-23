@@ -1,3 +1,11 @@
+import {
+  SteerOutcomeUnknown,
+  SteerNotDispatched,
+  findSteerFailure,
+} from "../jones/orchestration/LateSteer.ts";
+import { ControlAdmissionHeld } from "../jones/orchestration/ControlAdmission.ts";
+import { GoalNotificationDeliveryUnknown } from "../jones/goals/GoalNotificationDelivery.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
@@ -163,6 +171,24 @@ function layerExecutorFor(input: {
     ),
   );
   return EffectWorker.layerExecutor.pipe(
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({
+        run: ({ interrupt, detach, start }) =>
+          interrupt.pipe(
+            Effect.andThen(detach),
+            Effect.mapError(
+              (cause) =>
+                new RestartPreparation.RestartPreparationError({
+                  threadId,
+                  stage: "interrupt",
+                  cause,
+                }),
+            ),
+            Effect.andThen(start),
+          ),
+        recordSteerFailure: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
@@ -1198,5 +1224,104 @@ it.effect.each(["success", "unknown"] as const)(
           }),
         ),
       );
+    }),
+);
+
+it.effect.each(["single", "batch", "notification"] as const)(
+  "typed unknown and held %s steering never becomes a completed-turn follow-up",
+  (kind) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const now = yield* DateTime.now;
+      const messageId = MessageId.make("message:uncertain");
+      const base = restartEffect(now, {
+        type: "replace",
+        replacementProviderSessionId: replacementSessionId,
+      });
+      const effect = {
+        ...base,
+        request: {
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+          ...(kind === "batch"
+            ? {
+                type: "provider-turn.steer-batch" as const,
+                messageIds: [messageId, MessageId.make("message:second")],
+              }
+            : { type: "provider-turn.steer" as const }),
+        },
+      };
+      for (const failure of [
+        new SteerOutcomeUnknown({
+          instanceId: "codex",
+          nativeThreadId: "native-thread",
+          nativeTurnId: "native-turn",
+        }),
+        new SteerNotDispatched({ instanceId: "codex" }),
+        new ControlAdmissionHeld({ instanceId: "codex" }),
+      ]) {
+        const result = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+          Effect.flatMap((executor) => executor.execute(effect)),
+          Effect.exit,
+          Effect.provide(
+            layerExecutorFor({
+              events,
+              steer: () =>
+                Effect.fail(
+                  new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                    turnCompleted: true,
+                    cause:
+                      kind === "notification"
+                        ? new GoalNotificationDeliveryUnknown({ cause: failure })
+                        : failure,
+                  }),
+                ),
+              threads: {
+                getThreadRecords: () =>
+                  Effect.succeed({
+                    messages: [
+                      {
+                        id: messageId,
+                        runId,
+                        text: "Steering message",
+                        attachments: [],
+                        createdBy: "agent",
+                        creationSource: "server",
+                        ...(kind === "notification"
+                          ? {
+                              notification: {
+                                source: { kind: "monitor" },
+                                outcome: "updated",
+                                summary: "Steering message",
+                              },
+                            }
+                          : {}),
+                      },
+                    ],
+                    runs: [
+                      {
+                        id: runId,
+                        status: "completed",
+                        modelSelection: { instanceId: "codex", model: "test" },
+                      },
+                    ],
+                  } as never),
+                dispatch: () =>
+                  Ref.update(events, (current) => [...current, "unexpected-follow-up"]).pipe(
+                    Effect.as({} as never),
+                  ),
+              },
+            }),
+          ),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.equal(findSteerFailure(result.cause), failure);
+      }
+      assert.deepEqual(yield* Ref.get(events), []);
     }),
 );
