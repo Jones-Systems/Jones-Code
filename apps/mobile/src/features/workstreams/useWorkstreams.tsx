@@ -20,7 +20,6 @@ import {
   planWorkstreamOwnerOrder,
   loadLiveT3Placements,
   workstreamBindingKey,
-  type ConnectedEnvironmentTrustInput,
   type LiveT3Placements,
   type WorkstreamAssignmentIndexFetchers,
   type WorkstreamThreadLike,
@@ -121,7 +120,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
   // Only the current session's bootstrap config is live; it adds display trust, never write trust.
   const liveEnvironmentsAtom = useMemo(
     () =>
-      Atom.make((get): readonly ConnectedEnvironmentTrustInput[] =>
+      Atom.make((get) =>
         decodeEnvironmentIds(idsKey).map((environmentId) => {
           const config = get(environmentSession.initialConfigValueAtom(environmentId));
           return { environmentId, config, live: config !== null };
@@ -230,7 +229,12 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
               snapshot.prepared,
               "POST",
               (urls) => urls.operationRead(),
-              (client, headers) => client.operationRead({ headers, payload }),
+              (client, headers) =>
+                "operation_id" in payload
+                  ? client.operationRead({ headers, payload })
+                  : "thread" in payload
+                    ? client.operationRead({ headers, payload })
+                    : client.operationRead({ headers, payload }),
               signal ?? new AbortController().signal,
             ),
           setup: (signal) =>

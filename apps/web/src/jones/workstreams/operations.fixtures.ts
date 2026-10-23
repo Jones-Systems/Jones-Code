@@ -23,7 +23,7 @@ export const operationFixtureResult = (
     accepted_at: "2026-10-23T00:00:00Z",
     updated_at: "2026-10-23T00:00:00Z",
     detail: null,
-  };
+  } satisfies Partial<WorkstreamOperationResult>;
   if (state === "committed")
     return {
       ...base,

@@ -71,7 +71,7 @@ function Scenario() {
         updated_at: "2026-10-23T00:00:00Z",
         observed: null,
         detail: null,
-      };
+      } satisfies Partial<WorkstreamOperationResult>;
       if (modeRef.current === "pending") {
         const result: WorkstreamOperationResult = {
           ...base,

@@ -115,7 +115,7 @@ export function WorkstreamPicker({
   retryRef.current = () => {
     if (choice) void run(choice, true);
   };
-  const pending = busy || (waiting !== undefined && operationOpen(waiting));
+  const pending = busy || (waiting != null && operationOpen(waiting));
   return (
     <Dialog
       open

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { RegistryContext } from "@effect/atom-react";
-import { Atom, AtomRegistry } from "effect/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -12,12 +12,17 @@ import { operationFixtureData, operationFixtureResult, setupFixture } from "./op
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 const remote = Id.make("env:remote");
 const primary = Id.make("env:a");
-const catalog = Atom.make<EnvironmentCatalogState>({ isReady: true, entries: new Map() }).pipe(
-  Atom.keepAlive,
-);
-const config = Atom.family((_id: EnvironmentId) =>
-  Atom.make<ServerConfig | null>(null).pipe(Atom.keepAlive),
-);
+const { catalog, config } = await vi.hoisted(async () => {
+  const { Atom } = await import("effect/reactivity");
+  return {
+    catalog: Atom.make<EnvironmentCatalogState>({ isReady: true, entries: new Map() }).pipe(
+      Atom.keepAlive,
+    ),
+    config: Atom.family((_id: EnvironmentId) =>
+      Atom.make<ServerConfig | null>(null).pipe(Atom.keepAlive),
+    ),
+  };
+});
 const fixture = vi.hoisted(() => ({
   submit: vi.fn(),
   read: vi.fn(),

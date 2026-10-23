@@ -15,17 +15,20 @@ import {
 } from "@t3tools/client-runtime/jones/workstreams/operations";
 import { environmentCatalog } from "../../connection/catalog";
 import { environmentSession } from "../../state/session";
-import { createConnectedEnvironmentConfigsAtom } from "./connectedWorkstreamTrust";
+import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
+import { Atom } from "effect/reactivity";
 import {
   environmentOperationsTransport,
   requestEnvironmentWorkstreams,
 } from "./environmentWorkstreamsRequest";
 import { environmentWorkstreamsRoutes } from "./remoteThreadAssignment";
 
-const configsAtom = createConnectedEnvironmentConfigsAtom({
-  catalogValueAtom: environmentCatalog.catalogValueAtom,
-  initialConfigValueAtom: environmentSession.initialConfigValueAtom,
-});
+const configsAtom = Atom.make((get) =>
+  [...enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))].map((environmentId) => ({
+    environmentId,
+    config: get(environmentSession.initialConfigValueAtom(environmentId)),
+  })),
+);
 export function useWorkstreamOperations(input: {
   data: T3WorkstreamListResult | null;
   primaryEnvironmentId: string | null;

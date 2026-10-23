@@ -159,7 +159,12 @@ export function environmentOperationsTransport(
         environmentId,
         "POST",
         (urls) => urls.operationRead(),
-        (client, headers) => client.operationRead({ headers, payload }),
+        (client, headers) =>
+          "operation_id" in payload
+            ? client.operationRead({ headers, payload })
+            : "thread" in payload
+              ? client.operationRead({ headers, payload })
+              : client.operationRead({ headers, payload }),
         signal,
       ),
     setup: (signal) =>

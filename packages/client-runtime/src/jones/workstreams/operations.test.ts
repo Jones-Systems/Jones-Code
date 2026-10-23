@@ -36,7 +36,7 @@ const identity = {
   observed: null,
   accepted_at: "2026-10-23T00:00:00Z",
   updated_at: "2026-10-23T00:00:00Z",
-};
+} satisfies Partial<OperationResult>;
 const committed: OperationResult = {
   ...identity,
   state: "committed",
@@ -53,14 +53,14 @@ const open: OperationResult = {
   result: null,
   poll_after_ms: 1000,
 };
-const config: OperationResult = {
+const config = {
   ...identity,
   state: "unavailable",
   reason: "not_configured",
   detail: null,
   result: null,
   poll_after_ms: null,
-};
+} satisfies OperationResult;
 function fixture() {
   let bytes: string | null = null;
   const storage = {
