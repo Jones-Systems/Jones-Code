@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as Layer from "effect/Layer";
 
 import * as ClaudeAdapterV2 from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -9,6 +10,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 
 export type ProviderOrchestrationAdapterInfrastructure =
+  | ControlAdmission.ControlAdmission
   | ClaudeAdapterV2.ClaudeAgentSdkQueryRunner
   | CodexAdapterV2.CodexAppServerClientFactory
   | CursorAgentSdk.CursorAgentSdkRunner
@@ -22,6 +24,7 @@ export type ProviderOrchestrationAdapterInfrastructure =
  * memoization yields one shared queue.
  */
 export const layer = Layer.mergeAll(
+  ControlAdmission.layer,
   ClaudeAdapterV2.layerQueryRunner,
   CodexAdapterV2.layerAppServerClientFactory,
   CursorAgentSdk.layer.pipe(Layer.provideMerge(CursorSdk.layer)),

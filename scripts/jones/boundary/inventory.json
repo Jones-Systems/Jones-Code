@@ -1549,7 +1549,10 @@
     "packages/provider-core/src/server/jones/ShellDestinationInstructions.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
-    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned"
+    "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-stall-recovery.json": "jones-owned",
+    "apps/server/src/provider/ProviderOrchestrationAdapterInfrastructure.ts": "hook",
+    "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

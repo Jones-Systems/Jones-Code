@@ -1,4 +1,8 @@
 import {
+  isHistoricalTerminalCandidate,
+  type HistoricalTerminalInput,
+} from "../jones/orchestration/HistoricalTerminalHistory.ts";
+import {
   NodeId,
   CommandId,
   OrchestrationV2DomainEvent,
@@ -748,6 +752,64 @@ export const layer: Layer.Layer<
       normalize,
       ingestNormalized: (input) =>
         Effect.gen(function* () {
+          let historicalInput: HistoricalTerminalInput | undefined;
+          let historicalWrite:
+            | Effect.Effect<
+                {
+                  readonly handled: boolean;
+                  readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
+                },
+                ProviderEventPublishError
+              >
+            | undefined;
+          if (
+            isHistoricalTerminalCandidate(input.event) &&
+            eventSink.writeHistoricalTerminal !== undefined
+          ) {
+            historicalInput = {
+              providerSessionId: input.providerSessionId,
+              providerInstanceId: input.providerInstanceId,
+              threadId: input.threadId,
+              ...(input.runId === undefined ? {} : { runId: input.runId }),
+              event: input.event,
+              terminal: yield* makeDomainEvent(input, {
+                type: "provider-turn.updated",
+                ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
+                payload: input.event.providerTurn,
+                nodeId: input.event.providerTurn.nodeId,
+              }).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ProviderEventNormalizeError({
+                      providerSessionId: input.providerSessionId,
+                      threadId: input.threadId,
+                      providerEvent: input.event,
+                      cause,
+                    }),
+                ),
+              ),
+            };
+            historicalWrite = eventSink.writeHistoricalTerminal(historicalInput).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderEventPublishError({
+                    providerSessionId: input.providerSessionId,
+                    eventCount: 1,
+                    cause,
+                  }),
+              ),
+            );
+            const historical = yield* historicalWrite;
+            if (historical.handled) return historical.storedEvents;
+          }
+          // Restart can commit after the initial eligibility read. A rejected
+          // ordinary write retries only exact terminal history, never its bundle.
+          const retainRejectedTerminal = (
+            storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+          ) =>
+            storedEvents.length === 0 && historicalWrite !== undefined
+              ? historicalWrite.pipe(Effect.map((historical) => historical.storedEvents))
+              : Effect.succeed(storedEvents);
           const events = yield* normalize(input);
           if (events.length === 0) {
             return [];
@@ -758,8 +820,9 @@ export const layer: Layer.Layer<
             observation === undefined
               ? undefined
               : events.find((event) => event.type === "provider-thread.updated");
-          const runtimeGuard =
-            observation === undefined
+          const runtimeGuard = {
+            ...(historicalInput === undefined ? {} : { historicalTerminal: historicalInput }),
+            ...(observation === undefined
               ? "runtimeEvidence" in input.event && input.event.runtimeEvidence !== undefined
                 ? { runtimeEvidence: input.event.runtimeEvidence }
                 : {}
@@ -772,7 +835,8 @@ export const layer: Layer.Layer<
                       : {}),
                   },
                   runtimeIdentityObservation: observation.requested,
-                };
+                }),
+          };
           const mapWriteError = (cause: unknown) =>
             new ProviderEventPublishError({
               providerSessionId: input.providerSessionId,
@@ -789,7 +853,7 @@ export const layer: Layer.Layer<
                 events,
               })
               .pipe(Effect.mapError(mapWriteError));
-            return ownerResult.storedEvents;
+            return yield* retainRejectedTerminal(ownerResult.storedEvents);
           }
           if (input.writeIfRunCurrent === undefined) {
             return yield* eventSink
@@ -799,7 +863,7 @@ export const layer: Layer.Layer<
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 events,
               })
-              .pipe(Effect.mapError(mapWriteError));
+              .pipe(Effect.mapError(mapWriteError), Effect.flatMap(retainRejectedTerminal));
           }
           const result = yield* eventSink
             .writeIfRunCurrent({
@@ -811,7 +875,7 @@ export const layer: Layer.Layer<
               events,
             })
             .pipe(Effect.mapError(mapWriteError));
-          return result.storedEvents;
+          return yield* retainRejectedTerminal(result.storedEvents);
         }).pipe(
           Effect.flatMap((storedEvents) =>
             Effect.gen(function* () {

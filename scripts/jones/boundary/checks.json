@@ -2,6 +2,26 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-thread-stall-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/ControlAdmission.test.ts",
+        "apps/server/src/jones/orchestration/LateSteer.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts apps/server/src/jones/orchestration/ControlAdmission.test.ts apps/server/src/jones/orchestration/LateSteer.test.ts apps/server/src/jones/orchestration/RestartPreparation.test.ts apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts apps/server/src/jones/runtime/RuntimeStop.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workstreams-sidebar-assignment",
       "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "commands": [

@@ -1,3 +1,5 @@
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import { expect, it, vi } from "vite-plus/test";
@@ -128,6 +130,10 @@ function startWithMissingWorktree(
   const pruneWorktrees = vi.fn(() => Effect.void);
   const createWorktree = vi.fn(() => Effect.succeed({} as never));
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(ControlAdmission.layer),
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
@@ -732,6 +738,10 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(ControlAdmission.layer),
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         Layer.mock(PlannedUpdateContinuity.PlannedUpdateContinuity)({

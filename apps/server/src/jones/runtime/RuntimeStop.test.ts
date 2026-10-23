@@ -1,3 +1,4 @@
+import * as RestartPreparation from "../orchestration/RestartPreparation.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { assert, it } from "@effect/vitest";
 import {
@@ -36,7 +37,8 @@ import * as StopStore from "./RuntimeStopSqlite.ts";
 const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessions.layer).pipe(
   Layer.provideMerge(SqlitePersistence.layerMemory),
 );
-const testLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
+const eventLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
+const testLayer = RestartPreparation.layer.pipe(Layer.provideMerge(eventLayer));
 const fixture = Effect.fnUntraced(function* () {
   const sink = yield* EventSink.EventSinkV2;
   const sessions = yield* AuthSessions.AuthSessionRepository;
@@ -134,7 +136,15 @@ const fixture = Effect.fnUntraced(function* () {
     issuedAt: now,
     expiresAt: DateTime.add(now, { hours: 1 }),
   });
-  const state = { current: true, invocations: 0, unknown: false, available: true, wait: false };
+  const state = {
+    current: true,
+    invocations: 0,
+    unknown: false,
+    available: true,
+    wait: false,
+    held: false,
+    reconciled: [] as ProviderRuntimeBinding[],
+  };
   const started = yield* Deferred.make<void>();
   const completion = yield* Deferred.make<void>();
   const captured = {
@@ -178,7 +188,35 @@ const fixture = Effect.fnUntraced(function* () {
           : null,
       ),
   });
-  const service = RuntimeStop.layer.pipe(Layer.provide(manager));
+  const service = RuntimeStop.layer.pipe(
+    Layer.provide(manager),
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({
+        captureHeldRuntimeStop: () =>
+          Effect.succeed(
+            state.held
+              ? {
+                  ...captured,
+                  stop: captured.stop.pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterCloseSessionError({
+                          driver: binding.driver,
+                          providerSessionId: binding.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  ),
+                }
+              : null,
+          ),
+        resolveAfterTeardown: (resolved) =>
+          Effect.sync(() => {
+            state.reconciled.push(resolved);
+          }),
+      }),
+    ),
+  );
   const input: StopCurrentThreadRuntimeInput = {
     commandId: CommandId.make("command:runtime-stop"),
     threadId,
@@ -528,6 +566,31 @@ it.effect(
         assert.strictEqual((yield* sql`SELECT * FROM orchestration_command_receipts`).length, 1);
         assert.deepEqual(yield* sql`SELECT * FROM jones_runtime_stop_observations`, []);
         assert.strictEqual(f.state.invocations, 0);
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect.each([false, true])(
+  "a captured old restart runtime resolves its hold only after verified stop (unknown=%s)",
+  (unknown) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      f.state.available = false;
+      f.state.held = true;
+      f.state.unknown = unknown;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        const target = yield* owner
+          .readTarget(f.input.threadId)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        assert.equal(target.status, "available");
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const result = yield* owner.execute(f.input.commandId).pipe(Effect.result);
+        assert.equal(result._tag, unknown ? "Failure" : "Success");
+        assert.deepEqual(f.state.reconciled, unknown ? [] : [f.input.target.binding]);
+        assert.equal(f.state.invocations, 1);
       }).pipe(Effect.provide(f.service));
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

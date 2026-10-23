@@ -1,3 +1,4 @@
+import * as EventSink from "./EventSink.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
@@ -299,6 +300,12 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(
+          Layer.mock(EventSink.EventSinkV2)({
+            latestSequence: () => Effect.succeed(0),
+            stream: () => Stream.never,
+          }),
+        ),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 
@@ -342,6 +349,23 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       }).pipe(Effect.provide(layerControl));
 
       const interrupted = yield* Ref.get(interruptedThread);
+      yield* Ref.set(interruptedThread, null);
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        yield* control.interruptAndAwaitTerminal({
+          threadId,
+          providerSessionId: oldSessionId,
+          replacementProviderSessionId: replacementSessionId,
+          providerThreadId,
+          providerTurnId,
+          interruptedAttemptId: attemptId,
+        });
+      }).pipe(Effect.provide(layerControl));
+      assert.isNull(
+        yield* Ref.get(interruptedThread),
+        "persisted terminal evidence must not interrupt again",
+      );
+
       assert.isNotNull(interrupted);
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.providerInstanceId, providerInstanceId);

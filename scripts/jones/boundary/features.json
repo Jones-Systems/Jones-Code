@@ -4,6 +4,22 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "thread-stall-recovery",
+      "tests": [
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/jones/orchestration/ControlAdmission.test.ts",
+        "apps/server/src/jones/orchestration/LateSteer.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/orchestration/ThreadStallRecovery.integration.test.ts",
+        "apps/server/src/jones/orchestration/QueuedSteerBatch.integration.test.ts",
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts"
+      ],
+      "scope": "Exact committed restart history preserves the old captured terminal while fencing replacement state. Codex steering has a bounded acknowledgement wait with producer-owned late reconciliation and per-instance admission holds; worker integration releases shared capacity without replaying uncertain native actions. Server integration tests use synthetic state and native protocol fixtures."
+    },
+    {
       "id": "workstreams-sidebar-assignment",
       "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
