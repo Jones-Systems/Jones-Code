@@ -99,6 +99,27 @@ export default async function threadSelfConfigure(ctx) {
     );
     await ctx.step("Complete onboarding and register only synthetic A/B", async () => {
       await ctx.completeOnboarding();
+      await ctx.page.getByRole("button", { name: "Settings", exact: true }).click();
+      const followUp = ctx.page.getByRole("combobox", { name: "Follow-up behavior", exact: true });
+      await followUp.click();
+      await ctx.page.getByRole("option", { name: "Steer", exact: true }).click();
+      ctx.assert(
+        (await followUp.textContent()).trim() === "Steer",
+        "Disposable UI follow-up preference is Steer",
+      );
+      evidence.composerSubmission = {
+        followUpBehavior: "steer",
+        configuredThrough: "native Settings / General / Follow-up behavior",
+        verifiedBeforeStart: true,
+        ordinaryKey: "Enter",
+        modelPickerChangedBeforeFollowup: false,
+        defaultQueueBehaviorClaimed: false,
+      };
+      ctx.fixture.composerSubmission = evidence.composerSubmission;
+      await ctx.capture("steer-preference");
+      await ctx.page
+        .getByRole("button", { name: "Back to conversation from Settings", exact: true })
+        .click();
       await ctx.registerSyntheticProvider(selectionA.instanceId);
       await ctx.registerSyntheticProvider(selectionB.instanceId);
       await ctx.dispatch({
@@ -260,7 +281,11 @@ export default async function threadSelfConfigure(ctx) {
     await ctx.capture("fresh-b-completed");
     await ctx.step("Reload saved B and verify untouched control", async () => {
       await ctx.reload();
-      await open(title, threadId);
+      await ctx.page.waitForFunction(
+        (id) => location.pathname.includes(id) || location.hash.includes(id),
+        threadId,
+      );
+      await ctx.page.getByTestId("composer-editor").waitFor();
       await picker().filter({ hasText: "Synthetic model B" }).waitFor();
       evidence.reloaded = await snapshot();
       ctx.assert(

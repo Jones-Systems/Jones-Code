@@ -21,6 +21,12 @@ scenario sibling imports remain unsupported.
 
 ## Assertions and evidence
 
+Before starting A, the scenario uses native Settings / General to set the
+disposable app's Follow-up behavior to Steer and verifies the selected value.
+The manifest and a screenshot record that setup. Ordinary submissions then use
+Enter; this is not a claim about the product's default Queue preference. The
+comparison uses the identical UI setup and continuity oracle.
+
 A starts through the composer, reads its configuration, saves B with its actual
 revision and execution precondition, retries identically, rejects a conflicting
 retry, and makes another authenticated read. A stays held while the UI shows B.
