@@ -250,6 +250,18 @@ effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagr
 on rule names.
 Marketing keeps `astro check` for Astro files.
 
+For repeated local checks, use `pnpm typecheck:incremental packages/shared apps/server`
+(or `--all` for workspaces whose checker is exactly `tsc-rs --noEmit`). This opt-in
+command retains native incremental state while still running TypeScript and Effect
+checks every time. It excludes the root recursive command and Astro. Retained mode
+supports the repository base config and the qualified Expo base; use `--fresh` to
+bypass retained state for other config inheritance. Caches live in this worktree's
+`node_modules/.cache/jones/incremental-typecheck`; they last with the dependency
+cache. Interrupted runs clean their own files; crash residue is ignored and counted
+toward storage admission, without automatic reclamation. Admission and accepted
+payload limits are not a hard concurrent disk quota. Normal `typecheck` remains
+the authoritative fallback.
+
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
 

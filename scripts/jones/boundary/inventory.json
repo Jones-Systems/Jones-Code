@@ -1569,7 +1569,11 @@
     "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
     "scripts/setup-worktree.ts": "hook",
     "t3.json": "accepted-shared",
-    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned",
+    "scripts/jones/incremental-typecheck/cli.ts": "jones-owned",
+    "scripts/jones/incremental-typecheck/incrementalTypecheck.ts": "jones-owned",
+    "scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/incremental-typecheck.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1492,6 +1492,11 @@
         "scripts/jones/worktree-setup/setup.node-test.mjs"
       ],
       "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+    },
+    {
+      "id": "incremental-typecheck",
+      "tests": ["scripts/jones/incremental-typecheck/incrementalTypecheck.node-test.mjs"],
+      "scope": "Opt-in serial native incremental checking for explicitly selected workspaces whose normal script is tsc-rs --noEmit. Every invocation runs the installed checker and preserves TypeScript and Effect diagnostics. Invocation-private buildinfo and atomic identity/payload publication isolate concurrent writers; fresh mode bypasses retained state. Root commands, editor preparation, emit and APIs keep existing behavior. Root package.json adds the command and scripts/package.json registers focused Node tests; maintainer guidance explains scope and cache lifetime."
     }
   ]
 }
