@@ -1555,6 +1555,11 @@
         "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
       ],
       "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
+    },
+    {
+      "id": "ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
     }
   ]
 }

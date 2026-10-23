@@ -1592,11 +1592,6 @@
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned",
-    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
-    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
-    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/encoding.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/http.integration.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/live.ts": "jones-owned",
@@ -1605,7 +1600,13 @@
     "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned",
-    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned"
+    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned",
+    "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
