@@ -49,7 +49,6 @@ import * as EventStore from "../EventStore.ts";
 import * as LegacyV1ThreadImporter from "../legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "../Orchestrator.ts";
 import * as EffectWorker from "../EffectWorker.ts";
-import * as EffectOutbox from "../EffectOutbox.ts";
 import * as ProjectionMaintenance from "../ProjectionMaintenance.ts";
 import * as ProjectionStore from "../ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
@@ -99,6 +98,7 @@ function makeTestAdapter(input: {
   readonly responseByRunOrdinal: Readonly<Record<number, string>>;
   readonly responseByThreadId?: Readonly<Record<string, Readonly<Record<number, string>>>>;
   readonly capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>;
+  readonly lifecycle?: Ref.Ref<ReadonlyArray<string>>;
   readonly injectedHistory?: Ref.Ref<ReadonlyArray<unknown>>;
   readonly failStartOnce?: Ref.Ref<boolean>;
   readonly refuseStarts?: Ref.Ref<number>;
@@ -125,6 +125,8 @@ function makeTestAdapter(input: {
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
     openSession: (sessionInput) =>
       Effect.gen(function* () {
+        if (input.lifecycle)
+          yield* Ref.update(input.lifecycle, (events) => [...events, `open:${input.instanceId}`]);
         const events = yield* PubSub.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const now = yield* DateTime.now;
         const providerSession: OrchestrationV2ProviderSession = {
@@ -215,6 +217,15 @@ function makeTestAdapter(input: {
                       }),
                     ),
                   ),
+              }),
+          ...(input.lifecycle === undefined
+            ? {}
+            : {
+                unloadThread: ({ providerThread }) =>
+                  Ref.update(input.lifecycle!, (events) => [
+                    ...events,
+                    `unload:${providerThread.appThreadId}:${sessionInput.providerSessionId}`,
+                  ]),
               }),
           compactThread: (turnInput) => runtime.startTurn(turnInput),
           startTurn: (turnInput) =>
@@ -685,13 +696,11 @@ describe("orchestration v2 provider switching", () => {
             const target = (yield* orchestrator.getThreadProjection(threadId)).providerThreads.find(
               (thread) => thread.providerInstanceId === CLAUDE_MODEL_SELECTION.instanceId,
             )!;
-            yield* orchestrator.dispatch({
-              type: "provider-session.detach",
-              commandId: CommandId.make("detach-for-native-replacement"),
-              threadId,
-              providerSessionId: target.providerSessionId!,
-            });
-            yield* worker.drain();
+            assert.isFalse(
+              (yield* orchestrator.getThreadProjection(threadId)).providerSessions.some(
+                (session) => session.id === target.providerSessionId,
+              ),
+            );
             yield* Ref.set(failResumeOnce, true);
           }
           if (scenario.includes("retry")) yield* Ref.set(failStartOnce, true);
@@ -1568,7 +1577,21 @@ describe("orchestration v2 provider switching", () => {
               projection.runs.map((run) => run.status),
               scenario.selectedSupportsQueue ? ["running", "queued"] : ["running"],
             );
-            assert.deepEqual(projection.thread.modelSelection, CODEX_MODEL_SELECTION);
+            assert.deepEqual(
+              projection.thread.modelSelection,
+              scenario.selectedSupportsQueue ? CLAUDE_MODEL_SELECTION : CODEX_MODEL_SELECTION,
+            );
+            assert.deepEqual(projection.runs[0]?.modelSelection, CODEX_MODEL_SELECTION);
+            assert.equal(
+              projection.thread.activeProviderThreadId,
+              projection.runs[0]?.providerThreadId,
+            );
+            assert.deepEqual(
+              projection.runs.map((run) => run.modelSelection),
+              scenario.selectedSupportsQueue
+                ? [CODEX_MODEL_SELECTION, CLAUDE_MODEL_SELECTION]
+                : [CODEX_MODEL_SELECTION],
+            );
           }).pipe(
             Effect.provide(
               ProviderReplayHarness.layerWithRegistry(
@@ -1675,7 +1698,16 @@ describe("orchestration v2 provider switching", () => {
             beforeSteer.runs.map((run) => run.status),
             ["running", "queued", "queued"],
           );
-          assert.equal(beforeSteer.thread.providerInstanceId, CODEX_MODEL_SELECTION.instanceId);
+          assert.deepEqual(beforeSteer.thread.modelSelection, CLAUDE_MODEL_SELECTION);
+          assert.equal(beforeSteer.thread.providerInstanceId, CLAUDE_MODEL_SELECTION.instanceId);
+          assert.deepEqual(
+            beforeSteer.runs.map((run) => run.modelSelection),
+            [CODEX_MODEL_SELECTION, CODEX_MODEL_SELECTION, CLAUDE_MODEL_SELECTION],
+          );
+          assert.equal(
+            beforeSteer.thread.activeProviderThreadId,
+            beforeSteer.runs[0]?.providerThreadId,
+          );
           assert.lengthOf(beforeSteer.contextHandoffs, 0);
           const now = yield* DateTime.now;
           yield* eventSink.write({
@@ -1917,7 +1949,13 @@ describe("orchestration v2 provider switching", () => {
             queued.runs.map((run) => run.status),
             ["running", "queued"],
           );
-          assert.equal(queued.thread.providerInstanceId, CODEX_MODEL_SELECTION.instanceId);
+          assert.deepEqual(queued.thread.modelSelection, alternateSelection);
+          assert.equal(queued.thread.providerInstanceId, alternateSelection.instanceId);
+          assert.deepEqual(
+            queued.runs.map((run) => run.modelSelection),
+            [CODEX_MODEL_SELECTION, alternateSelection],
+          );
+          assert.equal(queued.thread.activeProviderThreadId, queued.runs[0]?.providerThreadId);
           const sourceNativeRef = queued.providerThreads.find(
             (providerThread) => providerThread.id === queued.runs[0]?.providerThreadId,
           )?.nativeThreadRef;
@@ -1994,6 +2032,7 @@ describe("orchestration v2 provider switching", () => {
         const cwd = yield* checkpointWorkspace("queued-provider-switch");
         const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
         const started = yield* Deferred.make<void>();
+        const lifecycle = yield* Ref.make<ReadonlyArray<string>>([]);
         const layerRegistry = ProviderAdapterRegistry.layerFromAdapters([
           makeTestAdapter({
             instanceId: ProviderInstanceId.make("codex"),
@@ -2006,6 +2045,7 @@ describe("orchestration v2 provider switching", () => {
               3: "Codex second queued turn complete",
             },
             capturedTurns,
+            lifecycle,
             holdFirstTurn: started,
           }),
           makeTestAdapter({
@@ -2015,16 +2055,14 @@ describe("orchestration v2 provider switching", () => {
             modelSelection: CLAUDE_MODEL_SELECTION,
             responseByRunOrdinal: { 4: "Claude turn complete" },
             capturedTurns,
+            lifecycle,
           }),
         ]);
         const queuedThreadId = ThreadId.make("thread:queued-provider-switch");
-        const layerDatabase = SqlitePersistence.layerMemory;
-        const layerOutboxProvided = EffectOutbox.layer.pipe(Layer.provide(layerDatabase));
         const projection = yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
           const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
           const eventSink = yield* EventSink.EventSinkV2;
-          const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
           const dispatch = (ordinal: number, modelSelection: ModelSelection) =>
             orchestrator.dispatch({
               type: "message.dispatch",
@@ -2065,7 +2103,17 @@ describe("orchestration v2 provider switching", () => {
             ["running", "queued", "queued", "queued"],
           );
           assert.equal(queued.thread.activeProviderThreadId, queued.runs[0]?.providerThreadId);
-          assert.equal(queued.thread.providerInstanceId, CODEX_MODEL_SELECTION.instanceId);
+          assert.deepEqual(queued.thread.modelSelection, CLAUDE_MODEL_SELECTION);
+          assert.equal(queued.thread.providerInstanceId, CLAUDE_MODEL_SELECTION.instanceId);
+          assert.deepEqual(
+            queued.runs.map((run) => run.modelSelection),
+            [
+              CODEX_MODEL_SELECTION,
+              CODEX_MODEL_SELECTION,
+              CODEX_MODEL_SELECTION,
+              CLAUDE_MODEL_SELECTION,
+            ],
+          );
           assert.lengthOf(queued.contextHandoffs, 0);
           const activeSession = queued.providerSessions.find(
             (session) => session.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
@@ -2141,6 +2189,7 @@ describe("orchestration v2 provider switching", () => {
             Stream.filter((stored) => stored.event.type === "provider-session.detached"),
             Stream.take(1),
             Stream.runCollect,
+            Effect.timeout("5 seconds"),
           );
           assert.equal(
             detachEvents[0]?.event.type === "provider-session.detached"
@@ -2148,41 +2197,32 @@ describe("orchestration v2 provider switching", () => {
               : null,
             activeSession?.id,
           );
-          const startCommandId = CommandId.make(
-            `command:system:start-queued:${queued.runs[3]!.id}`,
+          const retired = yield* orchestrator.getThreadProjection(queuedThreadId);
+          assert.isFalse(
+            retired.providerSessions.some((session) => session.id === activeSession?.id),
           );
-          const detachEffects = (yield* effectOutbox.listByCommandId(startCommandId)).filter(
-            (effect) => effect.request.type === "provider-session.detach",
-          );
-          assert.deepEqual(
-            detachEffects.map((effect) =>
-              effect.request.type === "provider-session.detach"
-                ? effect.request.providerSessionId
-                : null,
-            ),
-            [activeSession?.id],
-          );
+          assert.deepEqual(yield* Ref.get(lifecycle), [
+            `open:${CODEX_MODEL_SELECTION.instanceId}`,
+            `unload:${queuedThreadId}:${activeSession!.id}`,
+            `open:${CLAUDE_MODEL_SELECTION.instanceId}`,
+          ]);
           return yield* orchestrator.getThreadProjection(queuedThreadId);
         }).pipe(
           Effect.provide(
-            Layer.merge(
-              ProviderReplayHarness.layerWithRegistry(
-                {
-                  name: "queued-provider-switch",
-                  runtimePolicyOverride: {
-                    cwd,
-                    approvalPolicy: "never",
-                    sandboxPolicy: {
-                      type: "readOnly",
-                      access: { type: "fullAccess" },
-                      networkAccess: false,
-                    },
+            ProviderReplayHarness.layerWithRegistry(
+              {
+                name: "queued-provider-switch",
+                runtimePolicyOverride: {
+                  cwd,
+                  approvalPolicy: "never",
+                  sandboxPolicy: {
+                    type: "readOnly",
+                    access: { type: "fullAccess" },
+                    networkAccess: false,
                   },
                 },
-                layerRegistry,
-                { databaseLayer: layerDatabase },
-              ),
-              layerOutboxProvided,
+              },
+              layerRegistry,
             ),
           ),
         );
@@ -2827,18 +2867,11 @@ describe("orchestration v2 provider switching", () => {
             CLAUDE_MODEL_SELECTION,
           );
           yield* waitForIdle(threadId);
-          const codexSession = (yield* orchestrator.getThreadProjection(
-            threadId,
-          )).providerSessions.find(
-            (session) => session.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
-          )!;
-          yield* orchestrator.dispatch({
-            type: "provider-session.detach",
-            commandId: CommandId.make("command:provider-switch:stop-codex"),
-            threadId,
-            providerSessionId: codexSession.id,
-          });
-          yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+          assert.isFalse(
+            (yield* orchestrator.getThreadProjection(threadId)).providerSessions.some(
+              (session) => session.providerInstanceId === CODEX_MODEL_SELECTION.instanceId,
+            ),
+          );
           yield* orchestrator.dispatch(commands[3]!);
           assert.deepEqual(
             (yield* orchestrator.getThreadProjection(threadId)).thread.modelSelection,
