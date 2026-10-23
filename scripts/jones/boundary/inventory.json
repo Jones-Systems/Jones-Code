@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/web/src/components/BranchToolbar.panel.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbar.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/jones/hostService/linuxPriorityPolicy.ts": "jones-owned",
     "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts": "jones-owned",
     "apps/server/src/jones/hostService/systemBootService.ts": "jones-owned",

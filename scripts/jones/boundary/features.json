@@ -4,6 +4,15 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "remote-agent-lineage",
+      "tests": [
+        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+        "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
+        "apps/web/src/components/BranchToolbar.panel.browser.test.tsx"
+      ],
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Lineage. The shared relationship panel combines local and remote rows before its existing group/window rendering. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation and unavailable parents. No server, schema, authentication or lifecycle changes."
+    },
+    {
       "id": "provider-switch-before-start",
       "tests": [
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
