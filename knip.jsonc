@@ -68,6 +68,7 @@
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
         "src/provider/testFixtures/*.mjs",
+        "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.
         "src/jones/nativeCreation/NativeCreationPreparation.ts",
@@ -124,6 +125,7 @@
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
         // The PR read fixture HTML loads this synthetic verification entry.
         "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
+        "src/jones/workstreams/operationsPreview.tsx",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still

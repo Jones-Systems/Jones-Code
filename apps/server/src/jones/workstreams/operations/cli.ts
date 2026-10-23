@@ -226,7 +226,7 @@ const runLive = (flags: CliAuthLocationFlags, input: WorkstreamCliInput, json: b
             });
             const result = yield* dispatchWorkstreamCli(port, input);
             const output = json
-              ? yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(result)
+              ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)
               : formatWorkstreamCliResult(result);
             yield* Console.log(output);
           }),

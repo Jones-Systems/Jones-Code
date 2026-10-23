@@ -1667,6 +1667,10 @@
   ],
   "allowedImports": [
     {
+      "from": "apps/server/src/mcp/toolkits/worktree/registration.test.ts",
+      "to": "apps/server/src/jones/workstreams/operations/service.ts"
+    },
+    {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
       "to": "apps/web/src/components/files/PdfPreview.tsx"
     },
