@@ -1587,7 +1587,10 @@
     "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/CodexSelectionRestart.integration.test.ts": "jones-owned",
-    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned"
+    "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned",
+    "scripts/setup-worktree.ts": "hook",
+    "t3.json": "accepted-shared",
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
