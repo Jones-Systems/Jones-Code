@@ -3,9 +3,11 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as NodeEvents from "node:events";
+import * as NodeCrypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   processAbsence,
+  probePackagedIdentity,
   qualificationCancellation,
   verifyPackagedIdentity,
   withSmokeScratch,
@@ -47,9 +49,31 @@ describe("desktop packaged-worker qualification harness", () => {
     electron: "42.0.0",
     platform: "darwin",
     arch: "arm64",
-    workerEntry: "dist-electron/jones/updates/jonesStagingWorker.cjs",
+    workerEntry: "apps/desktop/dist-electron/jones/updates/jonesStagingWorker.cjs",
     workerSha256: "c".repeat(64),
   };
+
+  it("probes the packaged desktop subtree and retains a missing-entry diagnostic", async () => {
+    const root = await fixture();
+    // Portable directory fixture matches build-desktop-artifact's app layout; hosted CI proves ASAR/Electron.
+    const asar = NodePath.join(root, "app.asar");
+    const entry = NodePath.join(
+      asar,
+      "apps/desktop/dist-electron/jones/updates/jonesStagingWorker.cjs",
+    );
+    const worker = "process.exitCode = 0;\n";
+    await NodeFSP.mkdir(NodePath.dirname(entry), { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(asar, "package.json"), JSON.stringify(identity.metadata));
+    await NodeFSP.writeFile(entry, worker);
+    const env = { PATH: process.env.PATH };
+    await expect(probePackagedIdentity(process.execPath, asar, env)).resolves.toMatchObject({
+      metadata: identity.metadata,
+      workerEntry: identity.workerEntry,
+      workerSha256: NodeCrypto.createHash("sha256").update(worker).digest("hex"),
+    });
+    await NodeFSP.unlink(entry);
+    await expect(probePackagedIdentity(process.execPath, asar, env)).rejects.toThrow(/ENOENT/);
+  });
 
   it("requires packaged Electron and the desktop entry bound to the exact source, tree and version", () => {
     expect(() => verifyPackagedIdentity(identity, expected)).not.toThrow();

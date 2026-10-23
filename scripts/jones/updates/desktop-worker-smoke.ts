@@ -17,7 +17,7 @@ import {
 } from "@t3tools/shared/jones/jonesActions";
 
 const REPOSITORY = "Jones-Systems/Jones-Code";
-const WORKER_ENTRY = "dist-electron/jones/updates/jonesStagingWorker.cjs";
+const WORKER_ENTRY = "apps/desktop/dist-electron/jones/updates/jonesStagingWorker.cjs";
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 // Exercise protocol v1 as an external caller, without loading the unpackaged desktop runtime.
 type JonesStagingJob =
@@ -169,6 +169,43 @@ async function command(
     ...(signal === undefined ? {} : { signal }),
   });
   return result.stdout;
+}
+
+export async function probePackagedIdentity(
+  executable: string,
+  asar: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  let probe: string;
+  try {
+    probe = await command(
+      executable,
+      [
+        "-e",
+        `
+        const fs = require('node:fs'), crypto = require('node:crypto');
+        const asar = process.argv[1], entry = process.argv[2];
+        process.stdout.write(JSON.stringify({
+          metadata: JSON.parse(fs.readFileSync(asar + '/package.json', 'utf8')),
+          electron: process.versions.electron, platform: process.platform, arch: process.arch,
+          workerEntry: entry, workerSha256: crypto.createHash('sha256').update(fs.readFileSync(asar + '/' + entry)).digest('hex')
+        }));`,
+        asar,
+        WORKER_ENTRY,
+      ],
+      env,
+      signal,
+    );
+  } catch (cause) {
+    const failure = cause as { code?: unknown; signal?: unknown; stderr?: unknown };
+    const stderr = typeof failure.stderr === "string" ? failure.stderr.trim().slice(0, 512) : "";
+    throw new Error(
+      `Packaged identity probe failed (${String(failure.code ?? failure.signal ?? "unknown")}): ${stderr}`,
+      { cause },
+    );
+  }
+  return JSON.parse(probe) as unknown;
 }
 
 function taskMounts(root: string): string[] {
@@ -476,25 +513,7 @@ async function main() {
         const executable = NodePath.join(app, "Contents/MacOS", executableName);
         const asar = NodePath.join(app, "Contents/Resources/app.asar");
         const entry = NodePath.join(asar, WORKER_ENTRY);
-        const probe = await command(
-          executable,
-          [
-            "-e",
-            `
-        const fs = require('node:fs'), crypto = require('node:crypto');
-        const asar = process.argv[1], entry = process.argv[2];
-        process.stdout.write(JSON.stringify({
-          metadata: JSON.parse(fs.readFileSync(asar + '/package.json', 'utf8')),
-          electron: process.versions.electron, platform: process.platform, arch: process.arch,
-          workerEntry: entry, workerSha256: crypto.createHash('sha256').update(fs.readFileSync(asar + '/' + entry)).digest('hex')
-        }));`,
-            asar,
-            WORKER_ENTRY,
-          ],
-          env,
-          abort.signal,
-        );
-        const identity = JSON.parse(probe) as unknown;
+        const identity = await probePackagedIdentity(executable, asar, env, abort.signal);
         verifyPackagedIdentity(identity, expected);
         const parsedIdentity = record(identity);
         report.identity = {
