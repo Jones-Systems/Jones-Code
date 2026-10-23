@@ -7707,15 +7707,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   const generation = harness.providerThread.runtimeIdentity?.runtimeGeneration;
                   if (generation === undefined)
                     return yield* Effect.die("Missing synthetic runtime generation");
-                  const dispatch = yield* harness.controlAdmission.begin({
-                    instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
-                    providerSessionId: harness.runtime.providerSessionId,
-                    providerThreadId: harness.providerThread.id,
-                    providerTurnId: "unresolved-steer",
-                    runtimeGeneration: generation,
-                    nativeThreadId,
-                    nativeTurnId: priorTurnId,
-                  });
+                  const dispatch = yield* harness.controlAdmission
+                    .begin({
+                      instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+                      providerSessionId: harness.runtime.providerSessionId,
+                      providerThreadId: harness.providerThread.id,
+                      providerTurnId: "unresolved-steer",
+                      runtimeGeneration: generation,
+                      nativeThreadId,
+                      nativeTurnId: priorTurnId,
+                    })
+                    .pipe(Effect.orDie);
                   yield* harness.controlAdmission.markUnknown(dispatch);
                 }),
               }
