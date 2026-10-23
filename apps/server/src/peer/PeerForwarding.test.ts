@@ -47,6 +47,8 @@ import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerMcpClient from "./PeerMcpClient.ts";
+import { OrchestratorToolkit } from "../mcp/toolkits/orchestrator/tools.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
@@ -89,7 +91,15 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
   );
   const users = { ...liveThreadShell(usersThread, { runtimeMode: "auto" }), projectId: boxProject };
   const run = (status: OrchestrationV2Run["status"]) =>
-    ({ id: boxRun, status }) as unknown as OrchestrationV2Run;
+    ({
+      id: boxRun,
+      status,
+      ordinal: 1,
+      modelSelection: base.modelSelection,
+      requestedAt: base.createdAt,
+      startedAt: null,
+      completedAt: null,
+    }) as unknown as OrchestrationV2Run;
   const shellOf = (threadId: ThreadId): Effect.Effect<OrchestrationV2ThreadShell | null> =>
     threadId === boxThread ? linked : Effect.succeed(threadId === usersThread ? users : null);
   const projectionOf = (threadId: ThreadId) =>
@@ -100,6 +110,7 @@ const boxThreads = (seen: Ref.Ref<Seen>, linkSession: Ref.Ref<string>) => {
     getThreadShell: shellOf,
     getProjectThreadRecords: (input) => projectionOf(input.threadId),
     getThreadRecords: (threadId) => projectionOf(threadId),
+    getTimelinePage: () => Effect.succeed({ items: [], hasMore: false, totalItems: 0 }),
     listProjectThreads: () => linked.pipe(Effect.map((shell) => [shell] as never)),
     sendToThread: (input) =>
       Ref.update(seen, (current) => ({ ...current, sends: [...current.sends, input] })).pipe(
@@ -349,6 +360,95 @@ const failureOf = (result: McpSchema.CallToolResult) => {
   return result.isError === true && text?.type === "text" ? JSON.parse(text.text) : undefined;
 };
 
+it.effect(
+  "refuses sends before mutation on an old receiver while reads and Stop remain available",
+  () => {
+    let supportsPolicy = false;
+    const calls: Array<Parameters<PeerMcpClient.PeerMcpClient["Service"]["call"]>[0]> = [];
+    const scope: McpInvocationContext.McpInvocationScope = {
+      environmentId: laptop.environmentId,
+      requestNamespace: "source-session",
+      issuedAt: 1,
+      capabilities: new Set(["orchestration"]),
+      client: undefined,
+      thread: {
+        threadId: ThreadId.make("thread:source"),
+        providerSessionId: "source-session",
+        providerInstanceId: ProviderInstanceId.make("codex"),
+      },
+    };
+    return Effect.gen(function* () {
+      const forwarding = yield* PeerForwarding.PeerForwarding;
+      const send = () =>
+        forwarding.call(scope, OrchestratorToolkit.tools.t3_thread_send, box.environmentId, {
+          threadId: boxThread,
+          message: "Carry on.",
+          clientRequestId: "same-operation",
+        });
+      const refused = yield* send().pipe(Effect.flip);
+      expect(refused.code).toBe("capability_denied");
+      expect(calls.map((call) => call.tool)).toEqual(["t3_thread_read"]);
+      yield* forwarding.readThread(scope, box.environmentId, { threadId: boxThread });
+      yield* forwarding.interruptThread(scope, box.environmentId, {
+        threadId: boxThread,
+        stop: true,
+      });
+      expect(calls.map((call) => call.tool)).toEqual([
+        "t3_thread_read",
+        "t3_thread_read",
+        "t3_thread_interrupt",
+      ]);
+      supportsPolicy = true;
+      yield* send();
+      yield* send();
+      const sent = calls.filter((call) => call.tool === "t3_thread_send");
+      expect(sent).toHaveLength(2);
+      expect(sent[0]?.arguments.clientRequestId).toBe(sent[1]?.arguments.clientRequestId);
+      expect(sent[0]?.origin).toEqual(sent[1]?.origin);
+      expect(sent[0]?.origin).toMatchObject({
+        environmentId: laptop.environmentId,
+        thread: { threadId: "thread:source" },
+      });
+      expect(
+        calls
+          .filter((call) => call.tool === "t3_thread_read")
+          .every((call) => call.origin === undefined),
+      ).toBe(true);
+    }).pipe(
+      Effect.provide(
+        PeerForwarding.layer.pipe(
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+          Layer.provide(
+            Layer.mock(ThreadManagement.ThreadManagementService)({
+              getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
+            }),
+          ),
+          Layer.provide(
+            Layer.mock(PeerMcpClient.PeerMcpClient)({
+              call: (input) =>
+                Effect.sync(() => {
+                  calls.push(input);
+                  return (
+                    input.tool === "t3_thread_read" && supportsPolicy
+                      ? {
+                          remoteMessagePolicy: {
+                            schemaVersion: "t3.linked-message-policy/v1",
+                            authenticatedOrigin: true,
+                            incomingAcceptance: true,
+                          },
+                        }
+                      : {}
+                  ) as never;
+                }),
+            }),
+          ),
+        ),
+      ),
+    );
+  },
+);
+
 it.effect("an agent here works on a linked environment's threads within its own modes", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -387,6 +487,11 @@ it.effect("an agent here works on a linked environment's threads within its own 
       });
       expect(sent.isError).toBe(false);
       expect(sent.structuredContent).toMatchObject({ threadId: boxThread, delivery: "started" });
+      const sentInput = (yield* Ref.get(seen)).sends[0]!;
+      expect(sentInput.text).toContain("environment-laptop");
+      expect(sentInput.text).toContain("thread:laptop-full");
+      expect(sentInput.text).not.toContain("t3-thread:");
+      expect(sentInput.senderThreadId).toBeUndefined();
 
       // A plan-mode agent here may not steer that thread there: the box
       // refuses it, because the call carries the agent's own modes.
