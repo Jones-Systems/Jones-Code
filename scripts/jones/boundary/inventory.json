@@ -1572,7 +1572,11 @@
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
+    "apps/server/src/jones/hostService/linuxPriorityPolicy.ts": "jones-owned",
+    "apps/server/src/jones/hostService/linuxPriorityPolicy.test.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemBootService.ts": "jones-owned",
+    "apps/server/src/jones/hostService/systemBootService.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
