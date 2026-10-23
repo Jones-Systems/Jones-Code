@@ -6,6 +6,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
 
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
 const testState = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const testState = vi.hoisted(() => ({
   continueThreadsAfterServerUpdate: false,
   sessionAtom: null as unknown,
   jonesEnvironmentIds: new Set<string>(),
+  launcherUnsupported: false,
 }));
 
 vi.mock(import("~/jones/updates/jonesUpdates"), async (original) => {
@@ -31,6 +33,9 @@ vi.mock(import("~/jones/updates/jonesUpdates"), async (original) => {
                 channel: "jones-main",
                 phase: "blocked",
                 capability: { check: false, download: false, install: false },
+                ...(testState.launcherUnsupported
+                  ? { launcherSettlement: "unsupported", launcherRefresh: "recommended" }
+                  : {}),
               }
             : null,
         )) as never,
@@ -159,6 +164,7 @@ async function renderAction(
 
 beforeEach(() => {
   testState.jonesEnvironmentIds.clear();
+  testState.launcherUnsupported = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   testState.updateServer.mockReset();
   testState.toast.mockReset();
@@ -180,6 +186,22 @@ afterEach(async () => {
 });
 
 describe("ServerUpdateAction", () => {
+  it("points an older Jones launcher to Connections without offering a Release update", async () => {
+    testState.jonesEnvironmentIds.add("env-test");
+    testState.launcherUnsupported = true;
+    await renderAction({ appearance: "icon" });
+    await userEvent.hover(page.getByRole("button", { name: "Jones builds for Test server" }));
+    await expect
+      .element(
+        page.getByText("Launcher refresh recommended. Review this host in Connections.", {
+          exact: true,
+        }),
+      )
+      .toBeVisible();
+    await click();
+    expect(testState.updateServer).not.toHaveBeenCalled();
+  });
+
   it.each([
     { serverUpdateScope: undefined, scopes: ["orchestration:operate"], allowed: true },
     { serverUpdateScope: undefined, scopes: ["orchestration:read"], allowed: false },
