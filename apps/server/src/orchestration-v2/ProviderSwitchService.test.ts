@@ -499,3 +499,22 @@ it.effect("preserves cross-driver handoff for an existing Codex conversation", (
     ),
   ),
 );
+
+it.effect("replaces the bound conversation session rather than a newer sibling session", () =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const input = deadNativeThreadProjection("stopped");
+    const rootSession = { ...input.providerSessions[0]!, status: "ready" as const };
+    const sibling = {
+      ...rootSession,
+      id: ProviderSessionId.make("newer-sibling"),
+      updatedAt: DateTime.add(now, { seconds: 10 }),
+    };
+    const plan = yield* service.plan({
+      projection: { ...input, providerSessions: [rootSession, sibling] },
+      targetModelSelection: { instanceId: currentInstanceId, model: "gpt-5.4" },
+    });
+    assert.equal(plan.transition.type, "restart_and_resume");
+    assert.deepEqual(plan.releaseProviderSessionIds, [rootSession.id]);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: "shared" } }))),
+);

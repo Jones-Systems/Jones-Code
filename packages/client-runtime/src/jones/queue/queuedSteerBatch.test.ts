@@ -146,7 +146,59 @@ describe("queued batch client state", () => {
     ).toContain("individual Steer");
   });
 
-  it("stops before special commands, model changes and automatic completions remain queued", () => {
+  it.each(["codex", "claudeAgent"])(
+    "manually steers four historical configurations into active %s",
+    (driver) => {
+      const state = { ...input(), projection: projection(4) };
+      state.projection = {
+        ...state.projection,
+        providerSessions: state.projection.providerSessions.map((session) => ({
+          ...session,
+          driver: driver as typeof session.driver,
+        })),
+        runs: state.projection.runs.map((run, i) =>
+          i === 0
+            ? run
+            : {
+                ...run,
+                providerInstanceId: "previous-account" as never,
+                providerThreadId: "previous-thread" as never,
+                modelSelection: {
+                  instanceId: "previous-account" as never,
+                  model: "previous-model",
+                  options: [{ id: "reasoningEffort", value: "low" }],
+                },
+              },
+        ),
+      };
+      const view = deriveQueuedSteerBatch(state)!;
+      expect(view.reason).toBeNull();
+      expect(view.label).toBe("Steer all (4)");
+      expect(view.items.map((item) => item.messageId)).toEqual([
+        "message-0",
+        "message-1",
+        "message-2",
+        "message-3",
+      ]);
+      expect(
+        deriveQueuedSteerBatch({
+          ...state,
+          projection: {
+            ...state.projection,
+            thread: {
+              ...state.projection.thread,
+              modelSelection: {
+                ...state.projection.thread.modelSelection,
+                model: "unsynchronized",
+              },
+            },
+          },
+        })?.reason,
+      ).toContain("synchronize");
+    },
+  );
+
+  it("stops before special commands and leaves automatic completions queued", () => {
     const state = input();
     const modified = {
       ...state.projection,
@@ -155,13 +207,6 @@ describe("queued batch client state", () => {
       ),
     };
     expect(deriveQueuedSteerBatch({ ...state, projection: modified })?.items).toHaveLength(1);
-    const changedModel = {
-      ...state.projection,
-      runs: state.projection.runs.map((run, i) =>
-        i === 2 ? { ...run, modelSelection: { ...run.modelSelection, model: "different" } } : run,
-      ),
-    };
-    expect(deriveQueuedSteerBatch({ ...state, projection: changedModel })?.items).toHaveLength(1);
     const completion = {
       ...state.projection,
       messages: state.projection.messages.map((message, i) =>

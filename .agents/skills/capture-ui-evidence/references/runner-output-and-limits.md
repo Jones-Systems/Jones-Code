@@ -8,7 +8,7 @@ Runs use separate scratch and artifact directories. The runner registers the exa
 
 ## Scenarios and captures
 
-A custom scenario is an absolute-path ESM module with a default async function. Its content hash is recorded. Keep it self-contained (Node built-ins are available); only the scenario file is staged, not sibling imports. The context provides the Electron app and Playwright page, `step`, `capture`, `dispatch`, `readSnapshot`, `reload`, `completeOnboarding`, `setTheme`, `setWindowSize`, a disposable workspace, and non-secret logging. Fixture dispatch is limited to `project.create`, `thread.create`, and `thread.metadata.update`. On protocol V2, projects use the authenticated project mutation HTTP endpoint, thread commands use ticket-authenticated WebSocket RPC, and shell readback sends the required protocol header. Tokens and tickets stay inside the private renderer and are not returned as evidence. Create fixture state through the app dispatch or UI; do not write the database directly or send a provider turn.
+A custom scenario is an absolute-path ESM module with a default async function. Its content hash is recorded. Keep it self-contained (Node built-ins are available); the scenario entry is staged, not arbitrary sibling imports. Top-level harness modules are also staged; the native self-configuration entry uses that explicit support-module location. The context provides the Electron app and Playwright page, `step`, `capture`, `dispatch`, `readSnapshot`, `reload`, `completeOnboarding`, `setTheme`, `setWindowSize`, a disposable workspace, and non-secret logging. Fixture dispatch is limited to `project.create`, `thread.create`, and `thread.metadata.update`. On protocol V2, projects use the authenticated project mutation HTTP endpoint, thread commands use ticket-authenticated WebSocket RPC, and shell readback sends the required protocol header. Tokens and tickets stay inside the private renderer and are not returned as evidence. Create fixture state through app dispatch or UI; do not write the database directly. Metadata dispatch still cannot send provider turns. The narrowly allowlisted native self-configuration hooks can create only fixed synthetic A/B provider registrations and read fixture-prefixed thread detail. Its ordinary messages and explicit picker changes go through the actual UI. This opt-in scenario may send synthetic provider turns inside the private namespace; see [native lifecycle verification](native-self-configuration.md). No arbitrary settings patch, executable path, live provider, or renderer message-dispatch hook is added.
 
 `setTheme` controls a recorded native-theme and CSS-media fixture and reads the rendered appearance back. It does not prove user theme-preference persistence. Use `ctx.reload()` to restore the recorded navigator-online fixture after navigation.
 
@@ -22,7 +22,7 @@ Each run writes `manifest.json` using schema `jones-code-ui-evidence/v1`. It rec
 
 Source provenance includes the source HEAD, dirty status, a digest of the tracked diff and untracked-file content, and the declared comparison OID. A dirty-tree capture must be described as that base plus its recorded patch identity, not as a commit-only result. A source OID alone does not prove which code produced existing build outputs: `build.sourceCorrespondence` is `receipt-matched` only when the exact source and build-output receipt match; otherwise describe it as unproved. The unpackaged runtime identity may be `null`.
 
-Use the manifest to state what the run proves and what it leaves open. The built-in scenario covers project/thread metadata and a Sidebar rename with backend readback and reload persistence. It does not cover message content, provider turns, or external services. The Linux harness does not establish behavior for macOS, packaged/fused builds, signing, native dialogs, provider/network flows, or GitHub attachment upload.
+Use the manifest to state what the run proves and what it leaves open. The built-in scenario covers project/thread metadata and a Sidebar rename with backend readback and reload persistence. It does not cover message content, provider turns, or external services. The Linux harness does not establish behavior for macOS, packaged/fused builds, signing, native dialogs, live-provider/network flows, or GitHub attachment upload. The opt-in native self-configuration scenario adds only its named synthetic-provider lifecycle assertions; its hashed sidecar separates saved/requested/observed evidence. Generic manifest exclusions are not general message-content or live-inference qualification.
 
 ## Build receipts
 
@@ -53,5 +53,15 @@ Pass its absolute path through `--build-receipt`. The command rejects changed so
 ## Sharing evidence
 
 The default `.t3/ui-evidence/runs/` output is task-local and untracked. Attach screenshots or video through the repository's authorized GitHub workflow and verify that each attachment can be retrieved and renders in the PR. The runner does not upload evidence or commit generated captures. Keep the manifest with the PR evidence record so reviewers can identify the exact build, fixture, route, and coverage.
+
+Prefer the official GitHub CLI attachment support using existing CLI authentication. Check `gh pr edit --help` for `--attach` before concluding that browser sign-in is needed. A signed-out Browser profile does not establish that the CLI cannot upload. For an existing PR:
+
+```bash
+gh pr edit 123 --repo OWNER/REPO --attach './before.png#Before the change' --attach './after.png#After the change'
+```
+
+Repeating `--attach` uploads multiple images or videos. Without a body flag, the command preserves the existing PR body and appends the attachments. If updating the description too, use `--body-file`; references to attached local paths are replaced with uploaded URLs. See the [official CLI manual](https://cli.github.com/manual/gh_pr_edit). No extension or browser session is required when the installed CLI and its authentication support the operation.
+
+Read the PR body back and check the uploaded images in the rendered PR. A command can upload some attachments and return a nonzero exit status for others; inspect the saved URLs before retrying so successful uploads are not duplicated. If the local CLI lacks the flag or GitHub rejects the upload, report the actual limitation and use an authorized fallback.
 
 For every evidence set, identify the comparison and candidate revisions, build identity when available, route and platform, actual viewport, scale and theme, fixture and scenario, observable action/readback, and coverage limits. A combined preview must name its integration revision and constituent heads. Refresh any exact-current-head claim after the PR head changes.
