@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-remote-agent-lineage",
+      "tests": [
+        "apps/web/src/jones/remoteAgentLineage/model.test.ts",
+        "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx",
+        "apps/web/src/components/BranchToolbar.panel.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run --root apps/web --config vite.config.ts src/jones/remoteAgentLineage/model.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx src/components/BranchToolbar.panel.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/web/src/jones/remoteAgentLineage apps/web/src/components/ChatView.tsx apps/web/src/components/chat/ChatHeader.tsx apps/web/src/components/chat/ThreadRelationshipsControl.tsx apps/web/src/components/BranchToolbar.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-native-self-configuration-harness",
       "tests": [
         "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",

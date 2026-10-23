@@ -7,6 +7,9 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "apps/web/src/components/BranchToolbar.panel.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbar.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/jones/threadConfiguration/composerSelection.ts": "jones-owned",
     "apps/web/src/jones/threadConfiguration/composerSelection.test.ts": "jones-owned",
     "packages/contracts/src/jones/threadSelfConfiguration.test.ts": "jones-owned",
