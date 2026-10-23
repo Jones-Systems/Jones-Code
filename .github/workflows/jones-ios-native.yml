@@ -100,6 +100,7 @@ jobs:
             ${{ env.JONES_IOS_OUTPUT }}/admission-admission.json
             ${{ env.JONES_IOS_OUTPUT }}/tooling-admission.json
             ${{ env.JONES_IOS_OUTPUT }}/build-admission.json
+            ${{ env.JONES_IOS_OUTPUT }}/*-admission-events.jsonl
             ${{ env.JONES_IOS_OUTPUT }}/success.json
             ${{ env.JONES_IOS_OUTPUT }}/failure.json
             ${{ env.JONES_IOS_OUTPUT }}/startup-timeout.json

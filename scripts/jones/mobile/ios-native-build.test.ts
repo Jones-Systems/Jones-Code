@@ -1,5 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - Exercises evidence retention through real task-owned filesystem cleanup.
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
+import type { AdmissionEvent } from "./ios-admission.ts";
 import {
+  admitBuildBoundary,
   buildArgv,
   buildFailureCode,
   productPaths,
@@ -44,6 +50,84 @@ describe("installed native tooling", () => {
 });
 
 describe("captured build handoff", () => {
+  it.each([false, true])(
+    "retains admission evidence after build cleanup (permanent busy: %s)",
+    async (busy) => {
+      const taskRoot = await NodeFSP.mkdtemp(
+        NodePath.join(NodeOS.tmpdir(), "jones-ios-admission-"),
+      );
+      try {
+        const root = NodePath.join(taskRoot, "build"),
+          output = NodePath.join(taskRoot, "evidence");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.mkdir(output);
+        let time = 100,
+          samples = 0,
+          heavyStarts = 0;
+        const result = admitBuildBoundary(
+          {
+            sourceSha: "a".repeat(40),
+            serialSlot: "owner-slot",
+            root,
+            output,
+            children: [],
+            signal: new AbortController().signal,
+          },
+          "server",
+          {
+            env: {},
+            now: () => time,
+            monotonicNow: () => time,
+            wait: async (ms) => {
+              time += ms;
+            },
+            sample: async () => ({
+              sourceSha: "a".repeat(40),
+              hostname: NodeOS.hostname(),
+              serialSlot: "owner-slot",
+              measuredAt: time,
+              cpuUsed: samples++ === 0 || busy ? 90 : 30,
+              availableMemoryBytes: 1024 ** 3,
+              memoryPressure: "normal",
+              swapBytesPerSecond: 0,
+              freeDiskBytes: 30 * 1024 ** 3,
+            }),
+          },
+        ).then(() => {
+          heavyStarts++;
+        });
+        if (busy) await expect(result).rejects.toThrow("deadline");
+        else await result;
+        expect(heavyStarts).toBe(busy ? 0 : 1);
+        await NodeFSP.rm(root, { recursive: true });
+        const events: AdmissionEvent[] = (
+          await NodeFSP.readFile(NodePath.join(output, "server-admission-events.jsonl"), "utf8")
+        )
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(events[0]).toMatchObject({ kind: "started", at: 100, deadlineAt: 120_100 });
+        expect(events.filter((event) => event.kind === "sample")).toHaveLength(busy ? 6 : 2);
+        expect(events.filter((event) => event.kind === "held")).toHaveLength(busy ? 6 : 1);
+        expect(events[1]?.sample).toMatchObject({ cpuUsed: 90 });
+        expect(events.at(-1)).toMatchObject({
+          kind: busy ? "aborted" : "ready",
+          at: busy ? 120_100 : 20_100,
+        });
+        const passingPath = NodePath.join(output, "server-admission.json");
+        if (busy)
+          await expect(NodeFSP.lstat(passingPath)).rejects.toMatchObject({ code: "ENOENT" });
+        else
+          expect(JSON.parse(await NodeFSP.readFile(passingPath, "utf8"))).toMatchObject({
+            cpuUsed: 30,
+            measuredAt: 20_100,
+          });
+      } finally {
+        await NodeFSP.rm(taskRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("preserves disk exhaustion through combined build and cleanup failures", () => {
     expect(
       buildFailureCode(

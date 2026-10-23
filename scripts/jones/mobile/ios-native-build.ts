@@ -4,7 +4,8 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
-import { collectAdmission } from "./ios-admission.ts";
+import { collectAdmissionSample, waitForResourceAdmission } from "./ios-admission.ts";
+import type { AdmissionWaitOptions } from "./ios-admission.ts";
 import {
   configureTestRun,
   fileDigest,
@@ -157,10 +158,45 @@ export interface BuildOptions {
   source: string;
   sourceSha: string;
   root: string;
+  output: string;
   developerDir: string;
   serialSlot: string;
   children: ChildReceipt[];
   signal: AbortSignal;
+}
+
+export async function admitBuildBoundary(
+  options: Omit<BuildOptions, "source" | "developerDir">,
+  label: string,
+  dependencies: Partial<
+    Pick<AdmissionWaitOptions, "sample" | "now" | "monotonicNow" | "wait" | "env">
+  > = {},
+) {
+  const eventsPath = NodePath.join(options.output, `${label}-admission-events.jsonl`);
+  await NodeFSP.writeFile(eventsPath, "", { flag: "wx", mode: 0o600 });
+  return waitForResourceAdmission({
+    sourceSha: options.sourceSha,
+    serialSlot: options.serialSlot,
+    signal: options.signal,
+    sample: (signal) =>
+      collectAdmissionSample(
+        options.sourceSha,
+        options.serialSlot,
+        options.root,
+        options.children,
+        signal,
+      ),
+    ...dependencies,
+    record: async (event) => {
+      await NodeFSP.appendFile(eventsPath, `${JSON.stringify(event)}\n`);
+      if (event.kind === "ready")
+        await NodeFSP.writeFile(
+          NodePath.join(options.output, `${label}-admission.json`),
+          JSON.stringify(event.sample),
+          { flag: "wx", mode: 0o600 },
+        );
+    },
+  });
 }
 
 // The caller owns the disposable checkout and build root through all native
@@ -231,21 +267,13 @@ async function performBuild(options: BuildOptions) {
       "Named task branch required",
     );
   };
-  const admit = async (label: string) => {
-    const admission = await collectAdmission(sourceSha, options.serialSlot, root, children, signal);
-    await NodeFSP.writeFile(
-      NodePath.join(root, `${label}-admission.json`),
-      JSON.stringify(admission),
-      { flag: "wx", mode: 0o600 },
-    );
-  };
+  const admit = (label: string) => admitBuildBoundary(options, label);
   await checkSource("before");
   await run("ignored-ios", "git", ["check-ignore", "apps/mobile/ios/"], source);
   await NodeAssert.rejects(NodeFSP.lstat(ios), { code: "ENOENT" }, "Generated iOS must be absent");
   const xcodebuild = NodePath.join(developerDir, "usr/bin/xcodebuild");
   const xcodeVersion = await run("xcode-version", xcodebuild, ["-version"], source);
   await run("xcode-ready", xcodebuild, ["-checkFirstLaunchStatus"], source);
-  await admit("server");
   const manifests = await Promise.all(
     ["apps/server/package.json", "apps/desktop/package.json"].map(async (relative) => {
       const path = NodePath.join(source, relative),
@@ -265,16 +293,17 @@ async function performBuild(options: BuildOptions) {
       [NodePath.join(source, "scripts/stamp-jones-build.ts")],
       source,
     );
+    await admit("server");
     await run("server", "vp", ["run", "--filter", "t3", "build"], source, 10 * 60_000);
   } finally {
     for (const manifest of manifests) await NodeFSP.writeFile(manifest.path, manifest.bytes);
   }
-  await admit("prebuild");
   await NodeFSP.writeFile(
     NodePath.join(root, "generated-ios-owner.json"),
     JSON.stringify({ source, sourceSha, path: ios }),
     { flag: "wx", mode: 0o600 },
   );
+  await admit("prebuild");
   await run(
     "prebuild",
     process.execPath,
@@ -293,7 +322,7 @@ async function performBuild(options: BuildOptions) {
   const workspaces = (await NodeFSP.readdir(ios)).filter((name) => name.endsWith(".xcworkspace"));
   NodeAssert.equal(workspaces.length, 1, "Expected one generated workspace");
   const argv = buildArgv(NodePath.join(ios, workspaces[0]!), root);
-  await admit("build");
+  await admit("compile");
   await run("build", xcodebuild, argv, ios, 35 * 60_000);
   await checkSource("after");
   const products = NodePath.join(root, "DerivedData/Build/Products");
@@ -525,17 +554,9 @@ export async function buildMain(mode: string) {
         { flag: "wx", mode: 0o600 },
       );
     }
-    const admission = await collectAdmission(
-      input.sourceSha,
-      input.serialSlot,
-      input.root,
-      children,
-      controller.signal,
-    );
-    await NodeFSP.writeFile(
-      NodePath.join(input.output, `${mode.slice(2)}-admission.json`),
-      JSON.stringify(admission),
-      { flag: "wx", mode: 0o600 },
+    const admission = await admitBuildBoundary(
+      { ...input, children, signal: controller.signal },
+      mode.slice(2),
     );
     if (mode === "--admission") return admission;
     NodeAssert.ok(

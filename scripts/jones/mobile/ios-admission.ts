@@ -1,9 +1,10 @@
-// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Same-host macOS admission; sampling grants no execution authority.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off globalTimers:off - Same-host macOS admission; sampling grants no execution authority.
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
 import { object, ownedCommand } from "./xcuitest.ts";
 import type { ChildReceipt } from "./xcuitest.ts";
@@ -52,7 +53,7 @@ export function memoryAdmitted(pressure: unknown, swapBytesPerSecond: unknown): 
   return pressure !== "critical" || swapBytesPerSecond <= 10 * 1024 ** 2;
 }
 
-export function assertResourceAdmission(
+function assertAdmissionEvidence(
   value: unknown,
   sourceSha: string,
   now = Date.now(),
@@ -75,8 +76,8 @@ export function assertResourceAdmission(
     typeof admission.cpuUsed === "number" &&
       Number.isFinite(admission.cpuUsed) &&
       admission.cpuUsed >= 0 &&
-      admission.cpuUsed < 85,
-    "CPU admission held",
+      admission.cpuUsed <= 100,
+    "CPU evidence unavailable",
   );
   NodeAssert.ok(
     typeof admission.availableMemoryBytes === "number" &&
@@ -97,6 +98,95 @@ export function assertResourceAdmission(
   if (!hostedClass(admission, env))
     NodeAssert.ok(admission.freeDiskBytes >= 30 * 1024 ** 3, "30 GiB free disk required");
   return admission;
+}
+
+export function assertResourceAdmission(
+  value: unknown,
+  sourceSha: string,
+  now = Date.now(),
+  env = process.env,
+) {
+  const admission = assertAdmissionEvidence(value, sourceSha, now, env);
+  NodeAssert.ok(Number(admission.cpuUsed) < 85, "CPU admission held");
+  return admission;
+}
+
+export interface AdmissionEvent {
+  kind: "started" | "sample" | "held" | "ready" | "aborted";
+  at: number;
+  deadlineAt: number;
+  elapsedMs: number;
+  sample?: unknown;
+  reason?: string;
+}
+
+export interface AdmissionWaitOptions {
+  sourceSha: string;
+  serialSlot: string;
+  signal: AbortSignal;
+  sample: (signal: AbortSignal) => Promise<unknown>;
+  record: (event: AdmissionEvent) => Promise<void>;
+  now?: () => number;
+  monotonicNow?: () => number;
+  wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  env?: NodeJS.ProcessEnv;
+}
+
+// Only a fully validated CPU-busy sample may wait. Collector and other resource
+// failures stop immediately; the deadline also cancels an in-flight collector.
+export async function waitForResourceAdmission(options: AdmissionWaitOptions) {
+  const now = options.now ?? Date.now,
+    monotonicNow = options.monotonicNow ?? (() => NodePerfHooks.performance.now()),
+    wait =
+      options.wait ?? ((ms, signal) => NodeTimersPromises.setTimeout(ms, undefined, { signal }));
+  const startedAt = now(),
+    startedMonotonic = monotonicNow(),
+    deadlineAt = startedAt + 120_000,
+    deadlineError = new Error("CPU admission readiness deadline exceeded");
+  const controller = new AbortController();
+  const signal = AbortSignal.any([options.signal, controller.signal]);
+  const timer = setTimeout(() => controller.abort(deadlineError), 120_000);
+  timer.unref();
+  const elapsed = () => monotonicNow() - startedMonotonic;
+  const check = () => {
+    if (elapsed() >= 120_000) controller.abort(deadlineError);
+    signal.throwIfAborted();
+  };
+  const record = (kind: AdmissionEvent["kind"], extra: Partial<AdmissionEvent> = {}) =>
+    options.record({ kind, at: now(), deadlineAt, elapsedMs: elapsed(), ...extra });
+  try {
+    await record("started");
+    while (true) {
+      check();
+      const value = await options.sample(signal);
+      await record("sample", { sample: value });
+      check();
+      const admission = assertAdmissionEvidence(value, options.sourceSha, now(), options.env);
+      NodeAssert.equal(admission.serialSlot, options.serialSlot, "admission serial slot mismatch");
+      if (Number(admission.cpuUsed) < 85) {
+        await record("ready", { sample: admission });
+        check();
+        return assertResourceAdmission(admission, options.sourceSha, now(), options.env);
+      }
+      await record("held");
+      check();
+      await wait(Math.min(20_000, 120_000 - elapsed()), signal);
+    }
+  } catch (error) {
+    const reason = signal.aborted ? signal.reason : error;
+    try {
+      await record("aborted", {
+        reason: reason instanceof Error ? reason.message : String(reason),
+      });
+    } catch (recordError) {
+      throw new AggregateError([error, recordError], "Admission and evidence recording failed", {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function admissionMain(args: string[]) {
@@ -199,6 +289,18 @@ export async function collectAdmission(
   children: ChildReceipt[],
   signal?: AbortSignal,
 ) {
+  const admission = await collectAdmissionSample(sourceSha, serialSlot, scratch, children, signal);
+  assertResourceAdmission(admission, sourceSha);
+  return admission;
+}
+
+export async function collectAdmissionSample(
+  sourceSha: string,
+  serialSlot: string,
+  scratch: string,
+  children: ChildReceipt[],
+  signal?: AbortSignal,
+) {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Pre-install bootstrap must read the actual host without loading HostProcess workspace dependencies.
   NodeAssert.equal(process.platform, "darwin", "macOS required");
   NodeAssert.match(sourceSha, /^[0-9a-f]{40}$/);
@@ -242,6 +344,5 @@ export async function collectAdmission(
     swapBytesPerSecond: swapRate(before, after, seconds),
     freeDiskBytes: disk.bavail * disk.bsize,
   };
-  assertResourceAdmission(admission, sourceSha);
   return admission;
 }
