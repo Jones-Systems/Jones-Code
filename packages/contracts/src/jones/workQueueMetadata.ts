@@ -178,7 +178,8 @@ const ItemV4 = closed({
   assignment: Schema.NullOr(WorkQueueAssignment),
 }).check(
   Schema.makeFilter(
-    (item) => item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
+    (item) =>
+      item.native_handoff === null || (item.target !== null && item.payload_sha256 !== null),
   ),
 );
 const snapshotFields = {
@@ -226,10 +227,11 @@ export const WorkQueueMetadataV4 = closed({
 }).check(
   Schema.makeFilter(validSnapshot),
   Schema.makeFilter((value) =>
-    value.items.every((item) =>
-      item.assignment === null ||
-      item.assignment.updated_at === null ||
-      item.assignment.updated_at <= value.observed_at_ms,
+    value.items.every(
+      (item) =>
+        item.assignment === null ||
+        item.assignment.updated_at === null ||
+        item.assignment.updated_at <= value.observed_at_ms,
     ),
   ),
 );

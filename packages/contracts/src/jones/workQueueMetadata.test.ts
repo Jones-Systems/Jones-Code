@@ -261,14 +261,32 @@ describe("v4 assignment metadata", () => {
     );
     expect(decode(v4)).toEqual(v4);
     expect(Schema.encodeSync(WorkQueueMetadata)(decode(v4))).toEqual(v4);
-    expect(v4.items.map((row: { assignment: { state: string } | null }) => row.assignment?.state ?? null).sort()).toEqual(
-      [null, "issued", "pending", "satisfied", "conflict", "rejected", "unavailable", "unsupported", "permanent", "excluded", "cancelled"].sort(),
+    expect(
+      v4.items
+        .map((row: { assignment: { state: string } | null }) => row.assignment?.state ?? null)
+        .sort(),
+    ).toEqual(
+      [
+        null,
+        "issued",
+        "pending",
+        "satisfied",
+        "conflict",
+        "rejected",
+        "unavailable",
+        "unsupported",
+        "permanent",
+        "excluded",
+        "cancelled",
+      ].sort(),
     );
   });
   it("preserves old versions and rejects v4 fields on their closed items", () => {
     for (const old of [fixture, v2, v3]) {
       expect(Schema.encodeSync(WorkQueueMetadata)(decode(old))).toEqual(old);
-      expect(() => decode({ ...old, items: old.items.map((row) => ({ ...row, assignment: null })) })).toThrow();
+      expect(() =>
+        decode({ ...old, items: old.items.map((row) => ({ ...row, assignment: null })) }),
+      ).toThrow();
     }
   });
   it("rejects missing, private, unsafe and future assignment data", () => {
@@ -276,13 +294,22 @@ describe("v4 assignment metadata", () => {
     const assignment = row.assignment;
     const withAssignment = (value: unknown) => ({ ...v4, items: [{ ...row, assignment: value }] });
     for (const change of [
-      { name: "private" }, { prompt: "private" }, { state: "committed" },
-      { reason: "assignment_rejected:arbitrary detail" }, { reason: "assignment_unavailable:unknown" },
-      { workstream_id: "unsafe name" }, { workstream_id: null },
-      { observed_workstream_id: "bad\nvalue" }, { operation_id: "x".repeat(129) },
-      { updated_at: -1 }, { updated_at: 0.5 }, { updated_at: "1970-01-01T00:00:00Z" },
-      { updated_at: v4.observed_at_ms + 1 }, { updated_at: Number.MAX_SAFE_INTEGER + 1 },
-    ]) expect(() => decode(withAssignment({ ...assignment, ...change }))).toThrow();
+      { name: "private" },
+      { prompt: "private" },
+      { state: "committed" },
+      { reason: "assignment_rejected:arbitrary detail" },
+      { reason: "assignment_unavailable:unknown" },
+      { workstream_id: "unsafe name" },
+      { workstream_id: null },
+      { observed_workstream_id: "bad\nvalue" },
+      { operation_id: "x".repeat(129) },
+      { updated_at: -1 },
+      { updated_at: 0.5 },
+      { updated_at: "1970-01-01T00:00:00Z" },
+      { updated_at: v4.observed_at_ms + 1 },
+      { updated_at: Number.MAX_SAFE_INTEGER + 1 },
+    ])
+      expect(() => decode(withAssignment({ ...assignment, ...change }))).toThrow();
     for (const key of Object.keys(assignment)) {
       const incomplete = { ...assignment };
       delete incomplete[key];
@@ -293,7 +320,9 @@ describe("v4 assignment metadata", () => {
     expect(() => decode({ ...v4, private: "secret" })).toThrow();
     expect(decode(withAssignment(null))).toMatchObject({ items: [{ assignment: null }] });
     for (const updated_at of [null, 0, v4.observed_at_ms]) {
-      expect(decode(withAssignment({ ...assignment, updated_at }))).toMatchObject({ items: [{ assignment: { updated_at } }] });
+      expect(decode(withAssignment({ ...assignment, updated_at }))).toMatchObject({
+        items: [{ assignment: { updated_at } }],
+      });
     }
   });
 });

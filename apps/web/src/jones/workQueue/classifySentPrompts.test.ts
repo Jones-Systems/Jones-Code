@@ -286,7 +286,8 @@ describe.each(["v3", "v4"] as const)("%s recorded pre-start handoffs", (version)
       if (
         sample.schema !== "codex.t3-work-queue-metadata/v3" &&
         sample.schema !== "codex.t3-work-queue-metadata/v4"
-      ) throw new Error("fixture");
+      )
+        throw new Error("fixture");
       for (const turn_state of ["pending", terminalState] as const) {
         const observed = Schema.decodeUnknownSync(WorkQueueMetadata)({
           ...sample,
@@ -314,7 +315,8 @@ describe.each(["v3", "v4"] as const)("%s recorded pre-start handoffs", (version)
     if (
       sample.schema !== "codex.t3-work-queue-metadata/v3" &&
       sample.schema !== "codex.t3-work-queue-metadata/v4"
-    ) throw new Error("fixture");
+    )
+      throw new Error("fixture");
     const item = sample.items[0]!;
     const { turn_id: _turnId, ...missingTurn } = item.native_handoff!;
     for (const native_handoff of [
@@ -389,14 +391,17 @@ describe("v4 assignment and handoff independence", () => {
   it("preserves exact v2 handoff classification with or without an assignment projection", () => {
     const previous = snapshot();
     const expected = classifySentPrompts(previous, [voice()], "native-env");
-    for (const assignment of [null, {
-      workstream_id: "desired-work",
-      observed_workstream_id: "other-work",
-      operation_id: "operation",
-      state: "conflict",
-      reason: "assignment_conflict",
-      updated_at: 1500,
-    }]) {
+    for (const assignment of [
+      null,
+      {
+        workstream_id: "desired-work",
+        observed_workstream_id: "other-work",
+        operation_id: "operation",
+        state: "conflict",
+        reason: "assignment_conflict",
+        updated_at: 1500,
+      },
+    ]) {
       const sample = Schema.decodeUnknownSync(WorkQueueMetadata)({
         ...previous,
         schema: "codex.t3-work-queue-metadata/v4",

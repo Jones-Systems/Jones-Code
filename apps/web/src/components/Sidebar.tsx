@@ -3119,7 +3119,8 @@ export default function Sidebar() {
       !workstreamController.data ||
       workstreamController.loading ||
       workstreamController.stale
-    ) return;
+    )
+      return;
     return publishWorkQueueLocalNames(primaryEnvironmentId, workstreamController.data.items);
   }, [
     primaryEnvironmentId,

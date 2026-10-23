@@ -69,6 +69,7 @@ export function workQueueDestinationLabel(
     name.length > 256 ||
     // oxlint-disable-next-line no-control-regex -- Avoid invisible controls and bidi spoofing in local labels.
     /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/.test(name)
-  ) return id;
+  )
+    return id;
   return `${name} (${id})`;
 }

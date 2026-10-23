@@ -7,8 +7,11 @@ import { RelayConnectionTarget, type PreparedConnection } from "../connection/mo
 import type { ManagedRelayDpopSigner } from "../relay/managedRelay.ts";
 import { layerRemoteHttpClient } from "../rpc/http.ts";
 import {
-  fetchWorkQueueMetadata, publishWorkQueueLocalNames, readWorkQueueLocalNames,
-  subscribeWorkQueueLocalNames, workQueueDestinationLabel,
+  fetchWorkQueueMetadata,
+  publishWorkQueueLocalNames,
+  readWorkQueueLocalNames,
+  subscribeWorkQueueLocalNames,
+  workQueueDestinationLabel,
 } from "./workQueueMetadata.ts";
 import producerV4Raw from "../../../contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture?raw";
 
@@ -87,22 +90,35 @@ it.effect("fetches v4 unchanged from the selected environment without a name loo
       calls.push(String(url));
       return Response.json(response);
     });
-    expect(yield* fetchWorkQueueMetadata({ prepared: connection("selected"), signer }).pipe(
-      Effect.provide(layer),
-    )).toEqual(response);
+    expect(
+      yield* fetchWorkQueueMetadata({ prepared: connection("selected"), signer }).pipe(
+        Effect.provide(layer),
+      ),
+    ).toEqual(response);
     expect(calls).toEqual(["https://selected.test/api/work-queue/metadata"]);
   }),
 );
 it("uses only same-environment safe local labels and clears them with their owner", () => {
   let notifications = 0;
-  const unsubscribe = subscribeWorkQueueLocalNames(() => { notifications += 1; });
-  const release = publishWorkQueueLocalNames("env", [{ workstreamId: "work", name: "Local project" }]);
+  const unsubscribe = subscribeWorkQueueLocalNames(() => {
+    notifications += 1;
+  });
+  const release = publishWorkQueueLocalNames("env", [
+    { workstreamId: "work", name: "Local project" },
+  ]);
   try {
-    expect(workQueueDestinationLabel("work", "env", readWorkQueueLocalNames())).toBe("Local project (work)");
+    expect(workQueueDestinationLabel("work", "env", readWorkQueueLocalNames())).toBe(
+      "Local project (work)",
+    );
     expect(workQueueDestinationLabel("work", "other", readWorkQueueLocalNames())).toBe("work");
     expect(workQueueDestinationLabel("missing", "env", readWorkQueueLocalNames())).toBe("missing");
     for (const name of ["", "   ", "x".repeat(257), "bad\nname", "hidden\u202ename"]) {
-      expect(workQueueDestinationLabel("work", "env", { environmentId: "env", names: new Map([["work", name]]) })).toBe("work");
+      expect(
+        workQueueDestinationLabel("work", "env", {
+          environmentId: "env",
+          names: new Map([["work", name]]),
+        }),
+      ).toBe("work");
     }
   } finally {
     release();
