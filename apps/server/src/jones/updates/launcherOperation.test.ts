@@ -180,6 +180,16 @@ async function settlementFixture() {
 }
 
 describe("failed-operation settlement", () => {
+  it.each(["0.1.0", "0.1.0-dev.1+build.2"])(
+    "records launcher package version %s independently of the qualified runtime version",
+    async (writerLauncherVersion) => {
+      const f = await settlementFixture();
+      const receipt = { ...f.receipt, evidence: { ...f.receipt.evidence, writerLauncherVersion } };
+      await publishUpdateOperationSettlement(f.baseDir, receipt);
+      expect(await readUpdateOperationSettlement(f.baseDir, operationId)).toEqual(receipt);
+    },
+  );
+
   it("shares the old archive bytes, including property order and omission of reason", async () => {
     const f = await settlementFixture();
     const expected =

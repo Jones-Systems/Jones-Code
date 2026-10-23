@@ -553,6 +553,8 @@ const HASH = /^[a-f0-9]{64}$/;
 const SOURCE = /^[a-f0-9]{40}$/;
 const VERSION =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-preview\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/;
+const LAUNCHER_VERSION =
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const object = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -703,7 +705,9 @@ function decodeSettlement(value: unknown, operationId: string): UpdateOperationS
     typeof row.outcomeSha256 !== "string" ||
     !HASH.test(row.outcomeSha256) ||
     !timestamp(evidence.recordedAt) ||
-    !version(evidence.writerLauncherVersion)
+    typeof evidence.writerLauncherVersion !== "string" ||
+    evidence.writerLauncherVersion.length > 256 ||
+    !LAUNCHER_VERSION.test(evidence.writerLauncherVersion)
   )
     throw new Error("Invalid update settlement receipt.");
   if (row.basis === "retired-exception") {
