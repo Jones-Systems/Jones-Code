@@ -1,3 +1,8 @@
+import {
+  GoalNotificationNotDelivered,
+  GoalNotificationDeliveryUnknown,
+  isGoalNotificationNotDelivered,
+} from "../jones/goals/GoalNotificationDelivery.ts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -116,7 +121,10 @@ export const layer: Layer.Layer<
             threadId: input.threadId,
             operation: input.operation,
             providerTurnId: input.providerTurnId,
-            cause: "The recorded provider execution target is no longer valid.",
+            cause:
+              context.message?.notification === undefined
+                ? "The recorded provider execution target is no longer valid."
+                : new GoalNotificationNotDelivered(),
           });
         }
         if (providerTurn.status !== "running") {
@@ -125,7 +133,8 @@ export const layer: Layer.Layer<
               threadId: input.threadId,
               operation: "steer",
               providerTurnId: input.providerTurnId,
-              turnCompleted: providerTurn.status === "completed",
+              turnCompleted:
+                providerTurn.status === "completed" || context.message?.notification !== undefined,
               cause: "The provider turn ended before the steering message was delivered.",
             });
           }
@@ -164,7 +173,10 @@ export const layer: Layer.Layer<
             threadId: input.threadId,
             operation: input.operation,
             providerTurnId: input.providerTurnId,
-            cause: `Provider session ${input.providerSessionId} is not active.`,
+            cause:
+              context.message?.notification === undefined
+                ? `Provider session ${input.providerSessionId} is not active.`
+                : new GoalNotificationNotDelivered(),
           });
         }
         // A restart-session command commits the replacement binding before its
@@ -299,6 +311,19 @@ export const layer: Layer.Layer<
       steer: (input) =>
         Effect.gen(function* () {
           const context = yield* projections.getProviderControlContext(input.threadId, input);
+          if (context.message?.notification !== undefined && context.run !== undefined) {
+            const stopped = yield* projections.getThreadRecords(input.threadId, ["turnItems"], {
+              turnItemTypes: ["run_interrupt_request"],
+              turnItemRunIds: [context.run.id],
+            });
+            if (stopped.turnItems.length > 0)
+              return yield* new ProviderTurnControlError({
+                threadId: input.threadId,
+                operation: "steer",
+                providerTurnId: input.providerTurnId,
+                cause: new GoalNotificationNotDelivered(),
+              });
+          }
           const ownership = context.message?.delegatedCompletion;
           if (ownership !== undefined) {
             const projection = yield* projections.getThreadRecords(input.threadId, ["runs"], {
@@ -389,6 +414,17 @@ export const layer: Layer.Layer<
             .pipe(
               Effect.catch((cause) =>
                 Effect.gen(function* () {
+                  if (
+                    message.notification !== undefined &&
+                    !isGoalNotificationNotDelivered(cause)
+                  ) {
+                    return yield* new ProviderTurnControlError({
+                      threadId: input.threadId,
+                      operation: "steer",
+                      providerTurnId: input.providerTurnId,
+                      cause: new GoalNotificationDeliveryUnknown({ cause }),
+                    });
+                  }
                   const current = yield* projections.getProviderControlContext(
                     input.threadId,
                     input,
@@ -398,8 +434,10 @@ export const layer: Layer.Layer<
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
                     turnCompleted:
-                      findSteerFailure(cause) === undefined &&
-                      current.providerTurn?.status === "completed",
+                      isGoalNotificationNotDelivered(cause) ||
+                      (message.notification === undefined &&
+                        findSteerFailure(cause) === undefined &&
+                        current.providerTurn?.status === "completed"),
                     cause,
                   });
                 }),
