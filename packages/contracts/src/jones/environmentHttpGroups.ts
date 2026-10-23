@@ -16,6 +16,8 @@ import {
   JonesUpdateExactInput,
   JonesNativePrepareInput,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
+  JonesUpdateRecordRetiredInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
@@ -502,6 +504,22 @@ export const makeJonesHttpGroups = ({
   ) {}
 
   class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
+    .add(
+      HttpApiEndpoint.post("reconcile", "/api/jones-updates/reconcile", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateReconcileInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recordRetired", "/api/jones-updates/record-retired", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateRecordRetiredInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
         headers: OptionalBearerHeaders,
