@@ -34,9 +34,7 @@
     },
     {
       "id": "workstreams-sidebar-assignment",
-      "tests": [
-        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
-      ],
+      "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."
     },
     {
@@ -189,16 +187,12 @@
     },
     {
       "id": "provider-restart-identity",
-      "tests": [
-        "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"
-      ],
+      "tests": ["apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts"],
       "scope": "Exact committed restart replacements interrupt the old runtime with its session and instance identity while preserving native references and the replacement projection. The small shared service edit avoids duplicating control-target validation; the existing service integration harness is retained as a Jones test exception to cover same-instance parity and stale replacement rejection."
     },
     {
       "id": "environment-sidebar-filters",
-      "tests": [
-        "apps/web/src/jones/environmentFilters/environmentFilters.test.ts"
-      ],
+      "tests": ["apps/web/src/jones/environmentFilters/environmentFilters.test.ts"],
       "scope": "Session-only environment inclusion filters cover explicit categories, Laptop and Mac Mini label aliases, canonical laptop/Mac Mini machine kinds for custom names, disconnected and duplicate identities, unknown hosts, and sidebar remounts. Explicit categories take precedence over machine kinds. Shared hooks filter thread and draft inventories, search targets, summaries, and reset contexts without changing environment operations."
     },
     {
@@ -261,16 +255,12 @@
     },
     {
       "id": "work-queue-preview",
-      "tests": [
-        "apps/web/src/components/workQueue/WorkQueuePage.test.tsx"
-      ],
+      "tests": ["apps/web/src/components/workQueue/WorkQueuePage.test.tsx"],
       "scope": "Explicit sample preview components remain covered by WorkQueuePage.test.tsx. Ordinary Prompts navigation uses UnifiedQueuePage with genuine voice review and read-only durable queue metadata; integration coverage belongs to work-queue-metadata."
     },
     {
       "id": "boundary-inventory",
-      "tests": [
-        "scripts/jones/check-boundary.test.ts"
-      ]
+      "tests": ["scripts/jones/check-boundary.test.ts"]
     },
     {
       "id": "provider-settlement",
@@ -458,9 +448,7 @@
     },
     {
       "id": "mcp-pin-placement",
-      "tests": [
-        "apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/mcp/pinPlacement/pinPlacement.test.ts"],
       "scope": "t3_thread_organize pin placement (top, bottom, above or below a pinned anchor) computes pin order keys with the sidebar's own sort and planner, keeps same-key groups together, materializes keyless neighbors as reorders, applies the target's mode check to the anchor and rewritten neighbors, and returns key readback. The pure pinned-order helpers moved verbatim from client-runtime threadSort.ts to packages/shared/src/jones/pinOrder.ts so the server can share them; threadSort.ts re-exports them and keeps its upstream tests. The upstream thread toolkit keeps small schema and handler hooks."
     },
     {
@@ -1050,9 +1038,7 @@
     },
     {
       "id": "runtime-operation-permit",
-      "tests": [
-        "apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"
-      ]
+      "tests": ["apps/server/src/jones/runtime/RuntimeOperationPermit.test.ts"]
     },
     {
       "id": "provider-conversation-reselection",
@@ -1156,9 +1142,7 @@
     },
     {
       "id": "scheduled-wake-coalescing",
-      "tests": [
-        "apps/server/src/jones/scheduledTasks/queuedWake.test.ts"
-      ],
+      "tests": ["apps/server/src/jones/scheduledTasks/queuedWake.test.ts"],
       "scope": "Timer fires coalesce while the same task has a queued wake in its target thread. A running wake permits one pending wake; other schedules and changed targets remain independent. Existing scheduler reservation and skip rescheduling own concurrency and cadence."
     },
     {
@@ -1498,9 +1482,7 @@
     },
     {
       "id": "ci-dependency-setup",
-      "tests": [
-        "scripts/jones/ci/chromium-setup.node-test.mjs"
-      ],
+      "tests": ["scripts/jones/ci/chromium-setup.node-test.mjs"],
       "scope": "CI resolves Chromium from each workspace, checks a real headless launch before installing system dependencies, and verifies a single repair attempt. Browser caching follows the upstream versioned key; native compiler and libsecret package setup is consolidated without changing tests or server sharding."
     },
     {
@@ -1610,6 +1592,11 @@
         "scripts/jones/worktree-setup/setup.node-test.mjs"
       ],
       "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+    },
+    {
+      "id": "vcs-cache-efficiency",
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
+      "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
     },
     {
       "id": "workstreams-durable-native-profile",

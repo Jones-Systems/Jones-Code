@@ -1610,7 +1610,10 @@
     "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts": "accepted-shared",
     "apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts": "jones-owned",
     "apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts": "jones-owned",
-    "apps/server/src/jones/remoteDelegation/ObservationSupport.ts": "jones-owned"
+    "apps/server/src/jones/remoteDelegation/ObservationSupport.ts": "jones-owned",
+    "apps/server/src/vcs/VcsStatusBroadcaster.ts": "accepted-shared",
+    "apps/server/src/vcs/VcsStatusBroadcaster.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/boundary/fragments/vcs-cache-efficiency.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
