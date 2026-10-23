@@ -14,7 +14,7 @@ import {
 export const WORKFLOW_PATH = ".github/workflows/ci.yml";
 export const SOURCE_BRANCH = "main";
 export const DEFAULT_SHARD_COUNT = 6;
-const ALLOWED_SHARD_COUNTS = [1, 6, 7, 8];
+const ALLOWED_SHARD_COUNTS = [1, 6, 7, 8, 9];
 /** How many of the newest successful main pushes to look through. */
 export const MAX_SOURCE_RUNS = 20;
 /** The combined weights file inside each `server-shard-weights-a<attempt>` artifact. */
