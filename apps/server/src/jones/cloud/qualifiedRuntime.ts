@@ -1,5 +1,5 @@
 /* oxlint-disable t3code/no-global-process-runtime -- Standalone launcher boundary uses native host identity; platform qualification also accepts injected test adapters. */
-// @effect-diagnostics nodeBuiltinImport:off
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Detached launcher timing stays on Node built-ins.
 // Imported by the detached launcher: keep this boundary on Node built-ins.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -7,6 +7,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeModule from "node:module";
 import * as NodeSqlite from "node:sqlite";
+import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeWorkerThreads from "node:worker_threads";
 import type { JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
 
 const nodeRequire = NodeModule.createRequire(import.meta.url);
@@ -29,6 +31,47 @@ const VERSION =
   /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-preview\.[0-9]+\.[0-9]+(?:\.[0-9]+)?$/;
 const HANDLE = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const localLocks = new Set<string>();
+
+export interface QualifiedDigestTiming {
+  readonly schema: 1;
+  readonly role:
+    | "staging"
+    | "launcher-admission"
+    | "launcher-activation"
+    | "child-start"
+    | "server-startup"
+    | "selection"
+    | "recovery"
+    | "revocation"
+    | "adoption"
+    | "unspecified";
+  readonly runtime: string;
+  readonly files: number;
+  readonly bytes: number;
+  readonly wallMs: number;
+  /** Process CPU includes concurrent work; wall time and loop delay distinguish contention. */
+  readonly cpuMs: number;
+  readonly eventLoopDelayP99Ms: number | null;
+  readonly result: "match" | "mismatch" | "error";
+  readonly at: string;
+}
+
+interface QualifiedDigestOptions {
+  readonly signal?: AbortSignal;
+  readonly role?: QualifiedDigestTiming["role"];
+  readonly runtimeVersion?: string;
+  /** Dedicated child processes can also declare that they have no shared serving loop. */
+  readonly eventLoop?: "shared" | "worker";
+  /** Used only to label the measurement; callers retain their existing integrity decisions. */
+  readonly expectedSha256?: string;
+  readonly onDigestTiming?: (timing: QualifiedDigestTiming) => void | Promise<void>;
+}
+
+const digestTimings: QualifiedDigestTiming[] = [];
+
+export function recentQualifiedDigestTimings(): ReadonlyArray<QualifiedDigestTiming> {
+  return digestTimings.slice();
+}
 
 export interface QualifiedRuntimeArtifact {
   readonly repository: "Jones-Systems/Jones-Code";
@@ -283,81 +326,123 @@ export async function qualifiedPayloadDigest(
   directory: string,
   platform: "linux" | "darwin" = "linux",
   workflow?: QualifiedRuntimeArtifact["workflow"],
-  options?: { readonly signal?: AbortSignal },
+  options?: QualifiedDigestOptions,
 ): Promise<string> {
-  options?.signal?.throwIfAborted();
-  const fs = bundleFileSystem().promises;
-  const root = await fs.realpath(directory);
-  const rootStat = await fs.lstat(directory);
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
-    return blocked("invalid-artifact", "Runtime payload must be a real directory.");
-  const digest = NodeCrypto.createHash("sha256");
+  const started = NodePerfHooks.performance.now();
+  const cpu = process.cpuUsage();
+  const delay =
+    NodeWorkerThreads.isMainThread && options?.eventLoop !== "worker"
+      ? NodePerfHooks.monitorEventLoopDelay({ resolution: 10 })
+      : undefined;
+  delay?.enable();
   let count = 0;
+  let files = 0;
   let total = 0;
-  const visit = async (relative: string): Promise<void> => {
+  let result: QualifiedDigestTiming["result"] = "error";
+  try {
     options?.signal?.throwIfAborted();
-    const absolute = NodePath.join(root, relative);
-    const stat = await fs.lstat(absolute);
-    if (++count > 100_000)
-      return blocked("invalid-artifact", "Runtime payload exceeds the file limit.");
-    if (stat.isSymbolicLink()) {
-      const target = await fs.readlink(absolute);
-      const resolved = await fs.realpath(absolute);
-      if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
-        return blocked("invalid-artifact", "Runtime symlink escapes its payload.");
-      digest.update(`link\0${relative}\0${target}\0`);
-    } else if (stat.isDirectory()) {
-      digest.update(`dir\0${relative}\0`);
-      for (const name of (await fs.readdir(absolute)).sort())
-        await visit(NodePath.join(relative, name));
-    } else if (stat.isFile()) {
-      total += stat.size;
-      if (total > 2 * 1024 * 1024 * 1024)
-        return blocked("invalid-artifact", "Runtime payload exceeds the byte limit.");
-      const hash = NodeCrypto.createHash("sha256");
-      const handle = await fs.open(
-        absolute,
-        NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
-      );
-      try {
-        for await (const bytes of handle.createReadStream()) {
+    const fs = bundleFileSystem().promises;
+    const root = await fs.realpath(directory);
+    const rootStat = await fs.lstat(directory);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+      return blocked("invalid-artifact", "Runtime payload must be a real directory.");
+    const digest = NodeCrypto.createHash("sha256");
+    const visit = async (relative: string): Promise<void> => {
+      options?.signal?.throwIfAborted();
+      const absolute = NodePath.join(root, relative);
+      const stat = await fs.lstat(absolute);
+      if (++count > 100_000)
+        return blocked("invalid-artifact", "Runtime payload exceeds the file limit.");
+      if (stat.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        const resolved = await fs.realpath(absolute);
+        if (NodePath.isAbsolute(target) || !resolved.startsWith(`${root}${NodePath.sep}`))
+          return blocked("invalid-artifact", "Runtime symlink escapes its payload.");
+        digest.update(`link\0${relative}\0${target}\0`);
+      } else if (stat.isDirectory()) {
+        digest.update(`dir\0${relative}\0`);
+        for (const name of (await fs.readdir(absolute)).sort())
+          await visit(NodePath.join(relative, name));
+      } else if (stat.isFile()) {
+        files += 1;
+        total += stat.size;
+        if (total > 2 * 1024 * 1024 * 1024)
+          return blocked("invalid-artifact", "Runtime payload exceeds the byte limit.");
+        const hash = NodeCrypto.createHash("sha256");
+        const handle = await fs.open(
+          absolute,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          for await (const bytes of handle.createReadStream()) {
+            options?.signal?.throwIfAborted();
+            hash.update(bytes);
+          }
           options?.signal?.throwIfAborted();
-          hash.update(bytes);
+        } finally {
+          await handle.close();
         }
-        options?.signal?.throwIfAborted();
-      } finally {
-        await handle.close();
-      }
-      digest.update(
-        `file\0${relative}\0${stat.mode & 0o111}\0${stat.size}\0${hash.digest("hex")}\0`,
-      );
-    } else return blocked("invalid-artifact", "Runtime payload contains a special file.");
-  };
-  const roots = (await fs.readdir(root)).sort();
-  for (const name of roots) {
+        digest.update(
+          `file\0${relative}\0${stat.mode & 0o111}\0${stat.size}\0${hash.digest("hex")}\0`,
+        );
+      } else return blocked("invalid-artifact", "Runtime payload contains a special file.");
+    };
+    const roots = (await fs.readdir(root)).sort();
+    for (const name of roots) {
+      options?.signal?.throwIfAborted();
+      if (
+        name === QUALIFIED_RUNTIME_RECEIPT ||
+        name === ".install-complete" ||
+        name === ".jones-provenance.json"
+      )
+        continue;
+      if (
+        !(
+          platform === "darwin" && workflow !== ".github/workflows/artifact-cli-mac.yml"
+            ? ["t3", "Jones Code.app"]
+            : ["t3", "client", "node_modules", "resource-monitor"]
+        ).includes(name)
+      )
+        return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
+      await visit(name);
+    }
     options?.signal?.throwIfAborted();
-    if (
-      name === QUALIFIED_RUNTIME_RECEIPT ||
-      name === ".install-complete" ||
-      name === ".jones-provenance.json"
-    )
-      continue;
-    if (
-      !(
-        platform === "darwin" && workflow !== ".github/workflows/artifact-cli-mac.yml"
-          ? ["t3", "Jones Code.app"]
-          : ["t3", "client", "node_modules", "resource-monitor"]
-      ).includes(name)
-    )
-      return blocked("invalid-artifact", "Runtime payload has an unexpected root entry.");
-    await visit(name);
+    const entry = await fs.lstat(NodePath.join(root, "t3"));
+    options?.signal?.throwIfAborted();
+    if (!entry.isFile() || (entry.mode & 0o111) === 0)
+      return blocked("invalid-artifact", "Runtime payload has no executable.");
+    const value = digest.digest("hex");
+    result =
+      options?.expectedSha256 === undefined || options.expectedSha256 === value
+        ? "match"
+        : "mismatch";
+    return value;
+  } finally {
+    delay?.disable();
+    const used = process.cpuUsage(cpu);
+    const version = options?.runtimeVersion ?? NodePath.basename(directory);
+    const timing: QualifiedDigestTiming = Object.freeze({
+      schema: 1,
+      role: options?.role ?? "unspecified",
+      runtime: VERSION.test(version) ? version : "unspecified",
+      files,
+      bytes: total,
+      wallMs: NodePerfHooks.performance.now() - started,
+      cpuMs: (used.user + used.system) / 1_000,
+      eventLoopDelayP99Ms:
+        delay === undefined ? null : delay.count === 0 ? 0 : delay.percentile(99) / 1_000_000,
+      result,
+      at: new Date().toISOString(),
+    });
+    digestTimings.push(timing);
+    if (digestTimings.length > 32) digestTimings.shift();
+    try {
+      const observed = options?.onDigestTiming?.(timing);
+      if (observed !== undefined) void Promise.resolve(observed).catch(() => {});
+    } catch {
+      // Observability must never replace an integrity result or its original failure.
+    }
   }
-  options?.signal?.throwIfAborted();
-  const entry = await fs.lstat(NodePath.join(root, "t3"));
-  options?.signal?.throwIfAborted();
-  if (!entry.isFile() || (entry.mode & 0o111) === 0)
-    return blocked("invalid-artifact", "Runtime payload has no executable.");
-  return digest.digest("hex");
 }
 
 export async function readQualifiedRuntimeReceipt(
@@ -367,7 +452,7 @@ export async function readQualifiedRuntimeReceipt(
     platform: process.platform,
     architecture: process.arch,
   },
-  options?: { readonly signal?: AbortSignal },
+  options?: QualifiedDigestOptions,
 ): Promise<QualifiedRuntimeReceipt> {
   options?.signal?.throwIfAborted();
   if (!VERSION.test(version))
@@ -393,7 +478,7 @@ export async function readQualifiedRuntimeReceipt(
       runtimeDirectory(baseDir, version),
       receipt.platform,
       receipt.workflow,
-      options,
+      { ...options, runtimeVersion: version, expectedSha256: receipt.payloadSha256 },
     )) !== receipt.payloadSha256
   )
     return blocked("integrity-mismatch", "Qualified runtime payload changed.");
@@ -404,7 +489,7 @@ export async function currentQualifiedRuntimeBinding(
   baseDir: string,
   activeVersion: string,
   host?: { readonly platform: string; readonly architecture: string },
-  options?: { readonly signal?: AbortSignal },
+  options?: QualifiedDigestOptions,
 ): Promise<QualifiedRuntimeBinding> {
   options?.signal?.throwIfAborted();
   const resolvedBase = await NodeFSP.realpath(baseDir);
@@ -457,6 +542,7 @@ export async function stageQualifiedRuntime(input: {
       payloadDirectory,
       candidate.platform,
       candidate.workflow,
+      { runtimeVersion: candidate.version },
     );
     const host = input.host ?? { platform: process.platform, architecture: process.arch };
     const receipt = decodeQualifiedRuntimeReceipt({
@@ -514,7 +600,12 @@ export async function stageQualifiedRuntime(input: {
           errorOnExist: true,
           force: false,
         });
-        if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
+        if (
+          (await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow, {
+            runtimeVersion: receipt.version,
+            expectedSha256: digest,
+          })) !== digest
+        )
           return blocked("integrity-mismatch", "Runtime payload changed during staging.");
         await input.validate(NodePath.join(scratch, "t3"));
         await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
@@ -546,7 +637,7 @@ export async function verifyStagedQualifiedRuntime(
   activeVersion: string,
   handle: string,
   host?: { readonly platform: string; readonly architecture: string },
-  options?: { readonly signal?: AbortSignal },
+  options?: QualifiedDigestOptions,
 ): Promise<StagedQualifiedRuntime> {
   options?.signal?.throwIfAborted();
   const staged = decodeStagedQualifiedRuntime(await readRegularJson(stagedPath(baseDir, handle)));
@@ -577,6 +668,7 @@ export async function enrollQualifiedRuntime(input: {
     payloadDirectory,
     artifact.platform,
     artifact.workflow,
+    { runtimeVersion: artifact.version },
   );
   const receipt = decodeQualifiedRuntimeReceipt({
     ...artifact,
@@ -598,7 +690,10 @@ export async function enrollQualifiedRuntime(input: {
     if (
       !existing.isDirectory() ||
       existing.isSymbolicLink() ||
-      (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+      (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow, {
+        runtimeVersion: receipt.version,
+        expectedSha256: digest,
+      })) !== digest
     )
       return blocked(
         "occupied-cache",
@@ -628,7 +723,10 @@ export async function enrollQualifiedRuntime(input: {
     if (input.prepareExistingRuntime !== undefined) {
       await input.prepareExistingRuntime(destination);
       if (
-        (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow)) !== digest
+        (await qualifiedPayloadDigest(destination, receipt.platform, receipt.workflow, {
+          runtimeVersion: receipt.version,
+          expectedSha256: digest,
+        })) !== digest
       )
         return blocked(
           "integrity-mismatch",
@@ -652,7 +750,12 @@ export async function enrollQualifiedRuntime(input: {
       errorOnExist: true,
       force: false,
     });
-    if ((await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow)) !== digest)
+    if (
+      (await qualifiedPayloadDigest(scratch, receipt.platform, receipt.workflow, {
+        runtimeVersion: receipt.version,
+        expectedSha256: digest,
+      })) !== digest
+    )
       return blocked("integrity-mismatch", "Bootstrap payload changed while copied.");
     await input.validate(NodePath.join(scratch, "t3"));
     await durableCreate(NodePath.join(scratch, QUALIFIED_RUNTIME_RECEIPT), receipt);
