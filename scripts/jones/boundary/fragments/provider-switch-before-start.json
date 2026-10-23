@@ -7,7 +7,7 @@
     "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.guards.test.ts",
     "apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts"
   ],
-  "hookPaths": ["apps/server/src/orchestration-v2/Orchestrator.ts"],
+  "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
     {

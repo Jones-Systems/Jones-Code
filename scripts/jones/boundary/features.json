@@ -12,7 +12,7 @@
         "apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
-      "scope": "A Jones guard accepts only a recorded interruption before any provider start, with no native history or session. Narrow shared provider-switch hooks load candidate evidence and record ownership of the same pending provider thread through the existing event path. Saved model options, modes, terminal runs and messages remain unchanged. Started or uncertain histories retain the missing-cursor rejection. Jones integration tests exercise real dispatch after retiring the unused alias; no schema, migration, native resume or automatic execution change."
+      "scope": "A Jones guard accepts only a recorded interruption before any provider start, with no native history or session. The existing shared Orchestrator hook and accepted-shared provider-switch service load candidate evidence and record ownership of the same pending provider thread through the existing event path. Saved model options, modes, terminal runs and messages remain unchanged. Started or uncertain histories retain the missing-cursor rejection. Jones integration tests exercise real dispatch after retiring the unused alias; no schema, migration, native resume or automatic execution change."
     },
     {
       "id": "workstreams-sidebar-assignment",
