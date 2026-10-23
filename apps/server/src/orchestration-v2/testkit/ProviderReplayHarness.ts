@@ -1,3 +1,5 @@
+import * as RestartPreparation from "../../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import type * as CheckoutIntent from "../../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
@@ -442,8 +444,12 @@ export function layerWithRegistryAndServices<Error>(
       ),
     ),
   );
+  const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
+    Layer.provide(Layer.merge(layerStores, layerEventSinkProvided)),
+  );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
     Layer.provide(layerProviderSwitchServiceProvided),
+    Layer.provide(Layer.merge(layerRestartPreparationProvided, ControlAdmission.layer)),
     Layer.provide(
       Layer.mergeAll(
         layerContextHandoffServiceProvided,
@@ -466,6 +472,7 @@ export function layerWithRegistryAndServices<Error>(
     ),
   );
   const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
+    Layer.provide(layerEventSinkProvided),
     Layer.provide(Layer.merge(layerStores, layerProviderSessionManagerProvided)),
   );
   const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(
@@ -552,6 +559,7 @@ export function layerWithRegistryAndServices<Error>(
         )
       : Layer.empty;
   const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
+    Layer.provide(layerRestartPreparationProvided),
     Layer.provide(
       Layer.mergeAll(
         layerRunFinalizationServiceProvided,

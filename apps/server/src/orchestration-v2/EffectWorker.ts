@@ -30,6 +30,8 @@ import * as RuntimeRequestService from "./RuntimeRequestService.ts";
 import * as ThreadTitleRegenerationService from "./ThreadTitleRegenerationService.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import { continueRestartedRun } from "./RestartContinuation.ts";
 
 export class OrchestrationEffectExecutionError extends Schema.TaggedError<OrchestrationEffectExecutionError>()(
@@ -63,6 +65,10 @@ export function isNonRetryableProviderTurnControlFailure(
 }
 
 export interface OrchestrationEffectExecutorV2Shape {
+  readonly recordNonRetryableFailure?: (
+    effect: EffectOutbox.OrchestrationEffectV2,
+    cause: unknown,
+  ) => Effect.Effect<void, RestartPreparation.RestartPreparationWriteError>;
   readonly execute: (
     effect: EffectOutbox.OrchestrationEffectV2,
     options?: { readonly willRetry: boolean },
@@ -78,6 +84,7 @@ export const layerExecutor: Layer.Layer<
   OrchestrationEffectExecutorV2,
   never,
   | ProviderSessionManager.ProviderSessionManagerV2
+  | RestartPreparation.RestartPreparation
   | RunFinalizationService.RunFinalizationService
   | CheckpointRollbackService.CheckpointRollbackServiceV2
   | ProviderTurnControlService.ProviderTurnControlServiceV2
@@ -93,6 +100,7 @@ export const layerExecutor: Layer.Layer<
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
     const providerTurnStart = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
     const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
@@ -101,6 +109,7 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
+      recordNonRetryableFailure: restartPreparation.recordSteerFailure,
       execute: (effect, options) => {
         if (effect.nativeCreationExecutionReference !== undefined) {
           return executeNativeProviderEffect(effect).pipe(
@@ -296,6 +305,7 @@ export const layerExecutor: Layer.Layer<
                 Effect.catch((error) =>
                   Effect.gen(function* () {
                     if (
+                      findSteerFailure(error) !== undefined ||
                       !("turnCompleted" in error) ||
                       !error.turnCompleted ||
                       (effect.request.type !== "provider-turn.steer" &&
@@ -415,53 +425,62 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
-          case "provider-turn.restart":
-            return providerTurnControl
-              .interruptAndAwaitTerminal({
-                threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
-                interruptedAttemptId: effect.request.interruptedAttemptId,
-                ...(effect.request.sessionTransition?.type === "replace"
-                  ? {
-                      replacementProviderSessionId:
-                        effect.request.sessionTransition.replacementProviderSessionId,
-                    }
-                  : {}),
+          case "provider-turn.restart": {
+            const request = effect.request;
+            return restartPreparation
+              .run({
+                effect: { ...effect, request },
+                captureStop: (providerThread) =>
+                  providerSessions
+                    .get(request.providerSessionId)
+                    .pipe(
+                      Effect.flatMap((session) =>
+                        Option.isSome(session) && session.value.captureRuntimeStop !== undefined
+                          ? session.value.captureRuntimeStop(providerThread)
+                          : Effect.succeed(null),
+                      ),
+                    ),
+                interrupt: providerTurnControl.interruptAndAwaitTerminal({
+                  threadId: effect.threadId,
+                  providerSessionId: request.providerSessionId,
+                  providerThreadId: request.providerThreadId,
+                  providerTurnId: request.providerTurnId,
+                  interruptedAttemptId: request.interruptedAttemptId,
+                  ...(request.sessionTransition?.type === "replace"
+                    ? {
+                        replacementProviderSessionId:
+                          request.sessionTransition.replacementProviderSessionId,
+                      }
+                    : {}),
+                }),
+                detach:
+                  request.sessionTransition === undefined
+                    ? Effect.void
+                    : providerSessions.detach({
+                        providerSessionId: request.providerSessionId,
+                        threadId: effect.threadId,
+                        detail:
+                          request.sessionTransition.type === "replace"
+                            ? "Selection change requires a provider session restart."
+                            : "Provider thread handoff replaced this session binding.",
+                      }),
+                start: providerTurnStart.start({
+                  threadId: effect.threadId,
+                  runId: request.runId,
+                  willRetry,
+                }),
               })
               .pipe(
-                Effect.andThen(
-                  effect.request.sessionTransition?.type === "replace"
-                    ? providerSessions.detach({
-                        providerSessionId: effect.request.providerSessionId,
-                        threadId: effect.threadId,
-                        detail: "Selection change requires a provider session restart.",
-                      })
-                    : effect.request.sessionTransition?.type === "detach"
-                      ? providerSessions.detach({
-                          providerSessionId: effect.request.providerSessionId,
-                          threadId: effect.threadId,
-                          detail: "Provider thread handoff replaced this session binding.",
-                        })
-                      : Effect.void,
-                ),
-                Effect.andThen(
-                  providerTurnStart.start({
-                    threadId: effect.threadId,
-                    runId: effect.request.runId,
-                    willRetry,
-                  }),
-                ),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
                       effectId: effect.id,
-                      effectType: effect.request.type,
+                      effectType: request.type,
                       cause,
                     }),
                 ),
               );
+          }
           case "runtime-request.respond":
             return runtimeRequests
               .respond({
@@ -831,6 +850,9 @@ export const layerWithOptions = (
           }
 
           const error = Cause.pretty(exit.cause);
+          const terminalFailure =
+            findSteerFailure(exit.cause) !== undefined ||
+            RestartPreparation.findRestartPreparationFailure(exit.cause) !== undefined;
           const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
           yield* Effect.logWarning("Orchestration effect execution failed", {
             effectId: effect.id,
@@ -843,7 +865,7 @@ export const layerWithOptions = (
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : effect.attemptCount >= maxAttempts
+            : terminalFailure || effect.attemptCount >= maxAttempts
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
@@ -862,6 +884,16 @@ export const layerWithOptions = (
               effectId: effect.id,
               cause: "The worker no longer owns the effect lease.",
             });
+          }
+          if (terminalFailure && executor.recordNonRetryableFailure !== undefined) {
+            yield* executor.recordNonRetryableFailure(effect, exit.cause).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logError("Failed to record provider control explanation", {
+                  effectId: effect.id,
+                  cause,
+                }),
+              ),
+            );
           }
           return true;
         }).pipe(

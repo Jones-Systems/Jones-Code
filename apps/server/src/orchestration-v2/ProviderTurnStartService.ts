@@ -1,5 +1,8 @@
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuityService.ts";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { NativeCreationWholeOperationEvidence } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
@@ -122,6 +125,8 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   never,
   | EventSink.EventSinkV2
+  | RestartPreparation.RestartPreparation
+  | ControlAdmission.ControlAdmission
   | ContextHandoffService.ContextHandoffServiceV2
   | IdAllocator.IdAllocatorV2
   | FileSystem.FileSystem
@@ -142,6 +147,8 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
     const selectionTransitions = yield* ProviderSwitchService.ProviderSwitchServiceV2;
+    const restartPreparation = yield* RestartPreparation.RestartPreparation;
+    const controlAdmission = yield* ControlAdmission.ControlAdmission;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
@@ -448,6 +455,32 @@ export const layer: Layer.Layer<
           });
         },
       );
+      const admission = yield* Effect.result(
+        restartPreparation
+          .assertThreadOpen(input.threadId)
+          .pipe(Effect.andThen(controlAdmission.assertOpen(run.providerInstanceId))),
+      );
+      if (admission._tag === "Failure") {
+        yield* settleRunBeforeStart({
+          signal: "provider-control-held",
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Provider work is held",
+            failure: {
+              class: "provider_error",
+              message:
+                "Earlier provider control has an unresolved outcome. This turn was not started. Stop the exact runtime or wait for its control result before trying again.",
+              code: null,
+              retryable: false,
+            },
+          },
+        });
+        return yield* new ProviderTurnStartError({ runId, cause: admission.failure });
+      }
       if (message.attachments.length === 0 && message.text.trimStart().startsWith("/")) {
         const isEmptyCompaction =
           message.text.trim().toLowerCase() === "/compact" && !projection.hasConversation;
@@ -690,7 +723,8 @@ export const layer: Layer.Layer<
           });
         });
       if (sessionResult._tag === "Failure") {
-        if (input.willRetry === true) return yield* sessionResult.failure;
+        if (input.willRetry === true && findSteerFailure(sessionResult.failure) === undefined)
+          return yield* sessionResult.failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",
@@ -705,7 +739,8 @@ export const layer: Layer.Layer<
         Effect.gen(function* () {
           const loaded = yield* Effect.result(load);
           if (loaded._tag === "Success") return loaded.success;
-          if (input.willRetry === true) return yield* loaded.failure;
+          if (input.willRetry === true && findSteerFailure(loaded.failure) === undefined)
+            return yield* loaded.failure;
           yield* settleStartFailure({
             signal: "provider-thread-load-failure",
             title: "Provider turn failed to start",
@@ -800,7 +835,11 @@ export const layer: Layer.Layer<
           return resumed.success;
         }
 
-        if (keepWarm || hasUnknownRuntimeBinding(resumed.failure)) {
+        if (
+          keepWarm ||
+          findSteerFailure(resumed.failure) !== undefined ||
+          hasUnknownRuntimeBinding(resumed.failure)
+        ) {
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
         yield* Effect.logWarning("Provider resume failed; attempting a fresh native session", {

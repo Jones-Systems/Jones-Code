@@ -1,4 +1,6 @@
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
 import * as NativeCreationRepositorySqlite from "../jones/nativeCreation/NativeCreationRepositorySqlite.ts";
 import * as NativeCreationAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
@@ -98,6 +100,9 @@ const layerStores = Layer.mergeAll(
 
 export const layerEventSink = EventSink.layerFromStores.pipe(Layer.provide(layerStores));
 const layerEventSinkProvided = layerEventSink;
+const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
+  Layer.provide(Layer.merge(layerStores, layerEventSinkProvided)),
+);
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
   Layer.provide(layerStores),
 );
@@ -170,6 +175,7 @@ const layerPlannedUpdateContinuityProvided = PlannedUpdateContinuity.layer.pipe(
 );
 
 const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
+  Layer.provide(layerRestartPreparationProvided),
   Layer.provide(
     Layer.mergeAll(
       layerEventSinkProvided,
@@ -211,6 +217,8 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
 
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
   Layer.provide(layerProviderSwitchServiceProvided),
+  Layer.provide(ControlAdmission.layer),
+  Layer.provide(layerRestartPreparationProvided),
   Layer.provide(layerPlannedUpdateContinuityProvided),
   Layer.provide(
     Layer.mergeAll(
@@ -237,6 +245,7 @@ const nativeCreationProviderExecutorProvided = NativeCreationProviderExecutor.la
 );
 
 const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
+  Layer.provide(layerEventSinkProvided),
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
 const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(
@@ -376,6 +385,7 @@ const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.laye
   ),
 );
 const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
+  Layer.provide(layerRestartPreparationProvided),
   Layer.provide(
     Layer.mergeAll(
       layerRunFinalizationServiceProvided,
