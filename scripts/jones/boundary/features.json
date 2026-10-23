@@ -1485,6 +1485,14 @@
       "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease. Jones recovery imports the existing upstream ContextHandoffDelivery helper to preserve budget selection and persistence semantics."
     },
     {
+      "id": "worktree-setup",
+      "tests": [
+        "scripts/jones/worktree-setup/entrypoint.node-test.mjs",
+        "scripts/jones/worktree-setup/setup.node-test.mjs"
+      ],
+      "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+    },
+    {
       "id": "vcs-cache-efficiency",
       "tests": [
         "apps/server/src/vcs/VcsStatusBroadcaster.test.ts"
