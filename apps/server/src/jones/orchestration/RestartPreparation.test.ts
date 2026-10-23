@@ -36,256 +36,270 @@ const stores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
 const eventLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
 const testLayer = RestartPreparation.layer.pipe(Layer.provideMerge(eventLayer));
 
-const fixture = (includeOldRoot = false) => Effect.gen(function* () {
-  const sink = yield* EventSink.EventSinkV2;
-  const projections = yield* ProjectionStore.ProjectionStoreV2;
-  const preparation = yield* RestartPreparation.RestartPreparation;
-  const now = yield* DateTime.now;
-  const threadId = ThreadId.make("thread:restart-preparation");
-  const runId = RunId.make("run:restart-preparation");
-  const oldAttemptId = RunAttemptId.make("attempt:old");
-  const attemptId = RunAttemptId.make("attempt:new");
-  const nodeId = NodeId.make("node:new");
-  const providerTurnId = ProviderTurnId.make("turn:old");
-  const providerThreadId = ProviderThreadId.make("provider-thread:restart");
-  const providerSessionId = ProviderSessionId.make("session:old");
-  const providerInstanceId = ProviderInstanceId.make("instance-old");
-  const driver = ProviderDriverKind.make("codex");
-  const modelSelection = { instanceId: providerInstanceId, model: "fixture" };
-  const common = { threadId, occurredAt: now };
-  const run = {
-    id: runId,
-    threadId,
-    ordinal: 1,
-    providerInstanceId,
-    modelSelection,
-    providerThreadId,
-    userMessageId: MessageId.make("message:initial"),
-    rootNodeId: nodeId,
-    activeAttemptId: attemptId,
-    status: "starting" as const,
-    requestedAt: now,
-    startedAt: null,
-    completedAt: null,
-    checkpointId: null,
-    contextHandoffId: null,
-  };
-  const attempt = {
-    id: attemptId,
-    runId,
-    attemptOrdinal: 2,
-    rootNodeId: nodeId,
-    providerInstanceId,
-    providerThreadId,
-    providerTurnId: null,
-    reason: "steering_restart" as const,
-    status: "pending" as const,
-    providerSettlement: null,
-    startedAt: null,
-    completedAt: null,
-  };
-  const node = {
-    id: nodeId,
-    threadId,
-    runId,
-    parentNodeId: null,
-    rootNodeId: nodeId,
-    kind: "root_turn" as const,
-    status: "pending" as const,
-    countsForRun: true,
-    providerThreadId,
-    providerTurnId: null,
-    nativeItemRef: null,
-    runtimeRequestId: null,
-    checkpointScopeId: null,
-    startedAt: null,
-    completedAt: null,
-  };
-  const oldTurn = {
-    id: providerTurnId,
-    providerThreadId,
-    nodeId: NodeId.make("node:old"),
-    runAttemptId: oldAttemptId,
-    nativeTurnRef: { driver, nativeId: "native-turn:old", strength: "strong" as const },
-    ordinal: 1,
-    status: "running" as const,
-    startedAt: now,
-    completedAt: null,
-  };
-  const binding = {
-    threadId,
-    providerThreadId,
-    providerSessionId,
-    providerInstanceId,
-    driver,
-    nativeThreadId: "native-thread:old",
-    runtimeGeneration: "generation:old",
-  };
-  const initial: ReadonlyArray<OrchestrationV2DomainEvent> = [
-    {
-      ...common,
-      id: EventId.make("fixture:thread"),
-      type: "thread.created",
-      payload: {
-        id: threadId,
-        projectId: ProjectId.make("project:fixture"),
-        title: "Fixture",
-        providerInstanceId,
-        modelSelection,
-        createdBy: "user",
-        creationSource: "web",
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        branch: null,
-        worktreePath: null,
-        activeProviderThreadId: providerThreadId,
-        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-        forkedFrom: null,
-        createdAt: now,
-        updatedAt: now,
-        archivedAt: null,
-        settledOverride: null,
-        settledAt: null,
-        lastVisitedAt: null,
-        deletedAt: null,
-      },
-    },
-    {
-      ...common,
-      id: EventId.make("fixture:provider-thread"),
-      type: "provider-thread.updated",
-      payload: {
-        id: providerThreadId,
-        driver,
-        providerInstanceId,
-        providerSessionId: ProviderSessionId.make("session:new"),
-        appThreadId: threadId,
-        ownerNodeId: null,
-        nativeThreadRef: { driver, nativeId: binding.nativeThreadId, strength: "strong" },
-        nativeConversationHeadRef: null,
-        status: "not_loaded",
-        firstRunOrdinal: 1,
-        lastRunOrdinal: 1,
-        handoffIds: [],
-        forkedFrom: null,
-        createdAt: now,
-        updatedAt: now,
-        runtimeIdentity: {
-          runtimeGeneration: binding.runtimeGeneration,
-          requested: {
-            providerInstanceId,
-            providerDriver: driver,
-            model: "fixture",
-            serviceTier: null,
-          },
-          observed: {
-            backend: { status: "unknown" },
-            model: { status: "unknown" },
-            account: { status: "unknown" },
-            serviceTier: { status: "unknown" },
-          },
-        },
-      },
-    },
-    {
-      ...common,
-      id: EventId.make("fixture:old-attempt"),
-      type: "run-attempt.created",
-      payload: {
-        ...attempt,
-        id: oldAttemptId,
-        rootNodeId: oldTurn.nodeId,
-        attemptOrdinal: 1,
-        providerTurnId,
-        status: "superseded",
-        startedAt: now,
-        completedAt: now,
-      },
-    },
-    {
-      ...common,
-      id: EventId.make("fixture:old-turn"),
-      type: "provider-turn.updated",
-      payload: oldTurn,
-    },
-  ];
-  yield* sink.write({ events: initial });
-  const commandId = CommandId.make("command:restart-preparation");
-  yield* sink.write({
-    commandId,
-    events: [
-      { ...common, id: EventId.make("fixture:run"), type: "run.updated", payload: run },
+const fixture = (includeOldRoot = false) =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const preparation = yield* RestartPreparation.RestartPreparation;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:restart-preparation");
+    const runId = RunId.make("run:restart-preparation");
+    const oldAttemptId = RunAttemptId.make("attempt:old");
+    const attemptId = RunAttemptId.make("attempt:new");
+    const nodeId = NodeId.make("node:new");
+    const providerTurnId = ProviderTurnId.make("turn:old");
+    const providerThreadId = ProviderThreadId.make("provider-thread:restart");
+    const providerSessionId = ProviderSessionId.make("session:old");
+    const providerInstanceId = ProviderInstanceId.make("instance-old");
+    const driver = ProviderDriverKind.make("codex");
+    const modelSelection = { instanceId: providerInstanceId, model: "fixture" };
+    const common = { threadId, occurredAt: now };
+    const run = {
+      id: runId,
+      threadId,
+      ordinal: 1,
+      providerInstanceId,
+      modelSelection,
+      providerThreadId,
+      userMessageId: MessageId.make("message:initial"),
+      rootNodeId: nodeId,
+      activeAttemptId: attemptId,
+      status: "starting" as const,
+      requestedAt: now,
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+    const attempt = {
+      id: attemptId,
+      runId,
+      attemptOrdinal: 2,
+      rootNodeId: nodeId,
+      providerInstanceId,
+      providerThreadId,
+      providerTurnId: null,
+      reason: "steering_restart" as const,
+      status: "pending" as const,
+      providerSettlement: null,
+      startedAt: null,
+      completedAt: null,
+    };
+    const node = {
+      id: nodeId,
+      threadId,
+      runId,
+      parentNodeId: null,
+      rootNodeId: nodeId,
+      kind: "root_turn" as const,
+      status: "pending" as const,
+      countsForRun: true,
+      providerThreadId,
+      providerTurnId: null,
+      nativeItemRef: null,
+      runtimeRequestId: null,
+      checkpointScopeId: null,
+      startedAt: null,
+      completedAt: null,
+    };
+    const oldTurn = {
+      id: providerTurnId,
+      providerThreadId,
+      nodeId: NodeId.make("node:old"),
+      runAttemptId: oldAttemptId,
+      nativeTurnRef: { driver, nativeId: "native-turn:old", strength: "strong" as const },
+      ordinal: 1,
+      status: "running" as const,
+      startedAt: now,
+      completedAt: null,
+    };
+    const binding = {
+      threadId,
+      providerThreadId,
+      providerSessionId,
+      providerInstanceId,
+      driver,
+      nativeThreadId: "native-thread:old",
+      runtimeGeneration: "generation:old",
+    };
+    const initial: ReadonlyArray<OrchestrationV2DomainEvent> = [
       {
         ...common,
-        id: EventId.make("fixture:attempt"),
+        id: EventId.make("fixture:thread"),
+        type: "thread.created",
+        payload: {
+          id: threadId,
+          projectId: ProjectId.make("project:fixture"),
+          title: "Fixture",
+          providerInstanceId,
+          modelSelection,
+          createdBy: "user",
+          creationSource: "web",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: providerThreadId,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+      },
+      {
+        ...common,
+        id: EventId.make("fixture:provider-thread"),
+        type: "provider-thread.updated",
+        payload: {
+          id: providerThreadId,
+          driver,
+          providerInstanceId,
+          providerSessionId: ProviderSessionId.make("session:new"),
+          appThreadId: threadId,
+          ownerNodeId: null,
+          nativeThreadRef: { driver, nativeId: binding.nativeThreadId, strength: "strong" },
+          nativeConversationHeadRef: null,
+          status: "not_loaded",
+          firstRunOrdinal: 1,
+          lastRunOrdinal: 1,
+          handoffIds: [],
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          runtimeIdentity: {
+            runtimeGeneration: binding.runtimeGeneration,
+            requested: {
+              providerInstanceId,
+              providerDriver: driver,
+              model: "fixture",
+              serviceTier: null,
+            },
+            observed: {
+              backend: { status: "unknown" },
+              model: { status: "unknown" },
+              account: { status: "unknown" },
+              serviceTier: { status: "unknown" },
+            },
+          },
+        },
+      },
+      {
+        ...common,
+        id: EventId.make("fixture:old-attempt"),
         type: "run-attempt.created",
-        payload: attempt,
+        payload: {
+          ...attempt,
+          id: oldAttemptId,
+          rootNodeId: oldTurn.nodeId,
+          attemptOrdinal: 1,
+          providerTurnId,
+          status: "superseded",
+          startedAt: now,
+          completedAt: now,
+        },
       },
-      ...(includeOldRoot ? [{ ...common, id: EventId.make("fixture:old-node"), type: "node.updated" as const,
-      payload: { ...node, id: oldTurn.nodeId, rootNodeId: oldTurn.nodeId, status: "interrupted" as const, completedAt: now },
-    }] : []),
-    { ...common, id: EventId.make("fixture:node"), type: "node.updated", payload: node },
-    ],
-  });
-  const effect = {
-    id: "effect:restart-preparation",
-    commandId,
-    threadId,
-    request: {
-      type: "provider-turn.restart" as const,
-      providerSessionId,
-      providerThreadId,
-      providerTurnId,
-      interruptedAttemptId: oldAttemptId,
-      runId,
-      sessionTransition: {
-        type: "replace" as const,
-        replacementProviderSessionId: ProviderSessionId.make("session:new"),
+      {
+        ...common,
+        id: EventId.make("fixture:old-turn"),
+        type: "provider-turn.updated",
+        payload: oldTurn,
       },
-    },
-    status: "running" as const,
-    attemptCount: 1,
-    leaseOwner: "worker",
-    leaseExpiresAt: DateTime.formatIso(now),
-    availableAt: DateTime.formatIso(now),
-    createdAt: DateTime.formatIso(now),
-    updatedAt: DateTime.formatIso(now),
-    completedAt: null,
-    lastError: null,
-  } satisfies EffectOutbox.OrchestrationEffectV2;
-  const completeOld = sink
-    .write({
+    ];
+    yield* sink.write({ events: initial });
+    const commandId = CommandId.make("command:restart-preparation");
+    yield* sink.write({
+      commandId,
       events: [
+        { ...common, id: EventId.make("fixture:run"), type: "run.updated", payload: run },
         {
           ...common,
-          id: EventId.make("fixture:terminal"),
-          type: "provider-turn.updated",
-          payload: { ...oldTurn, status: "interrupted", completedAt: now },
+          id: EventId.make("fixture:attempt"),
+          type: "run-attempt.created",
+          payload: attempt,
         },
+        ...(includeOldRoot
+          ? [
+              {
+                ...common,
+                id: EventId.make("fixture:old-node"),
+                type: "node.updated" as const,
+                payload: {
+                  ...node,
+                  id: oldTurn.nodeId,
+                  rootNodeId: oldTurn.nodeId,
+                  status: "interrupted" as const,
+                  completedAt: now,
+                },
+              },
+            ]
+          : []),
+        { ...common, id: EventId.make("fixture:node"), type: "node.updated", payload: node },
       ],
-    })
-    .pipe(
-      Effect.asVoid,
-      Effect.mapError(
-        (cause) =>
-          new RestartPreparation.RestartPreparationError({ threadId, stage: "terminal", cause }),
-      ),
-    );
-  const target = { threadId, ...effect.request };
-  return {
-    sink,
-    projections,
-    preparation,
-    effect,
-    target,
-    completeOld,
-    run,
-    attempt,
-    node,
-    now,
-    binding,
-  };
-});
+    });
+    const effect = {
+      id: "effect:restart-preparation",
+      commandId,
+      threadId,
+      request: {
+        type: "provider-turn.restart" as const,
+        providerSessionId,
+        providerThreadId,
+        providerTurnId,
+        interruptedAttemptId: oldAttemptId,
+        runId,
+        sessionTransition: {
+          type: "replace" as const,
+          replacementProviderSessionId: ProviderSessionId.make("session:new"),
+        },
+      },
+      status: "running" as const,
+      attemptCount: 1,
+      leaseOwner: "worker",
+      leaseExpiresAt: DateTime.formatIso(now),
+      availableAt: DateTime.formatIso(now),
+      createdAt: DateTime.formatIso(now),
+      updatedAt: DateTime.formatIso(now),
+      completedAt: null,
+      lastError: null,
+    } satisfies EffectOutbox.OrchestrationEffectV2;
+    const completeOld = sink
+      .write({
+        events: [
+          {
+            ...common,
+            id: EventId.make("fixture:terminal"),
+            type: "provider-turn.updated",
+            payload: { ...oldTurn, status: "interrupted", completedAt: now },
+          },
+        ],
+      })
+      .pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          (cause) =>
+            new RestartPreparation.RestartPreparationError({ threadId, stage: "terminal", cause }),
+        ),
+      );
+    const target = { threadId, ...effect.request };
+    return {
+      sink,
+      projections,
+      preparation,
+      effect,
+      target,
+      completeOld,
+      run,
+      attempt,
+      node,
+      now,
+      binding,
+    };
+  });
 
 it.effect(
   "waits the elapsed terminal budget, observes a racing persisted terminal, and accepts preexisting evidence",
@@ -520,10 +534,21 @@ it.effect("selects the committed successor root when the command records the old
   Effect.gen(function* () {
     const f = yield* fixture(true);
     const calls: string[] = [];
-    yield* f.preparation.run({ effect: f.effect,
-      interrupt: f.completeOld.pipe(Effect.tap(() => Effect.sync(() => { calls.push("interrupt"); }))),
-      detach: Effect.sync(() => { calls.push("detach"); }),
-      start: Effect.sync(() => { calls.push("start"); }),
+    yield* f.preparation.run({
+      effect: f.effect,
+      interrupt: f.completeOld.pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            calls.push("interrupt");
+          }),
+        ),
+      ),
+      detach: Effect.sync(() => {
+        calls.push("detach");
+      }),
+      start: Effect.sync(() => {
+        calls.push("start");
+      }),
     });
     assert.deepEqual(calls, ["interrupt", "detach", "start"]);
   }).pipe(Effect.provide(testLayer)),
