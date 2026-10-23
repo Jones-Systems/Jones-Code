@@ -1537,9 +1537,14 @@
         "apps/server/src/workstreams/WorkstreamGateway.test.ts",
         "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
         "apps/server/src/jones/workstreams/operations/planner.test.ts",
-        "apps/server/src/jones/workstreams/operations/childIds.test.ts"
+        "apps/server/src/jones/workstreams/operations/childIds.test.ts",
+        "apps/server/src/jones/workstreams/operations/service.test.ts",
+        "apps/server/src/jones/workstreams/operations/http.integration.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
-      "scope": "Jones-owned Workstream operation contract, deterministic command IDs and qualified membership planning. Additive gateway recovery witnesses and exact-byte replay preserve existing low-level submit behavior; synthetic tests cover frozen contract conformance and verified transport responses. Server runner, client integration and queue dispatch are separate implementation checkpoints."
+      "scope": "Jones-owned Workstream operation contract, deterministic child IDs, qualified planning, serialized operation service, exact-byte receipt recovery and sealing. Production HTTP adapters share the application-owned operation service and advertise capability only when wired; cached setup status exposes signed registry UUIDs and bounded diagnostics. Synthetic and production-layer loopback tests cover restart adoption, unknown effects, contention, qualification, memory-only reads and compatibility. No Jones durable journal, migration or installed-runtime change."
     },
     {
       "id": "workstream-tools",

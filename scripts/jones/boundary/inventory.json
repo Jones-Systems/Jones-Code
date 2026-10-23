@@ -1596,7 +1596,15 @@
     "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
     "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/encoding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/http.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/live.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/loopbackFixture.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
