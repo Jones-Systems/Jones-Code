@@ -7,7 +7,10 @@ cross-machine transport, background-child continuity (SC-COR-002), macOS or
 packaged-build behavior. It changes no live account or model default.
 
 The fixture creates two Codex instances with one disposable account home and a
-real Git commit. Their only executables are generated inside the private sandbox.
+real Git commit and a genuine linked execution worktree. Both its common Git
+storage and worktree live inside the disposable scratch namespace. The synthetic
+peer verifies the app-issued cwd, distinct git-dir/common-dir and fixture HEAD;
+checkpoint capture remains mandatory. Their only executables are generated inside the private sandbox.
 The peer gets its MCP endpoint and authorization header from the app's actual
 thread/start or thread/resume request. No fabricated invocation scope, live home,
 external network, renderer dispatch of messages, or database write is involved.

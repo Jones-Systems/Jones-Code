@@ -1,3 +1,4 @@
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -5,6 +6,7 @@ import { loadScenario } from "./scenario-api.mjs";
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
 import {
+  installCheckpointWorktree,
   issuedConnection,
   decodeMcpResponse,
   assertContinuity,
@@ -222,6 +224,31 @@ NodeTest.test(
         await NodeFSP.copyFile(new URL(source, import.meta.url), NodePath.join(root, target));
       const scenario = await loadScenario(NodePath.join(root, "scenario.mjs"));
       NodeAssert.equal(typeof scenario.run, "function");
+    } finally {
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+NodeTest.test(
+  "checkpoint fixture is a real linked checkout with isolated common storage",
+  async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "native-linked-fixture-"));
+    try {
+      const fixture = await installCheckpointWorktree(root);
+      const git = (...args) =>
+        NodeChildProcess.execFileSync("/usr/bin/git", ["-C", fixture.worktreePath, ...args], {
+          encoding: "utf8",
+        }).trim();
+      NodeAssert.notEqual(fixture.gitDir, fixture.commonDir);
+      NodeAssert.equal(fixture.commonDir, root + "/.git");
+      NodeAssert.ok(fixture.gitDir.startsWith(root + "/.git/worktrees/"));
+      NodeAssert.equal(git("rev-parse", "HEAD"), fixture.initialCommit);
+      NodeAssert.equal(git("branch", "--show-current"), fixture.branch);
+      NodeAssert.equal(git("status", "--porcelain"), "");
+      NodeAssert.ok(
+        git("worktree", "list", "--porcelain").includes("worktree " + fixture.worktreePath),
+      );
     } finally {
       await NodeFSP.rm(root, { recursive: true, force: true });
     }

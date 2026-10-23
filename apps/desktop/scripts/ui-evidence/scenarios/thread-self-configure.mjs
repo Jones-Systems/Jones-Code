@@ -75,6 +75,7 @@ export default async function threadSelfConfigure(ctx) {
     waitForFixture(
       async () => {
         const projection = await snapshot(target);
+        evidence.lastSettlement = { threadId: target, expectedRuns: count, projection };
         return projection.runs.length === count &&
           projection.runs.every((run) => run.status === "completed") &&
           projection.runs.every((run) =>
@@ -145,8 +146,8 @@ export default async function threadSelfConfigure(ctx) {
           modelSelection: selectionA,
           runtimeMode: "full-access",
           interactionMode: "default",
-          branch: null,
-          worktreePath: null,
+          branch: evidence.git.branch,
+          worktreePath: evidence.git.worktreePath,
         });
       evidence.controlBefore = await snapshot(controlId);
       await open(title, threadId);
@@ -164,6 +165,17 @@ export default async function threadSelfConfigure(ctx) {
         await send("NATIVE_SELF_CONFIG_START");
         held = await waitForFixture(() => fixtureRecord("held"), "A saves B and holds", 30000);
         evidence.receipts = held;
+        const opened = (await readTrace()).find(
+          (event) =>
+            event.method === "thread/start" && event.nativeThreadId === held.nativeThreadId,
+        );
+        ctx.assert(
+          opened?.issuedCwd === evidence.git.worktreePath &&
+            opened.gitDir === evidence.git.gitDir &&
+            opened.commonDir === evidence.git.commonDir &&
+            opened.head === evidence.git.initialCommit,
+          "App-issued cwd resolves to the isolated linked fixture commit",
+        );
         ctx.assert(held.before.executionPrecondition !== null, "Real app-issued calling execution");
         ctx.assert(
           held.legacyRejected && held.conflictRejected,

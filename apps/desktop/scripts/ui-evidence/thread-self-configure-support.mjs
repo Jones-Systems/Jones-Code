@@ -150,6 +150,7 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
   const tracePath = root + "/trace-" + processId + ".ndjson";
   let sequence = 0,
     nativeThreadId,
+    issuedCwd,
     connection,
     sessionId,
     activeTurn,
@@ -251,7 +252,7 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
     recencyAt: 1,
     status: { type: "idle" },
     path: root + "/account/fixture.jsonl",
-    cwd: "/scratch/workspace",
+    cwd: issuedCwd,
     cliVersion: "0.162.0",
     originator: "synthetic",
     source: "cli",
@@ -270,8 +271,8 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
     modelProvider: "openai",
     serviceTier: null,
     disabledPluginIds: [],
-    cwd: "/scratch/workspace",
-    runtimeWorkspaceRoots: ["/scratch/workspace"],
+    cwd: issuedCwd,
+    runtimeWorkspaceRoots: [issuedCwd],
     instructionSources: [],
     approvalPolicy: "never",
     approvalsReviewer: "user",
@@ -401,8 +402,34 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
       });
     } else if (method === "thread/start" || method === "thread/resume") {
       nativeThreadId = params.threadId ?? randomUUID();
+      if (params.cwd !== "/scratch/workspace/native-self-config-execution")
+        throw new Error("Unexpected app-issued fixture cwd");
+      issuedCwd = params.cwd;
       connection = connectionFromStart(params);
-      trace({ method, model: params.model ?? null, appIssuedMcp: true });
+      const { execFileSync } = await import("node:child_process");
+      const gitIdentity = (arg) =>
+        execFileSync(
+          "/usr/bin/git",
+          ["-C", issuedCwd, "rev-parse", "--path-format=absolute", arg],
+          { encoding: "utf8", timeout: 15000 },
+        ).trim();
+      const gitDir = gitIdentity("--git-dir");
+      const commonDir = gitIdentity("--git-common-dir");
+      if (
+        gitDir === commonDir ||
+        !gitDir.startsWith("/scratch/workspace/.git/worktrees/") ||
+        commonDir !== "/scratch/workspace/.git"
+      )
+        throw new Error("Invalid linked fixture identity");
+      trace({
+        method,
+        model: params.model ?? null,
+        appIssuedMcp: true,
+        issuedCwd,
+        gitDir,
+        commonDir,
+        head: gitIdentity("HEAD"),
+      });
       write({ id, result: threadResult() });
     } else if (method === "thread/read") {
       nativeThreadId = params.threadId;
@@ -510,7 +537,11 @@ export async function installFixture(workspace) {
         ' "$@"\n',
       { flag: "wx", mode: 0o700 },
     );
-  // Turn the runner's empty metadata skeleton into a real repository with a valid HEAD.
+  return installCheckpointWorktree(workspace);
+}
+
+export async function installCheckpointWorktree(workspace) {
+  // The primary repository and linked execution checkout are both disposable.
   const git = (args) =>
     NodeChildProcess.execFileSync("/usr/bin/git", ["-C", workspace, ...args], {
       timeout: 15000,
@@ -534,7 +565,16 @@ export async function installFixture(workspace) {
     "-m",
     "Synthetic checkpoint baseline",
   ]);
-  return { initialCommit: git(["rev-parse", "HEAD"]), synthetic: true };
+  const initialCommit = git(["rev-parse", "HEAD"]);
+  const branch = "native-self-config-execution";
+  const worktreePath = workspace + "/" + branch;
+  git(["worktree", "add", "-b", branch, worktreePath, "HEAD"]);
+  const identity = (arg) => git(["-C", worktreePath, "rev-parse", "--path-format=absolute", arg]);
+  const gitDir = identity("--git-dir");
+  const commonDir = identity("--git-common-dir");
+  if (gitDir === commonDir || identity("HEAD") !== initialCommit)
+    throw new Error("Invalid synthetic linked worktree");
+  return { initialCommit, synthetic: true, branch, worktreePath, gitDir, commonDir };
 }
 
 export async function readTrace() {

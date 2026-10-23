@@ -405,3 +405,36 @@ NodeTest.test(
     NodeAssert.equal(fixture.sockets[0].closed, true);
   },
 );
+
+NodeTest.test("linked checkpoint metadata admits only the exact synthetic fixture", async () => {
+  const payload = {
+    ...threadCommand,
+    threadId: "native-self-config-linked",
+    modelSelection: { instanceId: "native-fixture-a", model: "native-model-a" },
+    branch: "native-self-config-execution",
+    worktreePath: "/scratch/workspace/native-self-config-execution",
+  };
+  const accepted = backendFixture();
+  await requestLocalBackend({ endpoint, method: "dispatch", payload }, accepted.dependencies);
+  NodeAssert.equal(accepted.sockets[0].messages[0].payload.worktreePath, payload.worktreePath);
+  for (const mutation of [
+    { worktreePath: "/scratch/workspace/native-self-config-execution/../other" },
+    { worktreePath: "/scratch/workspace/.git" },
+    { branch: "other" },
+    { threadId: "live-thread" },
+    { modelSelection: { instanceId: "codex", model: "gpt-5" } },
+  ]) {
+    const rejected = backendFixture();
+    rejected.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+      throw new Error("authentication reached");
+    };
+    await NodeAssert.rejects(
+      requestLocalBackend(
+        { endpoint, method: "dispatch", payload: { ...payload, ...mutation } },
+        rejected.dependencies,
+      ),
+      /exact synthetic linked worktree/,
+    );
+    NodeAssert.equal(rejected.calls.length, 0);
+  }
+});

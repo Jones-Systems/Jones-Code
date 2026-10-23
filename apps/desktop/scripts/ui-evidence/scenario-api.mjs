@@ -93,10 +93,17 @@ export async function requestLocalBackend(
       payload.type === "thread.create" &&
       (payload.createdBy !== "user" ||
         payload.creationSource !== "web" ||
-        payload.branch !== null ||
-        payload.worktreePath !== null)
+        !(
+          (payload.branch === null && payload.worktreePath === null) ||
+          (/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId) &&
+            payload.branch === "native-self-config-execution" &&
+            payload.worktreePath === "/scratch/workspace/native-self-config-execution" &&
+            ["native-fixture-a", "native-fixture-b"].includes(payload.modelSelection?.instanceId))
+        ))
     )
-      throw new Error("Fixture thread must use the private project without a worktree");
+      throw new Error(
+        "Fixture thread must use the private project or exact synthetic linked worktree",
+      );
   }
   if (
     method === "fixtureThread" &&
