@@ -102,6 +102,10 @@ describe("Jones environment HTTP registration", () => {
       ["attestations", "POST", "/api/workstreams/native/v1/attestations"],
       ["settlements", "POST", "/api/workstreams/native/v1/settlements"],
       ["settlementLookup", "POST", "/api/workstreams/native/v1/settlements/lookup"],
+      ["contextV2", "GET", "/api/workstreams/native/v2/context"],
+      ["attestationsV2", "POST", "/api/workstreams/native/v2/attestations"],
+      ["settlementsV2", "POST", "/api/workstreams/native/v2/settlements"],
+      ["settlementLookupV2", "POST", "/api/workstreams/native/v2/settlements/lookup"],
     ]);
     const bearerHeaders = Schema.Struct({
       authorization: Schema.optionalKey(Schema.String),
