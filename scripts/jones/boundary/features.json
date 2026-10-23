@@ -1494,9 +1494,7 @@
     },
     {
       "id": "vcs-cache-efficiency",
-      "tests": [
-        "apps/server/src/vcs/VcsStatusBroadcaster.test.ts"
-      ],
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
     }
   ]
