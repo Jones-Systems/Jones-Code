@@ -16,10 +16,12 @@ import {
   WORKSTREAM_APPEARANCE_CONTRACT,
   WORKSTREAM_APPEARANCE_MANIFEST,
   WORKSTREAM_CONTRACT_FAMILY,
+  WORKSTREAM_CONTRACT_HEADER_VERSION,
   WORKSTREAM_COUNTS_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_MANIFEST_SHA256,
   WORKSTREAM_CONTRACT_VERSION,
   WorkstreamCapabilities,
+  type WorkstreamCommand,
 } from "@t3tools/contracts";
 import {
   makeControlPlaneWorkstreamTransport,
@@ -56,6 +58,270 @@ const activation = {
     signingSecret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
   },
 } as const;
+
+const recoveryContract = {
+  contractVersion: WORKSTREAM_CONTRACT_HEADER_VERSION,
+  contractManifest: WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+} as const;
+const recoveryHeaders = {
+  "x-control-contract-version": WORKSTREAM_CONTRACT_HEADER_VERSION,
+  "x-control-contract-manifest": WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+};
+const recoveryCommand: WorkstreamCommand = {
+  command_id: "recovery-command-0001",
+  expected_server_generation: 7,
+  expected_registry_version: 11,
+  action: {
+    operation: "create_workstream",
+    name: "Recovery fixture",
+    lifecycle: "active",
+    progress: { state: "progressing" },
+    sort_order: 10,
+  },
+};
+const recoveryInput = {
+  ...recoveryContract,
+  command: recoveryCommand,
+  body: `${JSON.stringify(recoveryCommand, null, 2)}\n`,
+  idempotencyKey: recoveryCommand.command_id,
+};
+const recoveryError = (code: "not_found" | "idempotency_conflict") => ({
+  code,
+  status: code === "not_found" ? 404 : 409,
+  request_id: "recovery-request-0001",
+  recovery: code === "not_found" ? "stop" : "reconcile",
+});
+
+it.effect("recognizes verified receipt absence only on the recovery read path", () =>
+  Effect.gen(function* () {
+    const configured = makeControlPlaneWorkstreamTransport(activation, async (url, init) => {
+      expect(String(url)).toBe(
+        `https://control-plane.example/workstreams/v1/commands/${recoveryCommand.command_id}`,
+      );
+      expect(init?.method).toBe("GET");
+      return new Response(JSON.stringify(recoveryError("not_found")), {
+        status: 404,
+        headers: recoveryHeaders,
+      });
+    });
+    const input = { ...recoveryContract, commandId: recoveryCommand.command_id };
+    expect(yield* configured.transport.readCommandReceipt!(input)).toEqual({ kind: "absent" });
+    expect(yield* configured.transport.getCommand(input).pipe(Effect.flip)).toMatchObject({
+      detail: "http_error",
+    });
+  }),
+);
+
+it.effect.each([
+  "no-headers",
+  "wrong-manifest",
+  "wrong-version",
+  "bad-json",
+  "extra-field",
+  "wrong-recovery",
+  "wrong-status",
+  "server-error",
+  "network",
+  "invalid-success",
+] as const)("keeps recovery receipt %s unknown", (scenario) =>
+  Effect.gen(function* () {
+    const configured = makeControlPlaneWorkstreamTransport(activation, async () => {
+      if (scenario === "network") throw new Error("Synthetic connection loss");
+      const error = recoveryError("not_found");
+      return new Response(
+        scenario === "bad-json"
+          ? "not JSON"
+          : JSON.stringify({
+              ...error,
+              ...(scenario === "extra-field" ? { unexpected: true } : {}),
+              ...(scenario === "wrong-recovery" ? { recovery: "reconcile" } : {}),
+            }),
+        {
+          status:
+            scenario === "server-error"
+              ? 503
+              : scenario === "wrong-status"
+                ? 409
+                : scenario === "invalid-success"
+                  ? 200
+                  : 404,
+          headers:
+            scenario === "no-headers"
+              ? {}
+              : {
+                  ...recoveryHeaders,
+                  ...(scenario === "wrong-manifest"
+                    ? { "x-control-contract-manifest": "0".repeat(64) }
+                    : {}),
+                  ...(scenario === "wrong-version"
+                    ? { "x-control-contract-version": "workstreams/0.0.0" }
+                    : {}),
+                },
+        },
+      );
+    });
+    expect(
+      yield* configured.transport.readCommandReceipt!({
+        ...recoveryContract,
+        commandId: recoveryCommand.command_id,
+      }).pipe(Effect.flip),
+    ).toMatchObject({ effect: "unknown-effect" });
+  }),
+);
+
+it.effect("requires the configured response proof before accepting recovery evidence", () =>
+  Effect.gen(function* () {
+    const principalId = "11111111-1111-4111-8111-111111111111";
+    const registryBinding = Buffer.from(
+      JSON.stringify({
+        protocol: "workstreams-registry-binding/1.0.0",
+        manifest_sha256: "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
+        registry_instance_id: "22222222-2222-4222-8222-222222222222",
+        canonical_origin: "https://control-plane.example",
+        owner_id: activation.value.ownerId,
+        principal_id: principalId,
+        authorization_revision: activation.value.authorizationRevision,
+      }),
+    ).toString("base64url");
+    for (const code of ["not_found", "idempotency_conflict"] as const) {
+      for (const proof of ["valid", "missing", "tampered", "refused"] as const) {
+        const configured = makeControlPlaneWorkstreamTransport(
+          {
+            ...activation,
+            value: { ...activation.value, principalId, registryBinding },
+          },
+          async (_url, init) => {
+            const error = recoveryError(code);
+            const body =
+              proof === "refused"
+                ? '{"code":"registry_binding_not_current"}'
+                : JSON.stringify(error);
+            const status = proof === "refused" ? 409 : error.status;
+            const dispatch = proof === "refused" ? "not-dispatched" : "dispatched";
+            const canonical = [
+              "workstreams-registry-response/1.0.0",
+              new Headers(init?.headers).get("x-control-signature"),
+              String(status),
+              WORKSTREAM_CONTRACT_HEADER_VERSION,
+              WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+              registryBinding,
+              dispatch,
+              NodeCrypto.createHash("sha256").update(body).digest("hex"),
+            ].join("\n");
+            return new Response(body + (proof === "tampered" ? " " : ""), {
+              status,
+              headers: {
+                ...recoveryHeaders,
+                ...(proof === "missing"
+                  ? {}
+                  : {
+                      "x-control-registry-binding": registryBinding,
+                      "x-control-registry-dispatch": dispatch,
+                      "x-control-registry-response-mac": NodeCrypto.createHmac(
+                        "sha256",
+                        Buffer.from(activation.value.signingSecret, "base64"),
+                      )
+                        .update(canonical)
+                        .digest("base64url"),
+                    }),
+              },
+            });
+          },
+        );
+        const recovery =
+          code === "not_found"
+            ? configured.transport.readCommandReceipt!({
+                ...recoveryContract,
+                commandId: recoveryCommand.command_id,
+              }).pipe(Effect.map((result): string => result.kind))
+            : configured.transport.resubmitCommand!(recoveryInput).pipe(
+                Effect.map((result): string => result.kind),
+              );
+        if (proof === "valid") {
+          expect(yield* recovery).toBe(code === "not_found" ? "absent" : "idempotency_conflict");
+        } else {
+          expect(yield* recovery.pipe(Effect.flip)).toMatchObject({ effect: "unknown-effect" });
+        }
+      }
+    }
+  }),
+);
+
+it.effect(
+  "recognizes recovery conflicts while signing and sending exactly the retained bytes",
+  () =>
+    Effect.gen(function* () {
+      const bodies: NonNullable<RequestInit["body"]>[] = [];
+      const configured = makeControlPlaneWorkstreamTransport(activation, async (url, init) => {
+        expect(String(url)).toBe("https://control-plane.example/workstreams/v1/commands");
+        expect(init?.method).toBe("POST");
+        const headers = new Headers(init?.headers);
+        expect(init?.body).toBe(recoveryInput.body);
+        bodies.push(init!.body!);
+        expect(headers.get("idempotency-key")).toBe(recoveryCommand.command_id);
+        expect(headers.get("x-control-content-sha256")).toBe(
+          NodeCrypto.createHash("sha256").update(recoveryInput.body).digest("hex"),
+        );
+        expect(headers.get("x-control-signature")).toBe(
+          signWorkstreamRequest({
+            requestId: headers.get("x-control-request-id")!,
+            idempotencyKey: recoveryCommand.command_id,
+            sentAt: headers.get("x-control-timestamp")!,
+            nonce: headers.get("x-control-nonce")!,
+            principalId: activation.value.principalId,
+            keyId: activation.value.keyId,
+            method: "POST",
+            target: "/workstreams/v1/commands",
+            contentSha256: headers.get("x-control-content-sha256")!,
+            signingSecret: activation.value.signingSecret,
+          }),
+        );
+        return new Response(JSON.stringify(recoveryError("idempotency_conflict")), {
+          status: 409,
+          headers: recoveryHeaders,
+        });
+      });
+      expect(yield* configured.transport.resubmitCommand!(recoveryInput)).toEqual({
+        kind: "idempotency_conflict",
+      });
+      expect(yield* configured.transport.resubmitCommand!(recoveryInput)).toEqual({
+        kind: "idempotency_conflict",
+      });
+      expect(
+        yield* configured.transport.submitCommand(recoveryInput).pipe(Effect.flip),
+      ).toMatchObject({
+        detail: "http_error",
+        effect: "unknown-effect",
+      });
+      expect(bodies).toEqual([recoveryInput.body, recoveryInput.body, recoveryInput.body]);
+    }),
+);
+
+it.effect.each([
+  ["idempotency_conflict", 409, "reconcile", false],
+  ["idempotency_conflict", 503, "reconcile", true],
+  ["generation_conflict", 409, "reconcile", true],
+  ["version_conflict", 409, "reload", true],
+  ["forbidden", 403, "stop", true],
+  ["not_found", 404, "stop", true],
+  ["unavailable", 503, "reconcile", true],
+] as const)(
+  "keeps recovery submit %s/%s unknown without qualifying conflict evidence",
+  ([code, status, recovery, headers]) =>
+    Effect.gen(function* () {
+      const configured = makeControlPlaneWorkstreamTransport(
+        activation,
+        async () =>
+          new Response(
+            JSON.stringify({ code, status, recovery, request_id: "recovery-request-0001" }),
+            { status, headers: headers ? recoveryHeaders : {} },
+          ),
+      );
+      expect(
+        yield* configured.transport.resubmitCommand!(recoveryInput).pipe(Effect.flip),
+      ).toMatchObject({ effect: "unknown-effect" });
+    }),
+);
 
 it.effect("negotiates independent appearance without interpreting errors as automatic colors", () =>
   Effect.gen(function* () {

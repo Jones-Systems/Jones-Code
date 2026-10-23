@@ -1582,7 +1582,15 @@
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw": "jones-owned",
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw": "jones-owned",
     "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs": "jones-owned",
-    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned"
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/README.md": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/negative-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/semantic-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/manifest.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
