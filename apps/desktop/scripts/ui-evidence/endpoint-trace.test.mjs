@@ -9,6 +9,303 @@ const expected = { 0: { a: "a-fingerprint", b: "b-fingerprint" } };
 const request = (origin, authFp) => ({ generation: 0, kind: "request", origin, authFp });
 const ticket = (origin, ticketFp) => ({ generation: 0, kind: "websocket", origin, ticketFp });
 
+function pendingRequest(url) {
+  const headers = Promise.withResolvers();
+  return {
+    request: { url: () => url, method: () => "GET", allHeaders: () => headers.promise },
+    headers,
+  };
+}
+
+NodeTest.test(
+  "timeout diagnostics distinguish closed, detached, live and asset requests",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const trace = new EndpointTrace("t");
+    t.after(() => trace.dispose());
+    const closed = new NodeEvents.EventEmitter();
+    const detached = new NodeEvents.EventEmitter();
+    const current = new NodeEvents.EventEmitter();
+    const old = pendingRequest(A),
+      abandoned = pendingRequest(B);
+    const live = pendingRequest(B),
+      asset = pendingRequest("t3code://app/assets/private.js");
+    trace.attach(closed);
+    closed.emit("request", old.request);
+    closed.emit("requestfinished", old.request);
+    closed.emit("close");
+    trace.attach(detached);
+    detached.emit("request", abandoned.request);
+    trace.detach();
+    detached.emit("close");
+    detached.emit("requestfailed", abandoned.request);
+    trace.attach(current);
+    current.emit("request", live.request);
+    current.emit("request", asset.request);
+    current.emit("requestfailed", asset.request);
+    const drain = NodeAssert.rejects(trace.flush(), /renderer-trace-drain-timeout/);
+    t.mock.timers.tick(999);
+    NodeAssert.equal(trace.summary().incomplete, false);
+    t.mock.timers.tick(1);
+    await drain;
+    const summary = trace.summary();
+    NodeAssert.equal(summary.pendingAtTimeout, 4);
+    NodeAssert.equal(summary.drainTimeoutMs, 1000);
+    NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.currentGeneration, 2);
+    NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.omittedCount, 0);
+    const samples = summary.pendingDiagnosticsAtTimeout.samples;
+    NodeAssert.deepEqual(samples.map(({ ageMs, ...sample }) => sample), [
+      {
+        sequence: 0,
+        generation: 0,
+        originClass: "A",
+        headerState: "pending",
+        requestFinished: true,
+        requestFailed: false,
+        pageClosed: true,
+        detached: true,
+      },
+      {
+        sequence: 1,
+        generation: 1,
+        originClass: "B",
+        headerState: "pending",
+        requestFinished: false,
+        requestFailed: false,
+        pageClosed: false,
+        detached: true,
+      },
+      {
+        sequence: 2,
+        generation: 2,
+        originClass: "B",
+        headerState: "pending",
+        requestFinished: false,
+        requestFailed: false,
+        pageClosed: false,
+        detached: false,
+      },
+      {
+        sequence: 3,
+        generation: 2,
+        originClass: "packaged",
+        headerState: "pending",
+        requestFinished: false,
+        requestFailed: true,
+        pageClosed: false,
+        detached: false,
+      },
+    ]);
+    for (const sample of samples) NodeAssert.ok(Number.isFinite(sample.ageMs) && sample.ageMs >= 0);
+    NodeAssert.ok(samples[0].ageMs >= samples[3].ageMs);
+    NodeAssert.deepEqual(trace.entries, []);
+    NodeAssert.equal(summary.localAssetRequests, 0);
+    for (const page of [closed, detached, current]) NodeAssert.deepEqual(page.eventNames(), []);
+  },
+);
+
+NodeTest.test(
+  "timeout origin classes never retain secret URLs, paths, queries or headers",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const trace = new EndpointTrace("t");
+    t.after(() => trace.dispose());
+    const page = new NodeEvents.EventEmitter();
+    trace.attach(page);
+    const urls = [
+      ["http://private-user:private-password@127.0.0.1:43773/private-path?private-query", "A"],
+      [`${B}/private-path?private-query`, "B"],
+      ["t3code://app/private-path?private-query", "packaged"],
+      ["file:///private-path?private-query", "file"],
+      ["data:text/plain,private-payload", "data"],
+      ["blob:http://private-host/private-path", "blob"],
+      [`blob:${A}/private-path`, "blob"],
+      ["https://private-host/private-path?private-query", "other"],
+      ["t3code://private-host/private-path", "other"],
+    ];
+    let headerReads = 0;
+    for (const [url] of urls) {
+      const pending = pendingRequest(url);
+      page.emit("request", {
+        ...pending.request,
+        allHeaders: () => {
+          headerReads++;
+          return pending.headers.promise;
+        },
+      });
+    }
+    const drain = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+    t.mock.timers.tick(1000);
+    await drain;
+    NodeAssert.equal(headerReads, urls.length);
+    const summary = trace.summary();
+    NodeAssert.deepEqual(
+      summary.pendingDiagnosticsAtTimeout.samples.map((sample) => sample.originClass),
+      urls.map(([, kind]) => kind),
+    );
+    NodeAssert.equal(JSON.stringify(summary).includes("private-"), false);
+  },
+);
+
+NodeTest.test(
+  "timeout samples cap at sixteen while pending tracking obeys the event limit",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    for (const count of [16, 17, 5001]) {
+      const trace = new EndpointTrace("t");
+      t.after(() => trace.dispose());
+      const page = new NodeEvents.EventEmitter();
+      trace.attach(page);
+      let headerReads = 0;
+      for (let i = 0; i < count; i++) {
+        page.emit("request", {
+          url: () => A,
+          allHeaders: () => {
+            headerReads++;
+            return new Promise(() => {});
+          },
+        });
+      }
+      const expectedPending = Math.min(count, 5000);
+      NodeAssert.equal(headerReads, expectedPending);
+      NodeAssert.equal(trace.mark(), expectedPending);
+      const drain = NodeAssert.rejects(
+        trace.flush(),
+        count > 5000 ? /trace-overflow/ : /drain-timeout/,
+      );
+      t.mock.timers.tick(1000);
+      await drain;
+      const summary = trace.summary();
+      NodeAssert.equal(summary.pending, expectedPending);
+      NodeAssert.equal(summary.pendingAtTimeout, expectedPending);
+      NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.samples.length, 16);
+      NodeAssert.equal(summary.pendingDiagnosticsAtTimeout.omittedCount, expectedPending - 16);
+      NodeAssert.deepEqual(
+        summary.pendingDiagnosticsAtTimeout.samples.map((sample) => sample.sequence),
+        Array.from({ length: 16 }, (_, i) => i),
+      );
+      NodeAssert.equal(summary.incomplete, true);
+      trace.dispose();
+      NodeAssert.deepEqual(page.eventNames(), []);
+    }
+  },
+);
+
+NodeTest.test(
+  "late headers, lifecycle events and summary edits cannot change the timeout snapshot",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const trace = new EndpointTrace("t");
+    t.after(() => trace.dispose());
+    const page = new NodeEvents.EventEmitter();
+    trace.attach(page);
+    const fulfilled = pendingRequest(`${B}/private-path?private-query`);
+    const rejected = pendingRequest(A);
+    page.emit("request", fulfilled.request);
+    page.emit("request", rejected.request);
+    const lateClose = page.listeners("close");
+    const lateFinished = page.listeners("requestfinished");
+    const drain = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+    t.mock.timers.tick(1000);
+    await drain;
+    const before = trace.summary().pendingDiagnosticsAtTimeout;
+    const saved = structuredClone(before);
+    before.samples[0].originClass = "tampered";
+    before.samples.length = 0;
+    before.omittedCount = 999;
+    let fingerprints = 0;
+    trace.fingerprint = () => {
+      fingerprints++;
+      return "invalid";
+    };
+    fulfilled.headers.resolve({ authorization: "Bearer private-header" });
+    rejected.headers.reject(new Error("private-browser-error"));
+    for (const close of lateClose) close();
+    for (const finished of lateFinished) finished(fulfilled.request);
+    page.emit("requestfailed", rejected.request);
+    trace.dispose();
+    await new Promise((done) => setImmediate(done));
+    const after = trace.summary();
+    NodeAssert.deepEqual(after.pendingDiagnosticsAtTimeout, saved);
+    NodeAssert.equal(after.pending, 0);
+    NodeAssert.equal(after.pendingAtTimeout, 2);
+    NodeAssert.equal(after.failure, "renderer-trace-drain-timeout");
+    NodeAssert.equal(after.incomplete, true);
+    NodeAssert.equal(fingerprints, 0);
+    NodeAssert.equal(JSON.stringify(after).includes("private-"), false);
+    NodeAssert.deepEqual(trace.entries, []);
+    NodeAssert.deepEqual(page.eventNames(), []);
+    await NodeAssert.rejects(trace.checkpoint(), /drain-timeout/);
+  },
+);
+
+NodeTest.test(
+  "overlapping drains preserve the first timeout's lifecycle snapshot",
+  async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const trace = new EndpointTrace("t");
+    t.after(() => trace.dispose());
+    const page = new NodeEvents.EventEmitter();
+    trace.attach(page);
+    page.emit("request", pendingRequest(A).request);
+    const first = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+    t.mock.timers.tick(500);
+    const second = NodeAssert.rejects(trace.flush(), /drain-timeout/);
+    t.mock.timers.tick(500);
+    await first;
+    const snapshot = trace.summary().pendingDiagnosticsAtTimeout;
+    NodeAssert.equal(snapshot.samples[0].detached, false);
+    t.mock.timers.tick(500);
+    await second;
+    NodeAssert.deepEqual(trace.summary().pendingDiagnosticsAtTimeout, snapshot);
+    NodeAssert.equal(trace.summary().failure, "renderer-trace-drain-timeout");
+  },
+);
+
+NodeTest.test(
+  "settled observations retain generation, fingerprints and successful summary behavior",
+  async (t) => {
+    const trace = new EndpointTrace("t", { key: Buffer.alloc(32, 7) });
+    t.after(() => trace.dispose());
+    const first = new NodeEvents.EventEmitter(),
+      second = new NodeEvents.EventEmitter();
+    const fingerprints = { a: trace.fingerprint("Bearer a"), b: trace.fingerprint("Bearer b") };
+    const old = pendingRequest(`${A}/api`);
+    trace.attach(first);
+    await trace.catalog({ evaluate: async () => fingerprints }, "b");
+    first.emit("request", old.request);
+    first.emit("close");
+    trace.attach(second);
+    await trace.catalog({ evaluate: async () => fingerprints }, "b");
+    second.emit("request", {
+      url: () => B,
+      method: () => "GET",
+      allHeaders: async () => ({ authorization: "Bearer b" }),
+    });
+    second.emit("request", { url: () => "t3code://app/asset", allHeaders: async () => ({}) });
+    old.headers.resolve({ authorization: "Bearer a" });
+    NodeAssert.deepEqual(await trace.checkpoint(), { ok: true });
+    NodeAssert.deepEqual(trace.entries.map(({ generation, authFp }) => ({ generation, authFp })), [
+      { generation: 0, authFp: fingerprints.a },
+      { generation: 1, authFp: fingerprints.b },
+    ]);
+    NodeAssert.deepEqual(trace.summary(), {
+      count: 2,
+      localAssetRequests: 1,
+      counts: { [`0 ${A} request `]: 1, [`1 ${B} request `]: 1 },
+      fingerprints: { 0: fingerprints, 1: fingerprints },
+      failure: null,
+      incomplete: false,
+      pending: 0,
+      pendingAtTimeout: null,
+      drainTimeoutMs: 1000,
+      pendingDiagnosticsAtTimeout: null,
+    });
+    trace.dispose();
+    for (const page of [first, second]) NodeAssert.deepEqual(page.eventNames(), []);
+  },
+);
+
 NodeTest.test(
   "never-settling headers fail closed within the drain budget",
   { timeout: 250 },

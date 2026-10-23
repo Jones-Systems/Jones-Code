@@ -10,6 +10,14 @@ function endpoint(value) {
   return url;
 }
 
+function originClass(url) {
+  if (["file:", "data:", "blob:"].includes(url.protocol)) return url.protocol.slice(0, -1);
+  if (url.origin === A) return "A";
+  if (url.origin === B) return "B";
+  if (url.protocol === "t3code:" && url.hostname === "app") return "packaged";
+  return "other";
+}
+
 export function assertCrossover(entries, expectedByGeneration) {
   const tickets = new Map();
   for (const entry of entries) {
@@ -51,7 +59,7 @@ export class EndpointTrace {
   #sequence = 0;
   #generation = -1;
   #detach = [];
-  #pending = new Set();
+  #pending = new Map();
   #failure = null;
   #expected = {};
   #limit;
@@ -59,6 +67,7 @@ export class EndpointTrace {
   #drainTimeoutMs;
   #incomplete = false;
   #pendingAtTimeout = null;
+  #pendingDiagnosticsAtTimeout = null;
   #sealed = false;
   #disposed = false;
 
@@ -109,17 +118,45 @@ export class EndpointTrace {
     if (this.#sealed) throw new Error(this.#failure ?? "renderer-trace-disposed");
     this.detach();
     this.#generation++;
+    const lifecycle = { pageClosed: false, detached: false };
+    const requests = new WeakMap();
+    this.#detach.push(() => {
+      lifecycle.detached = true;
+    });
     const listen = (emitter, event, fn) => {
       emitter.on(event, fn);
       this.#detach.push(() => emitter.off(event, fn));
     };
+    listen(page, "close", () => {
+      if (!this.#sealed) lifecycle.pageClosed = true;
+    });
+    for (const [event, field] of [
+      ["requestfinished", "requestFinished"],
+      ["requestfailed", "requestFailed"],
+    ]) {
+      listen(page, event, (request) => {
+        const metadata = requests.get(request);
+        if (!this.#sealed && metadata) metadata[field] = true;
+      });
+    }
     listen(page, "request", (request) => {
       const slot = this.#reserve();
       if (!slot) return;
+      const metadata = {
+        ...slot,
+        originClass: "other",
+        headerState: "pending",
+        requestFinished: false,
+        requestFailed: false,
+        lifecycle,
+      };
+      requests.set(request, metadata);
       const pending = (async () => {
         const url = endpoint(request.url());
+        metadata.originClass = originClass(url);
         const headers = await request.allHeaders();
         if (this.#sealed) return;
+        metadata.headerState = "resolved";
         const auth = headers.authorization;
         // ElectronProtocol.ts serves packaged assets at t3code://app, outside HTTP endpoints.
         const packagedAsset = url.protocol === "t3code:" && url.hostname === "app";
@@ -136,10 +173,16 @@ export class EndpointTrace {
           authFp: auth ? this.fingerprint(auth) : null,
         });
       })().catch(() => {
-        if (!this.#sealed) this.#failure ??= "renderer-network-unobservable";
+        if (!this.#sealed) {
+          if (metadata.headerState === "pending") metadata.headerState = "rejected";
+          this.#failure ??= "renderer-network-unobservable";
+        }
       });
-      this.#pending.add(pending);
-      void pending.finally(() => this.#pending.delete(pending));
+      this.#pending.set(pending, metadata);
+      void pending.finally(() => {
+        this.#pending.delete(pending);
+        requests.delete(request);
+      });
     });
     listen(page, "websocket", (socket) => {
       try {
@@ -209,6 +252,32 @@ export class EndpointTrace {
         timer = setTimeout(() => {
           this.#incomplete = true;
           this.#pendingAtTimeout = this.#pending.size;
+          if (this.#pendingDiagnosticsAtTimeout === null) {
+            const now = performance.now();
+            const samples = [];
+            // Capture before timeout cleanup detaches the current page; retain no live references.
+            for (const metadata of this.#pending.values()) {
+              if (samples.length === 16) break;
+              samples.push(
+                Object.freeze({
+                  sequence: metadata.sequence,
+                  generation: metadata.generation,
+                  originClass: metadata.originClass,
+                  ageMs: Math.max(0, now - metadata.t),
+                  headerState: metadata.headerState,
+                  requestFinished: metadata.requestFinished,
+                  requestFailed: metadata.requestFailed,
+                  pageClosed: metadata.lifecycle.pageClosed,
+                  detached: metadata.lifecycle.detached,
+                }),
+              );
+            }
+            this.#pendingDiagnosticsAtTimeout = Object.freeze({
+              currentGeneration: this.#generation,
+              samples: Object.freeze(samples),
+              omittedCount: this.#pending.size - samples.length,
+            });
+          }
           this.#sealed = true;
           this.#failure ??= "renderer-trace-drain-timeout";
           this.detach();
@@ -216,7 +285,7 @@ export class EndpointTrace {
         }, this.#drainTimeoutMs);
       });
       // Include observations arriving during the drain without extending its deadline.
-      while (this.#pending.size) await Promise.race([Promise.all(this.#pending), deadline]);
+      while (this.#pending.size) await Promise.race([Promise.all(this.#pending.keys()), deadline]);
     } finally {
       clearTimeout(timer);
     }
@@ -318,6 +387,7 @@ export class EndpointTrace {
       pending: this.#pending.size,
       pendingAtTimeout: this.#pendingAtTimeout,
       drainTimeoutMs: this.#drainTimeoutMs,
+      pendingDiagnosticsAtTimeout: structuredClone(this.#pendingDiagnosticsAtTimeout),
     };
   }
   detach() {
