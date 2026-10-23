@@ -41,9 +41,16 @@ const bindingLabels: Record<string, string> = {
 };
 
 const assignmentStates: Record<WorkQueueAssignment["state"], string> = {
-  issued: "Issued", pending: "Pending", satisfied: "Satisfied", conflict: "Conflict",
-  rejected: "Rejected", unavailable: "Unavailable", unsupported: "Unsupported",
-  permanent: "Permanent hold", excluded: "Excluded", cancelled: "Cancelled",
+  issued: "Issued",
+  pending: "Pending",
+  satisfied: "Satisfied",
+  conflict: "Conflict",
+  rejected: "Rejected",
+  unavailable: "Unavailable",
+  unsupported: "Unsupported",
+  permanent: "Permanent hold",
+  excluded: "Excluded",
+  cancelled: "Cancelled",
 };
 const assignmentReasons: Record<WorkQueueAssignment["reason"], string> = {
   assignment_pending: "Assignment pending",
@@ -141,7 +148,11 @@ export function WorkQueueMetadataPanel({
     onResult?.(result);
   }, [result, onResult]);
   const snapshot = result && "snapshot" in result ? result.snapshot : null;
-  const items = snapshot?.items.filter((item) => !excludedRequests?.has(item.request_id)) ?? [];
+  const rows =
+    snapshot?.schema === "codex.t3-work-queue-metadata/v4"
+      ? snapshot.items.map((item) => ({ item, assignment: item.assignment }))
+      : (snapshot?.items.map((item) => ({ item, assignment: undefined })) ?? []);
+  const items = rows.filter(({ item }) => !excludedRequests?.has(item.request_id));
   const stale =
     result?.status === "stale" ||
     (result !== null && "snapshot" in result && result.expires_at_ms <= observedAt);
@@ -203,7 +214,7 @@ export function WorkQueueMetadataPanel({
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => (
+                {items.map(({ item, assignment }) => (
                   <tr key={item.request_id} className="align-top">
                     <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
                       <div className="font-medium">{item.workstream_id}</div>
@@ -255,23 +266,40 @@ export function WorkQueueMetadataPanel({
                     </td>
                     <td className="max-w-64 break-words border-b p-3 [overflow-wrap:anywhere]">
                       {item.queue_state}
-                      {"assignment" in item && (
+                      {assignment !== undefined && (
                         <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                          {item.assignment ? (
+                          {assignment ? (
                             <>
-                              <div>Assignment: {assignmentStates[item.assignment.state]}</div>
-                              <div>Reason: {assignmentReasons[item.assignment.reason]}</div>
-                              <div>Desired workstream: {workQueueDestinationLabel(
-                                item.assignment.workstream_id, snapshot.source.environment_ref, localNames,
-                              )}</div>
-                              <div>Observed workstream: {item.assignment.observed_workstream_id === null
-                                ? "Not observed"
-                                : workQueueDestinationLabel(item.assignment.observed_workstream_id,
-                                  snapshot.source.environment_ref, localNames)}</div>
-                              <div>Result updated: {item.assignment.updated_at === null
-                                ? "Not available" : formatTime(item.assignment.updated_at)}</div>
+                              <div>Assignment: {assignmentStates[assignment.state]}</div>
+                              <div>Reason: {assignmentReasons[assignment.reason]}</div>
+                              <div>
+                                Desired workstream:{" "}
+                                {workQueueDestinationLabel(
+                                  assignment.workstream_id,
+                                  snapshot.source.environment_ref,
+                                  localNames,
+                                )}
+                              </div>
+                              <div>
+                                Observed workstream:{" "}
+                                {assignment.observed_workstream_id === null
+                                  ? "Not observed"
+                                  : workQueueDestinationLabel(
+                                      assignment.observed_workstream_id,
+                                      snapshot.source.environment_ref,
+                                      localNames,
+                                    )}
+                              </div>
+                              <div>
+                                Result updated:{" "}
+                                {assignment.updated_at === null
+                                  ? "Not available"
+                                  : formatTime(assignment.updated_at)}
+                              </div>
                             </>
-                          ) : "Assignment information unavailable"}
+                          ) : (
+                            "Assignment information unavailable"
+                          )}
                         </div>
                       )}
                     </td>
