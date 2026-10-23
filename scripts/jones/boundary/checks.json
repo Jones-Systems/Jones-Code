@@ -676,11 +676,18 @@
         "apps/web/src/jones/workQueue/SentPrompts.test.tsx",
         "apps/web/src/jones/workQueue/UnifiedQueuePage.test.tsx",
         "apps/web/src/jones/workQueue/WorkQueueMetadataPanel.test.tsx",
-        "apps/web/src/jones/workQueue/classifySentPrompts.test.ts"
+        "apps/web/src/jones/workQueue/classifySentPrompts.test.ts",
+        "apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"
       ],
       "commands": [
         "vp test run apps/server/src/voiceReview/bridge.test.ts packages/contracts/src/settings.test.ts apps/server/src/jones/workQueueMetadata/WorkQueueMetadataService.test.ts apps/server/src/jones/workQueueMetadata/http.test.ts packages/client-runtime/src/jones/workQueueMetadata.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts packages/contracts/src/jones/workQueueMetadata.test.ts --maxWorkers=1 --no-file-parallelism",
-        "vp run --filter @t3tools/web test src/jones/workQueue/PromptsSettings.test.tsx src/components/settings/settingsSearch.test.ts src/components/workQueue/WorkQueuePage.test.tsx src/jones/workQueue/SentPrompts.test.tsx src/jones/workQueue/UnifiedQueuePage.test.tsx src/jones/workQueue/WorkQueueMetadataPanel.test.tsx src/jones/workQueue/classifySentPrompts.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp run --filter @t3tools/web test src/jones/workQueue/PromptsSettings.test.tsx src/components/settings/settingsSearch.test.ts src/components/workQueue/WorkQueuePage.test.tsx src/jones/workQueue/SentPrompts.test.tsx src/jones/workQueue/UnifiedQueuePage.test.tsx src/jones/workQueue/WorkQueueMetadataPanel.test.tsx src/jones/workQueue/classifySentPrompts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/jones/workstreams/Sidebar.assignment.browser.test.tsx --project browser --maxWorkers=1",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
       ]
     },
     {
@@ -2502,6 +2509,28 @@
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
         "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstream-tools",
+      "tests": [
+        "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
+        "apps/server/src/jones/workstreams/operations/cli.test.ts",
+        "apps/server/src/jones/mcp/workstreams/registration.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/workstreams/handlers.test.ts apps/server/src/jones/mcp/workstreams/registration.test.ts apps/server/src/jones/workstreams/operations/cli.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/components/settings/AcpRegistrySearchStep.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }

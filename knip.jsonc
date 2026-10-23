@@ -3,7 +3,7 @@
   // Exported types are part of our contracts even before they have consumers.
   "rules": { "types": "off", "nsTypes": "off" },
   // These executables are supplied by the OS or installed separately from npm.
-  "ignoreBinaries": ["eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
+  "ignoreBinaries": ["cc", "eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
   "workspaces": {
     ".": {
       // Keep vendored reference repositories outside the root project.

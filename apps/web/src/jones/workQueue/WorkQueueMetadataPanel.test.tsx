@@ -1,4 +1,8 @@
 // @vitest-environment jsdom
+import producerV4Raw from "../../../../../packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture?raw";
+import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
+import * as Schema from "effect/Schema";
+import { WorkQueueMetadata as MetadataSchema } from "@t3tools/contracts";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -89,6 +93,43 @@ describe("submitted work metadata", () => {
     status: "ready",
     snapshot: sample(),
     expires_at_ms: Date.now() + 60_000,
+  });
+  it("shows all ten assignment states, reasons and distinct destinations without write controls", async () => {
+    const snapshot = Schema.decodeUnknownSync(MetadataSchema)(JSON.parse(producerV4Raw));
+    const release = publishWorkQueueLocalNames("env", [
+      { workstreamId: "assigned-work", name: "Desired project" },
+      { workstreamId: "other-work", name: "<img src=x onerror=alert(1)>" },
+    ]);
+    try {
+      await render(async () => ({ status: "stale", snapshot, expires_at_ms: 30_100 }));
+      for (const label of ["Issued", "Pending", "Satisfied", "Conflict", "Rejected", "Unavailable", "Unsupported", "Permanent hold", "Excluded", "Cancelled"]) {
+        expect(container.textContent).toContain(`Assignment: ${label}`);
+      }
+      expect(container.textContent).toContain("Desired workstream: Desired project (assigned-work)");
+      expect(container.textContent).toContain("Observed workstream: Not observed");
+      expect(container.textContent).toContain("Observed workstream: <img src=x onerror=alert(1)> (other-work)");
+      expect(container.textContent).toContain("Assignment information unavailable");
+      expect(container.textContent).not.toContain("Unassigned");
+      expect(container.textContent).toContain("Reason: Thread belongs to another workstream");
+      expect(container.textContent).toContain("Stale sample");
+      expect(container.querySelector("img,textarea,input")).toBeNull();
+      expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Refresh metadata"]);
+      await act(() => release());
+      expect(container.textContent).toContain("Desired workstream: assigned-work");
+      expect(container.textContent).not.toContain("Desired project");
+    } finally {
+      release();
+    }
+  });
+  it.each(["v2", "v3"] as const)("keeps %s display free of invented assignment claims", async (version) => {
+    const snapshot = Schema.decodeUnknownSync(MetadataSchema)({
+      ...sample(), schema: `codex.t3-work-queue-metadata/${version}`,
+      items: sample().items.map((item) => ({ ...item, payload_sha256: null, native_handoff: null })),
+    });
+    await render(async () => ({ status: "ready", snapshot, expires_at_ms: Date.now() + 60_000 }));
+    expect(container.textContent).toContain("request-legacy");
+    expect(container.textContent).not.toContain("Assignment:");
+    expect(container.textContent).not.toContain("Assignment information unavailable");
   });
   it("shows raw and canonical identities, unknown outcomes and no mutation controls", async () => {
     await render(async () => ready());

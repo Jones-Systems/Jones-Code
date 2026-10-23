@@ -247,14 +247,15 @@ describe("native handoff classification", () => {
   });
 });
 
-const preStartSnapshot = (): WorkQueueMetadata => {
+const preStartSnapshot = (version: "v3" | "v4" = "v3"): WorkQueueMetadata => {
   const sample = snapshot();
   if (sample.schema !== "codex.t3-work-queue-metadata/v2") throw new Error("fixture");
   return {
     ...sample,
-    schema: "codex.t3-work-queue-metadata/v3",
+    schema: `codex.t3-work-queue-metadata/${version}`,
     items: sample.items.map((item) => ({
       ...item,
+      ...(version === "v4" ? { assignment: null } : {}),
       native_handoff: {
         ...item.native_handoff!,
         correlation_status: "pending",
@@ -265,9 +266,9 @@ const preStartSnapshot = (): WorkQueueMetadata => {
   } as unknown as WorkQueueMetadata;
 };
 
-describe("recorded pre-start handoffs", () => {
+describe.each(["v3", "v4"] as const)("%s recorded pre-start handoffs", (version) => {
   it("moves recorded accepted pre-start proof to Sent using the observation time", () => {
-    const result = classifySentPrompts(preStartSnapshot(), [voice()], "native-env");
+    const result = classifySentPrompts(preStartSnapshot(version), [voice()], "native-env");
     expect(result.sent).toHaveLength(1);
     expect(result.sent[0]).toMatchObject({
       text: "Authorized retained prompt",
@@ -281,16 +282,19 @@ describe("recorded pre-start handoffs", () => {
   it.each(["error", "interrupted"] as const)(
     "keeps the same recorded pre-start handoff Sent after %s",
     (terminalState) => {
-      const sample = preStartSnapshot();
-      if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+      const sample = preStartSnapshot(version);
+      if (
+        sample.schema !== "codex.t3-work-queue-metadata/v3" &&
+        sample.schema !== "codex.t3-work-queue-metadata/v4"
+      ) throw new Error("fixture");
       for (const turn_state of ["pending", terminalState] as const) {
-        const observed = {
+        const observed = Schema.decodeUnknownSync(WorkQueueMetadata)({
           ...sample,
           items: sample.items.map((item) => ({
             ...item,
             native_handoff: { ...item.native_handoff!, turn_state },
           })),
-        };
+        });
         const result = classifySentPrompts(observed, [voice()], "native-env");
         expect(result.sent).toHaveLength(1);
         expect(result.sent[0]).toMatchObject({
@@ -306,8 +310,11 @@ describe("recorded pre-start handoffs", () => {
     },
   );
   it("keeps missing turn evidence and contradictory null-turn states queued", () => {
-    const sample = preStartSnapshot();
-    if (sample.schema !== "codex.t3-work-queue-metadata/v3") throw new Error("fixture");
+    const sample = preStartSnapshot(version);
+    if (
+      sample.schema !== "codex.t3-work-queue-metadata/v3" &&
+      sample.schema !== "codex.t3-work-queue-metadata/v4"
+    ) throw new Error("fixture");
     const item = sample.items[0]!;
     const { turn_id: _turnId, ...missingTurn } = item.native_handoff!;
     for (const native_handoff of [
@@ -328,7 +335,7 @@ describe("recorded pre-start handoffs", () => {
     }
   });
   it("keeps pending commands without recorded proof queued", () => {
-    const sample = preStartSnapshot();
+    const sample = preStartSnapshot(version);
     const unconfirmed = {
       ...sample,
       items: sample.items.map((item) => ({ ...item, native_handoff: null })),
@@ -348,16 +355,16 @@ describe("recorded pre-start handoffs", () => {
       [delivery, { ...delivery, delivery_id: "ambiguous" }],
     ]) {
       const candidate = { ...entry, queue_delivery_links: { ...links, deliveries } };
-      const result = classifySentPrompts(preStartSnapshot(), [candidate], "native-env");
+      const result = classifySentPrompts(preStartSnapshot(version), [candidate], "native-env");
       expect(result.sent[0]!.text).toBeNull();
       expect(result.remainingVoice).toEqual([candidate]);
     }
     for (const nativeEnvironment of [null, "foreign-env"]) {
-      const result = classifySentPrompts(preStartSnapshot(), [entry], nativeEnvironment);
+      const result = classifySentPrompts(preStartSnapshot(version), [entry], nativeEnvironment);
       expect(result.sent[0]!.text).toBeNull();
       expect(result.remainingVoice).toEqual([entry]);
     }
-    const sample = preStartSnapshot();
+    const sample = preStartSnapshot(version);
     const foreignHost = { ...sample, source: { ...sample.source, host_id: "foreign-host" } };
     expect(classifySentPrompts(foreignHost, [entry], "native-env").sent[0]!.text).toBeNull();
     const sibling = { ...delivery, delivery_id: "sibling", queue_request_id: "unconfirmed" };
@@ -375,5 +382,35 @@ describe("recorded pre-start handoffs", () => {
       deliveries: [sibling],
       unlinked_delivery_count: 1,
     });
+  });
+});
+
+describe("v4 assignment and handoff independence", () => {
+  it("preserves exact v2 handoff classification with or without an assignment projection", () => {
+    const previous = snapshot();
+    const expected = classifySentPrompts(previous, [voice()], "native-env");
+    for (const assignment of [null, {
+      workstream_id: "desired-work",
+      observed_workstream_id: "other-work",
+      operation_id: "operation",
+      state: "conflict",
+      reason: "assignment_conflict",
+      updated_at: 1500,
+    }]) {
+      const sample = Schema.decodeUnknownSync(WorkQueueMetadata)({
+        ...previous,
+        schema: "codex.t3-work-queue-metadata/v4",
+        items: previous.items.map((item) => ({ ...item, assignment })),
+      });
+      expect(classifySentPrompts(sample, [voice()], "native-env")).toEqual(expected);
+      const unconfirmed = Schema.decodeUnknownSync(WorkQueueMetadata)({
+        ...sample,
+        items: sample.items.map((item) => ({ ...item, native_handoff: null })),
+      });
+      const result = classifySentPrompts(unconfirmed, [voice()], "native-env");
+      expect(result.sent).toEqual([]);
+      expect(result.confirmedRequests.size).toBe(0);
+      expect(result.remainingVoice).toEqual([voice()]);
+    }
   });
 });

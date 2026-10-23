@@ -1,3 +1,4 @@
+import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
 import { nextThreadStatusWakeAt } from "../jones/threadStatusFilter/model";
 import { useThreadStatusFilter } from "../jones/threadStatusFilter/useThreadStatusFilter";
 import { filterSidebarEnvironmentThreads } from "../jones/environmentFilters/model";
@@ -3112,6 +3113,20 @@ export default function Sidebar() {
   );
 
   const workstreamController = useWorkstreams(true, threads);
+  useEffect(() => {
+    if (
+      !primaryEnvironmentId ||
+      !workstreamController.data ||
+      workstreamController.loading ||
+      workstreamController.stale
+    ) return;
+    return publishWorkQueueLocalNames(primaryEnvironmentId, workstreamController.data.items);
+  }, [
+    primaryEnvironmentId,
+    workstreamController.data,
+    workstreamController.loading,
+    workstreamController.stale,
+  ]);
   const workstreamAssignmentMenuRef = useRef<
     ((thread: EnvironmentThreadShell) => NativeThreadAssignmentMenu) | null
   >(null);

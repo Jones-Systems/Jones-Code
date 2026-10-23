@@ -1619,7 +1619,15 @@
     "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx": "jones-owned",
     "packages/client-runtime/src/jones/workstreams/operations.test.ts": "jones-owned",
     "packages/client-runtime/src/jones/workstreams/operations.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned",
+    "packages/contracts/src/jones/fixtures/work_queue_metadata_v4.json.fixture": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned",
+    "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2154,6 +2162,18 @@
     {
       "from": "apps/web/src/routes/settings.jones-code.tsx",
       "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "packages/client-runtime/src/jones/workQueueMetadata.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/handlers.ts"
     }
   ]
 }

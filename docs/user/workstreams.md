@@ -25,3 +25,70 @@ Each group shows running threads out of its total known primary members, includi
 A completed turn or settled thread does not complete a Workstream. Open its details and change **Owner-declared workstream lifecycle** to record completion. Completion is shown as verified only when its owner declaration is present in the permanent history. Owner statements add context separately. T3 settlement and restore requests are explicit, separate actions.
 
 The lifecycle is a tracking status: **planned** means intended work, **active** means in progress, **paused** means temporarily stopped, **completed** means finished, **deferred** means postponed, and **abandoned** means no longer pursued. **Record member completed** records the progress of that member; it does not move the thread or complete the whole Workstream. **Remove** removes that membership, while **Record statement** saves a note.
+
+In **Prompts → Queued**, queue samples can show assignment status, its reason,
+and the desired and last observed Workstream. Names appear when they are already
+loaded for that environment; otherwise the app shows IDs. Missing assignment
+information or **Not observed** does not mean the thread is unassigned. These
+read-only samples can be stale and do not change or retry an assignment.
+
+## Agents and the command line
+
+On servers with Workstream operations support, agents can use
+`t3_workstreams_list` to find a group, `t3_workstream_create` to create one,
+and `t3_thread_workstream_set` to assign, move or unassign a thread.
+Read the current assignment with `t3_thread_workstream_read` before choosing
+an expected assignment. `t3_workstream_operation_status` reads an operation's
+latest result; `t3_workstreams_status` explains setup problems and links to
+repair instructions. Creating a group does not assign a thread to it.
+These tools operate on their own server only. Use the thread's owning server
+for a thread in another environment.
+
+The command line uses the running local instance selected by the usual
+`--base-dir` option:
+
+```sh
+t3 workstream list
+t3 workstream status
+t3 workstream status --thread thread-1 --environment env-1
+t3 workstream status --open
+```
+
+Use `--json` for machine-readable output. Get the request registry UUID and
+owner ID from `t3 workstream status --json` (`registry.registry_id` and
+`registry.owner_id`), or from `t3_workstreams_status` for MCP. The list
+response's `binding.registryId` is a server origin, not that UUID. Pass the
+returned cursor with `list --cursor` to see more groups.
+The `create`, `assign` and `unassign` commands accept `--request` JSON with
+an explicit operation ID. Keep the request for retries. For example, replace
+the example identifiers with the IDs returned by your server:
+
+```sh
+t3 workstream create --request '{"contract":"workstream-operations/1.0.0","operation_id":"create-example-0001","origin":{"kind":"cli"},"kind":"create_workstream","registry":{"registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"},"workstream":{"name":"Release work","lifecycle":"active","progress":{"state":"unknown"},"sort_order":0}}'
+t3 workstream assign --request '{"contract":"workstream-operations/1.0.0","operation_id":"assign-example-0001","origin":{"kind":"cli"},"kind":"set_primary","thread":{"environment_id":"env-1","thread_id":"thread-1"},"target":{"kind":"workstream","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1","workstream_id":"ws-1"},"expected":{"kind":"unassigned"}}'
+t3 workstream status assign-example-0001
+```
+
+To move an assigned thread, set `expected` to
+`{"kind":"primary","workstream_id":"current-group-id"}` and target the new
+group. To remove primary membership, use `unassign` with a `set_primary`
+request whose target is `{"kind":"unassigned","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"}`.
+Use a separate operation ID for each new action. `expected: {"kind":"any"}`
+explicitly permits changing whichever primary assignment is current.
+MCP mutation requests use the same fields with `origin.kind` set to `agent`.
+
+`committed` and `already_satisfied` confirm the assignment. `in_progress`
+and `reconciling` mean it is not yet confirmed. Read status and resubmit the
+same request with the same operation ID if needed, including after a lost
+reply or server restart. A missing retained status does not prove that nothing
+happened. The CLI does not automatically retry or generate a replacement ID.
+
+Keep that ID after `foreign_thread`, `registry_mismatch`, `permission_denied`,
+`offline`, `not_configured` or `registration_unavailable`; repair the reported
+setup or routing problem and retry the original request. Status reads show the
+last result and do not refresh a failure. Other rejected or unavailable results
+are sealed against later effects from that request; resubmitting the same ID
+refreshes them. A new ID is allowed only after a settled or sealed result,
+and is required after `contention`. A conflict shows the observed assignment;
+inspect it before issuing a new action. An older server reports unsupported
+instead of attempting a partial assignment.
