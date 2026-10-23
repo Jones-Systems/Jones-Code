@@ -27,6 +27,7 @@ import type {
   ProjectionRecords,
 } from "./ProjectionStore.ts";
 import {
+  resolveMessageModelSelection,
   type ChatAttachment,
   CommandId,
   MessageId,
@@ -773,7 +774,8 @@ const make = Effect.gen(function* () {
             assertProviderInstanceEnabled({
               projectId: projection.thread.projectId,
               commandId: command.commandId,
-              instanceId: (command.modelSelection ?? projection.thread.modelSelection).instanceId,
+              instanceId: resolveMessageModelSelection(command, projection.thread.modelSelection)
+                .instanceId,
             }),
           ),
         );
