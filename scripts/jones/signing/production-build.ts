@@ -134,14 +134,19 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
       mode: 0o600,
       flag: "wx",
     });
-    const nativePasskeys = target === "desktop" && process.env.JONES_MACOS_NATIVE_PASSKEYS === "enabled";
+    const nativePasskeys =
+      target === "desktop" && process.env.JONES_MACOS_NATIVE_PASSKEYS === "enabled";
     if (nativePasskeys) {
       if (!process.env.MACOS_PROVISIONING_PROFILE_BASE64?.trim())
         throw new Error("Enabled native passkeys require a provisioning profile.");
-      NodeFS.writeFileSync(profile, Buffer.from(process.env.MACOS_PROVISIONING_PROFILE_BASE64, "base64"), {
-        mode: 0o600,
-        flag: "wx",
-      });
+      NodeFS.writeFileSync(
+        profile,
+        Buffer.from(process.env.MACOS_PROVISIONING_PROFILE_BASE64, "base64"),
+        {
+          mode: 0o600,
+          flag: "wx",
+        },
+      );
     } else if (target === "desktop" && process.env.MACOS_PROVISIONING_PROFILE_BASE64?.trim()) {
       throw new Error("Provisioning profile supplied without native passkey opt-in.");
     }
@@ -164,7 +169,8 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
     ).version;
     if (typeof version !== "string" || !/^[a-zA-Z0-9.+-]+$/.test(version))
       throw new Error("Invalid production version.");
-    const output = target === "desktop" ? "artifacts/desktop-production" : "artifacts/cli-production";
+    const output =
+      target === "desktop" ? "artifacts/desktop-production" : "artifacts/cli-production";
     const buildArgs =
       target === "desktop"
         ? [
@@ -197,7 +203,8 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
     const artifacts = NodeFS.readdirSync(output).filter((name) => name.endsWith(extension));
     if (artifacts.length !== 1) throw new Error("Expected one production artifact.");
     const artifact = artifacts[0]!;
-    if (target === "desktop") run("/usr/bin/hdiutil", ["verify", NodePath.join(output, artifact)], env);
+    if (target === "desktop")
+      run("/usr/bin/hdiutil", ["verify", NodePath.join(output, artifact)], env);
     else
       run(
         process.execPath,
@@ -210,9 +217,11 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
         ],
         env,
       );
-    const sha256 = run("/usr/bin/shasum", ["-a", "256", NodePath.join(output, artifact)], env).split(
-      /\s+/,
-    )[0];
+    const sha256 = run(
+      "/usr/bin/shasum",
+      ["-a", "256", NodePath.join(output, artifact)],
+      env,
+    ).split(/\s+/)[0];
     const tree = run("git", ["rev-parse", "HEAD^{tree}"], env).trim();
     NodeFS.writeFileSync(
       NodePath.join(output, target === "desktop" ? `${artifact}.sha256` : "SHA256SUMS"),
@@ -248,7 +257,8 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
         2,
       ) + "\n",
     );
-    if (env.GITHUB_ENV) NodeFS.appendFileSync(env.GITHUB_ENV, `JONES_PRODUCTION_VERSION=${version}\n`);
+    if (env.GITHUB_ENV)
+      NodeFS.appendFileSync(env.GITHUB_ENV, `JONES_PRODUCTION_VERSION=${version}\n`);
   } finally {
     // Restore the preimage even if keychain creation failed after changing its search list.
     try {
@@ -270,9 +280,13 @@ export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
   }
 }
 
-if (process.argv[1] && NodePath.resolve(process.argv[1]) === NodeURL.fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  NodePath.resolve(process.argv[1]) === NodeURL.fileURLToPath(import.meta.url)
+) {
   try {
-    if (process.argv.length > 3) throw new Error("Production signing accepts one fixed target only.");
+    if (process.argv.length > 3)
+      throw new Error("Production signing accepts one fixed target only.");
     productionBuild(productionTarget(process.argv[2]));
   } catch (error) {
     process.stderr.write(

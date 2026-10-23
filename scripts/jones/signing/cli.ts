@@ -77,7 +77,8 @@ const machOMagic = new Set([
 
 function payloadFiles(contentDir: string): PayloadFile[] {
   const root = NodePath.resolve(contentDir);
-  if (!NodeFS.lstatSync(root).isDirectory()) throw new Error("CLI staging root must be a directory.");
+  if (!NodeFS.lstatSync(root).isDirectory())
+    throw new Error("CLI staging root must be a directory.");
   const files: PayloadFile[] = [];
   function visit(directory: string): void {
     for (const name of NodeFS.readdirSync(directory).sort()) {
@@ -126,9 +127,13 @@ function digestPayload(files: PayloadFile[]): string {
 
 export function inventoryCliMachO(contentDir: string): string[] {
   const files = payloadFiles(contentDir).filter((file) => file.machO);
-  if (!files.some((file) => file.name === "t3")) throw new Error("Staged CLI executable is not Mach-O.");
+  if (!files.some((file) => file.name === "t3"))
+    throw new Error("Staged CLI executable is not Mach-O.");
   for (const file of files) {
-    if (/(^|\/)@openai\//.test(file.name) || /^codex(?:[-.]|$)/.test(NodePath.basename(file.name))) {
+    if (
+      /(^|\/)@openai\//.test(file.name) ||
+      /^codex(?:[-.]|$)/.test(NodePath.basename(file.name))
+    ) {
       throw new Error("OpenAI-owned binaries are outside Jones CLI signing scope.");
     }
   }

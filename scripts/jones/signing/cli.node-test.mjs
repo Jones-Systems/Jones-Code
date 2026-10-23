@@ -67,7 +67,8 @@ function fixture() {
         } else {
           const identifier = fault === "wrong-id" ? "wrong.identifier" : identifiers.get(component);
           const team = fault === "wrong-team" ? "WRONGTEAM1" : JONES_MACOS_TEAM;
-          const authority = fault === "adhoc" ? "Signature=adhoc" : `Authority=${JONES_MACOS_IDENTITY}`;
+          const authority =
+            fault === "adhoc" ? "Signature=adhoc" : `Authority=${JONES_MACOS_IDENTITY}`;
           return {
             stdout: "",
             stderr: `Identifier=${identifier}\nTeamIdentifier=${team}\n${authority}\n${fault === "no-timestamp" ? "" : "Timestamp=synthetic"}\n${fault === "no-runtime" ? "" : "CodeDirectory flags=0x10000(runtime)"}`,
@@ -89,7 +90,11 @@ function fixture() {
       } else if (command === "/usr/bin/xcrun") {
         NodeAssert.equal(args[0], "notarytool");
         NodeAssert.deepEqual(JSON.parse(NodeFS.readFileSync(args[2], "utf8")), submitted);
-        NodeAssert.equal(identifiers.size, names.length, "all shipped Mach-O signed before submission");
+        NodeAssert.equal(
+          identifiers.size,
+          names.length,
+          "all shipped Mach-O signed before submission",
+        );
         if (fault === "cancel-command") throw new Error("synthetic interrupted command");
         if (fault === "payload-mutation") put("t3", "changed after ZIP");
         return {
@@ -131,24 +136,30 @@ function fixture() {
   };
 }
 
-NodeTest.test("CLI identities are stable, separate from desktop, and distinct per component", () => {
-  NodeAssert.equal(cliComponentIdentifier("/one/stage", "/one/stage/t3"), JONES_MACOS_CLI_ID);
-  NodeAssert.notEqual(JONES_MACOS_CLI_ID, JONES_MACOS_APP_ID);
-  const first = cliComponentIdentifier(
-    "/one",
-    "/one/node_modules/.pnpm/native@1/node_modules/native/addon.node",
-  );
-  NodeAssert.equal(
-    first,
-    cliComponentIdentifier("/two", "/two/node_modules/.pnpm/native@2/node_modules/native/addon.node"),
-  );
-  NodeAssert.ok(first.startsWith(`${JONES_MACOS_CLI_ID}.component.`));
-  NodeAssert.notEqual(first, cliComponentIdentifier("/one", "/one/other/addon.node"));
-  NodeAssert.throws(() => cliComponentIdentifier("/one", "/outside/t3"));
-  NodeAssert.equal(productionTarget(), "desktop");
-  NodeAssert.equal(productionTarget("cli"), "cli");
-  NodeAssert.throws(() => productionTarget("arbitrary-command"));
-});
+NodeTest.test(
+  "CLI identities are stable, separate from desktop, and distinct per component",
+  () => {
+    NodeAssert.equal(cliComponentIdentifier("/one/stage", "/one/stage/t3"), JONES_MACOS_CLI_ID);
+    NodeAssert.notEqual(JONES_MACOS_CLI_ID, JONES_MACOS_APP_ID);
+    const first = cliComponentIdentifier(
+      "/one",
+      "/one/node_modules/.pnpm/native@1/node_modules/native/addon.node",
+    );
+    NodeAssert.equal(
+      first,
+      cliComponentIdentifier(
+        "/two",
+        "/two/node_modules/.pnpm/native@2/node_modules/native/addon.node",
+      ),
+    );
+    NodeAssert.ok(first.startsWith(`${JONES_MACOS_CLI_ID}.component.`));
+    NodeAssert.notEqual(first, cliComponentIdentifier("/one", "/one/other/addon.node"));
+    NodeAssert.throws(() => cliComponentIdentifier("/one", "/outside/t3"));
+    NodeAssert.equal(productionTarget(), "desktop");
+    NodeAssert.equal(productionTarget("cli"), "cli");
+    NodeAssert.throws(() => productionTarget("arbitrary-command"));
+  },
+);
 
 NodeTest.test("production CLI configuration fails closed before any signing command", () => {
   NodeAssert.equal(requireProductionCliBuild({}, { platform: "mac", arch: "arm64" }), false);
@@ -156,7 +167,8 @@ NodeTest.test("production CLI configuration fails closed before any signing comm
   for (const key of Object.keys(configured)) {
     if (key === "JONES_MACOS_RELEASE_MODE") continue;
     NodeAssert.throws(
-      () => requireProductionCliBuild({ ...configured, [key]: "" }, { platform: "mac", arch: "arm64" }),
+      () =>
+        requireProductionCliBuild({ ...configured, [key]: "" }, { platform: "mac", arch: "arm64" }),
       key,
     );
   }
@@ -196,10 +208,19 @@ NodeTest.test(
         else NodeAssert.ok(args.includes("--preserve-metadata=entitlements"));
       }
       NodeAssert.equal(NodePath.basename(signatures.at(-1).args.at(-1)), "t3");
-      NodeAssert.equal(f.calls.some(({ args }) => args.includes("stapler")), false);
+      NodeAssert.equal(
+        f.calls.some(({ args }) => args.includes("stapler")),
+        false,
+      );
       NodeAssert.ok(f.notaryScratch && !NodeFS.existsSync(f.notaryScratch));
       const archive = NodePath.join(f.root, "distribution.tar.gz");
-      NodeChildProcess.execFileSync("tar", ["-czf", archive, "-C", f.root, NodePath.basename(f.contentDir)]);
+      NodeChildProcess.execFileSync("tar", [
+        "-czf",
+        archive,
+        "-C",
+        f.root,
+        NodePath.basename(f.contentDir),
+      ]);
       const extracted = NodePath.join(f.root, "unpacked");
       NodeFS.mkdirSync(extracted);
       NodeChildProcess.execFileSync("tar", ["-xzf", archive, "-C", extracted]);
@@ -245,7 +266,10 @@ for (const fault of [
           "cancel-command",
         ].includes(fault)
       ) {
-        NodeAssert.equal(f.calls.some(({ command }) => command === "/usr/bin/xcrun"), false);
+        NodeAssert.equal(
+          f.calls.some(({ command }) => command === "/usr/bin/xcrun"),
+          false,
+        );
       }
     } finally {
       f.cleanup();
@@ -259,7 +283,8 @@ NodeTest.test("OpenAI-owned native binaries and symlink payloads stop before sig
     try {
       if (fault === "openai")
         f.put("node_modules/@openai/codex/codex", Buffer.from("cffaedfe00000000", "hex"));
-      if (fault === "symlink") NodeFS.symlinkSync(f.entitlements, NodePath.join(f.contentDir, "outside"));
+      if (fault === "symlink")
+        NodeFS.symlinkSync(f.entitlements, NodePath.join(f.contentDir, "outside"));
       if (fault === "non-native-main") f.put("t3", "not native");
       if (fault === "duplicate-id") {
         for (const version of ["1", "2"])

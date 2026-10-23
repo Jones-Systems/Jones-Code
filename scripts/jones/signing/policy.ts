@@ -81,10 +81,17 @@ export function requireProductionPasskeys(
 }
 
 export function componentIdentifier(app: string, file: string): string {
-  const target = NodePath.resolve(file).replace(/\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/, ".app");
+  const target = NodePath.resolve(file).replace(
+    /\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/,
+    ".app",
+  );
   let relative = NodePath.relative(NodePath.resolve(app), target);
   if (relative === "") return JONES_MACOS_APP_ID;
-  if (relative === ".." || relative.startsWith(`..${NodePath.sep}`) || NodePath.isAbsolute(relative)) {
+  if (
+    relative === ".." ||
+    relative.startsWith(`..${NodePath.sep}`) ||
+    NodePath.isAbsolute(relative)
+  ) {
     throw new Error("Signing component escapes the application bundle.");
   }
   // Dependency versions and framework version directories must not rotate code identity.
