@@ -131,6 +131,7 @@ export default async function threadSelfConfigure(ctx) {
       await open(title, threadId);
       await picker().filter({ hasText: "Synthetic model A" }).waitFor();
       await picker().click();
+      await ctx.page.getByPlaceholder("Search models...").fill("Synthetic model B");
       await ctx.page.getByRole("option").filter({ hasText: "Synthetic model B" }).waitFor();
       await ctx.page.keyboard.press("Escape");
     });
@@ -279,6 +280,7 @@ export default async function threadSelfConfigure(ctx) {
       const control = await waitForFixture(() => fixtureRecord("picker-held"), "picker A running");
       evidence.pickerBefore = await snapshot(pickerId);
       await picker().click();
+      await ctx.page.getByPlaceholder("Search models...").fill("Synthetic model B");
       await ctx.page.getByRole("option").filter({ hasText: "Synthetic model B" }).click();
       await send("NATIVE_PICKER_CHANGED");
       evidence.pickerAfter = await waitForFixture(
