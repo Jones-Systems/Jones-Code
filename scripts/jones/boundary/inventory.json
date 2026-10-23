@@ -1568,7 +1568,21 @@
     "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
     "scripts/setup-worktree.ts": "hook",
     "t3.json": "accepted-shared",
-    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding.ts": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/registryBinding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/registryBinding.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/manifest.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/refusal.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/provisioning.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/binding.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -224,3 +224,56 @@ it.effect(
       );
     }),
 );
+
+it.effect(
+  "v2 HTTP keeps its protocol on auth, invalid body and unrepresentable evidence errors",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeProviderFixture();
+      const provider = makeWorkstreamsNativeProvider(
+        {
+          ...fixture.ports,
+          build: Effect.succeed(Option.some({ ...binding.build, sha: "c".repeat(40) })),
+        },
+        "v2",
+      );
+      const http = createNativeProviderHandlers(provider, {
+        getBySessionId: (id) =>
+          Effect.succeed(id === binding.session_id ? Option.some(binding) : Option.none()),
+      });
+      for (const [id, text, status, reason] of [
+        [null, requestText, 401, "unauthorized"],
+        ["other-session", requestText, 403, "forbidden"],
+        [binding.session_id, "not-json", 400, "invalid_request"],
+      ] as const) {
+        const response = yield* http.handle("settlements", id, body(text));
+        assert.strictEqual(response.status, status);
+        assert.deepEqual(JSON.parse(responseText(response)), {
+          protocol: "workstreams-t3-provider/2.0.0",
+          state: "rejected",
+          reason,
+        });
+      }
+      assert.strictEqual(
+        (yield* http.handle("settlements", binding.session_id, body(requestText))).status,
+        200,
+      );
+      const commandId = fixture.calls[0]!.commandId;
+      fixture.events.set(commandId, [
+        { ...fixture.events.get(commandId)![0]!, eventId: "x".repeat(129) },
+      ]);
+      const response = yield* http.handle(
+        "settlements/lookup",
+        binding.session_id,
+        body(requestText),
+      );
+      assert.strictEqual(response.status, 500);
+      assert.strictEqual(response.headers["cache-control"], "no-store");
+      assert.deepEqual(JSON.parse(responseText(response)), {
+        protocol: "workstreams-t3-provider/2.0.0",
+        state: "rejected",
+        reason: "invalid_request",
+      });
+      assert.strictEqual(fixture.calls.length, 1);
+    }),
+);
