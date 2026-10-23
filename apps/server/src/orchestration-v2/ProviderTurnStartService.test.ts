@@ -295,6 +295,10 @@ function makeLocalCommandHarness(input: {
   readonly keepWarm?: boolean;
   readonly liveKeepWarmSession?: boolean;
   readonly plannedResume?: "same" | "changed";
+  readonly handoffRecovery?: {
+    readonly compact?: ProviderAdapter.ProviderAdapterV2SessionRuntime["compactForContextHandoff"];
+    readonly usedTokens?: number;
+  };
   readonly effortProof?: {
     readonly selection?: ModelSelection;
     readonly models: ReadonlyArray<ServerProviderModel>;
@@ -359,6 +363,14 @@ function makeLocalCommandHarness(input: {
             strength: "strong",
           },
     nativeConversationHeadRef: null,
+    ...(input.handoffRecovery === undefined
+      ? {}
+      : {
+          contextUsage: {
+            usedTokens: input.handoffRecovery.usedTokens ?? 195_000,
+            maxTokens: 200_000,
+          },
+        }),
     status: "not_loaded",
     firstRunOrdinal: 2,
     lastRunOrdinal: 2,
@@ -637,6 +649,9 @@ function makeLocalCommandHarness(input: {
                           strength: "strong" as const,
                         },
                       }),
+                    ...(input.handoffRecovery?.compact === undefined
+                      ? {}
+                      : { compactForContextHandoff: input.handoffRecovery.compact }),
                     startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
                       Effect.sync(() => {
                         dispatched.push(value);
@@ -1475,6 +1490,74 @@ effectIt.effect("rechecks the attempt after reading current settings", () =>
     expect(harness.dispatched).toHaveLength(0);
     expect(harness.projection().runs.at(-1)?.status).toBe("interrupted");
   }),
+);
+
+effectIt.effect("compacts once for a reclaimable handoff and sends the intact request", () =>
+  Effect.gen(function* () {
+    const compactions: ProviderAdapter.ProviderAdapterV2TurnInput[] = [];
+    const harness = makeLocalCommandHarness({
+      text: "Keep this exact pending request",
+      plannedResume: "same",
+      handoffRecovery: {
+        compact: (input) =>
+          Effect.sync(() => {
+            compactions.push(input);
+            return { usedTokens: 1000, maxTokens: 200000 };
+          }),
+      },
+      effortProof: {
+        models: effortModels,
+        duringHandoff: Effect.void,
+        getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+      },
+    });
+    yield* harness.start;
+    expect(compactions).toHaveLength(1);
+    expect(harness.dispatched).toHaveLength(1);
+    expect(harness.dispatched[0]?.message.text).toMatch(
+      /User message:\nKeep this exact pending request$/,
+    );
+    expect(harness.dispatched[0]?.attemptId).toBe(compactions[0]?.attemptId);
+    expect(harness.dispatched[0]?.providerThread.nativeThreadRef).toEqual(
+      compactions[0]?.providerThread.nativeThreadRef,
+    );
+  }),
+);
+
+effectIt.effect.each(["enough", "unsupported", "oversized", "second-budget", "stop"] as const)(
+  "handoff recovery is bounded: %s",
+  (condition) =>
+    Effect.gen(function* () {
+      let compacted = 0;
+      const harness = makeLocalCommandHarness({
+        text: condition === "oversized" ? "x".repeat(200000) : "Pending request",
+        plannedResume: "same",
+        handoffRecovery: {
+          usedTokens: condition === "enough" ? 1000 : 195000,
+          ...(condition === "unsupported"
+            ? {}
+            : {
+                compact: () =>
+                  Effect.sync(() => {
+                    compacted++;
+                    if (condition === "stop") harness.interruptRun();
+                    return {
+                      usedTokens: condition === "second-budget" ? 195000 : 1000,
+                      maxTokens: 200000,
+                    };
+                  }),
+              }),
+        },
+        effortProof: {
+          models: effortModels,
+          duringHandoff: Effect.void,
+          getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        },
+      });
+      yield* Effect.exit(harness.start);
+      expect(compacted).toBe(condition === "second-budget" || condition === "stop" ? 1 : 0);
+      expect(harness.dispatched).toHaveLength(condition === "enough" ? 1 : 0);
+    }),
 );
 
 effectIt.effect("reads changed defaults after the actual handoff delivery awaits", () =>

@@ -311,3 +311,22 @@ it("recognizes only the Jones service cgroup for legacy server lineage", () => {
   assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
   assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
 });
+
+it("recognizes only the exact adopted system unit outside the user hierarchy", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/system.slice/t3code.service/child", "t3code.service"),
+  );
+  assert.isTrue(
+    isJonesBootServiceCgroup(
+      "0::/hostdev.slice/host-tooling-t3.service",
+      "host-tooling-t3.service",
+    ),
+  );
+  assert.isFalse(isJonesBootServiceCgroup("0::/system.slice/not-t3code.service", "t3code.service"));
+  assert.isFalse(
+    isJonesBootServiceCgroup(
+      "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service",
+      "t3code.service",
+    ),
+  );
+});
