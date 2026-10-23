@@ -119,3 +119,48 @@ it.effect("restoration has an independent fence and late acknowledgement never r
     assert.isFalse(state.blocked);
   }),
 );
+
+it.effect("releases only an unsent reservation while retaining its consumed attempt", () =>
+  Effect.gen(function* () {
+    const state = makeCodexHandoffCompaction();
+    const request = yield* state.begin(binding);
+    yield* request.cancelIfUndispatched;
+    assert.isFalse(state.blocked);
+    assert.equal((yield* Effect.exit(request.wait))._tag, "Failure");
+    assert.equal((yield* Effect.exit(request.beginDispatch))._tag, "Failure");
+    assert.equal((yield* Effect.exit(state.begin(binding)))._tag, "Failure");
+    const next = yield* state.begin({ ...binding, attemptId: "fresh" });
+    yield* request.cancelIfUndispatched;
+    assert.isTrue(state.blocked);
+    yield* next.assertActive;
+    yield* next.beginDispatch;
+  }),
+);
+
+it.effect.each(["dispatch", "acknowledgement", "native-start", "restoration"] as const)(
+  "does not clear %s evidence through the unsent cancellation capability",
+  (evidence) =>
+    Effect.gen(function* () {
+      const state = makeCodexHandoffCompaction();
+      const request = yield* state.begin(binding);
+      if (evidence === "dispatch") yield* request.beginDispatch;
+      if (evidence === "acknowledgement") yield* request.acknowledge;
+      if (evidence === "native-start") yield* state.started(binding, "native-turn");
+      if (evidence === "restoration") yield* request.beginRestoration;
+      yield* request.cancelIfUndispatched;
+      assert.isTrue(state.blocked);
+      assert.equal((yield* Effect.exit(request.wait))._tag, "Failure");
+      assert.equal(
+        (yield* Effect.exit(state.begin({ ...binding, attemptId: "fresh" })))._tag,
+        "Failure",
+      );
+      if (evidence === "dispatch") {
+        yield* state.started(binding, "native-turn");
+        yield* state.completed(binding, "native-turn", true);
+        assert.isTrue(state.blocked);
+        yield* request.acknowledge;
+        assert.isFalse(state.blocked);
+        assert.equal((yield* Effect.exit(state.begin(binding)))._tag, "Failure");
+      }
+    }),
+);

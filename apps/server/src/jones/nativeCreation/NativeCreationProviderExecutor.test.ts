@@ -1,3 +1,4 @@
+import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../runtimeIdentity/CodexReplayIdentity.ts";
 import * as Guard from "./NativeCreationProviderGuard.ts";
 import * as CodexClient from "effect-codex-app-server/client";
@@ -684,7 +685,7 @@ const scenario = (mode: Mode) =>
                   ),
                 ),
             },
-          });
+          }).pipe(Effect.provide(ControlAdmission.layer));
           if (mode === "transport-spawn-revoked") yield* f.revoke;
           const policy = ProviderAdapterV2RuntimePolicy.make({
             cwd: resources.worktreePath,
