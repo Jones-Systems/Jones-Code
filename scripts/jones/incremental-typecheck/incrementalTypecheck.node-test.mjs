@@ -158,7 +158,7 @@ function assertOnlyEntry(f) {
 
 NodeTest.test(
   "explicit selection, stable order, deduplication, ambiguous names and unsupported flags/scripts",
-  (t) => {
+  async (t) => {
     const f = fixture(t);
     NodeAssert.throws(() => parseArguments([]), /Explicit/);
     for (const args of [
@@ -231,13 +231,13 @@ NodeTest.test(
 
 NodeTest.test(
   "complete envelope validation rejects corruption, mismatches, oversize and obviously malformed native JSON",
-  (t) => {
+  async (t) => {
     const f = fixture(t);
     const entry = NodePath.join(f.root, "entry.json");
     const bytes = payload();
     write(entry, encodeEnvelope("id", bytes));
-    NodeAssert.deepEqual(readSeed(entry, "id"), bytes);
-    NodeAssert.equal(readSeed(entry, "other"), undefined);
+    NodeAssert.deepEqual(await readSeed(entry, "id"), bytes);
+    NodeAssert.equal(await readSeed(entry, "other"), undefined);
     const good = JSON.parse(NodeFS.readFileSync(entry));
     for (const value of [
       "{",
@@ -248,12 +248,12 @@ NodeTest.test(
       JSON.stringify({ ...good, payload: `${good.payload}\n` }),
     ]) {
       write(entry, value);
-      NodeAssert.equal(readSeed(entry, "id"), undefined);
+      NodeAssert.equal(await readSeed(entry, "id"), undefined);
     }
     write(entry, "");
     NodeFS.truncateSync(entry, ENVELOPE_LIMIT + 1);
-    NodeAssert.equal(readSeed(entry, "id"), undefined);
-    NodeAssert.equal(readSeed(NodePath.join(f.root, "missing"), "id"), undefined);
+    NodeAssert.equal(await readSeed(entry, "id"), undefined);
+    NodeAssert.equal(await readSeed(NodePath.join(f.root, "missing"), "id"), undefined);
     const native = JSON.parse(bytes);
     for (const value of [
       {},
@@ -270,7 +270,7 @@ NodeTest.test(
         entry,
         JSON.stringify({ ...good, checksum: digest(invalid), payload: invalid.toString("base64") }),
       );
-      NodeAssert.equal(readSeed(entry, "id"), undefined);
+      NodeAssert.equal(await readSeed(entry, "id"), undefined);
     }
     NodeAssert.equal(validNativePayload(Buffer.alloc(RAW_LIMIT + 1)), false);
   },
@@ -280,11 +280,11 @@ NodeTest.test(
   "identity covers native configuration/Effect settings, worktree, compiler, libraries, workspace and installed dependency metadata, not source/HEAD",
   async (t) => {
     const f = fixture(t);
-    const shared = () => sharedIdentity(f.root, f.workspaces, f.compiler);
-    const baseline = shared();
+    const shared = async () => await sharedIdentity(f.root, f.workspaces, f.compiler);
+    const baseline = await shared();
     write(NodePath.join(f.projects[0].directory, "source.ts"), "export const changed = true;\n");
     write(NodePath.join(f.root, ".git", "HEAD"), "another-commit");
-    NodeAssert.equal(shared(), baseline);
+    NodeAssert.equal(await shared(), baseline);
     const inputs = [
       "pnpm-lock.yaml",
       "pnpm-workspace.yaml",
@@ -301,11 +301,11 @@ NodeTest.test(
       "node_modules/.pnpm/example@1/node_modules/example/package.json",
     ];
     for (const input of inputs) {
-      const beforeIdentity = shared();
+      const beforeIdentity = await shared();
       const filename = NodePath.join(f.root, input);
       const before = NodeFS.existsSync(filename) ? NodeFS.readFileSync(filename) : undefined;
       write(filename, "changed metadata");
-      NodeAssert.notEqual(shared(), beforeIdentity, input);
+      NodeAssert.notEqual(await shared(), beforeIdentity, input);
       if (before) write(filename, before);
       else NodeFS.rmSync(filename);
     }
@@ -438,6 +438,42 @@ NodeTest.test(
     );
     NodeAssert.match(f.logs.at(-1), /cache not retained: Native build info/);
     NodeAssert.deepEqual(NodeFS.readFileSync(entry), before);
+    for (const failureAt of ["private", "publication"]) {
+      let compilerCalls = 0;
+      const failure = Object.assign(new Error("injected ENOSPC"), { code: "ENOSPC" });
+      const options = {
+        ...f.options,
+        run: async (command) => {
+          compilerCalls++;
+          return run(command);
+        },
+        writePrivate: async (filename, bytes, created) => {
+          const fd = NodeFS.openSync(filename, "wx", 0o600);
+          created();
+          try {
+            const publication = filename.endsWith(".tmp");
+            if ((failureAt === "publication") === publication) {
+              // Leave a partial owned file to qualify cleanup as well as errors.
+              NodeFS.writeSync(fd, bytes.subarray(0, Math.min(8, bytes.length)));
+              throw failure;
+            }
+            NodeFS.writeFileSync(fd, bytes);
+          } finally {
+            NodeFS.closeSync(fd);
+          }
+        },
+      };
+      if (failureAt === "private") {
+        await NodeAssert.rejects(checkProject(options), /injected ENOSPC/);
+        NodeAssert.equal(compilerCalls, 0);
+      } else {
+        NodeAssert.equal(await checkProject(options), 0);
+        NodeAssert.equal(compilerCalls, 1);
+        NodeAssert.match(f.logs.at(-1), /cache not retained: injected ENOSPC/);
+      }
+      NodeAssert.deepEqual(NodeFS.readFileSync(entry), before);
+      assertOnlyEntry(f);
+    }
     NodeFS.unlinkSync(entry);
     NodeFS.mkdirSync(entry);
     NodeAssert.equal(await checkProject({ ...f.options, fresh: true, run }), 0);
@@ -464,28 +500,41 @@ NodeTest.test(
     const f = fixture(t);
     const started = [];
     const releases = [];
-    const run = (command) =>
-      new Promise((resolve) => {
-        const filename = nativePath(command);
-        started.push(filename);
-        releases.push(() => {
-          write(filename, payload(`writer-${started.indexOf(filename)}`));
-          resolve({ code: 0, stdout: "" });
-        });
+    const readiness = [Promise.withResolvers(), Promise.withResolvers()];
+    const start = (index) =>
+      checkProject({
+        ...f.options,
+        run: (command) =>
+          new Promise((resolve) => {
+            const filename = nativePath(command);
+            started[index] = filename;
+            releases[index] = () => {
+              releases[index] = undefined;
+              write(filename, payload(`writer-${index}`));
+              resolve({ code: 0, stdout: "" });
+            };
+            readiness[index].resolve();
+          }),
       });
-    const first = checkProject({ ...f.options, run });
-    const second = checkProject({ ...f.options, run });
-    NodeAssert.equal(started.length, 2);
-    NodeAssert.notEqual(started[0], started[1]);
-    NodeAssert.equal(NodePath.dirname(started[0]), NodePath.dirname(started[1]));
-    releases[1]();
-    NodeAssert.equal(await second, 0);
-    NodeAssert.ok(NodeFS.existsSync(started[0]));
-    const { entry } = cachePaths(f.root, f.projects[0]);
-    NodeAssert.deepEqual(readSeed(entry, f.options.identity), payload("writer-1"));
-    releases[0]();
-    NodeAssert.equal(await first, 0);
-    NodeAssert.deepEqual(readSeed(entry, f.options.identity), payload("writer-0"));
+    const first = start(0);
+    const second = start(1);
+    try {
+      await Promise.race([Promise.all(readiness.map((ready) => ready.promise)), first, second]);
+      NodeAssert.equal(started.length, 2);
+      NodeAssert.notEqual(started[0], started[1]);
+      NodeAssert.equal(NodePath.dirname(started[0]), NodePath.dirname(started[1]));
+      releases[1]();
+      NodeAssert.equal(await second, 0);
+      NodeAssert.ok(NodeFS.existsSync(started[0]));
+      const { entry } = cachePaths(f.root, f.projects[0]);
+      NodeAssert.deepEqual(await readSeed(entry, f.options.identity), payload("writer-1"));
+      releases[0]();
+      NodeAssert.equal(await first, 0);
+      NodeAssert.deepEqual(await readSeed(entry, f.options.identity), payload("writer-0"));
+    } finally {
+      for (const release of releases) release?.();
+      await Promise.allSettled([first, second]);
+    }
     assertOnlyEntry(f);
   },
 );
@@ -512,7 +561,10 @@ NodeTest.test(
     const target = NodePath.join(f.root, "outside-cache");
     NodeFS.mkdirSync(target);
     NodeFS.symlinkSync(target, NodePath.join(directory, "linked"), "dir");
-    NodeAssert.throws(() => admitNamespace(f.root, namespace, RAW_LIMIT), /Unsafe cache entry/);
+    await NodeAssert.rejects(
+      () => admitNamespace(f.root, namespace, RAW_LIMIT),
+      /Unsafe cache entry/,
+    );
     NodeFS.unlinkSync(NodePath.join(directory, "linked"));
     NodeFS.rmdirSync(directory);
     NodeFS.symlinkSync(target, directory, "dir");
@@ -677,7 +729,7 @@ NodeTest.test(
         capture: true,
         signal: signal(),
       }),
-      /ENOENT/,
+      (error) => error.reason?._tag === "NotFound" && error.reason.cause?.code === "ENOENT",
     );
     for (const interrupt of ["SIGINT", "SIGTERM"]) {
       const ready = NodePath.join(f.root, `${interrupt}-ready`);
@@ -722,7 +774,7 @@ NodeTest.test(
   "native retained cache notices source, declaration, unresolved/new module and corrected errors",
   async (t) => {
     const f = fixture(t);
-    const compiler = resolveCompiler(repository);
+    const compiler = await resolveCompiler(repository);
     const project = f.projects[0];
     const source = NodePath.join(project.directory, "source.ts");
     const declaration = NodePath.join(project.directory, "dependency.d.ts");
@@ -799,7 +851,7 @@ NodeTest.test(
   "raw inherited Effect inputs invalidate lossy native configuration identity and preserve retained diagnostics",
   async (t) => {
     const f = fixture(t);
-    const compiler = resolveCompiler(repository);
+    const compiler = await resolveCompiler(repository);
     const project = f.projects[0];
     const source = NodePath.join(project.directory, "source.ts");
     const base = NodePath.join(f.root, "tsconfig.base.json");
@@ -822,12 +874,12 @@ NodeTest.test(
       "import * as Effect from 'effect/Effect'; export const probe = Effect.sync(() => 0);\n",
     );
     const config = await effectiveConfig(compiler, project, signal(), runProcess);
-    const identityForInputs = () =>
+    const identityForInputs = async () =>
       projectIdentity(f.root, project, "stable", {
         native: config,
-        inputs: configurationInputs(f.root, [project]).get(project.directory),
+        inputs: (await configurationInputs(f.root, [project])).get(project.directory),
       });
-    let identity = identityForInputs();
+    let identity = await identityForInputs();
     const outputs = [];
     const seeds = [];
     const check = () =>
@@ -861,8 +913,8 @@ NodeTest.test(
     assertOnlyEntry(f);
     NodeAssert.doesNotMatch(JSON.stringify(config), /globalDate/);
     write(base, baseBytes.replace('"globalDateInEffect": "error"', '"globalDateInEffect": "off"'));
-    NodeAssert.notEqual(identityForInputs(), identity);
-    identity = identityForInputs();
+    NodeAssert.notEqual(await identityForInputs(), identity);
+    identity = await identityForInputs();
     NodeAssert.deepEqual(await effectiveConfig(compiler, project, signal(), runProcess), config);
     write(
       source,
@@ -870,11 +922,11 @@ NodeTest.test(
     );
     NodeAssert.equal(await check(), 0, outputs.at(-1));
     write(base, baseBytes);
-    identity = identityForInputs();
+    identity = await identityForInputs();
     NodeAssert.notEqual(await check(), 0);
     NodeAssert.match(outputs.at(-1), /TS377067/);
     write(base, baseBytes.replace('"globalDateInEffect": "error"', '"globalDateInEffect": "off"'));
-    identity = identityForInputs();
+    identity = await identityForInputs();
     NodeAssert.equal(await check(), 0, outputs.at(-1));
     NodeAssert.deepEqual(seeds, [false, true, true, true, false, false, true]);
   },
@@ -909,7 +961,7 @@ NodeTest.test(
 
 NodeTest.test(
   "finite JSONC topology guard accepts decoded keys/comments/trailing commas and rejects ambiguity, cycles and escapes",
-  (t) => {
+  async (t) => {
     const f = fixture(t);
     const project = f.projects[0];
     const filename = NodePath.join(project.directory, "tsconfig.json");
@@ -918,18 +970,18 @@ NodeTest.test(
       base,
       '{"compilerOptions":{"plugins":[{"name":"@effect/language-service","diagnosticSeverity":{"globalDate":"error"}}]}}',
     );
-    const read = () => configurationInputs(f.root, [project]).get(project.directory);
-    NodeAssert.equal(typeof read(), "string", "no extends is supported");
+    const read = async () => (await configurationInputs(f.root, [project])).get(project.directory);
+    NodeAssert.equal(typeof (await read()), "string", "no extends is supported");
     write(
       filename,
       '{ /* "extends": "ignored" */ "extend\\u0073": "..\\/..\\/tsconfig.base.json", "nested": {"extends": "ignored"}, "text": "extends", } // trailing comment',
     );
-    const first = read();
+    const first = await read();
     write(
       base,
       '{"compilerOptions":{"plugins":[{"name":"@effect/language-service","diagnosticSeverity":{"globalDate":"off"}}]}}',
     );
-    NodeAssert.notEqual(read(), first);
+    NodeAssert.notEqual(await read(), first);
     const validProject = NodeFS.readFileSync(filename);
     for (const bytes of [
       '{"extends":"../../tsconfig.base.json","extend\\u0073":"../../tsconfig.base.json"}',
@@ -946,23 +998,23 @@ NodeTest.test(
       Buffer.from([0xff, 0xfe]),
     ]) {
       write(filename, bytes);
-      NodeAssert.throws(read, undefined, String(bytes));
+      await NodeAssert.rejects(read, undefined, String(bytes));
     }
     write(filename, validProject);
     for (const extension of ["./tsconfig.base.json", "./packages/a/tsconfig.json", null]) {
       write(base, JSON.stringify({ extends: extension }));
-      NodeAssert.throws(read, /nonterminal/);
+      await NodeAssert.rejects(read, /nonterminal/);
     }
     write(base, "{}");
     NodeFS.unlinkSync(filename);
     NodeFS.symlinkSync(base, filename);
-    NodeAssert.throws(read, /symlink/);
+    await NodeAssert.rejects(read, /symlink/);
   },
 );
 
 NodeTest.test(
   "qualified Expo binding pins its manifest and fingerprints terminal base bytes",
-  (t) => {
+  async (t) => {
     const f = fixture(t);
     const project = {
       name: "@fixture/mobile",
@@ -986,22 +1038,22 @@ NodeTest.test(
     const binding = NodePath.join(project.directory, "node_modules", "expo");
     NodeFS.mkdirSync(NodePath.dirname(binding), { recursive: true });
     NodeFS.symlinkSync(packageDirectory, binding, "dir");
-    const read = () => configurationInputs(f.root, [project]).get(project.directory);
-    const first = read();
+    const read = async () => (await configurationInputs(f.root, [project])).get(project.directory);
+    const first = await read();
     write(base, '{"compilerOptions":{"strict":false}}');
-    NodeAssert.notEqual(read(), first);
+    NodeAssert.notEqual(await read(), first);
     write(manifest, Buffer.concat([manifestBytes, Buffer.from("\n")]));
-    NodeAssert.throws(read, /Unqualified Expo/);
+    await NodeAssert.rejects(read, /Unqualified Expo/);
     write(manifest, manifestBytes);
     write(base, '{"extends":"./another.json"}');
-    NodeAssert.throws(read, /nonterminal/);
+    await NodeAssert.rejects(read, /nonterminal/);
     write(base, "{}");
     const other = NodePath.join(f.root, "node_modules", ".pnpm", "changed-expo-binding");
     write(NodePath.join(other, "package.json"), manifestBytes);
     write(NodePath.join(other, "tsconfig.base.json"), "{}");
     NodeFS.unlinkSync(binding);
     NodeFS.symlinkSync(other, binding, "dir");
-    NodeAssert.throws(read, /Expo config binding/);
+    await NodeAssert.rejects(read, /Expo config binding/);
   },
 );
 

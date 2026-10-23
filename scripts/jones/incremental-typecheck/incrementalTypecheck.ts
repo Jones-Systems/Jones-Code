@@ -1,12 +1,51 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ByteSize from "effect/ByteSize";
+import * as Crypto from "effect/Crypto";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 
-import * as NodeChildProcess from "node:child_process";
-import * as NodeCrypto from "node:crypto";
-import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
-import * as NodeTimersPromises from "node:timers/promises";
+
+// These adapters are the standalone CLI's Effect-to-Promise boundary. Services
+// come from their installed Node layers, rather than hidden native imports.
+function hostPath(): Path.Path {
+  return Effect.runSync(Effect.provide(Path.Path, NodePath.layer));
+}
+
+function hostFileSystem<A, E>(
+  operation: (fs: FileSystem.FileSystem) => Effect.Effect<A, E, Scope.Scope>,
+): Promise<A> {
+  return Effect.runPromise(
+    Effect.scoped(Effect.flatMap(FileSystem.FileSystem, operation)).pipe(
+      Effect.provide(NodeFileSystem.layer),
+    ),
+  );
+}
+
+async function fileInfo(filename: string): Promise<FileSystem.File.Info> {
+  // stat follows links. Reject them explicitly before inspecting their targets.
+  const linked = await hostFileSystem((fs) => fs.readLink(filename)).then(
+    () => true,
+    (error: unknown) => {
+      if (errorCode(error) === "EINVAL") return false;
+      throw error;
+    },
+  );
+  if (linked) throw new Error(`Unsafe cache entry symlink: ${filename}`);
+  return hostFileSystem((fs) => fs.stat(filename));
+}
 
 export const RAW_LIMIT = 16 * 1024 * 1024;
 export const ENVELOPE_LIMIT = 24 * 1024 * 1024;
@@ -57,7 +96,10 @@ function object(value: unknown): value is JsonObject {
 }
 
 function errorCode(error: unknown): string | undefined {
-  return object(error) && typeof error.code === "string" ? error.code : undefined;
+  if (!object(error)) return undefined;
+  if (typeof error.code === "string") return error.code;
+  if (object(error.reason)) return errorCode(error.reason.cause);
+  return undefined;
 }
 
 function message(error: unknown): string {
@@ -65,7 +107,13 @@ function message(error: unknown): string {
 }
 
 export function digest(bytes: string | Buffer): string {
-  return NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+  return Buffer.from(
+    Effect.runSync(
+      Effect.flatMap(Crypto.Crypto, (crypto) =>
+        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
+      ).pipe(Effect.provide(NodeCrypto.layer)),
+    ),
+  ).toString("hex");
 }
 
 function canonical(value: unknown): string {
@@ -80,12 +128,12 @@ function canonical(value: unknown): string {
 }
 
 function contained(root: string, target: string): boolean {
-  const relative = NodePath.relative(root, target);
+  const relative = hostPath().relative(root, target);
   return (
     relative === "" ||
-    (!NodePath.isAbsolute(relative) &&
+    (!hostPath().isAbsolute(relative) &&
       relative !== ".." &&
-      !relative.startsWith(`..${NodePath.sep}`))
+      !relative.startsWith(`..${hostPath().sep}`))
   );
 }
 
@@ -99,7 +147,7 @@ export function parseArguments(args: string[]) {
       }
       flags.add(arg);
     } else {
-      if (!arg.trim() || NodePath.isAbsolute(arg))
+      if (!arg.trim() || hostPath().isAbsolute(arg))
         throw new Error(`Invalid workspace selector: ${arg}`);
       selectors.push(arg);
     }
@@ -130,7 +178,8 @@ export function selectWorkspaces(
     : args.selectors.map((selector) => {
         const matches = workspaces.filter(
           (workspace) =>
-            workspace.name === selector || workspace.directory === NodePath.resolve(root, selector),
+            workspace.name === selector ||
+            workspace.directory === hostPath().resolve(root, selector),
         );
         if (matches.length !== 1)
           throw new Error(`${matches.length ? "Ambiguous" : "Unknown"} workspace: ${selector}`);
@@ -186,65 +235,83 @@ function groupExists(pid: number): boolean {
 
 export const runProcess: Runner = async (command) => {
   checkCancellation(command.signal);
-  const child = NodeChildProcess.spawn(command.executable, command.args, {
-    cwd: command.cwd,
-    // ts-rust 0.7's cross-platform launcher honors GOPORT_LAUNCH=0. Its checker
-    // threads then belong to this process instead of an early-returning launcher.
-    env: { ...process.env, GOPORT_LAUNCH: "0", RAYON_NUM_THREADS: "2" },
-    detached: HostProcess.Platform.defaultValue() !== "win32",
-    stdio: ["ignore", command.capture ? "pipe" : "inherit", "inherit"],
-    windowsHide: true,
-  });
-  let output = Buffer.alloc(0);
-  let overflow = false;
-  let escalation: ReturnType<typeof setTimeout> | undefined;
-  let exitDeadline: ReturnType<typeof setTimeout> | undefined;
-  let rejectExit: ((error: Error) => void) | undefined;
-  const kill = (signal: NodeJS.Signals) => {
-    if (!child.pid) return;
-    try {
-      if (HostProcess.Platform.defaultValue() === "win32") child.kill(signal);
-      else process.kill(-child.pid, signal);
-    } catch (error) {
-      if (errorCode(error) !== "ESRCH") throw error;
-    }
-  };
-  const stop = () => {
-    kill(command.signal.reason === "SIGINT" ? "SIGINT" : "SIGTERM");
-    escalation ??= setTimeout(() => {
-      kill("SIGKILL");
-      exitDeadline = setTimeout(
-        () =>
+  const scope = Scope.makeUnsafe();
+  let exitConfirmed = true;
+  let escalation: Fiber.Fiber<void> | undefined;
+  let capture: Fiber.Fiber<void, PlatformError.PlatformError> | undefined;
+  let stop: (() => void) | undefined;
+  try {
+    const child = await Effect.runPromise(
+      Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
+        spawner.spawn(
+          ChildProcess.make(command.executable, command.args, {
+            cwd: command.cwd,
+            // The native checker stays in this process on all platforms.
+            env: { ...process.env, GOPORT_LAUNCH: "0", RAYON_NUM_THREADS: "2" },
+            detached: HostProcess.Platform.defaultValue() !== "win32",
+            stdin: "ignore",
+            stdout: command.capture ? "pipe" : "inherit",
+            stderr: "inherit",
+            windowsHide: true,
+            forceKillAfter: 1500,
+          }),
+        ),
+      ).pipe(Effect.provide(NodeServices.layer), Scope.provide(scope)),
+    );
+    let output = Buffer.alloc(0);
+    let overflow = false;
+    let rejectExit: ((error: Error) => void) | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try {
+        process.kill(
+          HostProcess.Platform.defaultValue() === "win32" ? child.pid : -child.pid,
+          signal,
+        );
+      } catch (error) {
+        if (errorCode(error) !== "ESRCH") throw error;
+      }
+    };
+    stop = () => {
+      kill(command.signal.reason === "SIGINT" ? "SIGINT" : "SIGTERM");
+      escalation ??= Effect.runFork(
+        Effect.gen(function* () {
+          yield* Effect.sleep(1500);
+          kill("SIGKILL");
+          yield* Effect.sleep(5000);
           rejectExit?.(
             new UnconfirmedExit(
               `Process ${child.pid} exit unconfirmed after escalation; invocation files retained.`,
             ),
-          ),
-        5000,
+          );
+        }),
       );
-    }, 1500);
-  };
-  child.stdout?.on("data", (chunk: Buffer) => {
-    if (output.length + chunk.length > ENVELOPE_LIMIT) {
-      overflow = true;
-      stop();
-    } else if (!overflow) output = Buffer.concat([output, chunk]);
-  });
-  command.signal.addEventListener("abort", stop, { once: true });
-  if (command.signal.aborted) stop();
-  try {
-    const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-      (resolve, reject) => {
-        rejectExit = reject;
-        child.once("error", reject);
-        child.once("close", (code, signal) => resolve({ code, signal }));
-      },
-    );
-    if (HostProcess.Platform.defaultValue() !== "win32" && child.pid && groupExists(child.pid)) {
+    };
+    if (command.capture) {
+      capture = Effect.runFork(
+        Stream.runForEach(child.stdout, (chunk) =>
+          Effect.sync(() => {
+            if (output.length + chunk.length > ENVELOPE_LIMIT) {
+              overflow = true;
+              stop?.();
+            } else if (!overflow) output = Buffer.concat([output, chunk]);
+          }),
+        ),
+      );
+    }
+    command.signal.addEventListener("abort", stop, { once: true });
+    if (command.signal.aborted) stop();
+    const outcome = await new Promise<{ code?: number; error?: unknown }>((resolve, reject) => {
+      rejectExit = reject;
+      void Effect.runPromise(child.exitCode).then(
+        (code) => resolve({ code }),
+        (error: unknown) => resolve({ error }),
+      );
+    });
+    if (HostProcess.Platform.defaultValue() !== "win32" && groupExists(child.pid)) {
       kill("SIGTERM");
       for (let attempt = 0; attempt < 100 && groupExists(child.pid); attempt++) {
         if (attempt === 30) kill("SIGKILL");
-        await NodeTimersPromises.setTimeout(25);
+        await Effect.runPromise(Effect.sleep(25));
       }
       if (groupExists(child.pid))
         throw new UnconfirmedExit(
@@ -252,13 +319,29 @@ export const runProcess: Runner = async (command) => {
         );
     }
     checkCancellation(command.signal);
-    if (result.signal) throw new Interrupted(result.signal);
+    if (outcome.error !== undefined) {
+      // The Node spawner preserves a signal exit in its PlatformError cause.
+      const cause =
+        object(outcome.error) && object(outcome.error.reason)
+          ? outcome.error.reason.cause
+          : outcome.error;
+      const signal = /receipt of signal: '(SIG[A-Z]+)'/.exec(message(cause))?.[1];
+      if (signal) throw new Interrupted(signal);
+      throw outcome.error;
+    }
+    if (capture) await Effect.runPromise(Fiber.join(capture));
     if (overflow) throw new Error("Captured command output exceeded 24 MiB.");
-    return { code: result.code ?? 1, stdout: output.toString("utf8") };
+    return { code: outcome.code ?? 1, stdout: output.toString("utf8") };
+  } catch (error) {
+    if (error instanceof UnconfirmedExit) exitConfirmed = false;
+    throw error;
   } finally {
-    command.signal.removeEventListener("abort", stop);
-    clearTimeout(escalation);
-    clearTimeout(exitDeadline);
+    if (stop) command.signal.removeEventListener("abort", stop);
+    if (escalation) await Effect.runPromise(Fiber.interrupt(escalation));
+    if (capture) await Effect.runPromise(Fiber.interrupt(capture));
+    // An unconfirmed process retains its scope and exact invocation files;
+    // scope release must not conceal an unbounded native exit wait.
+    if (exitConfirmed) await Effect.runPromise(Scope.close(scope, Exit.void));
   }
 };
 
@@ -283,51 +366,56 @@ export async function discoverWorkspaces(
   const directories = new Set<string>([root]);
   for (const record of records) {
     if (!object(record) || typeof record.path !== "string")
-      throw new Error("Invalid pnpm workspace NodePath.");
-    const directory = NodeFS.realpathSync(record.path);
+      throw new Error("Invalid pnpm workspace path.");
+    const workspacePath = record.path;
+    const directory = await hostFileSystem((fs) => fs.realPath(workspacePath));
     if (!contained(root, directory))
       throw new Error(`Workspace escapes canonical worktree: ${record.path}`);
     directories.add(directory);
   }
-  return [...directories].sort().map((directory) => {
-    const manifest: unknown = JSON.parse(
-      NodeFS.readFileSync(NodePath.join(directory, "package.json"), "utf8"),
-    );
-    if (!object(manifest) || typeof manifest.name !== "string")
-      throw new Error(`Workspace name missing: ${directory}`);
-    return {
-      name: manifest.name,
-      directory,
-      script:
-        object(manifest.scripts) && typeof manifest.scripts.typecheck === "string"
-          ? manifest.scripts.typecheck
-          : undefined,
-    };
-  });
+  return Promise.all(
+    [...directories].sort().map(async (directory) => {
+      const manifest: unknown = JSON.parse(
+        await hostFileSystem((fs) => fs.readFileString(hostPath().join(directory, "package.json"))),
+      );
+      if (!object(manifest) || typeof manifest.name !== "string")
+        throw new Error(`Workspace name missing: ${directory}`);
+      return {
+        name: manifest.name,
+        directory,
+        script:
+          object(manifest.scripts) && typeof manifest.scripts.typecheck === "string"
+            ? manifest.scripts.typecheck
+            : undefined,
+      };
+    }),
+  );
 }
 
-export function resolveCompiler(root: string) {
-  const require = NodeModule.createRequire(NodePath.join(root, "package.json"));
+export async function resolveCompiler(root: string) {
+  const require = NodeModule.createRequire(hostPath().join(root, "package.json"));
   const wrapper = require.resolve("tsc-rs/package.json");
   const nativeManifest = NodeModule.createRequire(wrapper).resolve(
     `@tsc-rs/${HostProcess.Platform.defaultValue()}-${HostProcess.Architecture.defaultValue()}/package.json`,
   );
   for (const file of [wrapper, nativeManifest]) {
-    if (JSON.parse(NodeFS.readFileSync(file, "utf8")).version !== "0.7.0")
+    if (JSON.parse(await hostFileSystem((fs) => fs.readFileString(file))).version !== "0.7.0")
       throw new Error(`Expected installed tsc-rs 0.7.0: ${file}`);
   }
-  const executable = NodeFS.realpathSync(
-    NodePath.join(
-      NodePath.dirname(nativeManifest),
-      "lib",
-      HostProcess.Platform.defaultValue() === "win32" ? "tsc.exe" : "tsc",
+  const executable = await hostFileSystem((fs) =>
+    fs.realPath(
+      hostPath().join(
+        hostPath().dirname(nativeManifest),
+        "lib",
+        HostProcess.Platform.defaultValue() === "win32" ? "tsc.exe" : "tsc",
+      ),
     ),
   );
-  NodeFS.accessSync(executable, NodeFS.constants.X_OK);
+  await hostFileSystem((fs) => fs.access(executable));
   return { executable, wrapper, nativeManifest };
 }
 
-type Compiler = ReturnType<typeof resolveCompiler>;
+type Compiler = Awaited<ReturnType<typeof resolveCompiler>>;
 
 // Validate JSONC shape and duplicate decoded keys, never resolve or merge it.
 // Unsupported inheritance must not silently enable retained cache reuse.
@@ -408,15 +496,21 @@ function configObject(bytes: Buffer, filename: string): JsonObject {
   return parsed;
 }
 
-export function configurationInputs(root: string, projects: Workspace[]): Map<string, string> {
+export async function configurationInputs(
+  root: string,
+  projects: Workspace[],
+): Promise<Map<string, string>> {
   const files = new Map<string, { config: JsonObject; hash: string }>();
-  const read = (filename: string) => {
+  const read = async (filename: string) => {
     const cached = files.get(filename);
     if (cached) return cached;
-    if (!contained(root, filename) || NodeFS.realpathSync(filename) !== filename) {
+    if (
+      !contained(root, filename) ||
+      (await hostFileSystem((fs) => fs.realPath(filename))) !== filename
+    ) {
       throw new Error(`Unsupported config path or symlink escape: ${filename}`);
     }
-    const bytes = readBounded(filename, 1024 * 1024);
+    const bytes = await readBounded(filename, 1024 * 1024);
     if (!bytes) throw new Error(`Missing or oversized config input (1 MiB limit): ${filename}`);
     const input = { config: configObject(bytes, filename), hash: digest(bytes) };
     files.set(filename, input);
@@ -424,8 +518,8 @@ export function configurationInputs(root: string, projects: Workspace[]): Map<st
   };
   const identities = new Map<string, string>();
   for (const project of projects) {
-    const filename = NodePath.join(project.directory, "tsconfig.json");
-    const input = read(filename);
+    const filename = hostPath().join(project.directory, "tsconfig.json");
+    const input = await read(filename);
     const extendsValue = input.config.extends;
     if (!Object.hasOwn(input.config, "extends")) {
       identities.set(project.directory, digest(canonical({ filename, projectHash: input.hash })));
@@ -437,23 +531,24 @@ export function configurationInputs(root: string, projects: Workspace[]): Map<st
     let binding: unknown = null;
     if (
       extendsValue === "expo/tsconfig.base.json" &&
-      project.directory === NodePath.join(root, "apps", "mobile")
+      project.directory === hostPath().join(root, "apps", "mobile")
     ) {
-      const packageBinding = NodePath.join(project.directory, "node_modules", "expo");
-      const packageDirectory = NodeFS.realpathSync(packageBinding);
-      if (packageDirectory !== NodePath.join(root, EXPO_STORE_PATH)) {
+      const packageBinding = hostPath().join(project.directory, "node_modules", "expo");
+      const packageDirectory = await hostFileSystem((fs) => fs.realPath(packageBinding));
+      if (packageDirectory !== hostPath().join(root, EXPO_STORE_PATH)) {
         throw new Error(`Unsupported external Expo config binding: ${packageBinding}`);
       }
-      const require = NodeModule.createRequire(NodePath.join(project.directory, "package.json"));
-      const manifest = NodePath.join(packageDirectory, "package.json");
-      base = NodePath.join(packageDirectory, "tsconfig.base.json");
+      const require = NodeModule.createRequire(hostPath().join(project.directory, "package.json"));
+      const manifest = hostPath().join(packageDirectory, "package.json");
+      base = hostPath().join(packageDirectory, "tsconfig.base.json");
       if (
-        NodeFS.realpathSync(require.resolve("expo/package.json")) !== manifest ||
-        NodeFS.realpathSync(require.resolve(extendsValue)) !== base
+        (await hostFileSystem((fs) => fs.realPath(require.resolve("expo/package.json")))) !==
+          manifest ||
+        (await hostFileSystem((fs) => fs.realPath(require.resolve(extendsValue)))) !== base
       ) {
         throw new Error(`Ambiguous Expo config binding: ${packageBinding}`);
       }
-      const packageInput = read(manifest);
+      const packageInput = await read(manifest);
       if (packageInput.config.name !== "expo" || packageInput.hash !== EXPO_MANIFEST_HASH)
         throw new Error(
           `Unqualified Expo package identity: ${manifest}; use --fresh until requalified.`,
@@ -465,18 +560,18 @@ export function configurationInputs(root: string, projects: Workspace[]): Map<st
         manifestHash: packageInput.hash,
       };
     } else {
-      base = NodePath.join(root, "tsconfig.base.json");
+      base = hostPath().join(root, "tsconfig.base.json");
       if (
         !extendsValue.startsWith(".") ||
-        NodePath.isAbsolute(extendsValue) ||
-        NodePath.resolve(project.directory, extendsValue) !== base
+        hostPath().isAbsolute(extendsValue) ||
+        hostPath().resolve(project.directory, extendsValue) !== base
       ) {
         throw new Error(
           `Unsupported config inheritance in ${filename}: only the worktree tsconfig.base.json or mobile Expo base is recognized.`,
         );
       }
     }
-    const baseInput = read(base);
+    const baseInput = await read(base);
     if (Object.hasOwn(baseInput.config, "extends"))
       throw new Error(`Unsupported nonterminal config base: ${base}`);
     identities.set(
@@ -491,40 +586,45 @@ export function configurationInputs(root: string, projects: Workspace[]): Map<st
 
 // Fingerprint metadata, not source bytes or Git HEAD. Native incremental state
 // remains responsible for source, declaration, and module-resolution changes.
-export function sharedIdentity(root: string, workspaces: Workspace[], compiler: Compiler): string {
-  const hash = NodeCrypto.createHash("sha256");
+export async function sharedIdentity(
+  root: string,
+  workspaces: Workspace[],
+  compiler: Compiler,
+): Promise<string> {
+  const chunks: string[] = [];
   const add = (label: string, value: string | Buffer) => {
-    hash.update(JSON.stringify(label)).update("\0").update(digest(value)).update("\n");
+    chunks.push(`${JSON.stringify(label)}\0${digest(value)}\n`);
   };
-  const file = (filename: string, optional = false) => {
+  const file = async (filename: string, optional = false) => {
     try {
-      add(filename, NodeFS.readFileSync(filename));
+      add(filename, Buffer.from(await hostFileSystem((fs) => fs.readFile(filename))));
     } catch (error) {
       if (optional && errorCode(error) === "ENOENT") add(filename, "<absent>");
       else throw error;
     }
   };
   for (const filename of ["pnpm-lock.yaml", "pnpm-workspace.yaml", "package.json"])
-    file(NodePath.join(root, filename));
-  for (const workspace of workspaces) file(NodePath.join(workspace.directory, "package.json"));
+    await file(hostPath().join(root, filename));
+  for (const workspace of workspaces)
+    await file(hostPath().join(workspace.directory, "package.json"));
   for (const filename of [".modules.yaml", ".pnpm/lock.yaml", ".pnpm-workspace-state-v1.json"])
-    file(NodePath.join(root, "node_modules", filename), true);
-  file(compiler.wrapper);
-  file(compiler.nativeManifest);
-  file(compiler.executable);
-  const libraries = NodePath.dirname(compiler.executable);
-  for (const name of NodeFS.readdirSync(libraries).sort())
-    if (/^lib.*\.d\.ts$/.test(name)) file(NodePath.join(libraries, name));
-  if (!NodeFS.existsSync(NodePath.join(libraries, "lib.d.ts")))
+    await file(hostPath().join(root, "node_modules", filename), true);
+  await file(compiler.wrapper);
+  await file(compiler.nativeManifest);
+  await file(compiler.executable);
+  const libraries = hostPath().dirname(compiler.executable);
+  for (const name of (await hostFileSystem((fs) => fs.readDirectory(libraries))).sort())
+    if (/^lib.*\.d\.ts$/.test(name)) await file(hostPath().join(libraries, name));
+  if (!(await hostFileSystem((fs) => fs.exists(hostPath().join(libraries, "lib.d.ts")))))
     throw new Error("Native adjacent standard library is missing.");
 
   const seen = new Set<string>();
-  const modules = (directory: string) => {
+  const modules = async (directory: string): Promise<void> => {
     if (seen.has(directory)) return;
     seen.add(directory);
     let names: string[];
     try {
-      names = NodeFS.readdirSync(directory).sort();
+      names = (await hostFileSystem((fs) => fs.readDirectory(directory))).sort();
     } catch (error) {
       if (errorCode(error) === "ENOENT") {
         add(directory, "<absent>");
@@ -534,24 +634,25 @@ export function sharedIdentity(root: string, workspaces: Workspace[], compiler: 
     }
     for (const name of names) {
       if (name.startsWith(".")) continue;
-      const target = NodePath.join(directory, name);
+      const target = hostPath().join(directory, name);
       if (name.startsWith("@")) {
-        modules(target);
+        await modules(target);
         continue;
       }
-      const resolved = NodeFS.realpathSync(target);
+      const resolved = await hostFileSystem((fs) => fs.realPath(target));
       add(target, resolved);
-      file(NodePath.join(resolved, "package.json"), true);
+      await file(hostPath().join(resolved, "package.json"), true);
     }
   };
-  for (const workspace of workspaces) modules(NodePath.join(workspace.directory, "node_modules"));
-  const store = NodePath.join(root, "node_modules", ".pnpm");
-  for (const name of NodeFS.readdirSync(store).sort()) {
-    if (name === "node_modules") modules(NodePath.join(store, name));
-    else if (NodeFS.lstatSync(NodePath.join(store, name)).isDirectory())
-      modules(NodePath.join(store, name, "node_modules"));
+  for (const workspace of workspaces)
+    await modules(hostPath().join(workspace.directory, "node_modules"));
+  const store = hostPath().join(root, "node_modules", ".pnpm");
+  for (const name of (await hostFileSystem((fs) => fs.readDirectory(store))).sort()) {
+    if (name === "node_modules") await modules(hostPath().join(store, name));
+    else if ((await fileInfo(hostPath().join(store, name))).type === "Directory")
+      await modules(hostPath().join(store, name, "node_modules"));
   }
-  return hash.digest("hex");
+  return digest(chunks.join(""));
 }
 
 export async function effectiveConfig(
@@ -600,7 +701,7 @@ export function projectIdentity(
 }
 
 export function cachePaths(root: string, project: Workspace) {
-  const namespace = NodePath.join(
+  const namespace = hostPath().join(
     root,
     "node_modules",
     ".cache",
@@ -608,87 +709,89 @@ export function cachePaths(root: string, project: Workspace) {
     "incremental-typecheck",
     "v1",
   );
-  const directory = NodePath.join(namespace, digest(canonical([root, project.directory])));
-  return { namespace, directory, entry: NodePath.join(directory, "entry.json") };
+  const directory = hostPath().join(namespace, digest(canonical([root, project.directory])));
+  return { namespace, directory, entry: hostPath().join(directory, "entry.json") };
 }
 
-function safeDirectory(root: string, directory: string, create: boolean): void {
+async function safeDirectory(root: string, directory: string, create: boolean): Promise<void> {
   if (!contained(root, directory)) throw new Error(`Cache escapes worktree: ${directory}`);
   let current = root;
-  for (const component of NodePath.relative(root, directory).split(NodePath.sep).filter(Boolean)) {
-    current = NodePath.join(current, component);
+  for (const component of hostPath()
+    .relative(root, directory)
+    .split(hostPath().sep)
+    .filter(Boolean)) {
+    current = hostPath().join(current, component);
     if (create) {
       try {
-        NodeFS.mkdirSync(current);
+        await hostFileSystem((fs) => fs.makeDirectory(current));
       } catch (error) {
         if (errorCode(error) !== "EEXIST") throw error;
       }
     }
-    const stat = NodeFS.lstatSync(current);
-    if (stat.isSymbolicLink() || !stat.isDirectory())
-      throw new Error(`Unsafe cache directory: ${current}`);
+    const stat = await fileInfo(current);
+    if (stat.type !== "Directory") throw new Error(`Unsafe cache directory: ${current}`);
   }
 }
 
-export function admitNamespace(root: string, namespace: string, additional: number): void {
-  safeDirectory(root, namespace, true);
+export async function admitNamespace(
+  root: string,
+  namespace: string,
+  additional: number,
+): Promise<void> {
+  await safeDirectory(root, namespace, true);
   let bytes = 0;
-  const walk = (directory: string) => {
-    for (const name of NodeFS.readdirSync(directory)) {
-      const filename = NodePath.join(directory, name);
-      let stat: NodeFS.Stats;
+  const walk = async (directory: string): Promise<void> => {
+    for (const name of await hostFileSystem((fs) => fs.readDirectory(directory))) {
+      const filename = hostPath().join(directory, name);
+      let stat: FileSystem.File.Info;
       try {
-        stat = NodeFS.lstatSync(filename);
+        stat = await fileInfo(filename);
       } catch (error) {
         if (errorCode(error) === "ENOENT") continue;
         throw error;
       }
-      if (stat.isSymbolicLink() || (!stat.isDirectory() && !stat.isFile()))
+      if (stat.type !== "Directory" && stat.type !== "File")
         throw new Error(`Unsafe cache entry: ${filename}`);
-      bytes += stat.size;
+      bytes += ByteSize.toNumberUnsafe(stat.size);
       if (bytes + additional > NAMESPACE_LIMIT)
         throw new Error(
           `Cache capacity admission failed at ${namespace}: requires ${additional} additional bytes within 1 GiB; no automatic fallback or eviction.`,
         );
-      if (stat.isDirectory()) {
+      if (stat.type === "Directory") {
         try {
-          walk(filename);
+          await walk(filename);
         } catch (error) {
           if (errorCode(error) !== "ENOENT") throw error;
         }
       }
     }
   };
-  walk(namespace);
-  const disk = NodeFS.statfsSync(namespace);
-  if (disk.bavail * disk.bsize < additional)
-    throw new Error(`Insufficient filesystem capacity for cache at ${namespace}.`);
+  await walk(namespace);
 }
 
-function readBounded(filename: string, limit: number): Buffer | undefined {
-  let fd: number;
+async function readBounded(filename: string, limit: number): Promise<Buffer | undefined> {
   try {
-    if (NodeFS.lstatSync(filename).isSymbolicLink())
-      throw new Error(`Unsafe cache symlink: ${filename}`);
-    fd = NodeFS.openSync(filename, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+    await fileInfo(filename);
+    return await hostFileSystem((fs) =>
+      Effect.gen(function* () {
+        const file = yield* fs.open(filename, { flag: "r", noFollow: true });
+        const stat = yield* file.stat;
+        if (stat.type !== "File") throw new Error(`Cache path is not a regular file: ${filename}`);
+        const size = ByteSize.toNumberUnsafe(stat.size);
+        if (size > limit) return undefined;
+        const bytes = Buffer.alloc(size + 1);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const count = yield* file.read(bytes.subarray(offset));
+          if (count === 0) break;
+          offset += count;
+        }
+        return offset === size ? bytes.subarray(0, offset) : undefined;
+      }),
+    );
   } catch (error) {
     if (errorCode(error) === "ENOENT") return undefined;
     throw error;
-  }
-  try {
-    const stat = NodeFS.fstatSync(fd);
-    if (!stat.isFile()) throw new Error(`Cache path is not a regular file: ${filename}`);
-    if (stat.size > limit) return undefined;
-    const bytes = Buffer.alloc(stat.size + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const count = NodeFS.readSync(fd, bytes, offset, bytes.length - offset, null);
-      if (count === 0) break;
-      offset += count;
-    }
-    return offset === stat.size ? bytes.subarray(0, offset) : undefined;
-  } finally {
-    NodeFS.closeSync(fd);
   }
 }
 
@@ -783,8 +886,8 @@ export function encodeEnvelope(identity: string, payload: Buffer): Buffer {
   return bytes;
 }
 
-export function readSeed(filename: string, identity: string): Buffer | undefined {
-  const bytes = readBounded(filename, ENVELOPE_LIMIT);
+export async function readSeed(filename: string, identity: string): Promise<Buffer | undefined> {
+  const bytes = await readBounded(filename, ENVELOPE_LIMIT);
   if (!bytes) return undefined;
   try {
     const envelope: unknown = JSON.parse(bytes.toString("utf8"));
@@ -810,6 +913,20 @@ export function readSeed(filename: string, identity: string): Buffer | undefined
   }
 }
 
+async function writePrivateFile(
+  filename: string,
+  bytes: Buffer,
+  created: () => void,
+): Promise<void> {
+  await hostFileSystem((fs) =>
+    Effect.gen(function* () {
+      const file = yield* fs.open(filename, { flag: "wx", mode: 0o600 });
+      created();
+      yield* file.writeAll(bytes);
+    }),
+  );
+}
+
 export interface CheckProjectOptions {
   root: string;
   project: Workspace;
@@ -819,35 +936,35 @@ export interface CheckProjectOptions {
   signal: AbortSignal;
   inputsUnchanged: () => Promise<boolean>;
   run?: Runner;
+  writePrivate?: typeof writePrivateFile;
   log?: (line: string) => void;
 }
 
 export async function checkProject(options: CheckProjectOptions): Promise<number> {
   const { root, project, compiler, identity, fresh, signal } = options;
   const run = options.run ?? runProcess;
+  const writePrivate = options.writePrivate ?? writePrivateFile;
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const paths = cachePaths(root, project);
   checkCancellation(signal);
-  admitNamespace(root, paths.namespace, RAW_LIMIT + (fresh ? 0 : ENVELOPE_LIMIT));
-  safeDirectory(root, paths.directory, true);
-  const nonce = NodeCrypto.randomUUID();
-  const native = NodePath.join(paths.directory, `run-${nonce}.tsbuildinfo`);
-  const staging = NodePath.join(paths.directory, `entry-${nonce}.tmp`);
+  await admitNamespace(root, paths.namespace, RAW_LIMIT + (fresh ? 0 : ENVELOPE_LIMIT));
+  await safeDirectory(root, paths.directory, true);
+  const nonce = Effect.runSync(
+    Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4()).pipe(
+      Effect.provide(NodeCrypto.layer),
+    ),
+  );
+  const native = hostPath().join(paths.directory, `run-${nonce}.tsbuildinfo`);
+  const staging = hostPath().join(paths.directory, `entry-${nonce}.tmp`);
   const owned = new Set<string>();
   let exitConfirmed = true;
   let result = 1;
   let failure: unknown;
   try {
-    const seed = fresh ? undefined : readSeed(paths.entry, identity);
+    const seed = fresh ? undefined : await readSeed(paths.entry, identity);
     // Empty private files are a native cache miss; exclusive creation establishes
     // cleanup ownership before the first write, including partial setup failure.
-    const fd = NodeFS.openSync(native, "wx", 0o600);
-    owned.add(native);
-    try {
-      if (seed) NodeFS.writeFileSync(fd, seed);
-    } finally {
-      NodeFS.closeSync(fd);
-    }
+    await writePrivate(native, seed ?? Buffer.alloc(0), () => owned.add(native));
     log(
       `[incremental] ${project.name}: ${fresh ? "fresh" : seed ? "seed validated" : "cache miss"}; ${native}`,
     );
@@ -866,22 +983,16 @@ export async function checkProject(options: CheckProjectOptions): Promise<number
           throw new Error("identity inputs changed during checking.");
         }
         checkCancellation(signal);
-        safeDirectory(root, paths.directory, false);
-        const payload = readBounded(native, RAW_LIMIT);
+        await safeDirectory(root, paths.directory, false);
+        const payload = await readBounded(native, RAW_LIMIT);
         if (!payload) throw new Error("Native build info missing or exceeds 16 MiB.");
         const envelope = encodeEnvelope(identity, payload);
-        admitNamespace(root, paths.namespace, envelope.length);
-        const stagingFd = NodeFS.openSync(staging, "wx", 0o600);
-        owned.add(staging);
-        try {
-          NodeFS.writeFileSync(stagingFd, envelope);
-        } finally {
-          NodeFS.closeSync(stagingFd);
-        }
+        await admitNamespace(root, paths.namespace, envelope.length);
+        await writePrivate(staging, envelope, () => owned.add(staging));
         checkCancellation(signal);
         // One rename publishes identity and payload together. Concurrent writers
         // may lose reuse, never produce a mixed generation or skip native checking.
-        NodeFS.renameSync(staging, paths.entry);
+        await hostFileSystem((fs) => fs.rename(staging, paths.entry));
         owned.delete(staging);
       } catch (error) {
         if (error instanceof Interrupted || error instanceof UnconfirmedExit) throw error;
@@ -896,8 +1007,10 @@ export async function checkProject(options: CheckProjectOptions): Promise<number
     const failures: string[] = [];
     for (const filename of owned) {
       try {
-        safeDirectory(root, paths.directory, false);
-        NodeFS.unlinkSync(filename);
+        await safeDirectory(root, paths.directory, false);
+        if ((await fileInfo(filename)).type !== "File")
+          throw new Error(`Owned cleanup path is not a regular file: ${filename}`);
+        await hostFileSystem((fs) => fs.remove(filename));
       } catch (error) {
         if (errorCode(error) !== "ENOENT") failures.push(`${filename}: ${message(error)}`);
       }
@@ -932,17 +1045,17 @@ export async function runCli(
       process.stdout.write(HELP);
       return 0;
     }
-    const root = NodeFS.realpathSync(rootDirectory);
+    const root = await hostFileSystem((fs) => fs.realPath(rootDirectory));
     const signal = cancellation.signal;
     const workspaces = await discoverWorkspaces(root, signal, run);
     const { selected, excluded } = selectWorkspaces(root, workspaces, args);
     process.stderr.write(
-      `[incremental] Selected (${selected.length}): ${selected.map((workspace) => `${workspace.name} (${NodePath.relative(root, workspace.directory)})`).join(", ")}\n`,
+      `[incremental] Selected (${selected.length}): ${selected.map((workspace) => `${workspace.name} (${hostPath().relative(root, workspace.directory)})`).join(", ")}\n`,
     );
     process.stderr.write(
       `[incremental] Excluded: ${excluded.map((workspace) => `${workspace.name}: ${workspace.script ?? "no typecheck script"}`).join("; ")}\n`,
     );
-    const compiler = resolveCompiler(root);
+    const compiler = await resolveCompiler(root);
     const version = await run({
       executable: compiler.executable,
       args: ["--version"],
@@ -955,12 +1068,12 @@ export async function runCli(
     process.stderr.write(
       `[incremental] tsc-rs 0.7.0; ${NATIVE_VERSION}; upstream TypeScript ${UPSTREAM_VERSION} (distinct from root TypeScript API).\n[incremental] ${compiler.executable} ${OPTIONS.join(" ")} --tsBuildInfoFile <private>; GOPORT_LAUNCH=0 RAYON_NUM_THREADS=2\n`,
     );
-    const shared = args.fresh ? "fresh" : sharedIdentity(root, workspaces, compiler);
+    const shared = args.fresh ? "fresh" : await sharedIdentity(root, workspaces, compiler);
     // --showConfig drops Effect settings in Rust 0.7. Raw, guarded inputs supply
     // identity for them without interpreting or merging plugin options.
     const configInputs = args.fresh
       ? new Map<string, string>()
-      : configurationInputs(root, selected);
+      : await configurationInputs(root, selected);
     for (const project of selected) {
       checkCancellation(signal);
       let config: unknown;
@@ -974,7 +1087,7 @@ export async function runCli(
       }
       if (
         !args.fresh &&
-        configurationInputs(root, [project]).get(project.directory) !==
+        (await configurationInputs(root, [project])).get(project.directory) !==
           configInputs.get(project.directory)
       ) {
         throw new Error(
@@ -995,9 +1108,9 @@ export async function runCli(
         run,
         inputsUnchanged: async () => {
           const currentConfig = await effectiveConfig(compiler, project, signal, run);
-          const currentInputs = configurationInputs(root, [project]).get(project.directory);
+          const currentInputs = (await configurationInputs(root, [project])).get(project.directory);
           return (
-            projectIdentity(root, project, sharedIdentity(root, workspaces, compiler), {
+            projectIdentity(root, project, await sharedIdentity(root, workspaces, compiler), {
               native: currentConfig,
               inputs: currentInputs,
             }) === identity
