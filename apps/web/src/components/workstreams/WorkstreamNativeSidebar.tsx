@@ -1,3 +1,8 @@
+import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
+import {
+  operationOpen,
+  operationMessage,
+} from "@t3tools/client-runtime/jones/workstreams/operations";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -69,6 +74,7 @@ export function WorkstreamNativeSidebar({
   const { controller, grouping } = props;
   const statusGrouping = props.summaryGrouping ?? grouping;
   const threadStatusSummaries = summarizeWorkstreamThreadStatuses(statusGrouping);
+  const [pickerThread, setPickerThread] = useState<EnvironmentThreadShell | null>(null);
   const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
@@ -175,7 +181,8 @@ export function WorkstreamNativeSidebar({
         await operation();
         return bindingRef.current === startedBinding;
       } catch (cause) {
-        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
+        if (bindingRef.current === startedBinding)
+          setError(cause instanceof Error ? cause.message : workstreamFailureMessage(cause));
         return false;
       }
     })().finally(() => {
@@ -339,6 +346,11 @@ export function WorkstreamNativeSidebar({
         : undefined) ?? [];
     return {
       items: [
+        {
+          id: "assign-workstream:picker",
+          label: "Search or create Workstream…",
+          disabled: !canMove(thread),
+        },
         ...(!sourceAvailable(thread) || conflicted(thread) || !checked
           ? [
               {
@@ -368,7 +380,8 @@ export function WorkstreamNativeSidebar({
         },
       ],
       onAction: (action) => {
-        if (action === "assign-workstream:remove") run(() => move(thread, null));
+        if (action === "assign-workstream:picker") setPickerThread(thread);
+        else if (action === "assign-workstream:remove") run(() => move(thread, null));
         else {
           const destination = controller.data?.items.find(
             (item) => `assign-workstream:group:${item.workstreamId}` === action,
@@ -436,6 +449,37 @@ export function WorkstreamNativeSidebar({
   };
   return (
     <div ref={rootRef}>
+      {pickerThread ? (
+        <WorkstreamPicker
+          key={JSON.stringify([
+            pickerThread.environmentId,
+            pickerThread.id,
+            controller.data?.binding.registryId,
+            controller.data?.binding.ownerId,
+            controller.data?.binding.principalId,
+          ])}
+          controller={controller}
+          thread={pickerThread}
+          commandId={workstreamCommandId}
+          onClose={() => setPickerThread(null)}
+        />
+      ) : null}
+      {controller.operationEntries
+        ?.filter((entry) => entry.result && operationOpen(entry.result))
+        .map((entry) => (
+          <p
+            key={entry.operationId}
+            role="status"
+            className="px-2 py-1 text-xs text-muted-foreground"
+          >
+            {operationMessage(entry.result!)}
+          </p>
+        ))}
+      {controller.operationsError ? (
+        <p role="alert" className="px-2 py-1 text-xs text-destructive">
+          {controller.operationsError}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}

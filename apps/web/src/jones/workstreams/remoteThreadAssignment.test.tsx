@@ -1,3 +1,6 @@
+vi.mock("./useWorkstreamOperations", () => ({
+  useWorkstreamOperations: () => ({ entries: [], error: null, supports: () => false }),
+}));
 import { RegistryContext } from "@effect/atom-react";
 import type { SupervisorConnectionState } from "@t3tools/client-runtime/connection";
 import { RemoteEnvironmentAuthFetchError } from "@t3tools/client-runtime/rpc";

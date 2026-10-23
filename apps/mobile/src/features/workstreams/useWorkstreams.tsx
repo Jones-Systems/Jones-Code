@@ -1,3 +1,16 @@
+import {
+  WorkstreamOperationsClient,
+  supportsWorkstreamOperations,
+  operationSucceeded,
+  operationRegistryIdentity,
+  operationMessage,
+  WorkstreamOperationError,
+} from "@t3tools/client-runtime/jones/workstreams/operations";
+import {
+  WORKSTREAM_OPERATIONS_CONTRACT,
+  type WorkstreamOperationRequest,
+} from "@t3tools/contracts/jones/workstreamOperations";
+import type { MobileOperationActions } from "./actions";
 import { useAtomValue } from "@effect/atom-react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
@@ -65,6 +78,8 @@ const decodeEnvironmentIds = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Array(EnvironmentId)),
 );
 const refreshSubscribers = new Set<() => void>();
+// Home and the thread sidebar share retained requests and one polling loop per connection.
+const mobileOperationClients = new Map<string, WorkstreamOperationsClient>();
 const refreshMountedWorkstreams = () => {
   for (const refresh of refreshSubscribers) refresh();
 };
@@ -182,6 +197,163 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     [context],
   );
   const refresh = useCallback(() => setRevision((n) => n + 1), []);
+  const [operationWatchRevision, setOperationWatchRevision] = useState(0);
+  const [operationStatus, setOperationStatus] = useState<string | null>(null);
+  const supportsOperations = (id: string) =>
+    supportsWorkstreamOperations(
+      liveEnvironments.find((entry) => entry.environmentId === id)?.config?.environment
+        .capabilities,
+    );
+  const operationClient = (snapshot: MobileWorkstreamSnapshot) => {
+    const key = JSON.stringify([
+      snapshot.prepared.environmentId,
+      snapshot.data.binding.registryId,
+      snapshot.data.binding.ownerId,
+      snapshot.data.binding.principalId,
+    ]);
+    const connectionKey = `${key}:${snapshot.generation}`;
+    let client = mobileOperationClients.get(connectionKey);
+    if (!client) {
+      const storageKey = `t3code.workstream-operations.v1.${encodeURIComponent(key).replaceAll("%", "_")}`;
+      client = new WorkstreamOperationsClient(
+        {
+          submit: (payload, signal) =>
+            request(
+              snapshot.prepared,
+              "POST",
+              (urls) => urls.operationSubmit(),
+              (client, headers) => client.operationSubmit({ headers, payload }),
+              signal ?? new AbortController().signal,
+            ),
+          read: (payload, signal) =>
+            request(
+              snapshot.prepared,
+              "POST",
+              (urls) => urls.operationRead(),
+              (client, headers) => client.operationRead({ headers, payload }),
+              signal ?? new AbortController().signal,
+            ),
+          setup: (signal) =>
+            request(
+              snapshot.prepared,
+              "GET",
+              (urls) => urls.setupStatus(),
+              (client, headers) => client.setupStatus({ headers }),
+              signal ?? new AbortController().signal,
+            ),
+        },
+        {
+          load: () =>
+            runtime.runPromise(
+              MobileSecureStorage.pipe(Effect.flatMap((store) => store.getItem(storageKey))),
+            ),
+          save: (value) =>
+            runtime.runPromise(
+              MobileSecureStorage.pipe(Effect.flatMap((store) => store.setItem(storageKey, value))),
+            ),
+        },
+        () =>
+          runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
+      );
+      mobileOperationClients.set(connectionKey, client);
+    }
+    return client;
+  };
+  const operationRun = async (
+    snapshot: MobileWorkstreamSnapshot,
+    key: string,
+    make: (id: string) => WorkstreamOperationRequest,
+  ) => {
+    assertCurrent(snapshot);
+    if (snapshot.stale || !canEditWorkstreams(snapshot.data))
+      throw new Error("Workstreams are read-only.");
+    const abort = new AbortController();
+    controllers.current.add(abort);
+    setOperationStatus("Saving Workstream change…");
+    try {
+      const result = await operationClient(snapshot).run(key, make, {
+        signal: abort.signal,
+        retry: true,
+      });
+      if (!abort.signal.aborted) setOperationStatus(operationMessage(result));
+      if (!operationSucceeded(result)) throw new WorkstreamOperationError(result);
+      refreshMountedWorkstreams();
+      return result;
+    } finally {
+      controllers.current.delete(abort);
+      if (!abort.signal.aborted) setOperationWatchRevision((value) => value + 1);
+    }
+  };
+  const operationRegistry = async (snapshot: MobileWorkstreamSnapshot) => {
+    const abort = new AbortController();
+    controllers.current.add(abort);
+    try {
+      const status = await operationClient(snapshot).transport.setup(abort.signal);
+      assertCurrent(snapshot);
+      return operationRegistryIdentity(status, snapshot.data.binding.ownerId);
+    } finally {
+      controllers.current.delete(abort);
+    }
+  };
+  const assignOperation: NonNullable<MobileOperationActions["assignOperation"]> = async (
+    snapshot,
+    thread,
+    destination,
+  ) => {
+    if (thread.environmentId !== snapshot.prepared.environmentId)
+      throw new Error("Connect to the thread's own environment to assign it.");
+    const client = operationClient(snapshot);
+    const previous = client.snapshot().find((entry) => entry.key === `thread:${thread.id}`);
+    const observed = previous?.result?.state === "conflict" ? previous.result.observed : null;
+    const primary = snapshot.index?.entries.get(
+      nativeWorkstreamThreadKey(thread.environmentId, thread.id),
+    )?.primary;
+    const registry = await operationRegistry(snapshot);
+    await operationRun(snapshot, `thread:${thread.id}`, (operation_id) => ({
+      contract: WORKSTREAM_OPERATIONS_CONTRACT,
+      origin: { kind: "app" },
+      kind: "set_primary",
+      operation_id,
+      thread: { environment_id: thread.environmentId, thread_id: thread.id },
+      target:
+        destination === null
+          ? { kind: "unassigned", ...registry }
+          : { kind: "workstream", ...registry, workstream_id: destination },
+      expected:
+        observed?.kind === "primary"
+          ? { kind: "primary", workstream_id: observed.workstream_id }
+          : observed?.kind === "unassigned"
+            ? { kind: "unassigned" }
+            : primary
+              ? { kind: "primary", workstream_id: primary.workstreamId }
+              : snapshot.index?.complete
+                ? { kind: "unassigned" }
+                : { kind: "any" },
+    }));
+  };
+  const createOperation: NonNullable<MobileOperationActions["createOperation"]> = async (
+    snapshot,
+    name,
+  ) => {
+    const registry = await operationRegistry(snapshot);
+    const result = await operationRun(snapshot, `create:${name.trim()}`, (operation_id) => ({
+      contract: WORKSTREAM_OPERATIONS_CONTRACT,
+      origin: { kind: "app" },
+      kind: "create_workstream",
+      operation_id,
+      registry,
+      workstream: {
+        name: name.trim(),
+        lifecycle: "planned",
+        progress: { state: "unknown" },
+        sort_order: 0,
+      },
+    }));
+    if (result.state !== "committed" || !result.result.workstream_id)
+      throw new Error("Creation has no confirmed Workstream.");
+    return result.result.workstream_id;
+  };
+
   const registryFetchers = useCallback(
     (prepared: PreparedConnection): WorkstreamAssignmentIndexFetchers => {
       const page = (cursor: string | undefined, limit: number) => ({
@@ -489,6 +661,53 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       subscription.remove();
     };
   }, [connections, request]);
+
+  const operationBindingKey = snapshots
+    .map((snapshot) =>
+      JSON.stringify([
+        snapshot.prepared.environmentId,
+        snapshot.generation,
+        snapshot.data.binding.registryId,
+        snapshot.data.binding.ownerId,
+        snapshot.data.binding.principalId,
+        supportsOperations(snapshot.prepared.environmentId),
+      ]),
+    )
+    .join("|");
+  useEffect(() => {
+    const abort = new AbortController();
+    setOperationStatus(null);
+    const seen = new Set<string>();
+    const subscriptions: (() => void)[] = [];
+    for (const snapshot of snapshotsRef.current) {
+      if (!supportsOperations(snapshot.prepared.environmentId) || snapshot.stale) continue;
+      const client = operationClient(snapshot);
+      subscriptions.push(
+        client.subscribe(() => {
+          if (abort.signal.aborted) return;
+          for (const entry of client.snapshot()) {
+            if (entry.result) setOperationStatus(operationMessage(entry.result));
+            if (entry.result && operationSucceeded(entry.result) && !seen.has(entry.operationId)) {
+              seen.add(entry.operationId);
+              refreshMountedWorkstreams();
+            }
+          }
+        }),
+      );
+      void client.watch(abort.signal).catch(() => {
+        if (!abort.signal.aborted)
+          setOperationStatus(
+            "Workstream recovery unavailable. Retry to check the retained operation.",
+          );
+      });
+    }
+    return () => {
+      abort.abort();
+      for (const unsubscribe of subscriptions) unsubscribe();
+    };
+    // A connection/binding change replaces the polling lifetime, never the retained request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operationBindingKey, request, operationWatchRevision]);
   const assertCurrent = (snapshot: MobileWorkstreamSnapshot) => {
     if (
       !current.current.some(
@@ -711,7 +930,11 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       controllers.current.delete(controller);
     });
   };
-  const api: MobileWorkstreams = {
+  const api: MobileWorkstreams & MobileOperationActions = {
+    supportsOperations,
+    operationStatus,
+    assignOperation,
+    createOperation,
     saveAppearance,
     ...projection,
     snapshots,

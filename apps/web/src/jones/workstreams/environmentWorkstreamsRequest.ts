@@ -1,3 +1,4 @@
+import type { WorkstreamOperationsTransport } from "@t3tools/client-runtime/jones/workstreams/operations";
 import {
   executeAuthenticatedEnvironmentHttpRequest,
   RemoteEnvironmentAuthorization,
@@ -139,3 +140,35 @@ export const requestEnvironmentWorkstreams: EnvironmentWorkstreamsRequest = asyn
   if (result._tag === "Failure") throw Cause.squash(result.cause);
   return result.value as A;
 };
+
+export function environmentOperationsTransport(
+  environmentId: string,
+  request: EnvironmentWorkstreamsRequest = requestEnvironmentWorkstreams,
+): WorkstreamOperationsTransport {
+  return {
+    submit: (payload, signal) =>
+      request(
+        environmentId,
+        "POST",
+        (urls) => urls.operationSubmit(),
+        (client, headers) => client.operationSubmit({ headers, payload }),
+        signal,
+      ),
+    read: (payload, signal) =>
+      request(
+        environmentId,
+        "POST",
+        (urls) => urls.operationRead(),
+        (client, headers) => client.operationRead({ headers, payload }),
+        signal,
+      ),
+    setup: (signal) =>
+      request(
+        environmentId,
+        "GET",
+        (urls) => urls.setupStatus(),
+        (client, headers) => client.setupStatus({ headers }),
+        signal,
+      ),
+  };
+}

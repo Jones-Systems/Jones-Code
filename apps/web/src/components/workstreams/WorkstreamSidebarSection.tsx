@@ -133,6 +133,18 @@ export function WorkstreamCreateForm({
         onPendingChange(true);
         setError(null);
         void (async () => {
+          if (controller.createWorkstream) {
+            const existing = data.items.find((item) => item.name === trimmedName);
+            if (existing) {
+              setError(
+                `A Workstream named ${trimmedName} already exists. Choose it from Assign Workstream.`,
+              );
+              return;
+            }
+            await controller.createWorkstream(trimmedName, { commandId: workstreamCommandId });
+            if (sessionRef.current === startedSession) onClose();
+            return;
+          }
           const id = await workstreamCommandId();
           if (sessionRef.current !== startedSession || bindingRef.current !== startedBinding)
             return;
