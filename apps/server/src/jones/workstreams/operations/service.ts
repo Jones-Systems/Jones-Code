@@ -90,6 +90,7 @@ type Entry = {
   phase: "running" | "sealing" | "finished";
   done: Deferred.Deferred<void>;
   wake: Deferred.Deferred<void>;
+  restartRequested?: boolean;
   epoch?: number;
   firstAbsent?: number;
   regAbsent: boolean;
@@ -802,7 +803,7 @@ const make = Effect.gen(function* () {
       }
       entry.phase = "sealing";
       entry.failure = failure;
-      releaseLock(entry);
+      if (!entry.restartRequested) releaseLock(entry);
       yield* update(entry, {
         state: "reconciling",
         reason:
@@ -817,33 +818,57 @@ const make = Effect.gen(function* () {
     });
   const execute = (entry: Entry) =>
     Effect.gen(function* () {
-      let failure: Failure | undefined;
-      let replans = 0;
-      while (!failure) {
-        const attempt = yield* runPass(entry).pipe(Effect.result);
-        if (attempt._tag === "Success") {
-          if (attempt.success) break;
-          continue;
-        }
-        const error = attempt.failure;
-        if (error._tag === "Replan") {
-          if (replans++ < 3) {
-            yield* ports.sleep(
-              Math.max(error.delay ?? 0, 250 + Math.floor((yield* ports.jitter) * 250)),
-            );
+      for (;;) {
+        let failure: Failure | undefined;
+        let replans = 0;
+        while (!failure) {
+          const attempt = yield* runPass(entry).pipe(Effect.result);
+          if (attempt._tag === "Success") {
+            if (attempt.success) break;
             continue;
           }
-          failure = unavailable(error.backpressure ? "backpressure" : "contention");
-        } else if (error._tag === "StopRun") failure = error.result as Failure;
-        else
-          failure = unavailable(error.reason === "not-configured" ? "not_configured" : "offline");
-      }
-      if (failure) {
-        while (!(yield* closing(entry, failure).pipe(Effect.catch(() => Effect.succeed(false))))) {
-          yield* Effect.raceFirst(ports.sleep(30_000), Deferred.await(entry.wake));
-          entry.wake = yield* Deferred.make<void>();
+          const error = attempt.failure;
+          if (error._tag === "Replan") {
+            if (replans++ < 3) {
+              yield* ports.sleep(
+                Math.max(error.delay ?? 0, 250 + Math.floor((yield* ports.jitter) * 250)),
+              );
+              continue;
+            }
+            failure = unavailable(error.backpressure ? "backpressure" : "contention");
+          } else if (error._tag === "StopRun") failure = error.result as Failure;
+          else
+            failure = unavailable(error.reason === "not-configured" ? "not_configured" : "offline");
         }
+        if (failure) {
+          let finished = yield* closing(entry, failure).pipe(
+            Effect.catch(() => Effect.succeed(false)),
+          );
+          while (!finished && !entry.restartRequested) {
+            yield* Effect.raceFirst(ports.sleep(30_000), Deferred.await(entry.wake));
+            entry.wake = yield* Deferred.make<void>();
+            if (!entry.restartRequested)
+              finished = yield* closing(entry, failure).pipe(
+                Effect.catch(() => Effect.succeed(false)),
+              );
+          }
+          if (entry.restartRequested && !settled(entry.result)) {
+            delete entry.restartRequested;
+            delete entry.failure;
+            entry.phase = "running";
+            yield* update(entry, {
+              state: "in_progress",
+              reason: null,
+              detail: null,
+              result: null,
+              poll_after_ms: 250,
+            });
+            continue;
+          }
+        }
+        break;
       }
+      delete entry.restartRequested;
       entry.phase = "finished";
       entry.finishedAt = yield* ports.now;
       releaseLock(entry);
@@ -956,7 +981,21 @@ const make = Effect.gen(function* () {
           });
           yield* execute(entry).pipe(Effect.forkIn(scope));
         }
-      } else if (entry.phase === "sealing") yield* Deferred.succeed(entry.wake, undefined);
+      } else if (entry.phase === "sealing") {
+        if (entry.request.kind === "set_primary") {
+          const key = threadKey(entry.request.thread);
+          const locked = locks.get(key);
+          if (locked && locked !== entry)
+            return yield* new OperationConflict({
+              code: "thread_operation_in_progress",
+              open_operation_id: locked.request.operation_id,
+            });
+          locks.set(key, entry);
+        }
+        // The existing executor owns restart; timer wakes remain closing-only.
+        entry.restartRequested = true;
+        yield* Deferred.succeed(entry.wake, undefined);
+      }
       return entry;
     }).pipe(Semaphore.withPermit(admission));
   const submit = (input: WorkstreamOperationSubmitRequest) =>
