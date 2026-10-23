@@ -1591,7 +1591,15 @@
     "packages/contracts/contracts/workstream-operations/v1/manifest.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
-    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned"
+    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/encoding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/http.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/live.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/loopbackFixture.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

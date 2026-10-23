@@ -98,7 +98,12 @@ const layerIsolatedServerConfig = (baseDir: string) =>
     }),
   );
 
-it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
+// Descriptor tests use isolated startup metadata, never the launching server's context.
+const isolatedNodeServices = Layer.merge(
+  NodeServices.layer,
+  Layer.succeed(HostProcess.Environment, {}),
+);
+it.layer(isolatedNodeServices)("ServerEnvironmentLive", (it) => {
   it.effect.each(["2026-10-20T21:13:43Z", undefined, "invalid"])(
     "forwards only valid embedded build time %s with the descriptor version",
     (startedAt) =>
@@ -261,6 +266,9 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
 
       expect(first.environmentId).toBe(second.environmentId);
       expect(first.orchestrationProtocolVersion).toBe(ORCHESTRATION_PROTOCOL_VERSION);
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.connectionProbe).toBe(true);
       expect(second.capabilities.attachmentUploads).toBe(true);
@@ -519,6 +527,9 @@ it.layer(NodeServices.layer)("ServerEnvironmentLive", (it) => {
         });
         expect(descriptor.capabilities.workQueueMetadata).toBe(true);
       }
+      expect(second.capabilities.workstreamOperations).toEqual({
+        contract: "workstream-operations/1.0.0",
+      });
       expect(second.capabilities.repositoryIdentity).toBe(true);
       expect(second.capabilities.worktreeDefaultBase).toBe(true);
       expect(second.capabilities.queuedToolBoundaryDelivery).toBe(true);

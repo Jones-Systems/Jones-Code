@@ -269,3 +269,45 @@ describe("planSetPrimary", () => {
       expect(() => planSetPrimary(candidate)).toThrow("Inconsistent");
   });
 });
+
+describe("INV-6-prime action preconditions", () => {
+  it("every action this request can emit is fenced by conflict and already-satisfied states", () => {
+    for (const current of [null, "alpha", "beta"] as const) {
+      for (const target of [null, "alpha", "beta"] as const) {
+        for (const expected of [
+          { kind: "any" },
+          { kind: "unassigned" },
+          { kind: "primary", workstream_id: "alpha" },
+          { kind: "primary", workstream_id: "beta" },
+        ] as const) {
+          const result = planSetPrimary({
+            ...input,
+            placements: current ? [{ ...primary, workstream_id: current }] : [],
+            request: {
+              ...input.request,
+              expected,
+              target: target
+                ? { ...input.registry, kind: "workstream", workstream_id: target }
+                : { ...input.registry, kind: "unassigned" },
+            },
+          });
+          if (result.kind === "action") continue;
+          // Enumerate Acts(r), not actions from unrelated requests. A move to its own
+          // source is never emitted; unassigned expectations cannot emit move/remove.
+          if (target !== null && (expected.kind === "any" || expected.kind === "unassigned"))
+            expect(current === null).toBe(false);
+          if (expected.kind !== "unassigned") {
+            for (const source of ["alpha", "beta"] as const) {
+              if (
+                target === source ||
+                (expected.kind === "primary" && expected.workstream_id !== source)
+              )
+                continue;
+              expect(current === source).toBe(false);
+            }
+          }
+        }
+      }
+    }
+  });
+});
