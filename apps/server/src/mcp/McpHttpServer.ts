@@ -914,10 +914,13 @@ export const layerMcpTransport = McpServer.layerHttp({
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const layerWorkstreamToolkit = toolkitRegistration(
+  WorkstreamToolkit,
+  workstreamHandlers,
+).pipe(Layer.provide(workstreamBackendLayer));
+
 export const layer = Layer.mergeAll(
-  toolkitRegistration(WorkstreamToolkit, workstreamHandlers).pipe(
-    Layer.provide(workstreamBackendLayer),
-  ),
+  layerWorkstreamToolkit,
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
     Layer.provide(UserResponseRequest.layer),
   ),

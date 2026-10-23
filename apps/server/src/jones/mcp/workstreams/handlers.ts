@@ -3,7 +3,6 @@ import * as WorkstreamOperations from "../../workstreams/operations/service.ts";
 import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
 import { OrchestratorMcpFailure, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { requireMcpCapability } from "../../../mcp/McpInvocationContext.ts";
 import { WorkstreamToolkit, WorkstreamToolsBackend } from "./tools.ts";
@@ -12,16 +11,10 @@ export const handlers = McpToolAccess.toLayer(
   WorkstreamToolkit,
   Effect.gen(function* () {
     // Capture the application-owned adapter once; request scope stays per invocation.
-    const backend = yield* Effect.serviceOption(WorkstreamToolsBackend);
+    const backend = yield* WorkstreamToolsBackend;
     const available = Effect.gen(function* () {
       yield* requireMcpCapability("orchestration");
-      if (Option.isNone(backend))
-        return yield* new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message:
-            "Workstream operations are unsupported by this server. Update the server before retrying; retain your operation ID.",
-        });
-      return backend.value;
+      return backend;
     });
     return {
       t3_workstreams_list: McpToolAccess.reads((input) =>
@@ -61,17 +54,11 @@ export const handlers = McpToolAccess.toLayer(
   }),
 );
 
-/** Provided once by McpHttpServer; WorkstreamOperations itself is app-owned and
- * shared with HTTP. Root integrates the final J-A service before qualification. */
+/** Capture the application-owned service shared with HTTP; never construct a second cache. */
 export const backendLayer = Layer.effect(
   WorkstreamToolsBackend,
   Effect.gen(function* () {
-    const operations = yield* Effect.serviceOption(WorkstreamOperations.WorkstreamOperations);
-    const unsupported = new OrchestratorMcpFailure({
-      code: "capability_denied",
-      message:
-        "Workstream operations are unsupported by this server. Update the server before retrying; retain your operation ID.",
-    });
+    const operations = yield* WorkstreamOperations.WorkstreamOperations;
     const gateway = yield* WorkstreamGateway.WorkstreamGateway;
     const unavailable = () =>
       new OrchestratorMcpFailure({
@@ -82,29 +69,20 @@ export const backendLayer = Layer.effect(
     return WorkstreamToolsBackend.of({
       list: (input) => gateway.readMetadata(input).pipe(Effect.mapError(unavailable)),
       submit: (input) =>
-        Option.isNone(operations)
-          ? Effect.fail(unsupported)
-          : operations.value.submit(input).pipe(
-              Effect.mapError((error) => {
-                if (
-                  "code" in error &&
-                  (error.code === "operation_id_conflict" ||
-                    error.code === "thread_operation_in_progress")
-                ) {
-                  return {
-                    code: error.code,
-                    ...("open_operation_id" in error && typeof error.open_operation_id === "string"
-                      ? { open_operation_id: error.open_operation_id }
-                      : {}),
-                  };
-                }
-                return unavailable();
+        operations.submit(input).pipe(
+          Effect.catchTags({
+            OperationConflict: (error) =>
+              Effect.fail({
+                code: error.code,
+                ...(error.open_operation_id === undefined
+                  ? {}
+                  : { open_operation_id: error.open_operation_id }),
               }),
-            ),
-      read: (input) =>
-        Option.isNone(operations) ? Effect.fail(unsupported) : operations.value.read(input),
-      setupStatus: () =>
-        Option.isNone(operations) ? Effect.fail(unsupported) : operations.value.setupStatus(),
+            OperationInternalError: () => Effect.fail(unavailable()),
+          }),
+        ),
+      read: (input) => operations.read(input),
+      setupStatus: () => operations.setupStatus(),
     });
   }),
 );

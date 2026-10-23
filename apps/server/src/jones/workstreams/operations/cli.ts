@@ -29,6 +29,7 @@ export class WorkstreamCliError extends Schema.TaggedError<WorkstreamCliError>()
       "offline",
       "request_failed",
       "invalid_request",
+      "foreign_thread",
       "operation_id_conflict",
       "thread_operation_in_progress",
     ]),
@@ -39,17 +40,19 @@ export class WorkstreamCliError extends Schema.TaggedError<WorkstreamCliError>()
 ) {
   override get message(): string {
     const advice =
-      this.code === "thread_operation_in_progress"
-        ? `Another operation is open for this thread: ${this.open_operation_id ?? "read status --open"}. Reconcile it before starting another.`
-        : this.code === "operation_id_conflict"
-          ? "That operation ID is already bound to a different request. Recover its original request before proceeding."
-          : this.code === "unsupported"
-            ? "This server does not support Workstream operations. Update the server."
-            : this.code === "offline"
-              ? "No running local server was found for this base directory. Start that server first."
-              : this.code === "invalid_request"
-                ? "Invalid Workstream request. Check the command help and request fields."
-                : "The server request failed; the outcome may be unknown.";
+      this.code === "foreign_thread"
+        ? "foreign_thread: use the server that owns this thread."
+        : this.code === "thread_operation_in_progress"
+          ? `Another operation is open for this thread: ${this.open_operation_id ?? "read status --open"}. Reconcile it before starting another.`
+          : this.code === "operation_id_conflict"
+            ? "That operation ID is already bound to a different request. Recover its original request before proceeding."
+            : this.code === "unsupported"
+              ? "This server does not support Workstream operations. Update the server."
+              : this.code === "offline"
+                ? "No running local server was found for this base directory. Start that server first."
+                : this.code === "invalid_request"
+                  ? "Invalid Workstream request. Check the command help and request fields."
+                  : "The server request failed; the outcome may be unknown.";
     return `${advice}${this.operation_id === undefined ? "" : ` Operation ${this.operation_id}: read status, then retry the identical request with the SAME ID. Do not assume no change occurred.`}`;
   }
 }
@@ -85,7 +88,15 @@ export const dispatchWorkstreamCli = (port: WorkstreamCliPort, input: Workstream
         ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
       });
     case "status":
-      return input.query === undefined ? port.setupStatus() : port.read(input.query);
+      return Effect.gen(function* () {
+        if (input.query === undefined) return yield* port.setupStatus();
+        if ("thread" in input.query) {
+          const status = yield* port.setupStatus();
+          if (input.query.thread.environment_id !== status.environment_id)
+            return yield* new WorkstreamCliError({ code: "foreign_thread" });
+        }
+        return yield* port.read(input.query);
+      });
     default:
       return Effect.gen(function* () {
         const payload = yield* Schema.decodeUnknownEffect(
@@ -118,7 +129,16 @@ export const formatWorkstreamCliResult = (result: unknown): string => {
         ? "Contention: start a new operation ID before trying again."
         : result.state === "conflict"
           ? "Not confirmed. Inspect the observed assignment; use a new operation ID if you change the request."
-          : "Not confirmed. Read status; retry the identical request with the same operation ID to refresh or continue it.";
+          : result.state === "in_progress" ||
+              result.state === "reconciling" ||
+              (result.state === "rejected" &&
+                ["foreign_thread", "registry_mismatch", "permission_denied"].includes(
+                  result.reason,
+                )) ||
+              (result.state === "unavailable" &&
+                ["offline", "not_configured", "registration_unavailable"].includes(result.reason))
+            ? "Not confirmed. Keep the SAME operation ID and identical request; repair setup or routing if needed, then resubmit. Status does not refresh a failure."
+            : "Not confirmed. This failure is sealed. Resubmit the identical request with the same ID to refresh it, or start a new operation.";
     return `${result.state}${result.reason === null ? "" : ` (${result.reason})`}: ${result.operation_id}\n${next}\n${json}`;
   }
   if (Schema.is(Operations.WorkstreamSetupStatus)(result)) {
@@ -144,6 +164,37 @@ export const workstreamCliRequestError = (cause: unknown, operation_id?: string)
   });
 };
 
+/** The CLI and its HTTP integration tests share this exact transport adapter. */
+export const makeWorkstreamCliHttpPort = (
+  baseUrl: string,
+  headers: { readonly authorization: string },
+) =>
+  Effect.gen(function* () {
+    const client = yield* HttpApiClient.make(EnvironmentHttpApi, { baseUrl });
+    return {
+      list: (query) =>
+        client.workstreams
+          .list({ headers, payload: query })
+          .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
+      submit: (payload) =>
+        client.workstreams
+          .operationSubmit({ headers, payload })
+          .pipe(
+            Effect.mapError((cause) =>
+              workstreamCliRequestError(cause, payload.request.operation_id),
+            ),
+          ),
+      read: (payload) =>
+        client.workstreams
+          .operationRead({ headers, payload })
+          .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
+      setupStatus: () =>
+        client.workstreams
+          .setupStatus({ headers })
+          .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
+    } satisfies WorkstreamCliPort;
+  });
+
 const runLive = (flags: CliAuthLocationFlags, input: WorkstreamCliInput, json: boolean) =>
   Effect.gen(function* () {
     const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
@@ -156,32 +207,9 @@ const runLive = (flags: CliAuthLocationFlags, input: WorkstreamCliInput, json: b
         auth.issueSession({ scopes: AuthStandardClientScopes, label: "t3 workstream cli" }),
         (issued) =>
           Effect.gen(function* () {
-            const client = yield* HttpApiClient.make(EnvironmentHttpApi, {
-              baseUrl: runtime.value.origin,
+            const port = yield* makeWorkstreamCliHttpPort(runtime.value.origin, {
+              authorization: `Bearer ${issued.token}`,
             });
-            const headers = { authorization: `Bearer ${issued.token}` };
-            const port: WorkstreamCliPort = {
-              list: (query) =>
-                client.workstreams
-                  .list({ headers, payload: query })
-                  .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
-              submit: (payload) =>
-                client.workstreams
-                  .operationSubmit({ headers, payload })
-                  .pipe(
-                    Effect.mapError((cause) =>
-                      workstreamCliRequestError(cause, payload.request.operation_id),
-                    ),
-                  ),
-              read: (payload) =>
-                client.workstreams
-                  .operationRead({ headers, payload })
-                  .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
-              setupStatus: () =>
-                client.workstreams
-                  .setupStatus({ headers })
-                  .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
-            };
             const result = yield* dispatchWorkstreamCli(port, input);
             yield* Console.log(json ? JSON.stringify(result) : formatWorkstreamCliResult(result));
           }),

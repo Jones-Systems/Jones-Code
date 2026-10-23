@@ -1,4 +1,9 @@
-import { HttpClientError, HttpClientRequest, HttpClientResponse } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/http";
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Operations from "@t3tools/contracts/jones/workstreamOperations";
@@ -11,6 +16,7 @@ import corpus from "../../../../../../packages/contracts/contracts/workstream-op
 import { workstreamCommand } from "../../../cli/workstream.ts";
 import {
   dispatchWorkstreamCli,
+  makeWorkstreamCliHttpPort,
   workstreamCliRequestError,
   formatWorkstreamCliResult,
   makeWorkstreamOperationCommands,
@@ -18,6 +24,8 @@ import {
   type WorkstreamCliInput,
   type WorkstreamCliPort,
 } from "./cli.ts";
+
+import { startLoopbackControlPlane, startEnvironment } from "./loopbackFixture.ts";
 
 const request = Operations.parseWorkstreamOperationRequest({
   ...corpus.cases.find((c) => c.name === "set-primary")!.value,
@@ -151,4 +159,211 @@ it("maps old-server HTTP responses and preserves operation conflicts", () => {
   );
   expect(conflict.open_operation_id).toBe("operation-000002");
   expect(conflict.message).toContain("operation-000002");
+});
+
+it("executes parsed CLI commands through the production HTTP adapter and operation service", async () => {
+  const cp = await startLoopbackControlPlane();
+  try {
+    const environment = await startEnvironment(cp, "source-a");
+    try {
+      const results: unknown[] = [];
+      const cli = Command.make("workstream").pipe(
+        Command.withSubcommands(
+          makeWorkstreamOperationCommands((_flags, input) =>
+            Effect.gen(function* () {
+              const api = yield* makeWorkstreamCliHttpPort(environment.origin, {
+                authorization: "Bearer synthetic",
+              });
+              results.push(yield* dispatchWorkstreamCli(api, input));
+            }),
+          ),
+        ),
+      );
+      const run = (args: string[]) =>
+        Effect.runPromise(
+          Command.runWith(cli, { version: "test" })(args).pipe(
+            Effect.provide(
+              Layer.mergeAll(NodeServices.layer, TestConsole.layer, FetchHttpClient.layer),
+            ),
+          ),
+        );
+      await run(["status", "--json"]);
+      const setup = Operations.parseWorkstreamSetupStatus(results.at(-1));
+      expect(setup.registry.registry_id).toBe(cp.authority.registry_instance_id);
+      await run(["list", "--limit", "1"]);
+      const registry = {
+        registry_id: setup.registry.registry_id!,
+        owner_id: setup.registry.owner_id!,
+      };
+      const create: Operations.WorkstreamCreateRequest = {
+        contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
+        kind: "create_workstream",
+        operation_id: "cli-http-create-0001",
+        origin: { kind: "cli" },
+        registry,
+        workstream: {
+          name: "CLI HTTP",
+          lifecycle: "active",
+          progress: { state: "progressing" },
+          sort_order: 0,
+        },
+      };
+      await run(["create", "--request", JSON.stringify(create)]);
+      const created = Operations.parseWorkstreamOperationResult(results.at(-1));
+      expect(created.state).toBe("committed");
+      const writes = cp.observations.submissions;
+      await run(["create", "--request", JSON.stringify(create)]);
+      expect(results.at(-1)).toEqual(created);
+      expect(cp.observations.submissions).toBe(writes);
+      const assignment: Operations.WorkstreamSetPrimaryRequest = {
+        contract: create.contract,
+        kind: "set_primary",
+        operation_id: "cli-http-assign-0001",
+        origin: { kind: "cli" },
+        thread: { environment_id: "source-a", thread_id: "cli-thread" },
+        target: { ...registry, kind: "workstream", workstream_id: created.result!.workstream_id! },
+        expected: { kind: "unassigned" },
+      };
+      await run(["assign", "--request", JSON.stringify(assignment)]);
+      expect(Operations.parseWorkstreamOperationResult(results.at(-1)).state).toBe("committed");
+      const beforeRead = cp.observations.submissions;
+      await run(["status", "--thread", "cli-thread", "--environment", "source-a"]);
+      expect(results.at(-1)).toMatchObject({
+        assignment: { kind: "primary", workstream_id: created.result!.workstream_id },
+      });
+      await run(["status", assignment.operation_id]);
+      expect(results.at(-1)).toMatchObject({ operation: { state: "committed" } });
+      expect(cp.observations.submissions).toBe(beforeRead);
+      const move: Operations.WorkstreamSetPrimaryRequest = {
+        ...assignment,
+        operation_id: "cli-http-move-00001",
+        target: { ...registry, kind: "workstream", workstream_id: "ws-follow-on" },
+        expected: { kind: "primary", workstream_id: created.result!.workstream_id! },
+      };
+      await run(["assign", "--request", JSON.stringify(move)]);
+      expect(Operations.parseWorkstreamOperationResult(results.at(-1)).state).toBe("committed");
+      await run([
+        "unassign",
+        "--request",
+        JSON.stringify({
+          ...assignment,
+          operation_id: "cli-http-unassign-01",
+          target: { ...registry, kind: "unassigned" },
+          expected: { kind: "primary", workstream_id: "ws-follow-on" },
+        }),
+      ]);
+      expect(Operations.parseWorkstreamOperationResult(results.at(-1)).state).toBe("committed");
+      await run(["status", "--open"]);
+      expect(results.at(-1)).toEqual({ operations: [] });
+      const beforeForeign = cp.observations.submissions;
+      await expect(
+        run(["status", "--thread", "cli-thread", "--environment", "foreign"]),
+      ).rejects.toThrow("foreign_thread");
+      expect(cp.observations.submissions).toBe(beforeForeign);
+    } finally {
+      await environment.close();
+    }
+  } finally {
+    await cp.close();
+  }
+});
+
+it("preserves typed HTTP conflicts and CONFIG request identity on resubmit", async () => {
+  const cp = await startLoopbackControlPlane();
+  try {
+    const environment = await startEnvironment(cp, "source-a");
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const api = yield* makeWorkstreamCliHttpPort(environment.origin, {
+            authorization: "Bearer synthetic",
+          });
+          const setup = yield* api.setupStatus();
+          const create: Operations.WorkstreamCreateRequest = {
+            contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
+            kind: "create_workstream",
+            operation_id: "cli-http-conflict-01",
+            origin: { kind: "cli" },
+            registry: {
+              registry_id: setup.registry.registry_id!,
+              owner_id: setup.registry.owner_id!,
+            },
+            workstream: {
+              name: "CLI conflict",
+              lifecycle: "active",
+              progress: { state: "progressing" },
+              sort_order: 0,
+            },
+          };
+          expect((yield* api.submit({ request: create, wait_ms: 3000 })).state).toBe("committed");
+          const conflict = yield* api
+            .submit({
+              request: { ...create, workstream: { ...create.workstream, name: "Changed" } },
+              wait_ms: 0,
+            })
+            .pipe(Effect.flip);
+          expect(conflict.code).toBe("operation_id_conflict");
+          expect(conflict.operation_id).toBe(create.operation_id);
+          const foreign: Operations.WorkstreamSetPrimaryRequest = {
+            contract: create.contract,
+            kind: "set_primary",
+            operation_id: "cli-http-foreign-01",
+            origin: { kind: "cli" },
+            thread: { environment_id: "foreign", thread_id: "cli-thread" },
+            target: { ...create.registry, kind: "unassigned" },
+            expected: { kind: "any" },
+          };
+          const writes = cp.observations.submissions;
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const result = yield* dispatchWorkstreamCli(api, {
+              command: "unassign",
+              request: foreign,
+              wait_ms: 3000,
+            });
+            expect(result).toMatchObject({
+              state: "rejected",
+              reason: "foreign_thread",
+              operation_id: foreign.operation_id,
+            });
+            expect(formatWorkstreamCliResult(result)).toContain("SAME operation ID");
+          }
+          expect(cp.observations.submissions).toBe(writes);
+        }).pipe(Effect.provide(FetchHttpClient.layer)),
+      );
+    } finally {
+      await environment.close();
+    }
+  } finally {
+    await cp.close();
+  }
+});
+
+it("requires the same ID for every CONFIG and open result, and a new ID after contention", () => {
+  for (const [state, reason] of [
+    ["in_progress", null],
+    ["reconciling", "membership_effect_unknown"],
+    ["rejected", "foreign_thread"],
+    ["rejected", "registry_mismatch"],
+    ["rejected", "permission_denied"],
+    ["unavailable", "offline"],
+    ["unavailable", "not_configured"],
+    ["unavailable", "registration_unavailable"],
+  ] as const) {
+    const value = Operations.parseWorkstreamOperationResult({
+      ...result,
+      state,
+      reason,
+      detail:
+        reason === "registration_unavailable" ? { availability: "authority_unavailable" } : null,
+      poll_after_ms: state === "in_progress" || state === "reconciling" ? 30000 : null,
+    });
+    expect(formatWorkstreamCliResult(value)).toContain("SAME operation ID");
+  }
+  const contention = Operations.parseWorkstreamOperationResult({
+    ...result,
+    state: "unavailable",
+    reason: "contention",
+    poll_after_ms: null,
+  });
+  expect(formatWorkstreamCliResult(contention)).toContain("start a new operation ID");
 });

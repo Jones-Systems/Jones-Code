@@ -1604,7 +1604,8 @@
     "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2135,6 +2136,14 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/mcp/workstreams/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
     }
   ]
 }

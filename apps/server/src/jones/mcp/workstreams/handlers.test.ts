@@ -182,18 +182,6 @@ it.effect("requires orchestration capability for setup reads", () =>
   ),
 );
 
-it.effect("reports unsupported without an operation adapter", () =>
-  Effect.gen(function* () {
-    const toolkit = yield* WorkstreamToolkit.pipe(
-      Effect.provide(Access.HandlersLayer.layer(handlers)),
-    );
-    const result = yield* toolkit
-      .handle("t3_workstreams_status", {})
-      .pipe(Stream.unwrap, Stream.runCollect);
-    expect(JSON.stringify(result)).toContain("unsupported");
-  }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope), Effect.provide(threads)),
-);
-
 it.effect("delegates list, create, thread read and setup to the backend", () =>
   Effect.gen(function* () {
     const calls: unknown[] = [];
@@ -203,7 +191,7 @@ it.effect("delegates list, create, thread read and setup to the backend", () =>
       operation_id: "create-operation-0001",
       origin: { kind: "agent" },
       kind: "create_workstream",
-      registry: { registry_id: "https://registry.example", owner_id: "owner-1" },
+      registry: { registry_id: setup.registry.registry_id!, owner_id: setup.registry.owner_id! },
       workstream: {
         name: "Release",
         lifecycle: "active",

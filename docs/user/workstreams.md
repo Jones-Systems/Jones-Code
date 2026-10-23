@@ -46,22 +46,25 @@ t3 workstream status --thread thread-1 --environment env-1
 t3 workstream status --open
 ```
 
-Use `--json` for machine-readable output. List results include the registry
-and owner IDs; pass the returned cursor with `list --cursor` to see more groups.
+Use `--json` for machine-readable output. Get the request registry UUID and
+owner ID from `t3 workstream status --json` (`registry.registry_id` and
+`registry.owner_id`), or from `t3_workstreams_status` for MCP. The list
+response's `binding.registryId` is a server origin, not that UUID. Pass the
+returned cursor with `list --cursor` to see more groups.
 The `create`, `assign` and `unassign` commands accept `--request` JSON with
 an explicit operation ID. Keep the request for retries. For example, replace
 the example identifiers with the IDs returned by your server:
 
 ```sh
-t3 workstream create --request '{"contract":"workstream-operations/1.0.0","operation_id":"create-example-0001","origin":{"kind":"cli"},"kind":"create_workstream","registry":{"registry_id":"https://registry.example","owner_id":"owner-1"},"workstream":{"name":"Release work","lifecycle":"active","progress":{"state":"unknown"},"sort_order":0}}'
-t3 workstream assign --request '{"contract":"workstream-operations/1.0.0","operation_id":"assign-example-0001","origin":{"kind":"cli"},"kind":"set_primary","thread":{"environment_id":"env-1","thread_id":"thread-1"},"target":{"kind":"workstream","registry_id":"https://registry.example","owner_id":"owner-1","workstream_id":"ws-1"},"expected":{"kind":"unassigned"}}'
+t3 workstream create --request '{"contract":"workstream-operations/1.0.0","operation_id":"create-example-0001","origin":{"kind":"cli"},"kind":"create_workstream","registry":{"registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"},"workstream":{"name":"Release work","lifecycle":"active","progress":{"state":"unknown"},"sort_order":0}}'
+t3 workstream assign --request '{"contract":"workstream-operations/1.0.0","operation_id":"assign-example-0001","origin":{"kind":"cli"},"kind":"set_primary","thread":{"environment_id":"env-1","thread_id":"thread-1"},"target":{"kind":"workstream","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1","workstream_id":"ws-1"},"expected":{"kind":"unassigned"}}'
 t3 workstream status assign-example-0001
 ```
 
 To move an assigned thread, set `expected` to
 `{"kind":"primary","workstream_id":"current-group-id"}` and target the new
 group. To remove primary membership, use `unassign` with a `set_primary`
-request whose target is `{"kind":"unassigned","registry_id":"https://registry.example","owner_id":"owner-1"}`.
+request whose target is `{"kind":"unassigned","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"}`.
 Use a separate operation ID for each new action. `expected: {"kind":"any"}`
 explicitly permits changing whichever primary assignment is current.
 MCP mutation requests use the same fields with `origin.kind` set to `agent`.

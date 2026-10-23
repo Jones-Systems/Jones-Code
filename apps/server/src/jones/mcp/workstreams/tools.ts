@@ -13,7 +13,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 
 /** Production adapter must delegate to the same operation service used by HTTP.
  * It must preserve conflict errors and qualify foreign thread/environment IDs locally.
- * Absence is explicit unsupported behavior, never a fallback to raw registry writes.
+ * Registration requires the application-owned service; no raw registry write fallback.
  */
 export class WorkstreamToolsBackend extends Context.Service<
   WorkstreamToolsBackend,
@@ -60,12 +60,12 @@ const failure = Schema.Union([
 ]);
 const wait_ms = Operations.WorkstreamOperationSubmitRequest.fields.wait_ms;
 const retry =
-  "Supply an explicit operation_id and retain identical request fields on retry. Pending/reconciling and configuration failures require the SAME ID. Read status after a lost reply; never blindly mint a new ID. After contention, start a new ID. Only committed/already_satisfied confirms success.";
+  "Supply an explicit operation_id and retain identical request fields on retry. in_progress/reconciling and CONFIG failures (foreign_thread, registry_mismatch, permission_denied, offline, not_configured, registration_unavailable) require the SAME ID and unchanged request. Start a new ID only after a settled or sealed result. Read status after a lost reply; never blindly mint a new ID. After contention, start a new ID. Only committed/already_satisfied confirms success.";
 
 export const WorkstreamToolkit = Toolkit.make(
   Tool.make("t3_workstreams_list", {
     description:
-      "List this environment's Workstreams and registry binding. Follow the returned cursor for more. Choose an existing workstream, or create one, then set the thread's primary assignment. No cross-environment proxy.",
+      "List this environment's Workstreams. Obtain request registry_id and owner_id from t3_workstreams_status registry.registry_id and registry.owner_id; the legacy list binding.registryId is an HTTPS origin, not the operation registry UUID. Follow the returned cursor for more. Choose an existing workstream, or create one, then set the thread's primary assignment. No cross-environment proxy.",
     parameters: closed(
       Schema.Struct({
         limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
@@ -82,7 +82,7 @@ export const WorkstreamToolkit = Toolkit.make(
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
   Tool.make("t3_workstream_create", {
-    description: `Create a Workstream in the local registry with origin.kind agent. Use the returned workstream_id in t3_thread_workstream_set; creation alone does not assign a thread. ${retry}`,
+    description: `Create a Workstream in the local registry with origin.kind agent. Obtain the signed registry UUID from t3_workstreams_status registry.registry_id, never list binding.registryId. Use the returned workstream_id in t3_thread_workstream_set; creation alone does not assign a thread. ${retry}`,
     parameters: closed(
       Schema.Struct({
         request: Operations.WorkstreamCreateRequest.check(
@@ -101,7 +101,7 @@ export const WorkstreamToolkit = Toolkit.make(
     .annotate(Tool.Idempotent, true)
     .annotate(Tool.OpenWorld, false),
   Tool.make("t3_thread_workstream_set", {
-    description: `Assign, move, or unassign a local thread. Read its assignment first and set expected to that observation (or explicitly any). Use target.kind unassigned to remove primary membership. Foreign threads are rejected locally. origin.kind must be agent. ${retry}`,
+    description: `Assign, move, or unassign a local thread. Obtain target.registry_id from t3_workstreams_status registry.registry_id, never list binding.registryId. Read its assignment first and set expected to that observation (or explicitly any). Use target.kind unassigned to remove primary membership. Foreign threads are rejected locally. origin.kind must be agent. ${retry}`,
     parameters: closed(
       Schema.Struct({
         request: Operations.WorkstreamSetPrimaryRequest.check(

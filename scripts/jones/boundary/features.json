@@ -1550,9 +1550,10 @@
       "id": "workstream-tools",
       "tests": [
         "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
-        "apps/server/src/jones/workstreams/operations/cli.test.ts"
+        "apps/server/src/jones/workstreams/operations/cli.test.ts",
+        "apps/server/src/jones/mcp/workstreams/registration.test.ts"
       ],
-      "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status delegate to the shared operation service or its authenticated typed HTTP boundary. Explicit operation IDs survive pending and unknown outcomes; synthetic handler and CLI tests cover contract forwarding and capability holds. Operation execution belongs to the server workstream-operations feature."
+      "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
     }
   ]
 }
