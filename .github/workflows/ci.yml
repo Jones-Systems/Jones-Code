@@ -5,16 +5,25 @@ on:
   push:
     branches:
       - main
-  # Manual runs compare server shard counts against a fixed weights source.
+  # Manual runs compare server and web shard counts against a fixed weights source.
   workflow_dispatch:
     inputs:
       server_shards:
-        description: Number of server test shards
+        description: Number of server test shards (1 is a measurement-only baseline)
         type: choice
         options:
+          - "1"
           - "6"
+          - "7"
           - "8"
         default: "6"
+      web_shards:
+        description: Number of complete web suite shards
+        type: choice
+        options:
+          - "1"
+          - "2"
+        default: "2"
       weights_source_run_id:
         description: CI run whose combined server shard weights to use (default newest main push)
         type: string
@@ -34,7 +43,7 @@ permissions:
 # weights and is the CI result an update candidate's source needs, and GitHub
 # replaces a still-pending push with the newest one.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}', github.ref, inputs.server_shards, inputs.weights_source_run_id)) || github.ref }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}-{3}', github.ref, inputs.server_shards, inputs.web_shards, inputs.weights_source_run_id)) || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
@@ -156,16 +165,15 @@ jobs:
       - name: Verify preload bundle output
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
-  # Server and web tests have their own jobs. Run client-runtime after the
-  # parallel package batch: its generated-snapshot test exceeded its timeout
-  # when competing with other suites on the hosted runner.
+  # Desktop, mobile, client-runtime, server and web run on separate runners.
+  # Client-runtime keeps its generated-snapshot test free of competing suites.
   test:
     name: Test
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: |
             /*
@@ -182,7 +190,7 @@ jobs:
           command -v cc
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: 24.22.0
           cache: true
@@ -204,20 +212,17 @@ jobs:
         run: node --test native/process-placement/build.test.mjs
 
       - name: Test
-        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/client-runtime' test
+        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' --filter '!@t3tools/client-runtime' --filter '!@t3tools/desktop' --filter '!@t3tools/mobile' test
 
-      - name: Test client-runtime
-        run: vp run --filter @t3tools/client-runtime test
-
-  # The web suite is the largest outside the server. In the shared Test job it
-  # started last and ran alone for about 40s after everything else finished.
-  test_web:
-    name: Test Web
+  test_desktop:
+    name: Test Desktop
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
+    env:
+      CI_TEST_COMMAND: vp run --filter @t3tools/desktop test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: |
             /*
@@ -225,7 +230,169 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version: 24.22.0
+          cache: true
+          run-install: true
+
+      - name: Install native test build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+          command -v cc
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Test
+        id: tests
+        run: ${{ env.CI_TEST_COMMAND }}
+
+      - &test_receipt
+        name: Record test receipt
+        if: always()
+        env:
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          import { createRequire } from 'node:module';
+          import { join } from 'node:path';
+          const env = process.env;
+          const git = (...args) => execFileSync('git', args, { encoding: 'utf8' }).trim();
+          const report = join(env.RUNNER_TEMP, 'test-results.json');
+          const require = createRequire(import.meta.url);
+          const vpRequire = createRequire(require.resolve('vite-plus/package.json'));
+          const receipt = {
+            schema: 'jones.ci-test-receipt/v1',
+            repository: env.GITHUB_REPOSITORY, commit: git('rev-parse', 'HEAD'),
+            eventCommit: env.GITHUB_SHA, run: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT,
+            job: env.GITHUB_JOB, command: env.CI_TEST_COMMAND, outcome: env.TEST_OUTCOME,
+            workspace: env.GITHUB_WORKSPACE,
+            node: process.version, platform: process.platform, architecture: process.arch,
+            vitePlus: require('vite-plus/package.json').version,
+            vitest: vpRequire('vitest/package.json').version,
+            webConfigBlob: git('hash-object', 'apps/web/vite.config.ts'),
+            checkedInWeightsBlob: git('hash-object', 'apps/server/src/testUtils/shardWeights.json'),
+            weightsSourceRun: env.JONES_SERVER_SHARD_WEIGHTS_SOURCE_RUN_ID ?? null,
+            weightsDigest: env.JONES_SERVER_SHARD_WEIGHTS_DIGEST ?? null,
+            reportSha256: existsSync(report) ? createHash('sha256').update(readFileSync(report)).digest('hex') : null,
+          };
+          writeFileSync(join(env.RUNNER_TEMP, 'test-receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
+          if (env.TEST_OUTCOME === 'success' && !receipt.reportSha256) {
+            throw new Error('A passing test command must produce its case report');
+          }
+          NODE
+
+      - &test_receipt_upload
+        name: Upload test cases and receipt
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-cases-${{ github.job }}-a${{ github.run_attempt }}-s${{ strategy.job-index || 0 }}
+          path: |
+            ${{ runner.temp }}/test-results.json
+            ${{ runner.temp }}/test-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - &test_receipt_cleanup
+        name: Remove uploaded test evidence from runner
+        if: always()
+        run: |
+          node --input-type=module <<'NODE'
+          import { rmSync } from 'node:fs';
+          import { join } from 'node:path';
+          for (const name of ['test-results.json', 'test-receipt.json']) {
+            rmSync(join(process.env.RUNNER_TEMP, name), { force: true });
+          }
+          NODE
+
+  test_mobile:
+    name: Test Mobile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI_TEST_COMMAND: vp run --filter @t3tools/mobile test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version: 24.22.0
+          cache: true
+          run-install: true
+
+      - name: Test
+        id: tests
+        run: ${{ env.CI_TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
+
+  test_client_runtime:
+    name: Test Client Runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CI_TEST_COMMAND: vp run --filter @t3tools/client-runtime test --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version: 24.22.0
+          cache: true
+          run-install: true
+
+      - name: Test
+        id: tests
+        run: ${{ env.CI_TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
+
+  # Each shard uses the complete package command, including unit and browser projects.
+  test_web:
+    name: Test Web ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.web_shards == '1' && '[1]' || '[1,2]') }}
+    env:
+      CI_TEST_COMMAND: vp run --filter @t3tools/web test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: 24.22.0
           cache: true
@@ -239,7 +406,7 @@ jobs:
 
       - name: Cache Chromium
         id: chromium_cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
@@ -252,7 +419,12 @@ jobs:
         run: node scripts/jones/ci/chromium-setup.mjs apps/web
 
       - name: Test
-        run: vp run --filter @t3tools/web test
+        id: tests
+        run: ${{ env.CI_TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
 
   # Picks the server shard weights once for the whole run, so every shard splits
   # the same file list the same way. It reads the combined weights that the
@@ -306,14 +478,16 @@ jobs:
     name: Test Server ${{ matrix.shard }}
     needs: server_weights
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.server_shards == '1' && 40 || 10 }}
+    env:
+      CI_TEST_COMMAND: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts --reporter=json --outputFile.json="$RUNNER_TEMP/test-results.json"
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.server_weights.outputs.shards) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: |
             /*
@@ -321,22 +495,21 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: 24.22.0
           cache: true
           run-install: true
 
       # No Electron setup here: `t3` (apps/server) has no Electron dependency
-      # and none of its tests touch the runtime. Only the non-server `test`
-      # job, which covers @t3tools/desktop, needs the download.
+      # and none of its tests touch the runtime. Desktop has a separate job.
       - name: Resolve Playwright version
         id: playwright_version
         run: echo "version=$(node scripts/jones/ci/chromium-setup.mjs apps/server version)" >> "$GITHUB_OUTPUT"
 
       - name: Cache Chromium
         id: chromium_cache
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-shell-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright_version.outputs.version }}
@@ -385,17 +558,22 @@ jobs:
           esac
 
       - name: Test
+        id: tests
         env:
           T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
           T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
           JONES_SERVER_SHARD_TIMINGS_PATH: ${{ runner.temp }}/server-timings.ndjson
-        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }} --reporter=default --reporter=github-actions --reporter=../../scripts/jones/ci-test-progress-reporter.ts
+        run: ${{ env.CI_TEST_COMMAND }}
+
+      - *test_receipt
+      - *test_receipt_upload
+      - *test_receipt_cleanup
 
       # Uploaded even when the shard fails, so partial timings stay inspectable.
       # The attempt and shard in the name keep reruns and shards apart.
       - name: Upload server shard timings
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: server-timings-a${{ github.run_attempt }}-s${{ matrix.shard }}-of-${{ strategy.job-total }}
           path: ${{ runner.temp }}/server-timings.ndjson
@@ -426,7 +604,7 @@ jobs:
 
       - name: Upload thread transfer result
         if: always() && steps.transfer_budget.outputs.present == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: thread-transfer-results
           path: ${{ runner.temp }}/thread-transfer-result.json
@@ -688,7 +866,7 @@ jobs:
         run: vp run lint:mobile
 
   # The Linux and macOS legs run the same steps (shared through a YAML anchor)
-  # and differ only in runner and expected platform. Only the macOS leg is
+  # and differ in runner, expected platform, and dependency cache use. The macOS leg is
   # gated, because it needs the scarce runner.
   native_enrollment_qualification:
     name: Native Enrollment (ubuntu-24.04, Node 26.8.2)
@@ -699,7 +877,7 @@ jobs:
       QUALIFICATION_ARCHITECTURE: x64
     steps: &native_enrollment_steps
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           sparse-checkout: |
             /*
@@ -707,14 +885,14 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install dependencies on the supported development runtime
-        uses: voidzero-dev/setup-vp@v1
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
         with:
           node-version: 24.22.0
-          cache: true
+          cache: ${{ runner.os != 'macOS' }}
           run-install: true
 
       - name: Setup the standalone CLI runtime
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 26.8.2
 
@@ -803,6 +981,9 @@ jobs:
         build,
         test,
         test_web,
+        test_desktop,
+        test_mobile,
+        test_client_runtime,
         server_weights,
         test_server,
         transfer-report,

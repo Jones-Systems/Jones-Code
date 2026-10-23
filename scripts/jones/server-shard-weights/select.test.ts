@@ -428,6 +428,12 @@ describe("formatOutputs", () => {
     expect(weightsDigest(`${outputs.weights}\n`)).toBe(outputs.digest);
   });
 
+  it.each([1, 7])("emits each of %i shards exactly once", (count) => {
+    const outputs = readOutputs(formatOutputs(runtime, parseShardCount(String(count))));
+    expect(outputs.shard_count).toBe(String(count));
+    expect(JSON.parse(outputs.shards!)).toEqual(count === 1 ? [1] : [1, 2, 3, 4, 5, 6, 7]);
+  });
+
   it("chooses another delimiter when one appears in the value", () => {
     const hostile = { ...runtime, text: `${text}JONES_WEIGHTS_clash\n` };
     const values = ["clash", "safe"];
@@ -468,13 +474,15 @@ describe("parseShardCount", () => {
   it.each([
     [undefined, 6],
     ["", 6],
+    ["1", 1],
     ["6", 6],
+    ["7", 7],
     ["8", 8],
   ])("reads %s as %i shards", (input, count) => {
     expect(parseShardCount(input)).toBe(count);
   });
 
-  it.each(["7", "10", "six"])("rejects %s", (input) => {
+  it.each(["0", "2", "10", "six"])("rejects %s", (input) => {
     expect(() => parseShardCount(input)).toThrow();
   });
 });
