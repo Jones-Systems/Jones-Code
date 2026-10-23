@@ -1591,7 +1591,12 @@
     "packages/contracts/contracts/workstream-operations/v1/manifest.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
     "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
-    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned"
+    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2114,6 +2119,14 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/handlers.ts"
     }
   ]
 }
