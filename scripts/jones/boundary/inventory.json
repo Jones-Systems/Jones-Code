@@ -1570,7 +1570,11 @@
     "apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts": "hook",
     "apps/server/src/orchestration-v2/SteeringCompletion.integration.test.ts": "accepted-shared",
     "apps/server/src/jones/remoteDelegation/BlockingQuestions.test.ts": "jones-owned",
-    "apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts": "jones-owned"
+    "apps/server/src/jones/remoteDelegation/ObservationHooks.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
