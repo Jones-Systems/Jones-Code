@@ -213,6 +213,7 @@
     "apps/desktop/src/shell/DesktopShellEnvironment.ts": "hook",
     "apps/mobile/src/components/CompactBrandTitle.tsx": "accepted-shared",
     "apps/mobile/src/components/T3Wordmark.tsx": "accepted-shared",
+    "apps/mobile/src/features/diffs/nativeReviewDiffHighlighter.test.ts": "accepted-shared",
     "apps/mobile/src/features/home/HomeScreen.tsx": "accepted-shared",
     "apps/mobile/src/features/review/shikiReviewHighlighter.test.ts": "jones-tests-in-upstream",
     "apps/mobile/src/features/settings/SettingsEnvironmentDetailRouteScreen.tsx": "hook",
@@ -1559,10 +1560,16 @@
     "scripts/jones/boundary/fragments/shell-destination.json": "jones-owned",
     "apps/web/src/components/ThreadTerminalDrawer.tsx": "hook",
     "apps/web/src/jones/shellDestination/terminalAttachment.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-stall-recovery.json": "jones-owned",
+    "apps/server/src/provider/ProviderOrchestrationAdapterInfrastructure.ts": "hook",
+    "apps/server/src/orchestration-v2/ProjectionControlReads.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
+    "scripts/setup-worktree.ts": "hook",
+    "t3.json": "accepted-shared",
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

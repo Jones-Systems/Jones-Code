@@ -19,18 +19,10 @@ import * as Schema from "effect/Schema";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as EventSink from "./EventSink.ts";
+import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
+import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
-
-const yieldToRuntime = Effect.yieldNow.pipe(
-  Effect.andThen(
-    Effect.promise(
-      () =>
-        new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        }),
-    ),
-  ),
-);
 
 export class ProviderTurnControlError extends Schema.TaggedError<ProviderTurnControlError>()(
   "ProviderTurnControlError",
@@ -86,11 +78,14 @@ export class ProviderTurnControlServiceV2 extends Context.Service<
 export const layer: Layer.Layer<
   ProviderTurnControlServiceV2,
   never,
-  ProjectionStore.ProjectionStoreV2 | ProviderSessionManager.ProviderSessionManagerV2
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | EventSink.EventSinkV2
 > = Layer.effect(
   ProviderTurnControlServiceV2,
   Effect.gen(function* () {
     const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const sink = yield* EventSink.EventSinkV2;
     const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
 
     const load = (input: {
@@ -284,34 +279,10 @@ export const layer: Layer.Layer<
             providerTurnId: loaded.providerTurn.id,
           });
 
-          for (let remaining = 1_000; remaining > 0; remaining -= 1) {
-            const { providerTurn, attempt } = yield* projections.getProviderControlContext(
-              input.threadId,
-              {
-                providerThreadId: input.providerThreadId,
-                providerTurnId: input.providerTurnId,
-                attemptId: input.interruptedAttemptId,
-              },
-            );
-            if (
-              providerTurn !== undefined &&
-              providerTurn.status !== "running" &&
-              attempt !== undefined &&
-              attempt.status !== "running"
-            ) {
-              return;
-            }
-            // Provider terminal events are projected on a detached ingestion
-            // fiber. Yield through the Node event loop instead of sleeping on
-            // Effect's clock so deterministic runtimes cannot deadlock a
-            // command that is waiting for that projection.
-            yield* yieldToRuntime;
-          }
-          return yield* new ProviderTurnControlError({
-            threadId: input.threadId,
-            operation: "restart",
-            providerTurnId: input.providerTurnId,
-            cause: `Provider turn ${input.providerTurnId} did not terminalize before restart.`,
+          yield* awaitRestartTerminal({
+            target: input,
+            projections,
+            sink,
           });
         }).pipe(
           Effect.mapError((cause) =>
@@ -426,7 +397,9 @@ export const layer: Layer.Layer<
                     threadId: input.threadId,
                     operation: "steer",
                     providerTurnId: input.providerTurnId,
-                    turnCompleted: current.providerTurn?.status === "completed",
+                    turnCompleted:
+                      findSteerFailure(cause) === undefined &&
+                      current.providerTurn?.status === "completed",
                     cause,
                   });
                 }),
