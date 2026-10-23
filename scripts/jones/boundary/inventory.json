@@ -1565,7 +1565,10 @@
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
+    "scripts/setup-worktree.ts": "hook",
+    "t3.json": "accepted-shared",
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
