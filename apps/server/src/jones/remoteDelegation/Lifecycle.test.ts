@@ -31,11 +31,12 @@ const makeFixture = Effect.gen(function* () {
   let held = false;
   let denied = false;
   let unreachable = false;
+  let observationSupported = true;
   let cancelAfterDispatch = false;
   let withdrawals = 0;
   const withdrew = yield* Deferred.make<void>();
   const keys: Array<string | undefined> = [];
-  const notices = new Set<string>();
+  const notices = new Map<string, string>();
   const namespaces: Array<string> = [];
   const result = {
     threadId: ThreadId.make("remote:child"),
@@ -67,7 +68,7 @@ const makeFixture = Effect.gen(function* () {
             if (task !== undefined && task.result === null)
               task = { ...task, status: "waiting", progress: command.progress };
           } else if (command.type === "message.dispatch") {
-            notices.add(command.commandId);
+            notices.set(command.commandId, command.text);
           } else if (command.type === "delegated_task.remote.bind") {
             if (task === undefined) return yield* Effect.die("No reservation");
             task = {
@@ -98,6 +99,12 @@ const makeFixture = Effect.gen(function* () {
     Layer.mock(Forwarding.PeerForwarding)({
       call: (scope, tool, _environmentId, input) =>
         Effect.gen(function* () {
+          if (tool.name === "orchestrator_capabilities")
+            return {
+              features: observationSupported
+                ? { remoteTaskObservationVersion: "t3.remote-task-observation/v1" }
+                : {},
+            } as never;
           if (tool.name === "t3_remote_admission_cancel") {
             withdrawals++;
             yield* Deferred.succeed(withdrew, undefined);
@@ -163,6 +170,10 @@ const makeFixture = Effect.gen(function* () {
     },
     getTask: () => task!,
     getCounts: () => ({ launches, remoteExecutions, withdrawals, notices: notices.size }),
+    getNotices: () => [...notices.entries()],
+    observationSupported: (value: boolean) => {
+      observationSupported = value;
+    },
     held: (value: boolean) => {
       held = value;
     },
@@ -174,6 +185,81 @@ const makeFixture = Effect.gen(function* () {
     },
   };
 });
+
+it.effect("CSR-F1 refuses an unsupported peer before any new remote launch", () =>
+  Effect.gen(function* () {
+    const fixture = yield* makeFixture;
+    fixture.observationSupported(false);
+    const active = yield* fixture.create();
+    yield* active.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+    assert.equal(fixture.getCounts().launches, 0);
+    assert.equal(fixture.getCounts().remoteExecutions, 0);
+    assert.equal(fixture.getTask().status, "failed");
+    assert.match(fixture.getTask().result ?? "", /observation.*unsupported/i);
+    const intent = yield* fixture.store.get(commandId);
+    assert.equal(intent?.launchStarted, false);
+    assert.equal(intent?.status, "denied");
+    yield* active.close;
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["lost receipt", "held admission"] as const)(
+  "CSR-F1 preserves an unknown launch and its %s while observation support is unavailable",
+  (state) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture;
+      const sql = yield* SqlClient.SqlClient;
+      if (state === "lost receipt")
+        yield* sql`CREATE TRIGGER simulated_crash BEFORE UPDATE OF launched_json ON jones_remote_delegation_intents BEGIN SELECT RAISE(ABORT, 'synthetic crash after remote launch'); END`;
+      else fixture.held(true);
+      const first = yield* fixture.create();
+      yield* first.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      yield* first.close;
+      if (state === "lost receipt") yield* sql`DROP TRIGGER simulated_crash`;
+      const original = yield* fixture.store.get(commandId);
+      assert.equal(original?.launchStarted, true);
+      assert.equal(original?.launched, null);
+      const launches = fixture.getCounts().launches;
+      fixture.observationSupported(false);
+
+      const recovering = yield* fixture.create();
+      yield* recovering.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      assert.equal(fixture.getCounts().launches, launches);
+      assert.equal(fixture.getTask().result, null);
+      const pending = yield* fixture.store.get(commandId);
+      assert.equal(pending?.status, "pending");
+      assert.equal(pending?.launchStarted, true);
+      assert.equal(pending?.launched, null);
+      assert.deepEqual(pending?.admission, original?.admission);
+      if (state === "held admission")
+        assert.equal(fixture.getTask().progress, "Awaiting owner approval in Destination.");
+      const holds = fixture
+        .getNotices()
+        .filter(([, text]) => /observation/i.test(text) && /reconciliation/i.test(text));
+      assert.equal(holds.length, 1);
+      yield* recovering.lifecycle.submit(commandId, { task: "Inspect fixture" }, envelope);
+      assert.equal(fixture.getCounts().launches, launches);
+      assert.deepEqual(
+        fixture
+          .getNotices()
+          .filter(([, text]) => /observation/i.test(text) && /reconciliation/i.test(text)),
+        holds,
+      );
+      yield* recovering.close;
+
+      fixture.observationSupported(true);
+      fixture.held(false);
+      const resumed = yield* fixture.create();
+      yield* resumed.lifecycle.start;
+      yield* Deferred.await(fixture.bound);
+      assert.equal(fixture.getCounts().remoteExecutions, 1);
+      assert.deepEqual(new Set(fixture.keys), new Set([envelope.launch.clientRequestId]));
+      assert.deepEqual(new Set(fixture.namespaces), new Set([envelope.scope.requestNamespace]));
+      assert.equal(fixture.getTask().id, original?.taskId);
+      assert.equal(fixture.getTask().remoteChild?.runId, "remote:run");
+      yield* resumed.close;
+    }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "recovers a launch acknowledgement lost before local persistence after restart using the original key",
