@@ -1597,6 +1597,11 @@
       "id": "vcs-cache-efficiency",
       "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
       "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
+    },
+    {
+      "id": "timeline-payload-batching",
+      "tests": ["apps/server/src/jones/orchestration/threadReferenceTail.test.ts"],
+      "scope": "Batch selected canonical timeline payloads into one query while retaining history wire projection, page ordering, synthetic rows and missing/decode errors. One private helper stays beside its shared SQL types and transaction callers; Jones tests cover query counts and existing tail/fork behavior."
     }
   ]
 }
