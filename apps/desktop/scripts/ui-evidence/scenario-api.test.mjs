@@ -306,3 +306,51 @@ NodeTest.test(
     NodeAssert.equal(cleared, "synthetic-timer");
   },
 );
+
+NodeTest.test("synthetic registration fixes executable/account and uses create-only settings RPC", async () => {
+  for (const [instanceId, letter] of [["native-fixture-a", "A"], ["native-fixture-b", "B"]]) {
+    const fixture = backendFixture();
+    await requestLocalBackend({ endpoint, method: "registerSyntheticProvider",
+      payload: { instanceId } }, fixture.dependencies);
+    const request = fixture.sockets[0].messages[0];
+    NodeAssert.equal(request.tag, "server.updateSettings");
+    NodeAssert.deepEqual(request.payload, {
+      patch: {}, providerInstanceMutation: { operation: "create", instanceId,
+        instance: { driver: "codex", displayName: "Synthetic " + letter, enabled: true,
+          config: { binaryPath: "/scratch/home/native-self-config/codex-" + letter,
+            homePath: "/scratch/home/native-self-config/account" } } },
+    });
+    NodeAssert.equal(fixture.sockets[0].closed, true);
+  }
+});
+NodeTest.test("fixture thread readback uses authenticated V2 HTTP within its namespace", async () => {
+  const fixture = backendFixture();
+  await requestLocalBackend({ endpoint, method: "fixtureThread",
+    payload: { threadId: "native-self-config-control" } }, fixture.dependencies);
+  NodeAssert.equal(fixture.calls[0].url,
+    endpoint.httpBaseUrl + "/api/orchestration/threads/native-self-config-control");
+  NodeAssert.equal(fixture.calls[0].options.headers["x-t3-orchestration-protocol"], "2");
+  NodeAssert.equal(fixture.calls[0].options.credentials, "omit");
+});
+NodeTest.test("native hooks reject arbitrary providers, paths, methods and thread reads before authentication", async () => {
+  const fixture = backendFixture();
+  fixture.dependencies.desktopBridge.getLocalEnvironmentBearerToken = () => {
+    throw new Error("authentication reached");
+  };
+  for (const [method, payload] of [
+    ["registerSyntheticProvider", { instanceId: "codex" }],
+    ["registerSyntheticProvider", { instanceId: "native-fixture-a", binaryPath: "/usr/bin/codex" }],
+    ["registerSyntheticProvider", { instanceId: "native-fixture-a", patch: {} }],
+    ["fixtureThread", { threadId: "live-thread" }],
+    ["fixtureThread", { threadId: "native-self-config-../escape" }],
+    ["fixtureThread", { threadId: "native-self-config-valid", arbitrary: true }],
+    ["arbitrary", {}],
+    ["dispatch", { type: "message.dispatch" }],
+    ["dispatch", { type: "thread.model-selection.update" }],
+  ])
+    await NodeAssert.rejects(
+      requestLocalBackend({ endpoint, method, payload }, fixture.dependencies),
+      (error) => !error.message.includes("authentication reached"),
+    );
+  NodeAssert.equal(fixture.calls.length, 0);
+});

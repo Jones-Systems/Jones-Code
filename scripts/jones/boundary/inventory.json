@@ -7,6 +7,11 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "scripts/jones/boundary/fragments/native-self-configuration-harness.json": "jones-owned",
+    ".agents/skills/capture-ui-evidence/references/native-self-configuration.md": "policy",
+    "apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/thread-self-configure-support.mjs": "jones-owned",
+    "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs": "jones-owned",
     "scripts/mobile-showcase.ts": "hook",
     "scripts/jones/mobile/showcase-metro.ts": "jones-owned",
     "scripts/jones/mobile/showcase-metro.node-test.mjs": "jones-owned",

@@ -2,6 +2,17 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-native-self-configuration-harness",
+      "tests": [
+        "apps/desktop/scripts/ui-evidence/scenario-api.test.mjs",
+        "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 apps/desktop/scripts/ui-evidence/scenario-api.test.mjs apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-workstreams-sidebar-assignment",
       "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "commands": [
