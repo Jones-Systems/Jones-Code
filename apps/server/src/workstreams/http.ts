@@ -1,3 +1,8 @@
+import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
+import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
+import * as WorkstreamOperationsLive from "../jones/workstreams/operations/live.ts";
+import { Activation } from "../jones/workstreams/operations/ports.ts";
+import * as Option from "effect/Option";
 import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
 import {
   AuthOrchestrationOperateScope,
@@ -88,7 +93,9 @@ export const workstreamResponseHeadersLayer = HttpRouter.middleware(
 
 class WorkstreamControlPlane extends Context.Service<
   WorkstreamControlPlane,
-  ReturnType<typeof makeControlPlaneWorkstreamTransport>
+  ReturnType<typeof makeControlPlaneWorkstreamTransport> & {
+    readonly registryInstanceId: string | null;
+  }
 >()("t3/workstreams/http/WorkstreamControlPlane") {}
 
 // Both consumers provide this same layer identity, so one server layer graph owns one snapshot.
@@ -96,9 +103,14 @@ const workstreamControlPlaneLayer = Layer.effect(
   WorkstreamControlPlane,
   Effect.gen(function* () {
     const { baseDir } = yield* ServerConfig;
-    return makeControlPlaneWorkstreamTransport(
-      yield* Effect.sync(() => resolveWorkstreamActivation(baseDir)),
-    );
+    const activation = yield* Effect.sync(() => resolveWorkstreamActivation(baseDir));
+    const configured = makeControlPlaneWorkstreamTransport(activation);
+    // Operations use the registry instance ID, while the legacy gateway binding uses its origin.
+    const registryInstanceId =
+      activation.state === "enabled" && activation.value.registryBinding !== undefined
+        ? decodeRegistryBinding(activation.value.registryBinding).registry_instance_id
+        : null;
+    return { ...configured, registryInstanceId };
   }),
 );
 
@@ -140,6 +152,38 @@ export const workstreamRegistrationContextLayerLive = Layer.effect(
   }),
 ).pipe(
   Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(workstreamControlPlaneLayer),
+);
+
+export const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      Activation,
+      Effect.gen(function* () {
+        const configured = yield* WorkstreamControlPlane;
+        // Reuse startup qualification. Do not re-open activation files or expose values here.
+        return Activation.of({
+          registryId: configured.registryInstanceId,
+          status: {
+            state: configured.activationState,
+            missing_keys:
+              configured.activationState === "disabled"
+                ? [
+                    "T3_WORKSTREAM_CONTROL_PLANE_URL",
+                    "T3_WORKSTREAM_OWNER_ID",
+                    "T3_WORKSTREAM_PRINCIPAL_ID",
+                    "T3_WORKSTREAM_KEY_ID",
+                    "T3_WORKSTREAM_SIGNING_SECRET",
+                    "T3_WORKSTREAM_AUTHORIZATION_REVISION",
+                    "T3_WORKSTREAM_REGISTRY_BINDING",
+                    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION",
+                  ]
+                : [],
+          },
+        });
+      }),
+    ),
+  ),
   Layer.provide(workstreamControlPlaneLayer),
 );
 
@@ -190,12 +234,56 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
   Effect.fnUntraced(function* (handlers) {
     const gateway = yield* WorkstreamGateway;
     const registrationContext = yield* WorkstreamsRegistrationContext;
+    // Legacy isolated consumers may provide only the original gateway. Production always
+    // provides the operations layer; absent capability fails closed on the new routes.
+    const operationService = yield* Effect.serviceOption(WorkstreamOperations.WorkstreamOperations);
+    const operations = <A, E>(
+      run: (service: WorkstreamOperations.WorkstreamOperations["Service"]) => Effect.Effect<A, E>,
+    ): Effect.Effect<A, E | EnvironmentInternalError> =>
+      Option.isNone(operationService)
+        ? failEnvironmentInternal("internal_error", {
+            operation: "workstreamOperations",
+            reason: "service_unavailable",
+          })
+        : run(operationService.value);
     const read = (name: string) =>
       Effect.gen(function* () {
         yield* annotateEnvironmentRequest(name);
         yield* requireEnvironmentScope(AuthOrchestrationReadScope);
       });
     return handlers
+      .handle("operationSubmit", (args) =>
+        Effect.gen(function* () {
+          yield* annotateEnvironmentRequest(args.endpoint.name);
+          yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+          return yield* operations((service) => service.submit(args.payload)).pipe(
+            Effect.catchTags({
+              OperationConflict: (error) =>
+                Effect.fail({
+                  code: error.code,
+                  ...(error.open_operation_id === undefined
+                    ? {}
+                    : { open_operation_id: error.open_operation_id }),
+                }),
+              OperationInternalError: () =>
+                failEnvironmentInternal("internal_error", {
+                  operation: "workstreamOperations",
+                  reason: "internal_error",
+                }),
+            }),
+          );
+        }),
+      )
+      .handle("operationRead", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(operations((service) => service.read(args.payload))),
+        ),
+      )
+      .handle("setupStatus", (args) =>
+        read(args.endpoint.name).pipe(
+          Effect.andThen(operations((service) => service.setupStatus())),
+        ),
+      )
       .handle("registrationContext", createRegistrationContextHandler(registrationContext))
       .handle("appearanceRead", (args) =>
         read(args.endpoint.name).pipe(
