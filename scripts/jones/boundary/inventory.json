@@ -1617,7 +1617,12 @@
     "packages/provider-testing/src/replayWorkspace.test.ts": "jones-owned",
     "apps/server/src/vcs/VcsStatusBroadcaster.ts": "accepted-shared",
     "apps/server/src/vcs/VcsStatusBroadcaster.test.ts": "jones-tests-in-upstream",
-    "scripts/jones/boundary/fragments/vcs-cache-efficiency.json": "jones-owned"
+    "scripts/jones/boundary/fragments/vcs-cache-efficiency.json": "jones-owned",
+    "apps/web/src/components/BranchToolbar.panel.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbar.tsx": "accepted-shared",
+    "apps/web/src/components/chat/ThreadRelationshipsControl.agents.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/server/src/jones/orchestration/threadReferenceTail.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/timeline-payload-batching.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
