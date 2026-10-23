@@ -1,9 +1,9 @@
-import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
-import { test } from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeVM from "node:vm";
+import * as NodeTest from "node:test";
 import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import { jonesPairedStateSource } from "../../../apps/desktop/src/jones/updates/jonesPairedStateSource.ts";
 import {
@@ -17,7 +17,7 @@ import {
 
 let helper = jonesNativeHelperSource;
 if (process.env.JONES_SIGNING_TEST_REVISION) {
-  const source = execFileSync(
+  const source = NodeChildProcess.execFileSync(
     "git",
     [
       "show",
@@ -31,7 +31,7 @@ if (process.env.JONES_SIGNING_TEST_REVISION) {
     .replace(/\$\{jonesPairedStateSource\.(\w+)\}/g, (_, key) => jonesPairedStateSource[key]);
 }
 const definitions = helper.split("\nparser = argparse.ArgumentParser()")[0];
-console.log(`native helper SHA256 ${createHash("sha256").update(helper).digest("hex")}`);
+console.log(`native helper SHA256 ${NodeCrypto.createHash("sha256").update(helper).digest("hex")}`);
 for (const fault of [
   "valid",
   "tampered",
@@ -42,8 +42,8 @@ for (const fault of [
   "rollback",
   "rollback-tampered",
 ]) {
-  test(`native transaction refuses ${fault} before rename`, () => {
-    const result = spawnSync(
+  NodeTest.test(`native transaction refuses ${fault} before rename`, () => {
+    const result = NodeChildProcess.spawnSync(
       "python3",
       [
         "-c",
@@ -91,44 +91,44 @@ with tempfile.TemporaryDirectory(prefix='jones-signing-oracle-') as temporary:
       ],
       { encoding: "utf8", timeout: 10_000 },
     );
-    assert.equal(result.status, 0, result.stderr);
+    NodeAssert.equal(result.status, 0, result.stderr);
   });
 }
-test("production identity is explicit and native browser passkeys remain optional", () => {
+NodeTest.test("production identity is explicit and native browser passkeys remain optional", () => {
   const baseline = {
     JONES_MACOS_RELEASE_MODE: "production",
     JONES_MACOS_PRODUCTION_ID: "com.jonessystems.jonescode",
     T3CODE_APPLE_TEAM_ID: "2CUPSQS986",
     CSC_KEYCHAIN: "/synthetic/keychain",
   };
-  assert.equal(desktopAppId({}, "com.t3tools.t3code"), "com.t3tools.t3code");
-  assert.equal(nativePasskeysEnabled(baseline), false);
+  NodeAssert.equal(desktopAppId({}, "com.t3tools.t3code"), "com.t3tools.t3code");
+  NodeAssert.equal(nativePasskeysEnabled(baseline), false);
   requireProductionBuild(baseline, { platform: "mac", signed: true });
-  assert.throws(() => requireProductionBuild(baseline, { platform: "mac", signed: false }));
-  assert.throws(() =>
+  NodeAssert.throws(() => requireProductionBuild(baseline, { platform: "mac", signed: false }));
+  NodeAssert.throws(() =>
     nativePasskeysEnabled({ ...baseline, T3CODE_MACOS_PROVISIONING_PROFILE: "/profile" }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     nativePasskeysEnabled({ ...baseline, JONES_MACOS_NATIVE_PASSKEYS: "enabled" }),
   );
-  assert.equal(
+  NodeAssert.equal(
     componentIdentifier("/a/Jones.app", "/a/Jones.app/Contents/MacOS/Jones"),
     "com.jonessystems.jonescode",
   );
 });
 
-test("production build passes literal requirement source to codesign", () => {
-  const source = readFileSync(new URL("./sign.ts", import.meta.url), "utf8");
+NodeTest.test("production build passes literal requirement source to codesign", () => {
+  const source = NodeFS.readFileSync(new URL("./sign.ts", import.meta.url), "utf8");
   const call = source.match(/await run\("\/usr\/bin\/codesign", (\[[\s\S]*?\])\);/);
-  assert.ok(call, "production codesign verification call is present");
-  const args = runInNewContext(call[1], {
+  NodeAssert.ok(call, "production codesign verification call is present");
+  const args = NodeVM.runInNewContext(call[1], {
     signingRequirement,
     JONES_MACOS_APP_ID,
     options: { app: "/synthetic/Jones.app" },
   });
-  assert.ok(
+  NodeAssert.ok(
     args[args.indexOf("-R") + 1].startsWith("="),
     "codesign -R treats unprefixed input as a file",
   );
-  assert.equal(args.at(-1), "/synthetic/Jones.app");
+  NodeAssert.equal(args.at(-1), "/synthetic/Jones.app");
 });

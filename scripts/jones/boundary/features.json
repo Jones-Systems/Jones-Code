@@ -17,6 +17,7 @@
     {
       "id": "macos-signing",
       "tests": [
+        "scripts/jones/signing/cli.node-test.mjs",
         "packages/shared/src/jones/jonesActions.test.ts",
         "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
         "scripts/jones/signing/admission.node-test.mjs",
@@ -29,7 +30,7 @@
         "apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts",
         "scripts/build-desktop-artifact.test.ts"
       ],
-      "scope": "Explicit production Developer ID identity, component signing, protected default-branch workflow and credential lifecycle; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+      "scope": "Explicit production Developer ID identities for desktop and CLI, component signing, protected default-branch workflow and credential lifecycle. CLI inventories all staged Mach-O files, preserves entitlements, requires full-distribution notarization acceptance and verifies unchanged payload bytes through tar packaging; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. The production ID is owner-approved; the preview default remains unchanged and bootstrap activation remains held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
     },
     {
       "id": "workstreams-sidebar-assignment",

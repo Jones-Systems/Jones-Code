@@ -35,15 +35,46 @@ Security.framework. It never passes a real password to `security -P`, `-p` or
 its directory is private and its search-list preimage is restored in cleanup.
 The private notary key is a temporary 0600 file. Public key/issuer identifiers
 and that file's path are arguments to `notarytool`; private bytes are not.
-Only DMG, checksum and public provenance are uploaded. Interrupted hosted jobs
-rely on runner disposal as the final cleanup boundary; do not reuse a runner
-with an interrupted credential operation.
+Only the DMG or CLI tarball, checksum and public provenance are uploaded.
+Interrupted hosted jobs rely on runner disposal as the final cleanup boundary;
+do not reuse a runner with an interrupted credential operation.
 
 Signing uses hardened runtime, secure timestamps and distinct stable component
 identifiers. The app is notarized and stapled before packaging. Missing signing
 or notary prerequisites fail production without an ad-hoc fallback. Developer ID
 renewal within the same Team preserves the identifier/team requirement; a Team
 change needs an explicit migration and fresh consent.
+
+## Production CLI archives
+
+The same protected job has fixed `desktop` and `cli` targets. Its CLI artifact is
+`jones-code-cli-mac-production-arm64-<run>-<attempt>--<version>`. The desktop
+artifact name and updater mapping remain unchanged; the credential-free
+`artifact-cli-mac.yml` workflow retains its existing development behavior.
+
+The CLI executable uses `com.jonessystems.jonescode.cli`. Every shipped Mach-O
+file is inventoried from its header, including helpers without familiar suffixes.
+Nested files get distinct stable identifiers beneath the CLI namespace and are
+signed before `t3`. The existing CLI entitlement file is retained, and nested
+code preserves its entitlements. OpenAI-owned native binaries and symlinked
+payloads are refused rather than brought into Jones signing scope.
+
+Production requires the expected Developer ID identity and team, job keychain,
+and complete notary configuration. Each component's requirement, identifier,
+team, hardened runtime and timestamp are checked. A ZIP of the complete staged
+distribution, including native dependencies and web assets, is submitted and must
+receive `Accepted`. The shipped archive remains `tar.gz`; payload hashes reject
+changes between submission and packaging. ZIPs and bare CLI executables are not
+stapled. Their notarization ticket is available through Apple's online lookup.
+
+The temporary ZIP is removed on success or command failure. The fixed target
+shares the job keychain/private-file cleanup described above; runner disposal
+remains the final boundary after abrupt job cancellation. Hosted source checks
+exercise a credential-free CLI archive and smoke test, while synthetic tests
+exercise production commands and failure cleanup. These checks do not prove a
+real Developer ID signature or notarization. Production CLI updater selection,
+Mac Mini/launchd installation, and consent continuity require their own
+qualification and are outside this source slice.
 
 ## Optional native browser passkeys
 
@@ -75,7 +106,7 @@ is between compatible signed generations; legacy ad-hoc recovery is exceptional
 owner-directed bootstrap recovery. Existing provenance, writer exclusion and
 paired-state recovery remain required.
 
-The CLI and ChatGPT helper policy are outside this desktop slice. Source tests
+ChatGPT helper policy remains outside this slice. Source tests
 with stubbed signing commands do not establish cryptographic acceptance, actual
 notarization, app launch, or consent continuity. Qualify those on the first
 trusted signed artifact before installation.

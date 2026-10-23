@@ -1,18 +1,11 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Build-only signing adapter; native credentials never enter application services.
-import { execFileSync } from "node:child_process";
-import {
-  appendFileSync,
-  chmodSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import { JONES_MACOS_CLI_ID } from "./cli.ts";
 import {
   JONES_MACOS_APP_ID,
   JONES_MACOS_IDENTITY,
@@ -65,7 +58,7 @@ export function requireTrustedSigningContext(env: NodeJS.ProcessEnv): void {
 
 function run(command: string, args: string[], env: NodeJS.ProcessEnv, input?: string): string {
   try {
-    return execFileSync(command, args, {
+    return NodeChildProcess.execFileSync(command, args, {
       env,
       input,
       encoding: "utf8",
@@ -77,8 +70,15 @@ function run(command: string, args: string[], env: NodeJS.ProcessEnv, input?: st
   }
 }
 
-export function productionBuild(): void {
+export function productionTarget(value = "desktop"): "desktop" | "cli" {
+  if (value !== "desktop" && value !== "cli") throw new Error("Unknown production signing target.");
+  return value;
+}
+
+export function productionBuild(target: "desktop" | "cli" = "desktop"): void {
+  productionTarget(target);
   requireTrustedSigningContext(process.env);
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone signing entrypoint checks the actual runner before creating native resources without loading application services.
   if (process.platform !== "darwin")
     throw new Error("Production signing requires a disposable macOS runner.");
   const env = buildEnvironment(process.env);
@@ -89,12 +89,12 @@ export function productionBuild(): void {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line.trim()) as string);
-  const scratch = mkdtempSync(join(tmpdir(), "jones-signing-"));
-  chmodSync(scratch, 0o700);
-  const keychain = join(scratch, "job.keychain-db");
+  const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-signing-"));
+  NodeFS.chmodSync(scratch, 0o700);
+  const keychain = NodePath.join(scratch, "job.keychain-db");
   let created = false;
   try {
-    const importer = join(scratch, "import-identity");
+    const importer = NodePath.join(scratch, "import-identity");
     run(
       "/usr/bin/clang",
       [
@@ -128,21 +128,21 @@ export function productionBuild(): void {
       env,
     );
     run("/usr/bin/security", ["list-keychains", "-d", "user", "-s", keychain, ...searchList], env);
-    const key = join(scratch, "notary.p8");
-    const profile = join(scratch, "desktop.provisionprofile");
-    writeFileSync(key, Buffer.from(process.env.APPLE_NOTARY_API_KEY_P8_BASE64!, "base64"), {
+    const key = NodePath.join(scratch, "notary.p8");
+    const profile = NodePath.join(scratch, "desktop.provisionprofile");
+    NodeFS.writeFileSync(key, Buffer.from(process.env.APPLE_NOTARY_API_KEY_P8_BASE64!, "base64"), {
       mode: 0o600,
       flag: "wx",
     });
-    const nativePasskeys = process.env.JONES_MACOS_NATIVE_PASSKEYS === "enabled";
+    const nativePasskeys = target === "desktop" && process.env.JONES_MACOS_NATIVE_PASSKEYS === "enabled";
     if (nativePasskeys) {
       if (!process.env.MACOS_PROVISIONING_PROFILE_BASE64?.trim())
         throw new Error("Enabled native passkeys require a provisioning profile.");
-      writeFileSync(profile, Buffer.from(process.env.MACOS_PROVISIONING_PROFILE_BASE64, "base64"), {
+      NodeFS.writeFileSync(profile, Buffer.from(process.env.MACOS_PROVISIONING_PROFILE_BASE64, "base64"), {
         mode: 0o600,
         flag: "wx",
       });
-    } else if (process.env.MACOS_PROVISIONING_PROFILE_BASE64?.trim()) {
+    } else if (target === "desktop" && process.env.MACOS_PROVISIONING_PROFILE_BASE64?.trim()) {
       throw new Error("Provisioning profile supplied without native passkey opt-in.");
     }
     const buildEnv = {
@@ -156,38 +156,71 @@ export function productionBuild(): void {
       JONES_NOTARY_KEY_FILE: key,
       JONES_MACOS_PRODUCTION_ID: JONES_MACOS_APP_ID,
     };
-    run(
-      process.execPath,
-      [
-        "scripts/build-desktop-artifact.ts",
-        "--platform",
-        "mac",
-        "--target",
-        "dmg",
-        "--arch",
-        "arm64",
-        "--signed",
-        "--output-dir",
-        "artifacts/desktop-production",
-      ],
-      buildEnv,
-    );
-    const output = "artifacts/desktop-production";
-    const artifacts = readdirSync(output).filter((name) => name.endsWith(".dmg"));
-    if (artifacts.length !== 1) throw new Error("Expected one production DMG.");
-    const artifact = artifacts[0]!;
-    run("/usr/bin/hdiutil", ["verify", join(output, artifact)], env);
-    const sha256 = run("/usr/bin/shasum", ["-a", "256", join(output, artifact)], env).split(
-      /\s+/,
-    )[0];
-    const version: unknown = JSON.parse(readFileSync("apps/desktop/package.json", "utf8")).version;
+    const version: unknown = JSON.parse(
+      NodeFS.readFileSync(
+        target === "desktop" ? "apps/desktop/package.json" : "apps/server/package.json",
+        "utf8",
+      ),
+    ).version;
     if (typeof version !== "string" || !/^[a-zA-Z0-9.+-]+$/.test(version))
       throw new Error("Invalid production version.");
+    const output = target === "desktop" ? "artifacts/desktop-production" : "artifacts/cli-production";
+    const buildArgs =
+      target === "desktop"
+        ? [
+            "scripts/build-desktop-artifact.ts",
+            "--platform",
+            "mac",
+            "--target",
+            "dmg",
+            "--arch",
+            "arm64",
+            "--signed",
+            "--output-dir",
+            output,
+          ]
+        : [
+            "scripts/build-cli-archive.ts",
+            "--platform",
+            "mac",
+            "--arch",
+            "arm64",
+            "--version",
+            version,
+            "--resource-monitor-dir",
+            "artifacts/cli-build-inputs/resource-monitor",
+            "--output-dir",
+            output,
+          ];
+    run(process.execPath, buildArgs, buildEnv);
+    const extension = target === "desktop" ? ".dmg" : ".tar.gz";
+    const artifacts = NodeFS.readdirSync(output).filter((name) => name.endsWith(extension));
+    if (artifacts.length !== 1) throw new Error("Expected one production artifact.");
+    const artifact = artifacts[0]!;
+    if (target === "desktop") run("/usr/bin/hdiutil", ["verify", NodePath.join(output, artifact)], env);
+    else
+      run(
+        process.execPath,
+        [
+          "scripts/smoke-cli-archive.ts",
+          "--archive",
+          NodePath.join(output, artifact),
+          "--expect-version",
+          version,
+        ],
+        env,
+      );
+    const sha256 = run("/usr/bin/shasum", ["-a", "256", NodePath.join(output, artifact)], env).split(
+      /\s+/,
+    )[0];
     const tree = run("git", ["rev-parse", "HEAD^{tree}"], env).trim();
-    writeFileSync(join(output, `${artifact}.sha256`), `${sha256}  ${artifact}\n`);
-    writeFileSync(join(output, "SOURCE_COMMIT"), `${env.GITHUB_SHA}\n`);
-    writeFileSync(
-      join(output, "ARTIFACT.json"),
+    NodeFS.writeFileSync(
+      NodePath.join(output, target === "desktop" ? `${artifact}.sha256` : "SHA256SUMS"),
+      `${sha256}  ${artifact}\n`,
+    );
+    NodeFS.writeFileSync(NodePath.join(output, "SOURCE_COMMIT"), `${env.GITHUB_SHA}\n`);
+    NodeFS.writeFileSync(
+      NodePath.join(output, "ARTIFACT.json"),
       JSON.stringify(
         {
           schema: 1,
@@ -206,14 +239,16 @@ export function productionBuild(): void {
           sha256,
           signed: true,
           notarized: true,
-          bundleIdentifier: JONES_MACOS_APP_ID,
+          ...(target === "desktop"
+            ? { bundleIdentifier: JONES_MACOS_APP_ID }
+            : { signingIdentifier: JONES_MACOS_CLI_ID }),
           teamId: JONES_MACOS_TEAM,
         },
         null,
         2,
       ) + "\n",
     );
-    if (env.GITHUB_ENV) appendFileSync(env.GITHUB_ENV, `JONES_PRODUCTION_VERSION=${version}\n`);
+    if (env.GITHUB_ENV) NodeFS.appendFileSync(env.GITHUB_ENV, `JONES_PRODUCTION_VERSION=${version}\n`);
   } finally {
     // Restore the preimage even if keychain creation failed after changing its search list.
     try {
@@ -229,15 +264,16 @@ export function productionBuild(): void {
       try {
         if (created) run("/usr/bin/security", ["delete-keychain", keychain], env);
       } finally {
-        rmSync(scratch, { recursive: true, force: true });
+        NodeFS.rmSync(scratch, { recursive: true, force: true });
       }
     }
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && NodePath.resolve(process.argv[1]) === NodeURL.fileURLToPath(import.meta.url)) {
   try {
-    productionBuild();
+    if (process.argv.length > 3) throw new Error("Production signing accepts one fixed target only.");
+    productionBuild(productionTarget(process.argv[2]));
   } catch (error) {
     process.stderr.write(
       `${error instanceof Error ? error.message : "Production signing failed."}\n`,

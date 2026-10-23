@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Build-only signing adapter; native credentials never enter application services.
-import { createHash } from "node:crypto";
-import * as path from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodePath from "node:path";
 
 export const JONES_MACOS_TEAM = "2CUPSQS986";
 export const JONES_MACOS_APP_ID = "com.jonessystems.jonescode";
@@ -81,18 +81,18 @@ export function requireProductionPasskeys(
 }
 
 export function componentIdentifier(app: string, file: string): string {
-  const target = path.resolve(file).replace(/\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/, ".app");
-  let relative = path.relative(path.resolve(app), target);
+  const target = NodePath.resolve(file).replace(/\.app[\\/]Contents[\\/]MacOS[\\/][^\\/]+$/, ".app");
+  let relative = NodePath.relative(NodePath.resolve(app), target);
   if (relative === "") return JONES_MACOS_APP_ID;
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+  if (relative === ".." || relative.startsWith(`..${NodePath.sep}`) || NodePath.isAbsolute(relative)) {
     throw new Error("Signing component escapes the application bundle.");
   }
   // Dependency versions and framework version directories must not rotate code identity.
   relative = relative
-    .replaceAll(path.sep, "/")
+    .replaceAll(NodePath.sep, "/")
     .replace(/node_modules\/\.pnpm\/[^/]+\/node_modules\//g, "node_modules/")
     .replace(/\.framework\/Versions\/[^/]+\//g, ".framework/");
-  return `${JONES_MACOS_APP_ID}.component.${createHash("sha256").update(relative).digest("hex")}`;
+  return `${JONES_MACOS_APP_ID}.component.${NodeCrypto.createHash("sha256").update(relative).digest("hex")}`;
 }
 
 export function signingRequirement(identifier: string): string {

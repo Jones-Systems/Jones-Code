@@ -7,6 +7,8 @@
   },
   "baseline": "9c161462c94f7d9d6d9169da5c841457cbadf213",
   "paths": {
+    "scripts/jones/signing/cli.ts": "jones-owned",
+    "scripts/jones/signing/cli.node-test.mjs": "jones-owned",
     "apps/server/src/jones/providerSwitchBeforeStart/testFixture.ts": "jones-owned",
     "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts": "jones-owned",
     "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts": "jones-owned",

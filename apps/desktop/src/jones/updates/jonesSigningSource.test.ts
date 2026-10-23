@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Isolated synthetic Python transaction; signing commands are stubbed and never access a keychain.
-import { spawnSync } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 import { expect, it } from "vite-plus/test";
 import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 
@@ -17,7 +17,7 @@ it.each([
   "rollback-tampered",
   "rollback-adhoc",
 ])("native signing admission: %s", (scenario) => {
-  const result = spawnSync(
+  const result = NodeChildProcess.spawnSync(
     "python3",
     [
       "-c",

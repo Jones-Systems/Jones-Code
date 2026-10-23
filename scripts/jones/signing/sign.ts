@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off - Build-only signing adapter; native credentials never enter application services.
-import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { promisify } from "node:util";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeUtil from "node:util";
 import { sign as signApplication, type SignOptions } from "@electron/osx-sign";
 import {
   componentIdentifier,
@@ -13,7 +13,7 @@ import {
   signingRequirement,
 } from "./policy.ts";
 
-const exec = promisify(execFile);
+const exec = NodeUtil.promisify(NodeChildProcess.execFile);
 async function run(command: string, args: string[]): Promise<void> {
   try {
     await exec(command, args, { maxBuffer: 1024 * 1024, timeout: 30 * 60 * 1000 });
@@ -70,9 +70,9 @@ export async function signMac(options: SignOptions): Promise<void> {
     `=${signingRequirement(JONES_MACOS_APP_ID)}`,
     options.app,
   ]);
-  const scratch = await mkdtemp(join(tmpdir(), "jones-notarize-"));
+  const scratch = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-notarize-"));
   try {
-    const archive = join(scratch, "application.zip");
+    const archive = NodePath.join(scratch, "application.zip");
     await run("/usr/bin/ditto", ["-c", "-k", "--keepParent", options.app, archive]);
     await run("/usr/bin/xcrun", [
       "notarytool",
@@ -92,6 +92,6 @@ export async function signMac(options: SignOptions): Promise<void> {
     await run("/usr/bin/xcrun", ["stapler", "validate", options.app]);
     await run("/usr/sbin/spctl", ["--assess", "--type", "execute", options.app]);
   } finally {
-    await rm(scratch, { recursive: true, force: true });
+    await NodeFSP.rm(scratch, { recursive: true, force: true });
   }
 }

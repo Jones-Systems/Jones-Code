@@ -25,6 +25,12 @@ import serverPackageJson from "../apps/server/package.json" with { type: "json" 
 
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
 import {
+  assertCliPayloadUnchanged,
+  requireProductionCliBuild,
+  signProductionCli,
+  type CliPayloadSeal,
+} from "./jones/signing/cli.ts";
+import {
   createStagePatchedDependencies,
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
@@ -271,11 +277,9 @@ const MacSigningConfig = Config.all({
 });
 
 /**
- * Apple Silicon refuses to run unsigned Mach-O binaries at all, so the
- * executable is always signed: ad hoc when no identity is configured, or with
- * the Developer ID plus notarization when it is. The hardened runtime that
- * notarization requires only loads signed libraries, so every native addon in
- * the archive is signed with the same identity.
+ * Legacy development builds retain their existing ad-hoc or configured signing
+ * behavior. Explicit Jones production builds use the complete-distribution
+ * signing and notarization gate instead.
  */
 const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (input: {
   readonly repoRoot: string;
@@ -440,6 +444,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
+  const production = requireProductionCliBuild(process.env, input);
   const serverDir = path.join(repoRoot, "apps/server");
   const executableName = input.platform === "win" ? "t3.exe" : "t3";
   // tsdown suffixes cross-built executables with their target (t3-darwin-x64);
@@ -492,13 +497,24 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   });
 
   const executablePath = path.join(contentDir, executableName);
-  if (input.platform === "mac") {
+  if (input.platform !== "win") {
+    yield* fs.chmod(executablePath, 0o755);
+  }
+  let productionSeal: CliPayloadSeal | undefined;
+  if (production) {
+    productionSeal = yield* Effect.try(() =>
+      signProductionCli(
+        {
+          contentDir,
+          entitlements: path.join(repoRoot, "apps/server/resources/cli-entitlements.plist"),
+        },
+        process.env,
+      ),
+    );
+  } else if (input.platform === "mac") {
     yield* signMacArchiveContents({ repoRoot, contentDir, executablePath });
   } else if (input.platform === "win") {
     yield* signWindowsExecutable(executablePath);
-  }
-  if (input.platform !== "win") {
-    yield* fs.chmod(executablePath, 0o755);
   }
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });
@@ -533,6 +549,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       "tar (gzip)",
     );
   }
+  if (productionSeal) assertCliPayloadUnchanged(contentDir, productionSeal);
   const stat = yield* fs.stat(archivePath);
   yield* Effect.log(`[cli-archive] Wrote ${archivePath} (${String(stat.size)} bytes).`);
   return archivePath;

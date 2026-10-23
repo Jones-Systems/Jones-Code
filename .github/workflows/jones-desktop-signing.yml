@@ -12,6 +12,8 @@ on:
       - scripts/jones/updates/paired-executor-fixture.mjs
       - scripts/sign-macos*
       - scripts/build-desktop-artifact.ts
+      - scripts/build-cli-archive.ts
+      - apps/server/resources/cli-entitlements.plist
       - apps/desktop/src/jones/updates/**
       - .github/workflows/jones-desktop-signing.yml
 
@@ -28,6 +30,9 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: macos-15
     timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "3"
+      CMAKE_BUILD_PARALLEL_LEVEL: "3"
     steps:
       - name: Checkout public PR source without credentials
         env:
@@ -52,6 +57,7 @@ jobs:
       - name: Test signing policy and transaction rejection without credentials
         run: |
           node --test --test-concurrency=1 scripts/jones/signing/admission.node-test.mjs
+          node --test --test-concurrency=1 scripts/jones/signing/cli.node-test.mjs
           vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/sign-macos.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts scripts/build-desktop-artifact.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/jonesPairedStateSource.test.ts --maxWorkers=1 --no-file-parallelism
       - name: Compile the credential importer without importing any identity
         run: clang -fsyntax-only -framework Foundation -framework Security scripts/jones/signing/import-identity.m
@@ -60,6 +66,27 @@ jobs:
           vp run --filter @t3tools/shared typecheck
           vp run --filter @t3tools/scripts typecheck
           vp run --filter @t3tools/desktop typecheck
+      - name: Build credential-free CLI archive inputs
+        env:
+          VP_NODE_VERSION: "26.12.1"
+        run: |
+          test "$(uname -m)" = arm64
+          rustup target add aarch64-apple-darwin
+          cp .env.example .env
+          node scripts/stamp-jones-build.ts
+          vp run --filter t3 build
+          node apps/server/scripts/cli.ts build-exe --target darwin-arm64 --verbose
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target aarch64-apple-darwin
+          mkdir -p artifacts/cli-source-smoke/resource-monitor/darwin-arm64
+          cp native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor artifacts/cli-source-smoke/resource-monitor/darwin-arm64/
+      - name: Package and smoke-test the credential-free CLI archive
+        run: |
+          version=$(node -p "require('./apps/server/package.json').version")
+          node scripts/build-cli-archive.ts --platform mac --arch arm64 --version "$version" --resource-monitor-dir artifacts/cli-source-smoke/resource-monitor --output-dir artifacts/cli-source-smoke/archive
+          node scripts/smoke-cli-archive.ts --archive artifacts/cli-source-smoke/archive/*.tar.gz --expect-version "$version"
+      - name: Clean CLI source-check scratch
+        if: always()
+        run: rm -rf -- artifacts/cli-source-smoke
   sign:
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' && github.ref == 'refs/heads/main' &&
@@ -68,6 +95,10 @@ jobs:
     runs-on: macos-15
     environment: macos-signing
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [desktop, cli]
     env:
       JONES_MACOS_RELEASE_MODE: production
       JONES_MACOS_PRODUCTION_ID: ${{ vars.JONES_MACOS_PRODUCTION_ID }}
@@ -103,13 +134,25 @@ jobs:
       - name: Prepare public build inputs
         run: |
           test "$(uname -m)" = arm64
-          vp run --filter @t3tools/desktop ensure:electron
           rustup target add aarch64-apple-darwin
           cp .env.example .env
           base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
           version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           node scripts/update-release-package-versions.ts "$version"
           node scripts/stamp-jones-build.ts
+      - name: Prepare desktop Electron
+        if: matrix.target == 'desktop'
+        run: vp run --filter @t3tools/desktop ensure:electron
+      - name: Build CLI public inputs before credential import
+        if: matrix.target == 'cli'
+        env:
+          VP_NODE_VERSION: "26.12.1"
+        run: |
+          vp run --filter t3 build
+          node apps/server/scripts/cli.ts build-exe --target darwin-arm64 --verbose
+          cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target aarch64-apple-darwin
+          mkdir -p artifacts/cli-build-inputs/resource-monitor/darwin-arm64
+          cp native/resource-monitor/target/aarch64-apple-darwin/release/t3-resource-monitor artifacts/cli-build-inputs/resource-monitor/darwin-arm64/
       - name: Sign, notarize and package with job-owned credentials
         env:
           MACOS_SIGNING_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_SIGNING_CERTIFICATE_P12_BASE64 }}
@@ -120,8 +163,9 @@ jobs:
           MACOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
           T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
           T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.T3CODE_CLERK_PASSKEY_RP_DOMAINS }}
-        run: node scripts/jones/signing/production-build.ts
+        run: node scripts/jones/signing/production-build.ts "${{ matrix.target }}"
       - name: Upload only the sealed production artifact and public provenance
+        if: matrix.target == 'desktop'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: desktop-mac-production-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.JONES_PRODUCTION_VERSION }}
@@ -133,3 +177,19 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+      - name: Upload production CLI archive and public provenance
+        if: matrix.target == 'cli'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: jones-code-cli-mac-production-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.JONES_PRODUCTION_VERSION }}
+          path: |
+            artifacts/cli-production/*.tar.gz
+            artifacts/cli-production/SHA256SUMS
+            artifacts/cli-production/ARTIFACT.json
+            artifacts/cli-production/SOURCE_COMMIT
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Clean CLI public build inputs
+        if: always() && matrix.target == 'cli'
+        run: rm -rf -- artifacts/cli-build-inputs
