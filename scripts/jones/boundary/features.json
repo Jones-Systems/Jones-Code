@@ -1597,6 +1597,11 @@
         "apps/server/src/orchestration-v2/testkit/ThreadMergeBack.integration.test.ts"
       ],
       "scope": "The existing accepted-shared replayWorkspace helper drains bounded stderr concurrently with exit status and captures only owned synthetic Git metadata before existing cleanup. No fixture-layout rewrite, retry, skip or production Git change; CI Git2.55 root cause remains unproved by VPS Git2.47.3 passes."
+    },
+    {
+      "id": "vcs-cache-efficiency",
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
+      "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
     }
   ]
 }
