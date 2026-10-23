@@ -1,7 +1,7 @@
 // @effect-diagnostics globalFetch:off -- Isolated loopback listeners exercise production HTTP, gateway, and signed CP transport.
 import * as Effect from "effect/Effect";
 import type { WorkstreamCommand } from "@t3tools/contracts";
-import { expect, it } from "vite-plus/test";
+import { expect, it } from "@effect/vitest";
 import { parseWorkstreamOperationResult } from "@t3tools/contracts/jones/workstreamOperations";
 import type {
   WorkstreamCreateRequest,
@@ -248,11 +248,18 @@ it("adopts a lost create reply and still creates once across a server restart", 
   }
 });
 
-it("INV-6-prime: every possible late action is rejected for every settled expected/target/current combination", async () => {
-  const cp = await startLoopbackControlPlane();
-  try {
-    const environment = await startEnvironment(cp, "source-a");
-    try {
+it.live(
+  "INV-6-prime: every possible late action is rejected for every settled expected/target/current combination",
+  () =>
+    Effect.gen(function* () {
+      const cp = yield* Effect.acquireRelease(
+        Effect.promise(() => startLoopbackControlPlane()),
+        (cp) => Effect.promise(() => cp.close()),
+      );
+      const environment = yield* Effect.acquireRelease(
+        Effect.promise(() => startEnvironment(cp, "source-a")),
+        (environment) => Effect.promise(() => environment.close()),
+      );
       const ids = ["ws-core-v1", "ws-follow-on"] as const;
       let sequence = 0;
       for (const current of [null, ...ids]) {
@@ -269,7 +276,7 @@ it("INV-6-prime: every possible late action is rejected for every settled expect
           expected: { kind: "any" },
         };
         const ready = parseWorkstreamOperationResult(
-          await (await submit(environment.origin, bootstrap)).json(),
+          yield* Effect.promise(async () => (await submit(environment.origin, bootstrap)).json()),
         );
         expect(["committed", "already_satisfied"]).toContain(ready.state);
         for (const target of [null, ...ids])
@@ -292,18 +299,21 @@ it("INV-6-prime: every possible late action is rejected for every settled expect
               expected,
             };
             const result = parseWorkstreamOperationResult(
-              await (await submit(environment.origin, operation)).json(),
+              yield* Effect.promise(async () =>
+                (await submit(environment.origin, operation)).json(),
+              ),
             );
             expect(result.state).toBe(current === target ? "already_satisfied" : "conflict");
-            const binding = await Effect.runPromise(environment.gateway.readSession());
-            const groups = await Promise.all(
-              ids.map((id) => Effect.runPromise(environment.gateway.readDetail(id))),
+            const binding = yield* environment.gateway.readSession();
+            const groups = yield* Effect.all(
+              ids.map((id) => environment.gateway.readDetail(id)),
+              { concurrency: "unbounded" },
             );
             const version = (id: string) =>
               groups.find((g) => g.workstream.workstream_id === id)!.workstream.version;
             const actions: WorkstreamCommand["action"][] = [];
             if (target && (expected.kind === "any" || expected.kind === "unassigned")) {
-              const reference = await Effect.runPromise(environment.gateway.readReferences());
+              const reference = yield* environment.gateway.readReferences();
               const native_reference_id = reference.items.find(
                 (r) => r.identity.native_id === thread.thread_id,
               )!.native_reference_id;
@@ -341,25 +351,19 @@ it("INV-6-prime: every possible late action is rejected for every settled expect
                 );
               }
             for (const action of actions) {
-              const receipt = await Effect.runPromise(
-                environment.gateway.submit({
-                  command_id: `property-late-action-${++sequence}`,
-                  expected_registry_version: binding.registryVersion,
-                  expected_server_generation: binding.serverGeneration,
-                  action,
-                }),
-              );
+              const receipt = yield* environment.gateway.submit({
+                command_id: `property-late-action-${++sequence}`,
+                expected_registry_version: binding.registryVersion,
+                expected_server_generation: binding.serverGeneration,
+                action,
+              });
               expect(receipt.state).toBe("rejected");
             }
-            expect(
-              (await Effect.runPromise(environment.gateway.readSession())).registryVersion,
-            ).toBe(binding.registryVersion);
+            expect((yield* environment.gateway.readSession()).registryVersion).toBe(
+              binding.registryVersion,
+            );
           }
       }
-    } finally {
-      await environment.close();
-    }
-  } finally {
-    await cp.close();
-  }
-}, 30_000);
+    }),
+  30_000,
+);

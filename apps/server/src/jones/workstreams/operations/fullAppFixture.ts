@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Test-only signing keys are generated for one isolated fixture.
-import { randomBytes, randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type { WorkstreamsRegistrationContextT3Source, WorkstreamReceipt } from "@t3tools/contracts";
 import { activationFromEnvironment } from "../activation.ts";
 import { startLoopbackControlPlane } from "./loopbackFixture.ts";
@@ -13,8 +13,8 @@ const committed = (receipt: WorkstreamReceipt) => {
 export async function startFullAppControlPlane(source: WorkstreamsRegistrationContextT3Source) {
   const cp = await startLoopbackControlPlane({
     sources: [source],
-    registryId: randomUUID(),
-    signingSecret: randomBytes(32).toString("base64"),
+    registryId: NodeCrypto.randomUUID(),
+    signingSecret: NodeCrypto.randomBytes(32).toString("base64"),
     emptyAssignments: true,
   });
   let release: (() => void) | undefined;

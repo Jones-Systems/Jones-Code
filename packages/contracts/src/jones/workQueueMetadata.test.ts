@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Pin the producer fixture bytes with SHA-256.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import producerV4Raw from "./fixtures/work_queue_metadata_v4.json.fixture?raw";
 import { describe, expect, it } from "vite-plus/test";
 import * as Schema from "effect/Schema";
@@ -256,7 +256,7 @@ const v4 = JSON.parse(producerV4Raw);
 describe("v4 assignment metadata", () => {
   it("mirrors the frozen producer bytes and preserves all states and absent intents", () => {
     expect(new TextEncoder().encode(producerV4Raw).byteLength).toBe(7483);
-    expect(createHash("sha256").update(producerV4Raw).digest("hex")).toBe(
+    expect(NodeCrypto.createHash("sha256").update(producerV4Raw).digest("hex")).toBe(
       "17ae0653442857991848476847676481fee5c593f88a1056a4ff3f275cbbac1b",
     );
     expect(decode(v4)).toEqual(v4);

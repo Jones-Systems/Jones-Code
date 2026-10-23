@@ -18,8 +18,9 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 describe("read-only setup diagnosis", () => {
-  for (const reason of Object.keys(sourceReasonLabels) as (keyof typeof sourceReasonLabels)[]) {
-    it(`shows ${reason} with its documented next step`, async () => {
+  it.each(Object.keys(sourceReasonLabels) as (keyof typeof sourceReasonLabels)[])(
+    "shows %s with its documented next step",
+    async (reason) => {
       await act(async () =>
         root.render(
           <SetupStatusContent
@@ -40,8 +41,8 @@ describe("read-only setup diagnosis", () => {
       expect(container.textContent).toContain(sourceReasonLabels[reason]);
       expect(container.querySelector("a")?.href).toContain("workstreams-native-enrollment.md");
       expect(container.querySelector("button,input,form")).toBeNull();
-    });
-  }
+    },
+  );
   it("distinguishes not configured from offline without exposing values", async () => {
     await act(async () =>
       root.render(

@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Independent test hashes bind scripted CP receipts to exact bytes.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type {
   NativeReference,
   T3WorkstreamBinding,
@@ -21,14 +21,14 @@ import { WorkstreamCommand as CommandSchema } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as PlatformNodeCrypto from "@effect/platform-node/NodeCrypto";
 import { WorkstreamGatewayError } from "../../../workstreams/WorkstreamGateway.ts";
 import { t3Source, response } from "../registrationContext/testFixtures.ts";
 import { canonicalJson } from "./encoding.ts";
 import { Ports } from "./ports.ts";
 import * as Operations from "./service.ts";
 
-export const hash = (body: string) => createHash("sha256").update(body).digest("hex");
+export const hash = (body: string) => NodeCrypto.createHash("sha256").update(body).digest("hex");
 export const environmentId = "source-t3-synthetic";
 export const request: WorkstreamSetPrimaryRequest = {
   contract: "workstream-operations/1.0.0",
@@ -386,7 +386,7 @@ export const fakeControlPlane = () => {
   };
   const layer = Operations.layer.pipe(
     Layer.provide(Layer.succeed(Ports, ports)),
-    Layer.provide(NodeCrypto.layer),
+    Layer.provide(PlatformNodeCrypto.layer),
   );
   const seedRegistration = (operation = request) =>
     decide({

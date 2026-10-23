@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useEffect, useState } from "react";
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { WorkstreamSetupStatus } from "@t3tools/contracts/jones/workstreamOperations";
 import { supportsWorkstreamOperations } from "@t3tools/client-runtime/jones/workstreams/operations";
 import { primaryEnvironmentIdAtom } from "../../state/primaryEnvironment";
@@ -11,19 +12,11 @@ import { environmentOperationsTransport } from "./environmentWorkstreamsRequest"
 
 import { SetupStatusContent } from "./SetupStatusContent";
 const emptyConfig = Atom.make(null);
-export function WorkstreamsSetupStatus() {
-  const environmentId = useAtomValue(primaryEnvironmentIdAtom);
-  const config = useAtomValue(
-    environmentId === null ? emptyConfig : environmentSession.initialConfigValueAtom(environmentId),
-  );
-  const supported = supportsWorkstreamOperations(config?.environment.capabilities);
+function SetupStatusRequest({ environmentId }: { environmentId: EnvironmentId | null }) {
   const [status, setStatus] = useState<WorkstreamSetupStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [revision, setRevision] = useState(0);
   useEffect(() => {
-    setStatus(null);
-    setMessage(null);
-    if (!environmentId || !supported) return;
+    if (!environmentId) return;
     const abort = new AbortController();
     void environmentOperationsTransport(environmentId)
       .setup(abort.signal)
@@ -35,7 +28,20 @@ export function WorkstreamsSetupStatus() {
           setMessage("Offline or unavailable. Check this environment's connection, then refresh.");
       });
     return () => abort.abort();
-  }, [environmentId, supported, revision]);
+  }, [environmentId]);
+  return status ? (
+    <SetupStatusContent status={status} />
+  ) : (
+    <p role="status">{message ?? "Checking Workstreams setup…"}</p>
+  );
+}
+export function WorkstreamsSetupStatus() {
+  const environmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const config = useAtomValue(
+    environmentId === null ? emptyConfig : environmentSession.initialConfigValueAtom(environmentId),
+  );
+  const supported = supportsWorkstreamOperations(config?.environment.capabilities);
+  const [revision, setRevision] = useState(0);
   return (
     <SettingsPageContainer>
       <SettingsSection title="Workstreams setup" variant="plain">
@@ -46,11 +52,10 @@ export function WorkstreamsSetupStatus() {
           </p>
         ) : (
           <>
-            {status ? (
-              <SetupStatusContent status={status} />
-            ) : (
-              <p role="status">{message ?? "Checking Workstreams setup…"}</p>
-            )}
+            <SetupStatusRequest
+              key={`${environmentId}:${revision}`}
+              environmentId={environmentId}
+            />
             <div className="mt-3">
               <Button size="sm" variant="outline" onClick={() => setRevision((value) => value + 1)}>
                 Refresh setup status

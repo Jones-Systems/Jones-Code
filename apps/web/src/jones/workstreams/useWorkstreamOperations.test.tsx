@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { RegistryContext } from "@effect/atom-react";
 import { AtomRegistry } from "effect/reactivity";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vite-plus/test";
 import type { EnvironmentCatalogState } from "@t3tools/client-runtime/state/connections";
@@ -55,11 +55,14 @@ let container: HTMLDivElement;
 let latest: ReturnType<typeof useWorkstreamOperations>;
 const refresh = vi.fn();
 function Mounted() {
-  latest = useWorkstreamOperations({
+  const operations = useWorkstreamOperations({
     data: operationFixtureData,
     primaryEnvironmentId: primary,
     refresh,
   });
+  useEffect(() => {
+    latest = operations;
+  }, [operations]);
   return null;
 }
 const mount = async () =>
