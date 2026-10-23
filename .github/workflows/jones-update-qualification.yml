@@ -145,7 +145,7 @@ jobs:
       - uses: voidzero-dev/setup-vp@v1
         with:
           node-version-file: package.json
-          cache: true
+          cache: false
           run-install: true
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
