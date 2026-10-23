@@ -3005,10 +3005,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   }),
               ),
             );
+            const pendingProviderThread = providerContext!.providerThreads.find(
+              (candidate) => candidate.id === thread.activeProviderThreadId,
+            );
+            const beforeStartEvidence =
+              thread.modelSelection.instanceId !== command.modelSelection.instanceId &&
+              pendingProviderThread?.status === "not_loaded" &&
+              pendingProviderThread.nativeThreadRef === null
+                ? yield* loadProjectionForCommand(command, [
+                    "runs",
+                    "attempts",
+                    "nodes",
+                    "providerThreads",
+                    "providerTurns",
+                    "turnItems",
+                  ])
+                : undefined;
             return yield* providerSwitchService
               .plan({
                 projection: providerContext!,
                 targetModelSelection: command.modelSelection,
+                ...(beforeStartEvidence === undefined ? {} : { beforeStartEvidence }),
               })
               .pipe(mapDispatchError(command));
           })
@@ -3572,6 +3589,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return "thread.provider-switched" as const;
       }
     })();
+    if (providerSwitchPlan?.rebindPendingProviderThread !== undefined) {
+      const pending = providerSwitchPlan.rebindPendingProviderThread;
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "provider-thread.updated",
+        threadId: command.threadId,
+        providerInstanceId: updatedThread.providerInstanceId,
+        driver: pending.driver,
+        occurredAt: now,
+        payload: {
+          ...pending,
+          providerInstanceId: updatedThread.providerInstanceId,
+          providerSessionId: null,
+          updatedAt: now,
+        },
+      });
+    }
     yield* emit(
       events,
       command,
