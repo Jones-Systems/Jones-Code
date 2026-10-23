@@ -1015,6 +1015,7 @@
     "scripts/jones/boundary/fragments/fleet-update-access.json": "jones-owned",
     "apps/web/src/branding.ts": "accepted-shared",
     "apps/web/src/versionSkew.test.ts": "accepted-shared",
+    "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared",
     "apps/web/src/vite-env.d.ts": "accepted-shared",
     "packages/client-runtime/src/connection/resolver.ts": "accepted-shared",
     "docs/internals/server-updates.md": "accepted-shared",

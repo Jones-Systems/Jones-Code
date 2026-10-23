@@ -2,6 +2,14 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/components/settings/AcpRegistrySearchStep.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-provider-switch-before-start",
       "tests": [
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
