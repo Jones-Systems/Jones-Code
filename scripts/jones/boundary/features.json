@@ -1594,6 +1594,11 @@
       "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
     },
     {
+      "id": "vcs-cache-efficiency",
+      "tests": ["apps/server/src/vcs/VcsStatusBroadcaster.test.ts"],
+      "scope": "VCS status cache updates mutate the private directory map synchronously while replacing snapshot values, preserving deduplication, remote ordering and existing retention. A small accepted shared-file edit and colocated regression preserve private cache ownership without adding an extraction interface."
+    },
+    {
       "id": "pr-cache-scope-locks",
       "tests": [
         "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
