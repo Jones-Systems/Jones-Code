@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import type { McpThreadInvocationScope } from "../../../mcp/McpInvocationContext.ts";
 import { dispatchFailure, unavailable } from "../../../mcp/threadAccess.ts";
+import * as Sessions from "../../../orchestration-v2/ProviderSessionManager.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 
 export class UserResponseRequestMcpService extends Context.Service<
@@ -37,6 +38,7 @@ const refused = (message: string) =>
   new OrchestratorMcpFailure({ code: "invalid_request", message });
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService;
+  const sessions = yield* Sessions.ProviderSessionManagerV2;
   const serial = yield* Semaphore.make(1);
   return UserResponseRequestMcpService.of({
     request: (scope, input) =>
@@ -78,7 +80,15 @@ const make = Effect.gen(function* () {
             run === undefined ||
             run.rootNodeId === null ||
             run.providerInstanceId !== scope.thread.providerInstanceId ||
-            providerThread?.providerSessionId !== scope.thread.providerSessionId
+            providerThread === undefined ||
+            providerThread.providerSessionId === null ||
+            providerThread.providerInstanceId !== scope.thread.providerInstanceId ||
+            !(yield* sessions.isMcpCallerAttached({
+              threadId: scope.thread.threadId,
+              providerSessionId: providerThread.providerSessionId,
+              providerInstanceId: scope.thread.providerInstanceId,
+              mcpCredentialId: scope.thread.providerSessionId,
+            }))
           ) {
             return yield* refused("The calling provider no longer owns an active run.");
           }

@@ -15,7 +15,10 @@ import {
   importedHistoryCommands,
   type PreparedImportedHistoryChoice,
 } from "../jones/importedHistory/ContinuationChoiceBanner";
-import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import {
+  importedHistoryContinuationEligible,
+  resolveImportedHistoryReview,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ThreadFind, ThreadFindCanvas, type ThreadFindControls } from "./chat/ThreadFindProvider";
 import { THREAD_FIND_BAR_RESERVED_HEIGHT } from "./chat/ThreadFindBar";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
@@ -6373,7 +6376,7 @@ export default function ChatView(props: ChatViewProps) {
       return;
     }
     const threadIdForSend = activeThread.id;
-    if (serverProjection?.thread.historyOrigin === "v1_import") {
+    if (importedHistoryContinuationEligible(serverProjection)) {
       if (multipleModelSelections !== null) {
         setImportedChoice({
           environmentId,
@@ -6393,7 +6396,7 @@ export default function ChatView(props: ChatViewProps) {
             environmentId,
             threadId: threadIdForSend,
             prepared: null,
-            reason: "Observe the saved choice before another submission.",
+            reason: "Check continuation status before another submission.",
           });
           return;
         }
@@ -6677,7 +6680,7 @@ export default function ChatView(props: ChatViewProps) {
       }),
     );
     if (
-      serverProjection?.thread.historyOrigin === "v1_import" &&
+      importedHistoryContinuationEligible(serverProjection) &&
       multipleModelSelections === null &&
       isServerThread &&
       !shouldQueueBehindActiveRun
@@ -7801,6 +7804,7 @@ export default function ChatView(props: ChatViewProps) {
         editingRunId={queuedRunEdit.editingRunId}
         onEditQueuedRun={queuedRunEdit.beginEdit}
         onCancelEdit={queuedRunEdit.cancelEdit}
+        onImportedHistoryChoice={setImportedChoice}
       />
     ) : null;
   // One-shot: the resend "Work locally" queued fires once, then the marker clears.
@@ -8335,7 +8339,7 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
-                  {serverProjection?.thread.historyOrigin === "v1_import" && activeThread ? (
+                  {importedHistoryContinuationEligible(serverProjection) && activeThread ? (
                     <ContinuationChoiceBanner
                       key={`${activeThread.environmentId}:${activeThread.id}`}
                       environmentId={activeThread.environmentId}

@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import type { BoundLinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 
 const ALL_MCP_CAPABILITIES = [
   "preview",
@@ -37,6 +38,8 @@ export interface McpClientCaller {
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
    */
   readonly linked?: boolean | undefined;
+  /** Authenticated peer assertions for attribution, never a local caller or permission source. */
+  readonly remoteOrigin?: BoundLinkedMessageOrigin | undefined;
   /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.

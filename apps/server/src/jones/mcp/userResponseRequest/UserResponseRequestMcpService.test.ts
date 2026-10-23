@@ -37,6 +37,7 @@ import * as ReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts"
 import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import * as EffectOutbox from "../../../orchestration-v2/EffectOutbox.ts";
 import * as Recovery from "../../../orchestration-v2/ProviderRuntimeRecoveryService.ts";
+import * as Sessions from "../../../orchestration-v2/ProviderSessionManager.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Registry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as Harness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
@@ -49,12 +50,13 @@ import { UserResponseRequestToolkit } from "./tools.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
 const sessionId = ProviderSessionId.make("owner-session");
+const credentialId = "018f8f30-67e3-7377-a3ce-4b3cae358a17";
 const threadId = ThreadId.make("owner-thread");
 const modelSelection = { instanceId, model: "gpt-6" };
 const scope: Invocation.McpThreadInvocationScope = {
   environmentId: EnvironmentId.make("synthetic"),
-  requestNamespace: "owner-session",
-  thread: { threadId, providerSessionId: sessionId, providerInstanceId: instanceId },
+  requestNamespace: credentialId,
+  thread: { threadId, providerSessionId: credentialId, providerInstanceId: instanceId },
   client: undefined,
   capabilities: new Set(["orchestration"]),
   issuedAt: 1,
@@ -96,16 +98,28 @@ const threadManagement = Layer.unwrap(
     });
   }),
 ).pipe(Layer.provide(Layer.merge(runtime, stores)));
-const services = Layer.mergeAll(
-  runtime,
-  stores,
-  threadManagement,
-  Service.layer.pipe(Layer.provide(threadManagement)),
-);
+const sessions = (attached: boolean) =>
+  Layer.mock(Sessions.ProviderSessionManagerV2)({
+    isMcpCallerAttached: (input) =>
+      Effect.succeed(
+        attached &&
+          input.threadId === threadId &&
+          input.providerSessionId === sessionId &&
+          input.providerInstanceId === instanceId &&
+          input.mcpCredentialId === credentialId,
+      ),
+  });
+const services = (attached: boolean) =>
+  Layer.mergeAll(
+    runtime,
+    stores,
+    threadManagement,
+    Service.layer.pipe(Layer.provide(Layer.merge(threadManagement, sessions(attached)))),
+  );
 const recovery = Recovery.layer.pipe(
   Layer.provide(Layer.mergeAll(runtime, stores, IdAllocator.layer, ServerSettings.layerTest())),
 );
-const testLayer = Layer.merge(services, recovery);
+const testLayer = Layer.merge(services(true), recovery);
 
 const seed = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -209,7 +223,7 @@ const seed = Effect.gen(function* () {
 });
 
 it.effect(
-  "creates immediately, deduplicates live retries and concurrent content conflicts, then delivers free text after completion and recovery",
+  "accepts an attached credential distinct from its provider session, creates immediately, deduplicates live retries and concurrent content conflicts, then delivers free text after completion and recovery",
   () =>
     Effect.gen(function* () {
       const { orchestrator, sink, now, run } = yield* seed;
@@ -360,7 +374,8 @@ it.effect("enforces self-only live caller, capability, client and session owners
         ...scope,
         client: { sessionId: "external", label: "External", access: "read-only" as const },
       },
-      { ...scope, thread: { ...scope.thread, providerSessionId: "stale-session" } },
+      { ...scope, thread: { ...scope.thread, providerSessionId: "stale-credential" } },
+      { ...scope, thread: { ...scope.thread, providerSessionId: sessionId } },
       {
         ...scope,
         thread: { ...scope.thread, providerInstanceId: ProviderInstanceId.make("foreign") },
@@ -384,6 +399,18 @@ it.effect("enforces self-only live caller, capability, client and session owners
     });
     expect((yield* invoke(scope)).isFailure).toBe(true);
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("refuses a detached credential even when its provider run remains active", () =>
+  Effect.gen(function* () {
+    const { orchestrator } = yield* seed;
+    const service = yield* Service.UserResponseRequestMcpService;
+    const result = yield* service
+      .request(scope, { instruction: "Review the plan.", clientRequestId: "detached" })
+      .pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    expect((yield* orchestrator.getThreadProjection(threadId)).runtimeRequests).toHaveLength(0);
+  }).pipe(Effect.provide(Layer.merge(services(false), recovery))),
 );
 
 it.effect("serial dispatch refuses a fresh record whose bound run ended before acceptance", () =>
