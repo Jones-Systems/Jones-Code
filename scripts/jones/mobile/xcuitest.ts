@@ -19,6 +19,31 @@ export const object = (value: unknown): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 
+export type CommandStage = "owned-command" | "simulator-boot-readiness";
+export interface CommandDiagnostic {
+  stage: CommandStage;
+  timeoutMs: number;
+  deadlineAt: string;
+  timedOutAt?: string;
+  closedAt?: string;
+  cleanupError?: {
+    phase: "settlement" | "term" | "term-wait" | "kill" | "kill-wait";
+    syscall: "kill";
+    signal: "0" | "SIGTERM" | "SIGKILL";
+    errno: "EPERM" | "EACCES" | "EINVAL" | "UNKNOWN";
+  };
+}
+
+const commandLifecycle = {
+  spawn: (executable: string, argv: string[], options: NodeChildProcess.SpawnOptionsWithoutStdio) =>
+    NodeChildProcess.spawn(executable, argv, { ...options, stdio: ["pipe", "pipe", "pipe"] }),
+  kill: (pid: number, signal: 0 | NodeJS.Signals) => process.kill(pid, signal),
+  now: () => Date.now(),
+  wait: (ms: number) => NodeTimersPromises.setTimeout(ms),
+  setTimer: (callback: () => void, ms: number) => setTimeout(callback, ms),
+  clearTimer: (timer: ReturnType<typeof setTimeout>) => clearTimeout(timer),
+};
+
 export interface ChildReceipt {
   executable: string;
   argv: string[];
@@ -28,6 +53,7 @@ export interface ChildReceipt {
   code?: number | null;
   signal?: string | null;
   groupGone?: boolean;
+  diagnostic?: CommandDiagnostic;
 }
 
 // A detached child creates its own process group. The captured handle is the
@@ -42,20 +68,28 @@ export function ownedCommand(
     timeoutMs?: number;
     input?: string;
     receipts?: ChildReceipt[];
+    stage?: CommandStage;
   },
+  lifecycle = commandLifecycle,
 ) {
   options.signal?.throwIfAborted();
+  const startedAt = lifecycle.now();
+  const diagnostic: CommandDiagnostic = {
+    stage: options.stage ?? "owned-command",
+    timeoutMs: options.timeoutMs ?? 120_000,
+    deadlineAt: new Date(startedAt + (options.timeoutMs ?? 120_000)).toISOString(),
+  };
   const receipt: ChildReceipt = {
     executable,
     argv: [...argv],
-    spawnedAt: new Date().toISOString(),
+    spawnedAt: new Date(startedAt).toISOString(),
+    diagnostic,
   };
   options.receipts?.push(receipt);
-  const child = NodeChildProcess.spawn(executable, [...argv], {
+  const child = lifecycle.spawn(executable, [...argv], {
     cwd: options.cwd,
     env: options.env,
     detached: true,
-    stdio: ["pipe", "pipe", "pipe"],
   });
   if (child.pid !== undefined) {
     receipt.pid = child.pid;
@@ -71,12 +105,23 @@ export function ownedCommand(
       failure ??= error;
     });
     child.once("close", (code, signal) => {
+      diagnostic.closedAt = new Date(lifecycle.now()).toISOString();
       receipt.code = code;
       receipt.signal = signal;
       closed = true;
       resolve();
     });
   });
+  let phase: NonNullable<CommandDiagnostic["cleanupError"]>["phase"] = "settlement";
+  const recordSyscallFailure = (error: unknown, signal: "0" | "SIGTERM" | "SIGKILL") => {
+    const code = (error as NodeJS.ErrnoException).code;
+    diagnostic.cleanupError = {
+      phase,
+      syscall: "kill",
+      signal,
+      errno: code === "EPERM" || code === "EACCES" || code === "EINVAL" ? code : "UNKNOWN",
+    };
+  };
   const groupExists = () => {
     if (!receipt.pid) {
       receipt.groupGone = true;
@@ -84,20 +129,26 @@ export function ownedCommand(
     }
     if (receipt.groupGone) return false;
     try {
-      process.kill(-receipt.pid, 0);
+      lifecycle.kill(-receipt.pid, 0);
       return true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        recordSyscallFailure(error, "0");
+        throw error;
+      }
       receipt.groupGone = true;
       return false;
     }
   };
-  const signalGroup = (signal: NodeJS.Signals) => {
+  const signalGroup = (signal: "SIGTERM" | "SIGKILL") => {
     if (!groupExists()) return;
     try {
-      process.kill(-receipt.pid!, signal);
+      lifecycle.kill(-receipt.pid!, signal);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+        recordSyscallFailure(error, signal);
+        throw error;
+      }
       receipt.groupGone = true;
     }
   };
@@ -108,14 +159,20 @@ export function ownedCommand(
   const stop = () => {
     if (!stopPromise) {
       stopPromise = (async () => {
+        phase = "term";
         signalGroup("SIGTERM");
-        const deadline = Date.now() + 2_000;
-        while (groupExists() && Date.now() < deadline) await NodeTimersPromises.setTimeout(25);
-        if (groupExists()) signalGroup("SIGKILL");
-        const killedDeadline = Date.now() + 5_000;
-        while (Date.now() < killedDeadline) {
+        phase = "term-wait";
+        const deadline = lifecycle.now() + 2_000;
+        while (groupExists() && lifecycle.now() < deadline) await lifecycle.wait(25);
+        if (groupExists()) {
+          phase = "kill";
+          signalGroup("SIGKILL");
+        }
+        phase = "kill-wait";
+        const killedDeadline = lifecycle.now() + 5_000;
+        while (lifecycle.now() < killedDeadline) {
           if (!groupExists() && closed) break;
-          await NodeTimersPromises.setTimeout(25);
+          await lifecycle.wait(25);
         }
         NodeAssert.ok(!groupExists() && closed, `Owned child/group ${receipt.pid} exit unresolved`);
       })();
@@ -130,7 +187,8 @@ export function ownedCommand(
   };
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) abort();
-  const timer = setTimeout(() => {
+  const timer = lifecycle.setTimer(() => {
+    diagnostic.timedOutAt = new Date(lifecycle.now()).toISOString();
     failure ??= new Error("Owned command timed out; operation effect requires readback");
     void stop().catch(() => {});
   }, options.timeoutMs ?? 120_000);
@@ -156,7 +214,7 @@ export function ownedCommand(
     } catch (error) {
       cleanupError = error;
     } finally {
-      clearTimeout(timer);
+      lifecycle.clearTimer(timer);
       options.signal?.removeEventListener("abort", abort);
     }
     if (failure || cleanupError) {

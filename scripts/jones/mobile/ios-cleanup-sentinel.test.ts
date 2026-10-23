@@ -80,6 +80,7 @@ type HarnessConfig = {
   cancel?: "before" | "sample" | "wait" | "ready" | "running";
   target?: string;
   receipt?:
+    | "unknown"
     | "missing"
     | "malformed"
     | "allocating"
@@ -94,6 +95,7 @@ type HarnessConfig = {
   failure?: "spawn" | "progress" | "settlement" | "hash" | "stop";
   observation?: "device" | "groups" | "scratch" | "port" | "sentinel" | "create" | "parent";
   behavior?: "failed-success" | "successful-failure" | "wrong-code" | "early-cancellation";
+  diagnosticPayload?: boolean;
   settlementFailure?: boolean;
   admissionWriteFailure?: boolean;
   preexistingReceipt?: boolean;
@@ -249,6 +251,37 @@ async function harness(taskRoot: string, config: HarnessConfig) {
         children: [{ pid: 1234, pgid: 1234, groupGone: true, argv: ["test-without-building"] }],
       };
       if (affected) {
+        if (config.receipt === "unknown")
+          Object.assign(value, {
+            outcome: "unknown",
+            nativeClaim: false,
+            retainScratch: true,
+            primary: "Owned command timed out; operation effect requires readback",
+            primaryErrors: [
+              "Owned command timed out; operation effect requires readback",
+              "kill EPERM",
+            ],
+            cleanup: [
+              {
+                label: "owned-children-gone",
+                status: "failed",
+                error: "captured child/group cleanup unresolved",
+              },
+            ],
+          });
+        if (config.diagnosticPayload)
+          Object.assign(value, {
+            primary: `${taskRoot}/private-token ${"x".repeat(2000)}`,
+            primaryErrors: Array.from(
+              { length: 10 },
+              () => `${taskRoot}/private-token ${"x".repeat(2000)}`,
+            ),
+            cleanup: Array.from({ length: 10 }, () => ({
+              error: `${taskRoot}/private-token ${"x".repeat(2000)}`,
+            })),
+            stdout: "raw-private-output",
+            argv: ["raw-private-argv"],
+          });
         if (config.receipt === "source") value.sourceSha = "b".repeat(40);
         if (config.receipt === "build") value.build = { ...build, unrelated: true };
         if (config.receipt === "admission")
@@ -728,6 +761,78 @@ describe("sentinel orchestration admission and cleanup", () => {
         expect(error).toBeDefined();
         expect(h.starts).toEqual([]);
         expect(receipt.cleanupKnown).toBe(true);
+      });
+    },
+  );
+});
+
+describe("preserved native failure diagnostics", () => {
+  it("retains a bound unknown child failure separately from receipt validation", async () => {
+    await withHarness({ receipt: "unknown" }, async (h) => {
+      const { error, receipt } = await h.run();
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(h.starts).toEqual(["success"]);
+      expect(receipt).toMatchObject({
+        cleanupKnown: false,
+        qualification: "not-established",
+        cases: [],
+      });
+      expect(receipt.journeys[0]).toMatchObject({
+        state: "launch-unresolved",
+        cleanupFailure: "Incomplete receipt",
+        childFailure: {
+          primary: "Owned command timed out; operation effect requires readback",
+          primaryErrors: [
+            "Owned command timed out; operation effect requires readback",
+            "kill EPERM",
+          ],
+          cleanupErrors: ["captured child/group cleanup unresolved"],
+        },
+      });
+    });
+  });
+  it("retains the original sentinel stop error alongside aggregate cleanup failure", async () => {
+    await withHarness({ target: "/bin/sleep", failure: "stop" }, async (h) => {
+      const { error, receipt } = await h.run();
+      expect(h.starts).toEqual(SENTINEL_CASES);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(receipt).toMatchObject({
+        cleanupKnown: false,
+        sentinelsRemoved: false,
+        qualification: "not-established",
+        sentinelStopErrors: ["stop unresolved", "runner settlement failed"],
+        cleanupFailure: "Sentinel cleanup unresolved",
+      });
+    });
+  });
+});
+
+describe("bounded sentinel failure fields", () => {
+  it("copies only bounded redacted causes from a bound receipt", async () => {
+    await withHarness({ receipt: "unknown", diagnosticPayload: true }, async (h) => {
+      const { receipt } = await h.run();
+      const failure = receipt.journeys[0].childFailure;
+      expect(Object.keys(failure).sort()).toEqual(["cleanupErrors", "primary", "primaryErrors"]);
+      expect(failure.primaryErrors).toHaveLength(8);
+      expect(failure.cleanupErrors).toHaveLength(8);
+      for (const text of [failure.primary, ...failure.primaryErrors, ...failure.cleanupErrors]) {
+        expect(text).toHaveLength(512);
+        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(2048);
+        expect(text).toContain("[REDACTED]");
+      }
+      const serialized = JSON.stringify(failure);
+      expect(serialized).not.toContain(NodePath.dirname(h.root));
+      expect(serialized).not.toMatch(/raw-private|stdout|argv/);
+    });
+  });
+  it.each(["source", "build", "admission"] as const)(
+    "does not adopt diagnostics before %s binding",
+    async (receipt) => {
+      await withHarness({ receipt, diagnosticPayload: true }, async (h) => {
+        const { receipt: result } = await h.run();
+        expect(result.journeys[0].childFailure).toBeUndefined();
+        expect(result.cleanupKnown).toBe(false);
+        expect(h.starts).toEqual(["success"]);
       });
     },
   );

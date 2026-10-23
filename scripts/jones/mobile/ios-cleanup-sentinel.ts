@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeURL from "node:url";
 import { admitBuildBoundary, jobInputs } from "./ios-native-build.ts";
-import { acceptCreatedDevice } from "./ios-pin-workflow.ts";
+import { acceptCreatedDevice, redact } from "./ios-pin-workflow.ts";
 import { fileDigest, nativeEnvironment, object, ownedCommand } from "./xcuitest.ts";
 import type { ChildReceipt } from "./xcuitest.ts";
 
@@ -102,6 +102,40 @@ const defaultDependencies = {
   portClosed,
 };
 type Dependencies = typeof defaultDependencies;
+function diagnosticText(value: unknown, secrets: readonly string[]) {
+  return typeof value === "string" ? redact(value, secrets).slice(0, 512) : undefined;
+}
+function diagnosticErrors(error: unknown, secrets: readonly string[], depth = 0): string[] {
+  if (error instanceof AggregateError && depth < 3)
+    return error.errors
+      .slice(0, 8)
+      .flatMap((cause) => diagnosticErrors(cause, secrets, depth + 1))
+      .slice(0, 8);
+  return [diagnosticText(error instanceof Error ? error.message : "Unknown failure", secrets)!];
+}
+function childFailure(receipt: Record<string, unknown>, secrets: readonly string[]) {
+  const strings = (value: unknown) =>
+    Array.isArray(value)
+      ? value.slice(0, 8).flatMap((item) => {
+          const text = diagnosticText(item, secrets);
+          return text === undefined ? [] : [text];
+        })
+      : [];
+  return {
+    primary: diagnosticText(receipt.primary, secrets),
+    primaryErrors: strings(receipt.primaryErrors),
+    cleanupErrors: strings(
+      Array.isArray(receipt.cleanup)
+        ? receipt.cleanup
+            .slice(0, 8)
+            .map((item) =>
+              item && typeof item === "object" && "error" in item ? item.error : undefined,
+            )
+        : [],
+    ),
+  };
+}
+
 export interface JourneyAttempt {
   name: string;
   receiptPath: string;
@@ -109,6 +143,8 @@ export interface JourneyAttempt {
   runner?: ChildReceipt;
   cleanup?: Awaited<ReturnType<typeof verifyJourney>>;
   cleanupFailure?: string;
+  childFailure?: ReturnType<typeof childFailure>;
+  runnerErrors?: string[];
 }
 function journeyAttempt(output: string, name: string): JourneyAttempt {
   return { name, receiptPath: NodePath.join(output, `${name}.json`), state: "not-launched" };
@@ -236,7 +272,16 @@ export async function runJourney(
     await runner.result.catch((error) => {
       settlementError ??= error;
     });
+    if (settlementError)
+      attempt.runnerErrors = diagnosticErrors(settlementError, [source, root, output]);
     try {
+      const receipt = object(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
+      NodeAssert.equal(receipt.schema, "jones-ios-workflow-receipt/2");
+      NodeAssert.equal(receipt.sourceSha, sourceSha);
+      NodeAssert.deepEqual(receipt.build, build, "Journey build mismatch");
+      NodeAssert.deepEqual(receipt.admission, admission, "Journey admission mismatch");
+      if (receipt.outcome !== "pass")
+        attempt.childFailure = childFailure(receipt, [source, root, output]);
       NodeAssert.ok(
         !settlementError &&
           runner.receipt.groupGone === true &&
@@ -245,11 +290,6 @@ export async function runJourney(
           runner.receipt.pgid === runner.receipt.pid,
         "Journey runner settlement unresolved",
       );
-      const receipt = object(JSON.parse(await NodeFSP.readFile(receiptPath, "utf8")));
-      NodeAssert.equal(receipt.schema, "jones-ios-workflow-receipt/2");
-      NodeAssert.equal(receipt.sourceSha, sourceSha);
-      NodeAssert.deepEqual(receipt.build, build, "Journey build mismatch");
-      NodeAssert.deepEqual(receipt.admission, admission, "Journey admission mismatch");
       NodeAssert.ok(receipt.outcome === "pass" || receipt.outcome === "fail", "Incomplete receipt");
       NodeAssert.equal(receipt.retainScratch, false, "Runner cleanup unresolved");
       NodeAssert.ok(typeof receipt.scratch === "string");
@@ -491,10 +531,19 @@ export async function sentinelMain(mode: string, overrides: Partial<Dependencies
     let cleanupError: unknown;
     try {
       if (sleep) {
-        await sleep.stop();
-        await sleep.result.catch((error) => {
-          if (!sleep?.receipt.groupGone) throw error;
+        const stopErrors: unknown[] = [];
+        await sleep.stop().catch((error) => {
+          stopErrors.push(error);
         });
+        await sleep.result.catch((error) => {
+          if (stopErrors.length || !sleep?.receipt.groupGone) stopErrors.push(error);
+        });
+        if (stopErrors.length) {
+          result.sentinelStopErrors = stopErrors
+            .flatMap((error) => diagnosticErrors(error, [input.source, input.root, input.output]))
+            .slice(0, 8);
+          throw new AggregateError(stopErrors, "Sentinel sleep settlement unresolved");
+        }
       }
     } catch (error) {
       cleanupError = error;
@@ -520,7 +569,9 @@ export async function sentinelMain(mode: string, overrides: Partial<Dependencies
       );
       NodeAssert.ok(result.cleanupKnown, "Journey cleanup unresolved");
     } catch (error) {
-      cleanupError = error;
+      cleanupError = cleanupError
+        ? new AggregateError([cleanupError, error], "Sentinel cleanup unresolved")
+        : error;
       result.cleanupKnown = false;
       result.cleanupFailure = error instanceof Error ? error.message : "Cleanup unresolved";
     }

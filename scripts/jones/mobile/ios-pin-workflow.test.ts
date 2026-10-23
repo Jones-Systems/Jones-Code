@@ -2,6 +2,8 @@ import { describe, expect, it } from "vite-plus/test";
 import * as NodeOS from "node:os";
 import {
   acceptCreatedDevice,
+  FixtureStartupTimeout,
+  workflowFailure,
   assertAdmission,
   assertPersistence,
   assertTransition,
@@ -288,5 +290,51 @@ describe("owned cleanup", () => {
     await second.finish();
     expect(calls).toEqual(["first", "second"]);
     expect((await first.finish()).cleanup).toEqual([]);
+  });
+});
+
+describe("workflow failure diagnostics", () => {
+  it("keeps boot timeout and cleanup causes redacted and distinct from fixture startup", () => {
+    const error = new AggregateError(
+      [new Error("Owned command timed out; secret"), new Error("kill EPERM secret")],
+      "Owned command timed out; secret",
+    );
+    expect(workflowFailure(error, "simulator-boot-readiness", ["secret"])).toEqual({
+      primary: "Owned command timed out; [REDACTED]",
+      primaryErrors: ["Owned command timed out; [REDACTED]", "kill EPERM [REDACTED]"],
+      failureStage: "simulator-boot-readiness",
+      failureCode: "other",
+    });
+    expect(workflowFailure(new Error("fixture timeout"), "fixture-startup", [])).toMatchObject({
+      failureCode: "other",
+    });
+    expect(
+      workflowFailure(new FixtureStartupTimeout("fixture deadline"), "fixture-startup", []),
+    ).toMatchObject({
+      failureStage: "fixture-startup",
+      failureCode: "startup-timeout",
+    });
+    expect(workflowFailure(error, "simulator-boot-readiness", [], true)).toMatchObject({
+      failureCode: "cancelled",
+    });
+  });
+});
+
+describe("bounded workflow failure fields", () => {
+  it("redacts before limiting diagnostic messages", () => {
+    const failure = workflowFailure(
+      new AggregateError(
+        Array.from({ length: 20 }, () => new Error(`secret ${"x".repeat(2000)}`)),
+        `secret ${"x".repeat(2000)}`,
+      ),
+      "simulator-boot-readiness",
+      ["secret"],
+    );
+    expect(failure.primaryErrors).toHaveLength(8);
+    for (const text of [failure.primary, ...failure.primaryErrors!]) {
+      expect(text).toHaveLength(512);
+      expect(text).toContain("[REDACTED]");
+      expect(text).not.toContain("secret");
+    }
   });
 });

@@ -22,7 +22,7 @@ import {
   testArgv,
   treeDigest,
 } from "./xcuitest.ts";
-import type { ChildReceipt } from "./xcuitest.ts";
+import type { ChildReceipt, CommandStage } from "./xcuitest.ts";
 import { assertResourceAdmission, hostedClass } from "./ios-admission.ts";
 
 const sha256 = (value: string | Buffer) =>
@@ -109,7 +109,31 @@ export interface WorkflowIO {
 }
 
 export class PinOracleFailure extends Error {}
-class FixtureStartupTimeout extends Error {}
+export class FixtureStartupTimeout extends Error {}
+export type WorkflowStage = "setup" | "simulator-boot-readiness" | "fixture-startup" | "journey";
+export function workflowFailure(
+  error: unknown,
+  stage: WorkflowStage,
+  secrets: readonly string[],
+  cancelled = false,
+) {
+  return {
+    primary: redact(message(error), secrets).slice(0, 512),
+    failureStage: stage,
+    failureCode: cancelled
+      ? "cancelled"
+      : error instanceof FixtureStartupTimeout
+        ? "startup-timeout"
+        : "other",
+    ...(error instanceof AggregateError
+      ? {
+          primaryErrors: error.errors
+            .slice(0, 8)
+            .map((item) => redact(message(item), secrets).slice(0, 512)),
+        }
+      : {}),
+  };
+}
 export const FIXTURE_READINESS_TIMEOUT_MS = 30_000;
 export function nativeClaimAllowed(timeoutMs: number) {
   return timeoutMs === FIXTURE_READINESS_TIMEOUT_MS;
@@ -265,7 +289,7 @@ async function command(
   cwd: string,
   env: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? "/usr/bin:/bin" },
   input?: string,
-  options?: Pick<Options, "signal" | "children">,
+  options?: Pick<Options, "signal" | "children"> & { stage?: CommandStage },
 ) {
   return ownedCommand(executable, args, {
     cwd,
@@ -273,6 +297,7 @@ async function command(
     ...(input === undefined ? {} : { input }),
     ...(options?.signal === undefined ? {} : { signal: options.signal }),
     ...(options?.children === undefined ? {} : { receipts: options.children }),
+    ...(options?.stage === undefined ? {} : { stage: options.stage }),
   }).result;
 }
 async function checked(
@@ -281,7 +306,7 @@ async function checked(
   cwd: string,
   env?: NodeJS.ProcessEnv,
   input?: string,
-  options?: Pick<Options, "signal" | "children">,
+  options?: Pick<Options, "signal" | "children"> & { stage?: CommandStage },
 ) {
   const result = await command(executable, args, cwd, env, input, options);
   NodeAssert.equal(
@@ -770,11 +795,18 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
     );
   });
   let primary: string | undefined;
+  let stage: WorkflowStage = "setup";
   const env = nativeEnvironment(root, options.developerDir, process.env.PATH ?? "/usr/bin:/bin");
-  const run = (exe: string, args: readonly string[], teardown = false) =>
+  const run = (
+    exe: string,
+    args: readonly string[],
+    teardown = false,
+    commandStage?: CommandStage,
+  ) =>
     checked(exe, args, root, env, undefined, {
       ...(teardown || options.signal === undefined ? {} : { signal: options.signal }),
       children: options.children,
+      ...(commandStage === undefined ? {} : { stage: commandStage }),
     });
   const devices = async (teardown = false) => {
     const response = record(
@@ -858,8 +890,10 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
     if (creationError) throw creationError;
     NodeAssert.ok(udid, "created device unavailable");
     await run("/usr/bin/xcrun", ["simctl", "boot", udid]);
-    await run("/usr/bin/xcrun", ["simctl", "bootstatus", udid, "-b"]);
+    stage = "simulator-boot-readiness";
+    await run("/usr/bin/xcrun", ["simctl", "bootstatus", udid, "-b"], false, stage);
     await progress(options, "device-booted");
+    stage = "fixture-startup";
     const fixture = await startFixture(
       options,
       NodePath.join(root, "fixture"),
@@ -867,6 +901,7 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
       secrets,
       receipt,
     );
+    stage = "journey";
     receipt.server = { environmentId: fixture.environmentId, port: fixture.port };
     await progress(options, "fixture-ready");
     const phases = new PinPhases(fixture.read, options.signal);
@@ -1029,14 +1064,12 @@ async function nativeRun(options: Options, facts: Awaited<ReturnType<typeof pref
     NodeAssert.equal(options.noAction, false, "no-action negative control unexpectedly passed");
     receipt.nativeClaim = nativeClaimAllowed(options.fixtureReadinessTimeoutMs);
   } catch (error) {
-    primary = redact(message(error), secrets);
-    receipt.failureCode = options.signal?.aborted
-      ? "cancelled"
-      : error instanceof FixtureStartupTimeout
-        ? "startup-timeout"
-        : (receipt.failureCode ?? "other");
-    if (error instanceof AggregateError)
-      receipt.primaryErrors = error.errors.map((item) => redact(message(item), secrets));
+    const failure = workflowFailure(error, stage, secrets, options.signal?.aborted);
+    primary = failure.primary;
+    Object.assign(receipt, failure, {
+      failureCode:
+        failure.failureCode === "other" ? (receipt.failureCode ?? "other") : failure.failureCode,
+    });
   }
   try {
     await progress(options, "cleanup-started");

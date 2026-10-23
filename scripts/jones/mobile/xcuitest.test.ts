@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - Standalone native-adapter fixtures own temporary files and exercise Node subprocess cleanup without a server Effect runtime.
 import { describe, expect, it, vi } from "vite-plus/test";
+import * as NodeEvents from "node:events";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -294,5 +295,129 @@ describe("opt-in generated UI-test target", () => {
       await NodeFSP.rm(root, { recursive: true });
     }
     await expect(NodeFSP.stat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("pure command failure diagnostics", () => {
+  function fixture(failAt: number, errno = "EPERM", close = true, timedOut = true) {
+    type Lifecycle = NonNullable<Parameters<typeof ownedCommand>[3]>;
+    const child = Object.assign(new NodeEvents.EventEmitter(), {
+      pid: 1234,
+      stdout: new NodeEvents.EventEmitter(),
+      stderr: new NodeEvents.EventEmitter(),
+      stdin: Object.assign(new NodeEvents.EventEmitter(), { end: () => {} }),
+    }) as ReturnType<Lifecycle["spawn"]>;
+    const calls: (0 | NodeJS.Signals)[] = [];
+    let clock = 0;
+    let timeout!: () => void;
+    const syscallError = Object.assign(new Error(`kill ${errno}`), { code: errno });
+    const spawn = vi.fn(() => child);
+    const clearTimer = vi.fn();
+    const lifecycle: Lifecycle = {
+      spawn,
+      now: () => clock,
+      wait: async (ms) => {
+        clock += ms;
+      },
+      setTimer: (callback) => {
+        timeout = callback;
+        return 1 as unknown as ReturnType<typeof setTimeout>;
+      },
+      clearTimer,
+      kill: (pid, signal) => {
+        expect(pid).toBe(-1234);
+        calls.push(signal);
+        if (signal === "SIGTERM" && close) child.emit("close", null, "SIGTERM");
+        if (calls.length === failAt) throw syscallError;
+        return true;
+      },
+    };
+    const command = ownedCommand(
+      "/private/tool",
+      ["private-argument"],
+      {
+        cwd: "/private/scratch",
+        env: {},
+        stage: "simulator-boot-readiness",
+      },
+      lifecycle,
+    );
+    const result = command.result.catch((error: unknown) => error as AggregateError);
+    clock = 120_000;
+    if (timedOut) timeout();
+    if (close) child.emit("close", null, "SIGTERM");
+    return { command, result, syscallError, calls, spawn, clearTimer };
+  }
+  it.each([
+    [1, "term", "0"],
+    [2, "term", "SIGTERM"],
+    [3, "term-wait", "0"],
+    [83, "term-wait", "0"],
+    [84, "term-wait", "0"],
+    [85, "kill", "0"],
+    [86, "kill", "SIGKILL"],
+    [87, "kill-wait", "0"],
+  ] as const)(
+    "keeps timeout primary and EPERM unknown at syscall %s",
+    async (position, phase, signal) => {
+      const f = fixture(position);
+      const error = (await f.result) as AggregateError;
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.errors[0].message).toBe(
+        "Owned command timed out; operation effect requires readback",
+      );
+      expect(error.errors[1]).toBe(f.syscallError);
+      expect(f.command.receipt.groupGone).not.toBe(true);
+      expect(f.command.receipt.signal).toBe("SIGTERM");
+      expect(f.command.receipt.diagnostic).toMatchObject({
+        stage: "simulator-boot-readiness",
+        timeoutMs: 120_000,
+        deadlineAt: "1970-01-01T00:02:00.000Z",
+        timedOutAt: "1970-01-01T00:02:00.000Z",
+        cleanupError: { phase, syscall: "kill", signal, errno: "EPERM" },
+      });
+      expect(f.command.receipt.diagnostic?.closedAt).toBeDefined();
+      expect(f.calls).toHaveLength(position);
+      expect(f.spawn).toHaveBeenCalledTimes(1);
+      expect(f.clearTimer).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.stringify(f.command.receipt.diagnostic);
+      expect(diagnostic.length).toBeLessThan(512);
+      expect(diagnostic).not.toMatch(/private|argv|stdout|stderr/);
+    },
+  );
+  it.each([1, 2, 3, 85, 86, 87])(
+    "accepts ESRCH with close at syscall %s without losing timeout",
+    async (position) => {
+      const f = fixture(position, "ESRCH");
+      const error = (await f.result) as AggregateError;
+      expect(error.errors).toHaveLength(1);
+      expect(error.message).toContain("timed out");
+      expect(f.command.receipt.groupGone).toBe(true);
+      expect(f.command.receipt.diagnostic?.cleanupError).toBeUndefined();
+    },
+  );
+  it("keeps a close-only EPERM settlement unresolved without inventing a timeout", async () => {
+    const f = fixture(1, "EPERM", true, false);
+    const error = (await f.result) as AggregateError;
+    expect(error.errors).toEqual([f.syscallError]);
+    expect(f.command.receipt.groupGone).not.toBe(true);
+    expect(f.command.receipt.diagnostic).toMatchObject({
+      closedAt: "1970-01-01T00:02:00.000Z",
+      cleanupError: { phase: "settlement", syscall: "kill", signal: "0", errno: "EPERM" },
+    });
+    expect(f.command.receipt.diagnostic?.timedOutAt).toBeUndefined();
+  });
+  it("requires close even after ESRCH", async () => {
+    const f = fixture(1, "ESRCH", false);
+    const error = (await f.result) as AggregateError;
+    expect(error.errors).toHaveLength(2);
+    expect(error.errors[1].message).toContain("exit unresolved");
+    expect(f.command.receipt.diagnostic?.closedAt).toBeUndefined();
+  });
+  it("bounds unexpected errno without copying syscall messages", async () => {
+    const f = fixture(3, "/private/secret");
+    await f.result;
+    expect(f.command.receipt.diagnostic?.cleanupError?.errno).toBe("UNKNOWN");
+    expect(JSON.stringify(f.command.receipt.diagnostic)).not.toContain("private");
   });
 });
