@@ -2045,11 +2045,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         );
         // Codex drops client developer messages during compaction but only
         // resends additionalContext when it changes.
-        const restoreAdditionalContext = (threadId: string) =>
+        const injectAdditionalContext = (threadId: string, targetClient = client) =>
           Effect.gen(function* () {
             const context = (yield* Ref.get(additionalContextByThread)).get(threadId);
             if (!context) return;
-            yield* client.request("thread/inject_items", {
+            yield* targetClient.request("thread/inject_items", {
               threadId,
               items: Object.entries(context).map(([key, entry]) =>
                 entry.kind === "untrusted"
@@ -2070,7 +2070,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     },
               ),
             });
-          }).pipe(
+          });
+        const restoreAdditionalContext = (threadId: string) =>
+          injectAdditionalContext(threadId).pipe(
             Effect.timeout("10 seconds"),
             Effect.catch((cause) =>
               Effect.logWarning("Failed to restore Codex additional context after compaction.", {
@@ -9755,7 +9757,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* value.revalidateStartAdmission ?? Effect.void;
                 if (!prepared.producer.active || currentProducer !== prepared.producer)
                   return yield* new HandoffCompactionError({ reason: "cancelled" });
-                yield* restoreAdditionalContext(prepared.binding.nativeThreadId);
+                // Observe restoration on this producer even after the caller times out
+                // or cancels. Only its acknowledgement settles this separate effect.
+                const restoration = yield* Effect.uninterruptibleMask((restore) =>
+                  prepared.request.beginRestoration.pipe(
+                    Effect.andThen(
+                      restore(
+                        injectAdditionalContext(
+                          prepared.binding.nativeThreadId,
+                          prepared.producer.client,
+                        ),
+                      ).pipe(
+                        Effect.andThen(prepared.request.acknowledgeRestoration),
+                        Effect.onError(() => prepared.request.cancel),
+                        Effect.forkIn(prepared.producer.scope, { startImmediately: true }),
+                      ),
+                    ),
+                  ),
+                );
+                yield* Fiber.join(restoration).pipe(Effect.timeout("10 seconds"));
+                if (!prepared.producer.active || currentProducer !== prepared.producer)
+                  return yield* new HandoffCompactionError({ reason: "cancelled" });
                 yield* prepared.request.assertActive;
                 yield* value.revalidateStartAdmission ?? Effect.void;
                 yield* prepared.request.release;

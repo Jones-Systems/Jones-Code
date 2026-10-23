@@ -87,3 +87,35 @@ it.effect("late acknowledgement and terminal reconcile cancellation without revi
     yield* next.assertActive;
   }),
 );
+
+it.effect("restoration has an independent fence and late acknowledgement never revives input", () =>
+  Effect.gen(function* () {
+    const state = makeCodexHandoffCompaction();
+    const request = yield* state.begin(binding);
+    yield* request.acknowledge;
+    yield* state.started(binding, "turn");
+    yield* state.compacted(binding, "turn");
+    yield* state.usage(binding, "turn", usage);
+    yield* state.completed(binding, "turn", true);
+    yield* request.wait;
+    yield* request.beginRestoration;
+    yield* request.cancel;
+    yield* request.release;
+    yield* state.completed(binding, "turn", true);
+    assert.isTrue(state.blocked);
+    assert.equal(
+      (yield* Effect.exit(state.begin({ ...binding, attemptId: "blocked" })))._tag,
+      "Failure",
+    );
+    yield* request.acknowledgeRestoration;
+    assert.isFalse(state.blocked);
+    assert.equal((yield* Effect.exit(request.assertActive))._tag, "Failure");
+    const next = yield* state.begin({ ...binding, attemptId: "next" });
+    yield* request.acknowledgeRestoration;
+    assert.isTrue(state.blocked);
+    yield* next.beginRestoration;
+    yield* next.cancel;
+    yield* state.retire(binding);
+    assert.isFalse(state.blocked);
+  }),
+);

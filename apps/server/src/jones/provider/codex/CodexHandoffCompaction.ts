@@ -24,12 +24,15 @@ interface Request extends Binding {
   completed: boolean;
   failed: boolean;
   ambiguous: boolean;
+  restorationPending: boolean;
   usage?: ThreadTokenUsageSnapshot;
 }
 
 // Maintenance never registers a root provider turn: that would falsely attribute
 // the still-unsent user input to this native turn. Cancellation never revives it;
 // acknowledged terminal evidence can still release its native admission fence.
+// Once restoration is dispatched, its own acknowledgement or producer retirement
+// is required: the earlier compaction terminal cannot settle that later effect.
 export function makeCodexHandoffCompaction() {
   const consumed = new Set<string>();
   let pending: Request | undefined;
@@ -42,7 +45,8 @@ export function makeCodexHandoffCompaction() {
       request.failed &&
       request.acknowledged &&
       request.completed &&
-      !request.ambiguous
+      !request.ambiguous &&
+      !request.restorationPending
     )
       pending = undefined;
   };
@@ -103,6 +107,7 @@ export function makeCodexHandoffCompaction() {
           completed: false,
           failed: false,
           ambiguous: false,
+          restorationPending: false,
         };
         consumed.add(key);
         pending = request;
@@ -118,8 +123,19 @@ export function makeCodexHandoffCompaction() {
             request.acknowledged = true;
             return finish(request);
           }),
+          beginRestoration: Effect.suspend(() => {
+            if (pending !== request || request.failed)
+              return Effect.fail(new HandoffCompactionError({ reason: "cancelled" }));
+            request.restorationPending = true;
+            return Effect.void;
+          }),
+          acknowledgeRestoration: Effect.sync(() => {
+            request.restorationPending = false;
+            reconcile(request);
+          }),
           release: Effect.sync(() => {
-            if (pending === request && !request.failed) pending = undefined;
+            if (pending === request && !request.failed && !request.restorationPending)
+              pending = undefined;
           }),
         };
       });
