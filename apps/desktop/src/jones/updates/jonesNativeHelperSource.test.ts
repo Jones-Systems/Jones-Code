@@ -1227,16 +1227,12 @@ if boundary_fault.startswith('mount-'):
     assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
 assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
 `;
-        NodeChildProcess.execFileSync(
-          "python3",
-          ["-", f.directory, "trial-mismatch", fault],
-          {
-            input: `${nativeFunctions}\n${runtime}\n${scenario}`,
-            encoding: "utf8",
-            timeout: 10000,
-            maxBuffer: 1024 * 1024,
-          },
-        );
+        NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
+          input: `${nativeFunctions}\n${runtime}\n${scenario}`,
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
       } finally {
         await f.cleanup();
       }
@@ -1396,16 +1392,12 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-", f.directory, "trial-mismatch", fault],
-        {
-          input: `${nativeFunctions}\n${runtime}\n${scenario}`,
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-", f.directory, "trial-mismatch", fault], {
+        input: `${nativeFunctions}\n${runtime}\n${scenario}`,
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
