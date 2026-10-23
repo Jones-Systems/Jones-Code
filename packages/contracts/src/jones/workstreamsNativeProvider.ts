@@ -1,7 +1,6 @@
 import * as Schema from "effect/Schema";
 
 export const WORKSTREAMS_T3_PROVIDER_FAMILY = "workstreams-t3-provider";
-export const WORKSTREAMS_T3_PROVIDER_V2_VERSION = "2.0.0";
 export const WORKSTREAMS_T3_PROVIDER_V2_PROTOCOL = "workstreams-t3-provider/2.0.0";
 export const WORKSTREAMS_T3_PROVIDER_V2_MANIFEST_SHA256 =
   "5acf321e9a2c0584d0e3e74137e6bdd07b5ab90f35bc5cec47ba1ee96c08fed8";
