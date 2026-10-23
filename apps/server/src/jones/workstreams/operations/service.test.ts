@@ -434,6 +434,13 @@ describe("workstream operation state machine", () => {
           });
           expect(new Set(cp.state.writes).size).toBe(1);
           expect(cp.state.membershipCommits).toBe(0);
+          const reads = cp.state.reads;
+          const writes = cp.state.writes.length;
+          expect(yield* service.submit({ request, wait_ms: 0 })).toMatchObject({
+            state: "reconciling",
+          });
+          expect(cp.state.reads).toBe(reads);
+          expect(cp.state.writes.length).toBe(writes);
           cp.state.beforeSend = undefined;
           cp.state.offline = false;
           yield* TestClock.adjust(30_000);
@@ -469,6 +476,108 @@ describe("workstream operation state machine", () => {
           operation: { state: "rejected", reason: "thread_not_found" },
         });
         expect(cp.state.writes.length).toBe(writes);
+      }),
+    ),
+  );
+
+  it.effect(
+    "only an explicit same-ID resubmit restarts a sealing operation after thread recovery",
+    () =>
+      withCP((cp) =>
+        Effect.gen(function* () {
+          cp.seedRegistration();
+          cp.state.exists = false;
+          const service = yield* WorkstreamOperations;
+          yield* service.submit({ request, wait_ms: 0 });
+          yield* TestClock.adjust(1);
+          expect(yield* service.read({ operation_id: request.operation_id })).toMatchObject({
+            operation: { state: "reconciling", poll_after_ms: 30_000 },
+          });
+          const version = cp.state.version;
+          cp.state.exists = true;
+          yield* TestClock.adjust(30_000);
+          expect(yield* service.read({ operation_id: request.operation_id })).toMatchObject({
+            operation: { state: "reconciling" },
+          });
+          expect(cp.state.version).toBe(version);
+          expect(cp.state.writes).toEqual([]);
+
+          const retried = yield* service.submit({ request, wait_ms: 3000 }).pipe(Effect.forkChild);
+          yield* TestClock.adjust(3000);
+          const result = yield* Fiber.join(retried);
+          expect(result.state).toBe("committed");
+          expect(result.children).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                command_id: childId(request, "reg"),
+                outcome: "committed",
+              }),
+              expect.objectContaining({
+                command_id: childId(request, "mem"),
+                outcome: "committed",
+              }),
+            ]),
+          );
+          expect(cp.state.writes.map((body) => JSON.parse(body).command_id)).toEqual([
+            childId(request, "mem"),
+          ]);
+          expect(cp.state.membershipCommits).toBe(1);
+          const reads = cp.state.reads;
+          expect(yield* service.submit({ request, wait_ms: 0 })).toEqual(result);
+          expect(cp.state.reads).toBe(reads);
+        }),
+      ),
+  );
+
+  it.effect("sealing resubmits reacquire the thread lock and join a single executor", () =>
+    withCP((cp) =>
+      Effect.gen(function* () {
+        cp.seedRegistration();
+        cp.state.exists = false;
+        const service = yield* WorkstreamOperations;
+        yield* service.submit({ request, wait_ms: 0 });
+        yield* TestClock.adjust(1);
+        cp.state.exists = true;
+        const release = yield* Deferred.make<void>();
+        cp.state.beforeSend = () => Deferred.await(release);
+        const other = { ...request, operation_id: "second-assignment-001" };
+        yield* service.submit({ request: other, wait_ms: 0 });
+        yield* TestClock.adjust(1);
+        expect(yield* service.submit({ request, wait_ms: 0 }).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { code: "thread_operation_in_progress", open_operation_id: other.operation_id },
+        });
+        cp.state.exists = false;
+        yield* Deferred.succeed(release, undefined);
+        yield* TestClock.adjust(1);
+        expect(yield* service.read({ operation_id: other.operation_id })).toMatchObject({
+          operation: { state: "rejected", reason: "thread_not_found" },
+        });
+
+        cp.state.exists = true;
+        const resume = yield* Deferred.make<void>();
+        cp.state.beforeSend = () => Deferred.await(resume);
+        const writes = cp.state.writes.length;
+        yield* Effect.all(
+          [service.submit({ request, wait_ms: 0 }), service.submit({ request, wait_ms: 0 })],
+          { concurrency: "unbounded" },
+        );
+        yield* TestClock.adjust(1);
+        expect(cp.state.writes.length).toBe(writes + 1);
+        const blocked = yield* service.submit({ request: other, wait_ms: 0 }).pipe(Effect.result);
+        expect(blocked).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            code: "thread_operation_in_progress",
+            open_operation_id: request.operation_id,
+          },
+        });
+        yield* Deferred.succeed(resume, undefined);
+        yield* TestClock.adjust(1);
+        expect(yield* service.read({ operation_id: request.operation_id })).toMatchObject({
+          operation: { state: "committed" },
+        });
+        expect(cp.state.membershipCommits).toBe(1);
       }),
     ),
   );
