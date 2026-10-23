@@ -8,6 +8,7 @@ import {
   ThreadId,
   type ImportedHistoryDelivery,
   type ImportedHistoryOutcome,
+  type ImportedHistoryReview,
 } from "@t3tools/contracts";
 import {
   decodeImportedHistoryCorrelation,
@@ -67,7 +68,7 @@ function fixture(initial: string | null = null) {
     storage,
     isCurrent: () => current,
     allocateCommandId: vi.fn(() => CommandId.make("command:queue")),
-    review: vi.fn(async () => ({
+    review: vi.fn(async (): Promise<ImportedHistoryReview> => ({
       status: "available" as const,
       reviewedBasis: "a".repeat(64),
       reason: null,
@@ -217,4 +218,18 @@ describe("mobile imported history admission", () => {
     expect(h.ports.storage.read()?.draftIdentity).toBe("draft:first");
     expect(h.ports.observe).toHaveBeenCalled();
   });
+});
+
+it("explains an unavailable review without permitting a start", async () => {
+  const h = fixture();
+  h.ports.review.mockResolvedValueOnce({
+    status: "unavailable",
+    reviewedBasis: null,
+    reason: "existing_native_context_requires_review",
+  });
+  await h.choice.review(delivery, "draft:original", () => true);
+  expect(h.choice.snapshot().canStart).toBe(false);
+  expect(h.choice.snapshot().notice).toContain("existing provider conversation");
+  await h.choice.start();
+  expect(h.ports.start).not.toHaveBeenCalled();
 });
