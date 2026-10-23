@@ -1,3 +1,4 @@
+import golden from "../../../../../../packages/contracts/contracts/workstreams-t3-provider/v2/fixtures/golden-vectors.json" with { type: "json" };
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -12,7 +13,10 @@ import {
   WorkstreamsNativeSettlementResponse,
   WorkstreamsNativeAttestationResponse,
   WorkstreamsNativeContextResponse,
-  type WorkstreamsNativeSettlementRequest,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
+  WorkstreamsNativeSettlementRequest,
 } from "@t3tools/contracts";
 import { NativeStoreAuthorityPersistenceError } from "../../../environment/nativeStoreAuthorityPersistence.ts";
 import { OrchestratorDispatchError } from "../../../orchestration-v2/Orchestrator.ts";
@@ -21,7 +25,7 @@ import {
   nativeProviderResultEvidence,
   unavailableNativeProviderEvidence,
 } from "./service.ts";
-import { NATIVE_PROVIDER_SCOPES, type NativeProviderEnrollmentBinding } from "./enrollment.ts";
+import { NATIVE_PROVIDER_SCOPES, NativeProviderEnrollmentBinding } from "./enrollment.ts";
 import {
   makeProviderFixture,
   binding,
@@ -586,4 +590,152 @@ it.effect(
       if (lookup.state === "unknown") assert.strictEqual(lookup.reason, "provider_unavailable");
       assert.strictEqual(fixture.calls.length, 1);
     }),
+);
+
+it.effect("legacy Effect serialization pins the enrollment digest and native command ID", () =>
+  Effect.gen(function* () {
+    const fixture = makeProviderFixture();
+    yield* fixture.provider().settle(binding, request, requestBytesSha256);
+    const attempt = fixture.attempts.get(fixture.key(request))!;
+    assert.strictEqual(
+      requestBytesSha256,
+      "c829d669cdb5482b6bc4d6594d83eb326fb24d794050353f463744659c32e297",
+    );
+    assert.strictEqual(
+      attempt.enrollmentSha256,
+      "913447c9ac31d5b1a3debefd169f2129df5a1aac581a369d3bae1eeb291d34d5",
+    );
+    assert.strictEqual(
+      attempt.nativeCommandId,
+      "workstreams:bbbac8b21a74019ccfe788846e0acaf75950aaf98f665c23397bc96c9488c4a3",
+    );
+    assert.strictEqual(fixture.calls[0]!.commandId, attempt.nativeCommandId);
+  }),
+);
+
+it.effect("v2 reports original enrollment at an upgraded build while v1 remains strict", () =>
+  Effect.gen(function* () {
+    const fixture = makeProviderFixture();
+    const observed = { ...binding.build, sha: "c".repeat(40), tree: "d".repeat(40) };
+    const ports = { ...fixture.ports, build: Effect.succeed(Option.some(observed)) };
+    const v1 = makeWorkstreamsNativeProvider(ports);
+    const v2 = makeWorkstreamsNativeProvider(ports, "v2");
+    assert.deepEqual(yield* v1.context(binding), {
+      protocol: binding.protocol,
+      state: "rejected",
+      reason: "contract_mismatch",
+    });
+    const context = yield* v2.context(binding);
+    yield* Schema.decodeUnknownEffect(WorkstreamsNativeContextResponseV2)(context);
+    assert.strictEqual(context.state, "ready");
+    if (context.state === "ready") {
+      const {
+        session_id: _session,
+        registry_origin: _origin,
+        scopes: _scopes,
+        ...enrollment
+      } = binding;
+      assert.deepEqual(context.enrollment, enrollment);
+      assert.deepEqual(context.observed_build, observed);
+    }
+    const attested = yield* v2.attest(binding, attestationRequest);
+    yield* Schema.decodeUnknownEffect(WorkstreamsNativeAttestationResponseV2)(attested);
+    assert.strictEqual(attested.state, "attested");
+    if (attested.state === "attested")
+      assert.strictEqual(
+        Date.parse(attested.expires_at) - Date.parse(attested.attested_at),
+        300_000,
+      );
+    for (const native_action of ["settle", "unsettle"] as const) {
+      const actionFixture = makeProviderFixture();
+      const actionProvider = makeWorkstreamsNativeProvider(
+        { ...actionFixture.ports, build: ports.build },
+        "v2",
+      );
+      const input = { ...request, native_action };
+      const result = yield* actionProvider.settle(binding, input, requestBytesSha256);
+      yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementResponseV2)(result);
+      assert.strictEqual(result.state, "terminal");
+    }
+  }),
+);
+
+it.effect("v2 preserves unavailable build, scope, identity and authority fences", () =>
+  Effect.gen(function* () {
+    const fixture = makeProviderFixture();
+    const unavailable = makeWorkstreamsNativeProvider(
+      { ...fixture.ports, build: Effect.succeed(Option.none()) },
+      "v2",
+    );
+    assert.deepEqual(yield* unavailable.context(binding), {
+      protocol: "workstreams-t3-provider/2.0.0",
+      state: "unavailable",
+      reason: "build_unavailable",
+    });
+    for (const result of [
+      yield* unavailable.attest(binding, attestationRequest),
+      yield* unavailable.settle(binding, request, requestBytesSha256),
+    ])
+      assert.deepEqual(result, {
+        protocol: "workstreams-t3-provider/2.0.0",
+        state: "rejected",
+        reason: "contract_mismatch",
+      });
+    const provider = makeWorkstreamsNativeProvider(fixture.ports, "v2");
+    for (const [changed, reason] of [
+      [{ ...binding, owner_id: "other-owner" }, "caller_mismatch"],
+      [{ ...binding, principal_id: "other-principal" }, "caller_mismatch"],
+      [{ ...binding, source_instance_id: "other-source" }, "source_mismatch"],
+      [{ ...binding, authority_namespace: "other-authority" }, "generation_conflict"],
+      [{ ...binding, store_generation: binding.store_generation + 1 }, "generation_conflict"],
+      [{ ...binding, scopes: [] }, "forbidden"],
+    ] as const)
+      assert.deepEqual(yield* provider.settle(changed, request, requestBytesSha256), {
+        protocol: "workstreams-t3-provider/2.0.0",
+        state: "rejected",
+        reason,
+      });
+    assert.strictEqual(fixture.attempts.size, 0);
+    assert.strictEqual(fixture.calls.length, 0);
+  }),
+);
+
+it.effect("both native profiles retain the producer's legacy settlement golden vectors", () =>
+  Effect.gen(function* () {
+    assert.deepEqual(
+      binding,
+      yield* Schema.decodeUnknownEffect(NativeProviderEnrollmentBinding)(golden.binding),
+    );
+    for (const vector of golden.vectors) {
+      const input = yield* Schema.decodeUnknownEffect(WorkstreamsNativeSettlementRequest)(
+        vector.request,
+      );
+      assert.strictEqual(
+        yield* Schema.encodeEffect(Schema.fromJsonString(WorkstreamsNativeSettlementRequest))(
+          input,
+        ),
+        vector.request_json,
+      );
+      for (const upgrade of [false, true]) {
+        const fixture = makeProviderFixture();
+        const provider = upgrade
+          ? makeWorkstreamsNativeProvider(
+              {
+                ...fixture.ports,
+                build: Effect.succeed(Option.some({ ...binding.build, sha: "c".repeat(40) })),
+              },
+              "v2",
+            )
+          : fixture.provider();
+        const result = yield* provider.settle(binding, input, vector.request_bytes_sha256);
+        assert.strictEqual(result.state, "terminal");
+        if (result.state === "terminal")
+          assert.strictEqual(result.result.native_evidence.result_sha256, vector.result_sha256);
+        const attempt = fixture.attempts.get(fixture.key(input))!;
+        assert.strictEqual(attempt.enrollmentSha256, vector.enrollment_sha256);
+        assert.strictEqual(attempt.nativeCommandId, vector.native_command_id);
+        assert.strictEqual(fixture.calls[0]!.commandId, vector.native_command_id);
+      }
+    }
+  }),
 );

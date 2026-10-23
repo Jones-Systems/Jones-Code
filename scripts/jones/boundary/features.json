@@ -4,6 +4,19 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "workstreams-durable-native-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/operations.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+      ],
+      "scope": "Provider v2 reports immutable enrolled provenance separately from the observed build while sharing the original request identity, attempt store, receipt/event rules and authority fences. Existing v1 behavior stays strict. Synthetic native tests cover compatible-build recovery and compaction without redispatch, profile-specific HTTP/authentication and historical enrollment readback; plan/apply and installation custody keep current-build qualification. Registration v3 and operational adoption are separate slices."
+    },
+    {
       "id": "provider-switch-before-start",
       "tests": [
         "apps/server/src/jones/providerSwitchBeforeStart/providerSwitchBeforeStart.test.ts",
