@@ -2,6 +2,7 @@ import {
   ModelSelection,
   OrchestrationV2ThreadProjection,
   ProviderSessionId,
+  type OrchestrationV2ProviderThread,
   ProviderThreadId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -12,6 +13,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+
+import {
+  interruptedPendingProviderThread,
+  type ProviderSwitchBeforeStartEvidence,
+} from "../jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts";
 
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import {
@@ -25,6 +31,7 @@ export interface ProviderSwitchPlanV2 {
   readonly targetProviderThreadId: ProviderThreadId | null;
   readonly releaseProviderSessionIds: ReadonlyArray<ProviderSessionId>;
   readonly transition: ProviderSessionTransition;
+  readonly rebindPendingProviderThread?: OrchestrationV2ProviderThread;
 }
 
 export class ProviderSwitchPlanError extends Schema.TaggedError<ProviderSwitchPlanError>()(
@@ -43,6 +50,7 @@ export interface ProviderSwitchServiceV2Shape {
       "thread" | "providerSessions" | "providerThreads"
     >;
     readonly targetModelSelection: ModelSelection;
+    readonly beforeStartEvidence?: ProviderSwitchBeforeStartEvidence;
   }) => Effect.Effect<ProviderSwitchPlanV2, ProviderSwitchPlanError>;
 }
 
@@ -64,7 +72,7 @@ export const layer: Layer.Layer<
   Effect.gen(function* () {
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
     return ProviderSwitchServiceV2.of({
-      plan: ({ projection, targetModelSelection }) =>
+      plan: ({ projection, targetModelSelection, beforeStartEvidence }) =>
         Effect.gen(function* () {
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
@@ -110,6 +118,15 @@ export const layer: Layer.Layer<
                   thread.ownerNodeId === null &&
                   thread.providerInstanceId === current.instanceId,
               )?.driver ?? currentSessions[0]?.driver);
+          const rebindPendingProviderThread =
+            instanceChanged &&
+            Option.isSome(currentInstance) &&
+            currentInstance.value.driver === "codex" &&
+            Option.isSome(targetInstance) &&
+            targetInstance.value.driver === "codex" &&
+            targetInstance.value.enabled
+              ? interruptedPendingProviderThread(projection, beforeStartEvidence)
+              : undefined;
           const hasCurrentHistory =
             currentSessions.length > 0 ||
             projection.providerThreads.some(
@@ -121,6 +138,7 @@ export const layer: Layer.Layer<
           if (
             instanceChanged &&
             hasCurrentHistory &&
+            rebindPendingProviderThread === undefined &&
             currentDriver === "codex" &&
             Option.isSome(targetInstance) &&
             targetInstance.value.driver === "codex" &&
@@ -252,6 +270,7 @@ export const layer: Layer.Layer<
             targetProviderThreadId: targetProviderThread?.id ?? null,
             releaseProviderSessionIds,
             transition,
+            ...(rebindPendingProviderThread === undefined ? {} : { rebindPendingProviderThread }),
           };
         }).pipe(
           Effect.mapError(
