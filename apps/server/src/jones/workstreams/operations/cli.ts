@@ -80,7 +80,16 @@ export type WorkstreamCliInput =
   | { readonly command: "status"; readonly query?: Operations.WorkstreamOperationReadRequest };
 
 /** No generated IDs, hidden retries, or client-side register/verify/mutate sequence. */
-export const dispatchWorkstreamCli = (port: WorkstreamCliPort, input: WorkstreamCliInput) => {
+export const dispatchWorkstreamCli = (
+  port: WorkstreamCliPort,
+  input: WorkstreamCliInput,
+): Effect.Effect<
+  | T3WorkstreamListResult
+  | Operations.WorkstreamOperationResult
+  | Operations.WorkstreamOperationReadResponse
+  | Operations.WorkstreamSetupStatus,
+  WorkstreamCliError
+> => {
   switch (input.command) {
     case "list":
       return port.list({
@@ -184,10 +193,15 @@ export const makeWorkstreamCliHttpPort = (
               workstreamCliRequestError(cause, payload.request.operation_id),
             ),
           ),
-      read: (payload) =>
-        client.workstreams
-          .operationRead({ headers, payload })
-          .pipe(Effect.mapError((cause) => workstreamCliRequestError(cause))),
+      read: (payload) => {
+        const read =
+          "operation_id" in payload
+            ? client.workstreams.operationRead({ headers, payload })
+            : "thread" in payload
+              ? client.workstreams.operationRead({ headers, payload })
+              : client.workstreams.operationRead({ headers, payload });
+        return read.pipe(Effect.mapError((cause) => workstreamCliRequestError(cause)));
+      },
       setupStatus: () =>
         client.workstreams
           .setupStatus({ headers })
@@ -211,7 +225,10 @@ const runLive = (flags: CliAuthLocationFlags, input: WorkstreamCliInput, json: b
               authorization: `Bearer ${issued.token}`,
             });
             const result = yield* dispatchWorkstreamCli(port, input);
-            yield* Console.log(json ? JSON.stringify(result) : formatWorkstreamCliResult(result));
+            const output = json
+              ? yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(result)
+              : formatWorkstreamCliResult(result);
+            yield* Console.log(output);
           }),
         (issued) => auth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
       );
@@ -242,7 +259,16 @@ const mutation = {
     Flag.withDefault(3000),
   ),
 };
-const mutationCommand = (run: typeof runLive, command: "create" | "assign" | "unassign") =>
+type WorkstreamCliRunner<E, R> = (
+  flags: CliAuthLocationFlags,
+  input: WorkstreamCliInput,
+  json: boolean,
+) => Effect.Effect<void, E, R>;
+
+const mutationCommand = <E, R>(
+  run: WorkstreamCliRunner<E, R>,
+  command: "create" | "assign" | "unassign",
+) =>
   Command.make(command, mutation).pipe(
     Command.withDescription(
       `${command} through the local server. Pending is not success. Retry the same request ID after a lost reply or configuration failure.`,
@@ -258,7 +284,7 @@ const mutationCommand = (run: typeof runLive, command: "create" | "assign" | "un
       }),
     ),
   );
-export const makeWorkstreamOperationCommands = (run: typeof runLive = runLive) => [
+export const makeWorkstreamOperationCommands = <E, R>(run: WorkstreamCliRunner<E, R>) => [
   Command.make("list", {
     ...common,
     limit: Flag.Int("limit").pipe(
@@ -331,4 +357,4 @@ export const makeWorkstreamOperationCommands = (run: typeof runLive = runLive) =
   ),
 ];
 
-export const workstreamOperationCommands = makeWorkstreamOperationCommands();
+export const workstreamOperationCommands = makeWorkstreamOperationCommands(runLive);

@@ -36,7 +36,7 @@ export class WorkstreamToolsBackend extends Context.Service<
       OrchestratorMcpFailure
     >;
   }
->()("jones/mcp/workstreams/WorkstreamToolsBackend") {}
+>()("t3/jones/mcp/workstreams/tools/WorkstreamToolsBackend") {}
 
 // Reject extra wire keys before Struct decoding can discard them.
 const closed = <Fields extends Schema.Struct.Fields>(schema: Schema.Struct<Fields>) =>
@@ -68,8 +68,8 @@ export const WorkstreamToolkit = Toolkit.make(
       "List this environment's Workstreams. Obtain request registry_id and owner_id from t3_workstreams_status registry.registry_id and registry.owner_id; the legacy list binding.registryId is an HTTPS origin, not the operation registry UUID. Follow the returned cursor for more. Choose an existing workstream, or create one, then set the thread's primary assignment. No cross-environment proxy.",
     parameters: closed(
       Schema.Struct({
-        limit: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
-        cursor: Schema.optional(Schema.String),
+        limit: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 100 }))),
+        cursor: Schema.optionalKey(Schema.String),
       }),
     ),
     success: T3WorkstreamListResult,
@@ -155,7 +155,7 @@ export const WorkstreamToolkit = Toolkit.make(
   Tool.make("t3_workstreams_status", {
     description:
       "Read Workstreams setup for this local environment: activation, registry access, source availability, placement readiness and repair documentation. No secrets or configuration changes.",
-    parameters: closed(Schema.Struct({})),
+    parameters: Tool.EmptyParams,
     success: Operations.WorkstreamSetupStatus,
     failure,
     failureMode: "return",

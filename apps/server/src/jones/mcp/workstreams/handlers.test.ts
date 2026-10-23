@@ -11,7 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { Tool } from "effect/ai";
-import corpus from "../../../../../../packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json";
+import corpus from "../../../../../../packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json" with { type: "json" };
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -114,6 +114,13 @@ it("registers all six tools with operation schemas and annotations", () => {
   ])
     expect(() => decode({ request: bad, wait_ms: 0 })).toThrow();
   expect(() => decode({ request, wait_ms: 3001 })).toThrow();
+  expect(() => decode({ request, wait_ms: 0, extra: true })).toThrow();
+  const decodeSetup = Schema.decodeUnknownSync(
+    WorkstreamToolkit.tools.t3_workstreams_status.parametersSchema,
+  );
+  expect(decodeSetup({})).toEqual({});
+  for (const invalid of [{ extra: true }, [], null, "status"])
+    expect(() => decodeSetup(invalid)).toThrow();
 });
 
 it.effect("delegates identical mutation retries unchanged and reads retained status", () =>
@@ -177,7 +184,10 @@ it.effect("requires orchestration capability for setup reads", () =>
       .pipe(Stream.unwrap, Stream.runCollect);
     expect(JSON.stringify(result)).toContain("McpCapabilityUnavailableError");
   }).pipe(
-    Effect.provideService(Invocation.McpInvocationContext, { ...scope, capabilities: new Set() }),
+    Effect.provideService(Invocation.McpInvocationContext, {
+      ...scope,
+      capabilities: new Set<never>(),
+    }),
     Effect.provide(threads),
   ),
 );
@@ -186,7 +196,7 @@ it.effect("delegates list, create, thread read and setup to the backend", () =>
   Effect.gen(function* () {
     const calls: unknown[] = [];
     const toolkit = yield* build(calls);
-    const create = Schema.decodeUnknownSync(Operations.WorkstreamCreateRequest)({
+    const create = yield* Schema.decodeUnknownEffect(Operations.WorkstreamCreateRequest)({
       contract: Operations.WORKSTREAM_OPERATIONS_CONTRACT,
       operation_id: "create-operation-0001",
       origin: { kind: "agent" },

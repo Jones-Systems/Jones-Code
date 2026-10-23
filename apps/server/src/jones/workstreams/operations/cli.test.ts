@@ -12,7 +12,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestConsole from "effect/testing/TestConsole";
 import { Command } from "effect/cli";
-import corpus from "../../../../../../packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json";
+import corpus from "../../../../../../packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json" with { type: "json" };
 import { workstreamCommand } from "../../../cli/workstream.ts";
 import {
   dispatchWorkstreamCli,

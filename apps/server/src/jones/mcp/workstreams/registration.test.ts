@@ -49,7 +49,12 @@ it.effect(
     );
     const registration = McpHttpServer.layerWorkstreamToolkit.pipe(
       Layer.provideMerge(McpServer.McpServer.layer),
-      Layer.provide(Layer.mock(WorkstreamGateway)({ readMetadata: cp.ports.gateway.readMetadata })),
+      Layer.provide(
+        Layer.mock(WorkstreamGateway)({
+          purgeAuthorization: () => {},
+          readMetadata: cp.ports.gateway.readMetadata,
+        }),
+      ),
       Layer.provideMerge(applicationOperations),
     );
     return Effect.gen(function* () {
@@ -75,6 +80,8 @@ it.effect(
       );
       expect(setup.registry.registry_id).toBe(registryId);
       expect(setup.registry.registry_id).not.toBe(cp.binding().registryId);
+      const invalidSetup = yield* call("t3_workstreams_status", { extra: true }).pipe(Effect.exit);
+      expect(invalidSetup._tag).toBe("Failure");
       const request: Contract.WorkstreamSetPrimaryRequest = {
         ...fixtureRequest,
         origin: { kind: "agent" },
