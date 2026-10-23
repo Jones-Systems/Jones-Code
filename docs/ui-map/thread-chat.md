@@ -64,8 +64,11 @@ for `jones-shell` fences. [ChatMarkdown](../../apps/web/src/components/ChatMarkd
 dispatches these to the [Jones controller and view](../../apps/web/src/jones/shellDestination/ShellDestinationCodeBlock.tsx).
 Ordinary shell fences retain their existing source-thread terminal callback;
 `environment=` on an ordinary shell fence suppresses Play and explains the
-dedicated grammar. Other Markdown consumers without a thread and shell callback
-show the destination but cannot run. Native mobile has no new Play control.
+dedicated grammar. Other Markdown consumers without a thread, shell callback or stable
+message identity show the destination but cannot run. Each assistant message and
+block keeps its own terminal association. Legacy associations without message
+identity show an ambiguity warning and disable ordinary Play; Run again explicitly
+starts a new terminal without attaching or changing the old association. Native mobile has no new Play control.
 
 The chip uses the clicking client's exact-ID connection catalog. Its label is
 authoritative; an unknown or mismatched agent label is shown as a claim and cannot

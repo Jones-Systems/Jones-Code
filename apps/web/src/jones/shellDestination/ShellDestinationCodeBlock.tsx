@@ -19,7 +19,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { randomUUID } from "../../lib/utils";
 import { ShellRunController, SHELL_RUN_THREAD_ID, type ShellTerminalPort } from "./controller";
 import { shellCommandEligibility } from "./model";
-import { shellRunKey, shellRunStore } from "./runStore";
+import { legacyShellRunKey, shellRunKey, shellRunStore } from "./runStore";
 import { readShellDestination, useShellDestination } from "./useShellDestination";
 
 let controller: ShellRunController | undefined;
@@ -37,6 +37,7 @@ export function ShellDestinationCodeBlock({
   meta,
   complete,
   blockPosition,
+  messageId,
   threadRef,
   onRunShellCommand,
   children,
@@ -45,6 +46,7 @@ export function ShellDestinationCodeBlock({
   readonly meta: string | null | undefined;
   readonly complete: boolean;
   readonly blockPosition: number | undefined;
+  readonly messageId: string | undefined;
   readonly threadRef: ScopedThreadRef | null;
   readonly onRunShellCommand: ((command: string) => void) | undefined;
   readonly children: (controls: {
@@ -62,6 +64,7 @@ export function ShellDestinationCodeBlock({
     blockPosition ?? -1,
     destination.environmentId ?? "",
     code,
+    messageId ?? "",
   );
   const controller = runController();
   const run = useSyncExternalStore(
@@ -69,6 +72,13 @@ export function ShellDestinationCodeBlock({
     () => controller.store.get(key),
     () => null,
   );
+  const legacyKey = legacyShellRunKey(key);
+  const legacyRun = useSyncExternalStore(
+    controller.store.subscribe,
+    () => (legacyKey ? controller.store.get(legacyKey) : null),
+    () => null,
+  );
+  const legacyBlocked = !run && legacyRun !== null;
   const [focusRequestId, setFocusRequestId] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
@@ -87,7 +97,9 @@ export function ShellDestinationCodeBlock({
   const reason =
     !threadRef || !onRunShellCommand || blockPosition === undefined
       ? "Run is available only in a project-backed chat."
-      : (eligibility.reason ?? destination.reason);
+      : !messageId?.trim()
+        ? "Run is unavailable because this message has no stable identity."
+        : (eligibility.reason ?? destination.reason);
   const sessions = useEnvironmentQuery(
     target && run && enabled && run.phase !== "closed"
       ? terminalEnvironment.metadata({ environmentId: target.environmentId, input: null })
@@ -117,7 +129,7 @@ export function ShellDestinationCodeBlock({
   ]);
 
   const start = (again: boolean) => {
-    if (reason || !enabled || !threadRef || !onRunShellCommand) return;
+    if (reason || !enabled || !threadRef || !onRunShellCommand || (legacyBlocked && !again)) return;
     setError(null);
     const current = () => readShellDestination(fence, threadRef.environmentId);
     if (current().status === "self") {
@@ -192,7 +204,7 @@ export function ShellDestinationCodeBlock({
             variant="ghost-muted"
             size="icon-xs"
             aria-label={runLabel}
-            disabled={!!reason || !enabled || closing || run?.phase === "closed"}
+            disabled={!!reason || !enabled || closing || legacyBlocked || run?.phase === "closed"}
             onClick={() => start(false)}
           />
         }
@@ -214,6 +226,23 @@ export function ShellDestinationCodeBlock({
         <p role="alert" className="px-3 text-xs text-destructive">
           {error}
         </p>
+      ) : null}
+      {legacyBlocked ? (
+        <div className="px-3 py-2 text-xs">
+          <p role="alert">
+            An earlier run of this block has no message identity. It may already have run, and its
+            terminal cannot be safely assigned to this message. The command will not be replayed.
+            Run again deliberately starts a new terminal.
+          </p>
+          <Button
+            size="xs"
+            variant="ghost"
+            disabled={!!reason || !enabled}
+            onClick={() => start(true)}
+          >
+            Run again
+          </Button>
+        </div>
       ) : null}
       {run ? (
         <div
