@@ -40,6 +40,14 @@ import {
   build,
 } from "./testFixtures.ts";
 
+import {
+  makeV3RegistrationFixture,
+  observedBuild,
+  preChangeClientResponse,
+  v3Response,
+  v3T3Source,
+} from "../testing/registrationV3.ts";
+
 const encodeAcceptedResponse = Schema.encodeSync(
   Schema.fromJsonString(WorkstreamsRegistrationContextAcceptedResponse),
 );
@@ -311,3 +319,46 @@ it.each([
     await app.dispose();
   }
 });
+
+it.each([true, false])(
+  "translates upstream v3 through HTTP with the existing availability header (v2 policy: %s)",
+  async (acceptsV2) => {
+    const fixture = makeV3RegistrationFixture({
+      readRegistrationContext: Effect.succeed(
+        encodeFixtureJson({
+          ...v3Response,
+          sources: v3Response.sources.map((source) =>
+            source.provider === "t3"
+              ? {
+                  ...source,
+                  accepted_native_profiles: acceptsV2
+                    ? v3T3Source.accepted_native_profiles
+                    : ["workstreams-t3-provider/1.0.0"],
+                }
+              : source,
+          ),
+        }),
+      ),
+    });
+    const app = makeApp(fixture);
+    try {
+      const result = await app.handler(readRequest());
+      expect(result.status).toBe(200);
+      expect(result.headers.get("cache-control")).toBe("private, no-store");
+      expect(result.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(result.headers.get("x-jones-workstreams-t3-availability")).toBe(
+        acceptsV2 ? "ready" : "unavailable;reason=contract_mismatch",
+      );
+      const text = await result.text();
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThanOrEqual(8_192);
+      const body = JSON.parse(text);
+      expect(Schema.decodeUnknownSync(preChangeClientResponse)(body)).toEqual({
+        ...v2Response,
+        sources: acceptsV2 ? [githubSource, { ...t3Source, build: observedBuild }] : [githubSource],
+      });
+      expect(body).not.toHaveProperty("t3Availability");
+    } finally {
+      await app.dispose();
+    }
+  },
+);

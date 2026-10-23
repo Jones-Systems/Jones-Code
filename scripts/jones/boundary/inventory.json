@@ -1570,7 +1570,44 @@
     "scripts/jones/boundary/fragments/context-handoff-recovery.json": "jones-owned",
     "scripts/setup-worktree.ts": "hook",
     "t3.json": "accepted-shared",
-    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned"
+    "scripts/jones/boundary/fragments/worktree-setup.json": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding.ts": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/registryBinding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/registryBinding.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/manifest.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/refusal.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/provisioning.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/binding.schema.json.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw": "jones-owned",
+    "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/README.md": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/conformance.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/negative-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/fixtures/semantic-cases.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/manifest.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-request.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/operation-result.schema.json": "jones-owned",
+    "packages/contracts/contracts/workstream-operations/v1/schemas/setup-status.schema.json": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/encoding.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/http.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/live.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/loopbackFixture.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/tools.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/handlers.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cli.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/workstreams/registration.test.ts": "jones-owned",
+    "apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2097,6 +2134,22 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/tools.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/handlers.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
     }
   ]
 }

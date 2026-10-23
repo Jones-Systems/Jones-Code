@@ -1,3 +1,4 @@
+import { workstreamOperationCommands } from "../jones/workstreams/operations/cli.ts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import { Command, GlobalFlag } from "effect/cli";
@@ -43,5 +44,9 @@ const authorityCommand = Command.make("authority").pipe(
 
 export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
-  Command.withSubcommands([authorityCommand, workstreamProviderCommand]),
+  Command.withSubcommands([
+    authorityCommand,
+    workstreamProviderCommand,
+    ...workstreamOperationCommands,
+  ]),
 );

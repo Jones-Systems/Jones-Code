@@ -2449,6 +2449,68 @@
         "vp lint scripts/setup-worktree.ts scripts/jones/worktree-setup/setup.ts",
         "vp run --filter @t3tools/scripts typecheck"
       ]
+    },
+    {
+      "id": "jones-workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/workstreamsRegistryBinding.test.ts apps/server/src/jones/workstreams/registryBinding.test.ts apps/server/src/jones/workstreams/activation.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx --maxWorkers=1",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstream-operations",
+      "tests": [
+        "packages/contracts/src/jones/workstreamOperations.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/jones/workstreams/operations/planner.test.ts",
+        "apps/server/src/jones/workstreams/operations/childIds.test.ts",
+        "apps/server/src/jones/workstreams/operations/service.test.ts",
+        "apps/server/src/jones/workstreams/operations/http.integration.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/workstreamOperations.test.ts apps/server/src/workstreams/WorkstreamGateway.test.ts apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts apps/server/src/jones/workstreams/operations/planner.test.ts apps/server/src/jones/workstreams/operations/childIds.test.ts apps/server/src/jones/workstreams/operations/service.test.ts apps/server/src/jones/workstreams/operations/http.integration.test.ts apps/server/src/environment/ServerEnvironment.test.ts apps/server/src/workstreams/http.test.ts packages/contracts/src/jones/environmentHttpGroups.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstream-tools",
+      "tests": [
+        "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
+        "apps/server/src/jones/workstreams/operations/cli.test.ts",
+        "apps/server/src/jones/mcp/workstreams/registration.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/mcp/workstreams/handlers.test.ts apps/server/src/jones/mcp/workstreams/registration.test.ts apps/server/src/jones/workstreams/operations/cli.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/src/mcp/toolkits/worktree/registration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/components/settings/AcpRegistrySearchStep.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

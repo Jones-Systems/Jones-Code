@@ -42,6 +42,7 @@ import * as PreviewBrowser from "../../../preview/PreviewBrowser.ts";
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 
 import * as WorkstreamGateway from "../../../workstreams/WorkstreamGateway.ts";
+import * as WorkstreamOperations from "../../../jones/workstreams/operations/service.ts";
 
 const layerStubServices = Layer.mergeAll(
   NodeSqliteClient.layer({ filename: ":memory:" }),
@@ -71,6 +72,7 @@ const layerStubServices = Layer.mergeAll(
   Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
   Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
   Layer.mock(ThreadSearch.ThreadSearch)({}),
+  Layer.mock(WorkstreamOperations.WorkstreamOperations)({}),
   Layer.mock(WorkstreamGateway.WorkstreamGateway)({
     purgeAuthorization: () => {},
     readRegistryCounts: () =>
@@ -165,6 +167,16 @@ it.effect("production mcp layer lists worktree tools over http", () =>
       expect(toolNames).toContain("t3_worktree_status");
       expect(toolNames).toContain("preview_status");
       expect(toolNames).toContain("delegate_task");
+      expect(toolNames).toEqual(
+        expect.arrayContaining([
+          "t3_workstreams_list",
+          "t3_workstream_create",
+          "t3_thread_workstream_set",
+          "t3_thread_workstream_read",
+          "t3_workstream_operation_status",
+          "t3_workstreams_status",
+        ]),
+      );
 
       const handoff = tools.find((tool) => tool.name === "t3_worktree_handoff");
       expect(handoff?.annotations?.readOnlyHint).toBe(false);

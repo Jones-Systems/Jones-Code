@@ -1,3 +1,8 @@
+import { WorkstreamToolkit } from "../jones/mcp/workstreams/tools.ts";
+import {
+  handlers as workstreamHandlers,
+  backendLayer as workstreamBackendLayer,
+} from "../jones/mcp/workstreams/handlers.ts";
 import * as RemoteAdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
 import * as UserResponseRequest from "../jones/mcp/userResponseRequest/UserResponseRequestMcpService.ts";
 import { handlers as userResponseRequestHandlers } from "../jones/mcp/userResponseRequest/handlers.ts";
@@ -909,7 +914,13 @@ export const layerMcpTransport = McpServer.layerHttp({
   allowSessionTermination: true,
 }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const layerWorkstreamToolkit = toolkitRegistration(
+  WorkstreamToolkit,
+  workstreamHandlers,
+).pipe(Layer.provide(workstreamBackendLayer));
+
 export const layer = Layer.mergeAll(
+  layerWorkstreamToolkit,
   toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
     Layer.provide(UserResponseRequest.layer),
   ),

@@ -1429,7 +1429,7 @@
         "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
         "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
       ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with injected synthetic authentication, HTTPS registry identity, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
     },
     {
       "id": "native-enrollment-runtime",
@@ -1493,6 +1493,74 @@
         "scripts/jones/worktree-setup/setup.node-test.mjs"
       ],
       "scope": "Lightweight automatic worktree setup preserves environment symlinking without dependency installation or warming. Explicit frozen install and same-invocation warming use fresh worktree-filesystem capacity admission. Jones-owned Node tests cover producer ordering, failures, budgets, and synthetic configuration preservation. The upstream setup script is a narrow hook; t3.json adds a manual action and scripts/package.json registers dependency-free tests."
+    },
+    {
+      "id": "workstreams-durable-native-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsNativeProvider.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/service.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/http.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/service.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/operations.test.ts",
+        "apps/server/src/jones/workstreams/enrollment/bearerRoute.test.ts"
+      ],
+      "scope": "Provider v2 reports immutable enrolled provenance separately from the observed build while sharing the original request identity, attempt store, receipt/event rules and authority fences. Existing v1 behavior stays strict. Synthetic native tests cover compatible-build recovery and compaction without redispatch, profile-specific HTTP/authentication and historical enrollment readback; plan/apply and installation custody keep current-build qualification. Registration v3 and operational adoption are separate slices."
+    },
+    {
+      "id": "workstreams-registry-binding",
+      "tests": [
+        "packages/shared/src/jones/workstreamsRegistryBinding.test.ts",
+        "apps/server/src/jones/workstreams/registryBinding.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/loopbackBinding.test.ts",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx"
+      ],
+      "scope": "Independently pinned registry identity separates canonical HTTPS metadata from literal-loopback transport. Strict activation tokens, request HMAC and bounded exact response proofs cover all signed families without altering legacy manifests or native provider identity. A joined real HTTP client/hook ledger test proves the authenticated pre-dispatch refusal mapping and unknown-effect receipt-only recovery. Synthetic authority, build and authentication remain explicit test seams; no installed or PostgreSQL qualification is claimed."
+    },
+    {
+      "id": "workstreams-durable-registration-profile",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsRegistrationContext.test.ts",
+        "apps/server/src/jones/workstreams/activation.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
+        "apps/server/src/jones/workstreams/registrationContext/http.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts"
+      ],
+      "scope": "Opt-in registration v3 carries immutable enrolled provenance and explicit native profile policy. Jones qualifies the local source independently of routine build drift only when provider v2 is accepted, then translates the result into the existing client v2 response with the observed local build. Strict selectors and authority fences remain intact. Transport retains canonical registry binding and authenticated response proof. Synthetic tests cover selector, contract, transport, qualification and client compatibility; installed adoption remains separate."
+    },
+    {
+      "id": "workstream-operations",
+      "tests": [
+        "packages/contracts/src/jones/workstreamOperations.test.ts",
+        "apps/server/src/workstreams/WorkstreamGateway.test.ts",
+        "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts",
+        "apps/server/src/jones/workstreams/operations/planner.test.ts",
+        "apps/server/src/jones/workstreams/operations/childIds.test.ts",
+        "apps/server/src/jones/workstreams/operations/service.test.ts",
+        "apps/server/src/jones/workstreams/operations/http.integration.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts",
+        "apps/server/src/workstreams/http.test.ts",
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+      ],
+      "scope": "Jones-owned Workstream operation contract, deterministic child IDs, qualified planning, serialized operation service, exact-byte receipt recovery and sealing. Production HTTP adapters share the application-owned operation service and advertise capability only when wired; cached setup status exposes signed registry UUIDs and bounded diagnostics. Synthetic and production-layer loopback tests cover restart adoption, unknown effects, contention, qualification, memory-only reads and compatibility. No Jones durable journal, migration or installed-runtime change."
+    },
+    {
+      "id": "workstream-tools",
+      "tests": [
+        "apps/server/src/jones/mcp/workstreams/handlers.test.ts",
+        "apps/server/src/jones/workstreams/operations/cli.test.ts",
+        "apps/server/src/jones/mcp/workstreams/registration.test.ts",
+        "apps/server/src/mcp/toolkits/worktree/registration.test.ts"
+      ],
+      "scope": "Local-environment MCP and executable CLI workstream list, create, assign, unassign and status use the application-owned operation service or its authenticated typed HTTP boundary. Production MCP registration consumes that service as a required dependency, sharing its retained results with HTTP. Requests obtain the signed registry UUID from setup status, not the legacy gateway origin. Tests cover production MCP registration, parsed CLI commands against real loopback HTTP handlers, operation replay, conflicts, owning-environment checks, and all CONFIG/open retry advice. Synthetic CP and authentication seams do not qualify installed sessions or live Control Plane state."
+    },
+    {
+      "id": "ci-registry-search-timers",
+      "tests": ["apps/web/src/components/settings/AcpRegistrySearchStep.browser.test.tsx"],
+      "scope": "Accepted shared test-only CI repair: control the existing registry-search debounce clock so the first Enter submits before debounce and the second Enter refreshes. Preserve every assertion and all eight test cases; production behavior is unchanged. The existing upstream browser harness requires this direct one-line edit rather than a duplicated Jones harness."
     }
   ]
 }

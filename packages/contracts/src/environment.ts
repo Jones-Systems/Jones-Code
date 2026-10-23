@@ -1,3 +1,4 @@
+import { WORKSTREAM_OPERATIONS_CONTRACT } from "./jones/workstreamOperations.ts";
 import { QueuedSteerBatchCapability } from "./jones/queuedSteerBatch.ts";
 import { ThreadAttentionCapability } from "./jones/threadAttention.ts";
 import { SettlementOriginsCapability } from "./jones/settlementOrigins.ts";
@@ -102,6 +103,9 @@ export const NativeBootstrapCreationCapability = nativeBootstrapCapabilityStruct
 export type NativeBootstrapCreationCapability = typeof NativeBootstrapCreationCapability.Type;
 
 export const ExecutionEnvironmentCapabilities = Schema.Struct({
+  workstreamOperations: Schema.optionalKey(
+    Schema.Struct({ contract: Schema.Literal(WORKSTREAM_OPERATIONS_CONTRACT) }),
+  ),
   queuedSteerBatch: Schema.optionalKey(QueuedSteerBatchCapability),
   workQueueMetadata: Schema.optionalKey(Schema.Boolean),
   settlementOrigins: Schema.optionalKey(SettlementOriginsCapability),

@@ -52,6 +52,7 @@ import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import {
+  workstreamOperationsLayerLive,
   workstreamGatewayLayerLive,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
@@ -769,43 +770,47 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
-).pipe(
-  Layer.provide(
-    PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  // Both transports consume the same service instance, so caches single-flight across clients
-  // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
-  Layer.provide(layerPullRequestService),
-  Layer.provide(ServerBrowser.layer),
-  Layer.provide(
-    Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
-  ),
-  Layer.provide(DesktopBrowserChannel.layer),
-  Layer.provide(PreviewBrowser.layer),
-  Layer.provide(workstreamGatewayLayerLive),
-  Layer.provide(workstreamRegistrationContextLayerLive),
-  // Same layer identity as the gateway's, so the config descriptor reads the same authority.
-  Layer.provide(workstreamNativeAuthorityLayerLive),
-  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
-  Layer.provide(
-    PeerForwarding.layer.pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+)
+  .pipe(
+    Layer.provide(
+      PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
-  ),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(layerServerSelfUpdate),
-  // The same relation layer as the Jones updates routes, so both share one ancestry cache.
-  Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
-  Layer.provide(layerJonesUpdates),
-  Layer.provide(layerCommandReadiness),
-  Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
-  Layer.provide(workstreamResponseHeadersLayer),
-  Layer.provide(ServerHttp.layerBrowserApiCors),
-  Layer.provide(ServerHttp.layerHttpCompression),
-);
+    // delegate_task to a linked environment, from /mcp and the follower above.
+    Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+    // Both transports consume the same service instance, so caches single-flight across clients
+    // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
+    Layer.provide(layerPullRequestService),
+    Layer.provide(ServerBrowser.layer),
+    Layer.provide(
+      Layer.merge(JonesHttp.previewCompanionServicesLayer, JonesHttp.remoteAdmissionServicesLayer),
+    ),
+    Layer.provide(DesktopBrowserChannel.layer),
+    Layer.provide(PreviewBrowser.layer),
+    Layer.provide(workstreamOperationsLayerLive),
+  )
+  .pipe(
+    Layer.provide(workstreamGatewayLayerLive),
+    Layer.provide(workstreamRegistrationContextLayerLive),
+    // Same layer identity as the gateway's, so the config descriptor reads the same authority.
+    Layer.provide(workstreamNativeAuthorityLayerLive),
+    // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+    Layer.provide(
+      PeerForwarding.layer.pipe(
+        Layer.provideMerge(PeerMcpClient.layer),
+        Layer.provideMerge(PeerLinks.layer),
+      ),
+    ),
+    Layer.provide(PreviewAutomationBroker.layer),
+    Layer.provide(layerServerSelfUpdate),
+    // The same relation layer as the Jones updates routes, so both share one ancestry cache.
+    Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
+    Layer.provide(layerJonesUpdates),
+    Layer.provide(layerCommandReadiness),
+    Layer.provide(JonesHttp.voiceReviewResponseHeadersLayer),
+    Layer.provide(workstreamResponseHeadersLayer),
+    Layer.provide(ServerHttp.layerBrowserApiCors),
+    Layer.provide(ServerHttp.layerHttpCompression),
+  );
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {

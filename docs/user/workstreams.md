@@ -14,7 +14,7 @@ Choose **Color…** from a Workstream's menu to preview a preset or custom RGB b
 
 Assigning through the thread menu preserves its repository, project, pinning, snooze and settlement state. Dragging a pinned thread into a Workstream assigns it first, then unpins it so it appears in the group. A failed or unconfirmed assignment leaves it pinned; dropping it onto its existing group also keeps the pin. Snoozed and settled conversations keep their native sidebar shelves.
 
-If a thread menu cannot check access, it shows that status and attempts a bounded fresh check when opened. **Refresh** also rechecks access for the relevant connected environments. Signing out or lacking thread-operation permission keeps the actions disabled. A verification failure can include a specific source, build or generation mismatch; that environment must be current before assignment can proceed. An unknown command outcome stays blocked while Refresh checks its existing receipt, without resubmitting the command.
+If a thread menu cannot check access, it shows that status and attempts a bounded fresh check when opened. **Refresh** also rechecks access for the relevant connected environments. Signing out or lacking thread-operation permission keeps the actions disabled. A verification failure can include a specific source, build or generation mismatch; that environment must be current before assignment can proceed. An unknown assignment outcome stays pending while the server reconciles it. Refresh checks its status; do not start a second assignment while the first is unresolved.
 
 If the app reports that its build is not enrolled for Workstreams, the Workstreams connection still identifies a different app build. This can happen after an update. The connection needs to be renewed for the running build before either dragging or **Assign thread** can work. **Refresh** checks whether that repair has finished; it does not renew the connection itself. The message is about the app connection, rather than access to a particular Workstream.
 
@@ -29,3 +29,64 @@ and the desired and last observed Workstream. Names appear when they are already
 loaded for that environment; otherwise the app shows IDs. Missing assignment
 information or **Not observed** does not mean the thread is unassigned. These
 read-only samples can be stale and do not change or retry an assignment.
+
+## Agents and the command line
+
+On servers with Workstream operations support, agents can use
+`t3_workstreams_list` to find a group, `t3_workstream_create` to create one,
+and `t3_thread_workstream_set` to assign, move or unassign a thread.
+Read the current assignment with `t3_thread_workstream_read` before choosing
+an expected assignment. `t3_workstream_operation_status` reads an operation's
+latest result; `t3_workstreams_status` explains setup problems and links to
+repair instructions. Creating a group does not assign a thread to it.
+These tools operate on their own server only. Use the thread's owning server
+for a thread in another environment.
+
+The command line uses the running local instance selected by the usual
+`--base-dir` option:
+
+```sh
+t3 workstream list
+t3 workstream status
+t3 workstream status --thread thread-1 --environment env-1
+t3 workstream status --open
+```
+
+Use `--json` for machine-readable output. Get the request registry UUID and
+owner ID from `t3 workstream status --json` (`registry.registry_id` and
+`registry.owner_id`), or from `t3_workstreams_status` for MCP. The list
+response's `binding.registryId` is a server origin, not that UUID. Pass the
+returned cursor with `list --cursor` to see more groups.
+The `create`, `assign` and `unassign` commands accept `--request` JSON with
+an explicit operation ID. Keep the request for retries. For example, replace
+the example identifiers with the IDs returned by your server:
+
+```sh
+t3 workstream create --request '{"contract":"workstream-operations/1.0.0","operation_id":"create-example-0001","origin":{"kind":"cli"},"kind":"create_workstream","registry":{"registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"},"workstream":{"name":"Release work","lifecycle":"active","progress":{"state":"unknown"},"sort_order":0}}'
+t3 workstream assign --request '{"contract":"workstream-operations/1.0.0","operation_id":"assign-example-0001","origin":{"kind":"cli"},"kind":"set_primary","thread":{"environment_id":"env-1","thread_id":"thread-1"},"target":{"kind":"workstream","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1","workstream_id":"ws-1"},"expected":{"kind":"unassigned"}}'
+t3 workstream status assign-example-0001
+```
+
+To move an assigned thread, set `expected` to
+`{"kind":"primary","workstream_id":"current-group-id"}` and target the new
+group. To remove primary membership, use `unassign` with a `set_primary`
+request whose target is `{"kind":"unassigned","registry_id":"11111111-1111-4111-8111-111111111111","owner_id":"owner-1"}`.
+Use a separate operation ID for each new action. `expected: {"kind":"any"}`
+explicitly permits changing whichever primary assignment is current.
+MCP mutation requests use the same fields with `origin.kind` set to `agent`.
+
+`committed` and `already_satisfied` confirm the assignment. `in_progress`
+and `reconciling` mean it is not yet confirmed. Read status and resubmit the
+same request with the same operation ID if needed, including after a lost
+reply or server restart. A missing retained status does not prove that nothing
+happened. The CLI does not automatically retry or generate a replacement ID.
+
+Keep that ID after `foreign_thread`, `registry_mismatch`, `permission_denied`,
+`offline`, `not_configured` or `registration_unavailable`; repair the reported
+setup or routing problem and retry the original request. Status reads show the
+last result and do not refresh a failure. Other rejected or unavailable results
+are sealed against later effects from that request; resubmitting the same ID
+refreshes them. A new ID is allowed only after a settled or sealed result,
+and is required after `contention`. A conflict shows the observed assignment;
+inspect it before issuing a new action. An older server reports unsupported
+instead of attempting a partial assignment.

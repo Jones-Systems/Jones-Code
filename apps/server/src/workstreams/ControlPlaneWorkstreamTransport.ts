@@ -1,4 +1,13 @@
 import {
+  decodeRegistryBinding,
+  REGISTRY_BINDING_ALGORITHM,
+} from "@t3tools/shared/jones/workstreamsRegistryBinding";
+import {
+  RegistryBindingProofFailure,
+  RegistryBindingRefusal,
+  verifyRegistryResponse,
+} from "../jones/workstreams/registryBinding.ts";
+import {
   activationFromEnvironment,
   decodeSigningSecret,
   hasCanonicalActivation,
@@ -16,7 +25,6 @@ import {
   WorkstreamCountsCapabilities,
   WorkstreamRegistryCounts,
   WORKSTREAM_CONTRACT_HEADER_VERSION,
-  WORKSTREAM_CONTRACT_VERSION,
   WORKSTREAM_MAX_RESPONSE_BYTES,
   WorkstreamCapabilities,
   WorkstreamDeclarationPage,
@@ -36,11 +44,8 @@ import {
   T3PlacementPage,
   T3PlacementRequest,
   T3_PLACEMENT_MAX_REQUEST_BYTES,
-  WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL,
-  WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256,
+  WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS,
   type WorkstreamsRegistrationContextVersion,
-  WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256,
   WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES,
   WORKSTREAMS_T3_PROVIDER_METADATA_TIMEOUT_MS,
 } from "@t3tools/contracts";
@@ -51,6 +56,9 @@ import * as Schema from "effect/Schema";
 import {
   WORKSTREAM_ACTIVATION_DISABLED_DETAIL,
   WorkstreamTransportError,
+  WorkstreamVerifiedPreDispatchRefusal,
+  type WorkstreamReceiptRead,
+  type WorkstreamRecoverySubmitResult,
   type WorkstreamTransport,
 } from "./WorkstreamGateway.ts";
 
@@ -98,6 +106,15 @@ class BoundedTransportFailure extends Error {
   }
 }
 
+class VerifiedRecoveryResponse extends Error {
+  readonly code: "not_found" | "idempotency_conflict";
+
+  constructor(code: "not_found" | "idempotency_conflict") {
+    super(code);
+    this.code = code;
+  }
+}
+
 export type WorkstreamFetch = (
   input: string | URL | Request,
   init?: RequestInit,
@@ -138,8 +155,9 @@ export function signWorkstreamRequest(input: {
     | typeof WORKSTREAM_CONTRACT_HEADER_VERSION
     | typeof T3_PLACEMENT_CONTRACT
     | typeof WORKSTREAM_APPEARANCE_CONTRACT
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL
-    | typeof WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL;
+    | (typeof WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS)[WorkstreamsRegistrationContextVersion]["protocol"];
+  readonly registryBinding?: string;
+  readonly contractManifest?: string;
   readonly requestId: string;
   readonly idempotencyKey?: string;
   readonly sentAt: string;
@@ -154,7 +172,7 @@ export function signWorkstreamRequest(input: {
   const key = decodeSigningSecret(input.signingSecret);
   if (key === null) throw new Error("invalid_workstream_signing_secret");
   const canonical = [
-    "hmac-sha256-v1",
+    input.registryBinding === undefined ? "hmac-sha256-v1" : REGISTRY_BINDING_ALGORITHM,
     input.contractVersion ?? WORKSTREAM_CONTRACT_HEADER_VERSION,
     input.requestId,
     input.idempotencyKey ?? "",
@@ -165,6 +183,9 @@ export function signWorkstreamRequest(input: {
     input.method,
     input.target,
     input.contentSha256,
+    ...(input.registryBinding === undefined
+      ? []
+      : [input.contractManifest ?? "", input.registryBinding]),
   ].join("\n");
   return NodeCrypto.createHmac("sha256", key).update(canonical).digest("base64url");
 }
@@ -172,43 +193,60 @@ export function signWorkstreamRequest(input: {
 async function readBoundedResponse(
   response: Response,
   maxBytes = WORKSTREAM_MAX_RESPONSE_BYTES,
-): Promise<string> {
+): Promise<Buffer> {
   const declared = response.headers.get("content-length");
   if (declared !== null && Number(declared) > maxBytes) {
     await response.body?.cancel();
     throw new BoundedTransportFailure("response_too_large");
   }
-  if (response.body === null) {
-    if (!response.ok) throw new BoundedTransportFailure("http_error");
-    return "";
-  }
+  if (response.body === null) return Buffer.alloc(0);
   const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8", { fatal: true });
   let total = 0;
-  let body = "";
+  const chunks: Uint8Array[] = [];
   try {
     while (true) {
       const chunk = await reader.read();
       if (chunk.done) break;
       total += chunk.value.byteLength;
-      if (total > maxBytes) {
-        throw new BoundedTransportFailure("response_too_large");
-      }
-      body += decoder.decode(chunk.value, { stream: true });
+      if (total > maxBytes) throw new BoundedTransportFailure("response_too_large");
+      chunks.push(chunk.value);
     }
-    body += decoder.decode();
+    return Buffer.concat(chunks, total);
   } catch (cause) {
     await reader.cancel().catch(() => undefined);
     throw cause;
+  } finally {
+    reader.releaseLock();
   }
+}
+
+function decodeResponse(
+  response: Response,
+  bytes: Buffer,
+  recovery?: "receipt" | "submit",
+): string {
+  const body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   if (!response.ok) {
     try {
       const error = Schema.decodeUnknownSync(Schema.fromJsonString(WorkstreamError))(body, {
         onExcessProperty: "error",
       });
+      if (
+        recovery !== undefined &&
+        response.headers.get("x-control-contract-version") === WORKSTREAM_CONTRACT_HEADER_VERSION &&
+        response.headers.get("x-control-contract-manifest") ===
+          WORKSTREAM_CONTRACT_MANIFEST_SHA256 &&
+        error.status === response.status
+      ) {
+        if (recovery === "receipt" && error.code === "not_found")
+          throw new VerifiedRecoveryResponse(error.code);
+        if (recovery === "submit" && error.code === "idempotency_conflict")
+          throw new VerifiedRecoveryResponse(error.code);
+      }
       if (error.code === "cursor_stale") throw new BoundedTransportFailure("cursor_stale");
     } catch (cause) {
-      if (cause instanceof BoundedTransportFailure) throw cause;
+      if (cause instanceof BoundedTransportFailure || cause instanceof VerifiedRecoveryResponse)
+        throw cause;
     }
     throw new BoundedTransportFailure("http_error");
   }
@@ -220,6 +258,8 @@ async function performRequest(input: {
   readonly config: ControlPlaneWorkstreamActivation;
   readonly registrationContextVersion?: WorkstreamsRegistrationContextVersion | null;
   readonly countsContract?: boolean;
+  readonly recovery?: "receipt" | "submit";
+  readonly responseContractHeaders?: "required" | "optional";
   readonly method: "GET" | "POST";
   readonly target: string;
   readonly body: string;
@@ -239,16 +279,18 @@ async function performRequest(input: {
   const registration = input.target.split(/[?#]/, 1)[0] === REGISTRATION_CONTEXT_ROUTE;
   const registrationVersion =
     input.registrationContextVersion === undefined ? "1.0.0" : input.registrationContextVersion;
-  if (registration && registrationVersion !== "1.0.0" && registrationVersion !== "2.0.0")
+  if (
+    registration &&
+    (registrationVersion === null ||
+      !Object.hasOwn(WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS, registrationVersion))
+  )
     throw new BoundedTransportFailure("invalid_target");
-  const registrationProtocol =
-    registrationVersion === "2.0.0"
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_PROTOCOL
-      : WORKSTREAMS_REGISTRATION_CONTEXT_PROTOCOL;
-  const registrationManifest =
-    registrationVersion === "2.0.0"
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_V2_MANIFEST_SHA256
-      : WORKSTREAMS_REGISTRATION_CONTEXT_MANIFEST_SHA256;
+  const registrationContract =
+    WORKSTREAMS_REGISTRATION_CONTEXT_CONTRACTS[
+      registration && registrationVersion !== null ? registrationVersion : "1.0.0"
+    ];
+  const registrationProtocol = registrationContract.protocol;
+  const registrationManifest = registrationContract.manifest;
   const appearance =
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/read` ||
     input.target === `${WORKSTREAM_APPEARANCE_ROUTE}/write`;
@@ -275,14 +317,28 @@ async function performRequest(input: {
     input.body === ""
       ? EMPTY_SHA256
       : NodeCrypto.createHash("sha256").update(input.body).digest("hex");
+  const contractVersion = registration
+    ? registrationProtocol
+    : appearance
+      ? WORKSTREAM_APPEARANCE_CONTRACT
+      : placement
+        ? T3_PLACEMENT_CONTRACT
+        : WORKSTREAM_CONTRACT_HEADER_VERSION;
+  const contractManifest = registration
+    ? registrationManifest
+    : appearance
+      ? WORKSTREAM_APPEARANCE_MANIFEST
+      : placement
+        ? T3_PLACEMENT_MANIFEST_SHA256
+        : counts
+          ? WORKSTREAM_COUNTS_MANIFEST_SHA256
+          : WORKSTREAM_CONTRACT_MANIFEST_SHA256;
   const signature = signWorkstreamRequest({
-    contractVersion: registration
-      ? registrationProtocol
-      : appearance
-        ? WORKSTREAM_APPEARANCE_CONTRACT
-        : placement
-          ? T3_PLACEMENT_CONTRACT
-          : WORKSTREAM_CONTRACT_HEADER_VERSION,
+    contractVersion,
+    contractManifest,
+    ...(input.config.registryBinding === undefined
+      ? {}
+      : { registryBinding: input.config.registryBinding }),
     requestId,
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     sentAt: input.sentAt,
@@ -301,23 +357,13 @@ async function performRequest(input: {
     headers: {
       accept: "application/json",
       "content-type": "application/json; charset=utf-8",
-      "x-control-algorithm": "hmac-sha256-v1",
-      "x-control-contract-version": registration
-        ? registrationProtocol
-        : appearance
-          ? WORKSTREAM_APPEARANCE_CONTRACT
-          : placement
-            ? T3_PLACEMENT_CONTRACT
-            : `workstreams/${WORKSTREAM_CONTRACT_VERSION}`,
-      "x-control-contract-manifest": registration
-        ? registrationManifest
-        : appearance
-          ? WORKSTREAM_APPEARANCE_MANIFEST
-          : placement
-            ? T3_PLACEMENT_MANIFEST_SHA256
-            : counts
-              ? WORKSTREAM_COUNTS_MANIFEST_SHA256
-              : WORKSTREAM_CONTRACT_MANIFEST_SHA256,
+      "x-control-algorithm":
+        input.config.registryBinding === undefined ? "hmac-sha256-v1" : REGISTRY_BINDING_ALGORITHM,
+      ...(input.config.registryBinding === undefined
+        ? {}
+        : { "x-control-registry-binding": input.config.registryBinding }),
+      "x-control-contract-version": contractVersion,
+      "x-control-contract-manifest": contractManifest,
       "x-control-request-id": requestId,
       "x-control-timestamp": input.sentAt,
       "x-control-nonce": nonce,
@@ -329,6 +375,24 @@ async function performRequest(input: {
     },
     ...(input.body === "" ? {} : { body: input.body }),
   });
+  const bytes = await readBoundedResponse(
+    response,
+    registration
+      ? WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES
+      : WORKSTREAM_MAX_RESPONSE_BYTES,
+  );
+  if (input.config.registryBinding !== undefined) {
+    verifyRegistryResponse({
+      response,
+      body: bytes,
+      token: input.config.registryBinding,
+      requestSignature: signature,
+      secret: decodeSigningSecret(input.config.signingSecret)!,
+      contractVersion,
+      contractManifest,
+      responseContractHeaders: input.responseContractHeaders ?? "required",
+    });
+  }
   if (
     counts &&
     (response.headers.get("x-control-contract-version") !== WORKSTREAM_CONTRACT_HEADER_VERSION ||
@@ -366,12 +430,7 @@ async function performRequest(input: {
     await response.body?.cancel();
     throw new BoundedTransportFailure("http_error");
   }
-  return readBoundedResponse(
-    response,
-    registration
-      ? WORKSTREAMS_REGISTRATION_CONTEXT_MAX_RESPONSE_BYTES
-      : WORKSTREAM_MAX_RESPONSE_BYTES,
-  );
+  return decodeResponse(response, bytes, input.recovery);
 }
 
 export function makeControlPlaneWorkstreamTransport(
@@ -386,7 +445,12 @@ export function makeControlPlaneWorkstreamTransport(
     "registryId" | "ownerId" | "principalId" | "authorizationRevision"
   >;
 } {
-  if (activation.state !== "enabled" || !hasCanonicalActivation(activation.value)) {
+  if (
+    activation.state !== "enabled" ||
+    !hasCanonicalActivation(activation.value) ||
+    (activation.value.baseUrl.protocol === "http:" &&
+      activation.value.registryBinding === undefined)
+  ) {
     const activationState = activation.state === "disabled" ? "disabled" : "invalid";
     const detail =
       activationState === "disabled"
@@ -425,6 +489,7 @@ export function makeControlPlaneWorkstreamTransport(
     body = "",
     idempotencyKey?: string,
     countsContract = false,
+    recovery?: "receipt" | "submit",
   ): Effect.Effect<S["Type"], WorkstreamTransportError, S["DecodingServices"]> =>
     Effect.gen(function* () {
       const sentAt = DateTime.formatIso(yield* DateTime.now);
@@ -438,20 +503,37 @@ export function makeControlPlaneWorkstreamTransport(
             body,
             sentAt,
             countsContract,
+            ...(recovery === undefined ? {} : { recovery }),
+            responseContractHeaders:
+              operation === "get_command" ||
+              operation === "submit_command" ||
+              recovery !== undefined
+                ? "optional"
+                : "required",
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
             signal,
           }),
         catch: (cause) =>
           new WorkstreamTransportError({
             operation,
+            ...(cause instanceof RegistryBindingRefusal || cause instanceof VerifiedRecoveryResponse
+              ? { cause }
+              : {}),
             effect:
-              method === "POST" &&
-              operation !== "thread_placements" &&
-              operation !== "appearance_read"
+              recovery !== undefined ||
+              config.registryBinding !== undefined ||
+              (method === "POST" &&
+                operation !== "thread_placements" &&
+                operation !== "appearance_read")
                 ? "unknown-effect"
                 : "no-effect",
             detail:
-              cause instanceof BoundedTransportFailure ? cause.reason : "transport_unavailable",
+              cause instanceof BoundedTransportFailure
+                ? cause.reason
+                : cause instanceof RegistryBindingProofFailure ||
+                    cause instanceof RegistryBindingRefusal
+                  ? cause.message
+                  : "transport_unavailable",
           }),
       }).pipe(
         Effect.timeoutOrElse({
@@ -461,9 +543,11 @@ export function makeControlPlaneWorkstreamTransport(
               new WorkstreamTransportError({
                 operation,
                 effect:
-                  method === "POST" &&
-                  operation !== "thread_placements" &&
-                  operation !== "appearance_read"
+                  recovery !== undefined ||
+                  config.registryBinding !== undefined ||
+                  (method === "POST" &&
+                    operation !== "thread_placements" &&
+                    operation !== "appearance_read")
                     ? "unknown-effect"
                     : "no-effect",
                 detail: "Control-plane request timed out.",
@@ -475,13 +559,15 @@ export function makeControlPlaneWorkstreamTransport(
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
-          (cause) =>
+          () =>
             new WorkstreamTransportError({
               operation,
               effect:
-                method === "POST" &&
-                operation !== "thread_placements" &&
-                operation !== "appearance_read"
+                recovery !== undefined ||
+                config.registryBinding !== undefined ||
+                (method === "POST" &&
+                  operation !== "thread_placements" &&
+                  operation !== "appearance_read")
                   ? "unknown-effect"
                   : "no-effect",
               detail: "Control-plane returned invalid JSON for the accepted contract.",
@@ -516,9 +602,14 @@ export function makeControlPlaneWorkstreamTransport(
           catch: (cause) =>
             new WorkstreamTransportError({
               operation: "registration_context",
-              effect: "no-effect",
+              effect: config.registryBinding === undefined ? "no-effect" : "unknown-effect",
               detail:
-                cause instanceof BoundedTransportFailure ? cause.reason : "transport_unavailable",
+                cause instanceof BoundedTransportFailure
+                  ? cause.reason
+                  : cause instanceof RegistryBindingProofFailure ||
+                      cause instanceof RegistryBindingRefusal
+                    ? cause.message
+                    : "transport_unavailable",
             }),
         }).pipe(
           Effect.timeoutOrElse({
@@ -527,7 +618,7 @@ export function makeControlPlaneWorkstreamTransport(
               Effect.fail(
                 new WorkstreamTransportError({
                   operation: "registration_context",
-                  effect: "no-effect",
+                  effect: config.registryBinding === undefined ? "no-effect" : "unknown-effect",
                   detail: "Control-plane request timed out.",
                 }),
               ),
@@ -536,12 +627,52 @@ export function makeControlPlaneWorkstreamTransport(
       }),
     },
     binding: {
-      registryId: config.baseUrl.origin,
+      registryId:
+        config.registryBinding === undefined
+          ? config.baseUrl.origin
+          : decodeRegistryBinding(config.registryBinding).canonical_origin,
       ownerId: config.ownerId,
       principalId: config.principalId,
       authorizationRevision: config.authorizationRevision,
     },
     transport: {
+      readCommandReceipt: ({ commandId }) =>
+        request(
+          "read_command_receipt",
+          "GET",
+          `/workstreams/v1/commands/${encodeURIComponent(commandId)}`,
+          WorkstreamReceipt,
+          "",
+          undefined,
+          false,
+          "receipt",
+        ).pipe(
+          Effect.map((receipt): WorkstreamReceiptRead => ({ kind: "receipt", receipt })),
+          Effect.catch((error) =>
+            error.cause instanceof VerifiedRecoveryResponse && error.cause.code === "not_found"
+              ? Effect.succeed<WorkstreamReceiptRead>({ kind: "absent" })
+              : Effect.fail(error),
+          ),
+        ),
+      resubmitCommand: ({ body, idempotencyKey }) =>
+        request(
+          "resubmit_command",
+          "POST",
+          "/workstreams/v1/commands",
+          WorkstreamReceipt,
+          body,
+          idempotencyKey,
+          false,
+          "submit",
+        ).pipe(
+          Effect.map((receipt): WorkstreamRecoverySubmitResult => ({ kind: "receipt", receipt })),
+          Effect.catch((error) =>
+            error.cause instanceof VerifiedRecoveryResponse &&
+            error.cause.code === "idempotency_conflict"
+              ? Effect.succeed<WorkstreamRecoverySubmitResult>({ kind: "idempotency_conflict" })
+              : Effect.fail(error),
+          ),
+        ),
       readAppearance: (input) =>
         request(
           "appearance_read",
@@ -683,6 +814,12 @@ export function makeControlPlaneWorkstreamTransport(
           WorkstreamReceipt,
           body,
           idempotencyKey,
+        ).pipe(
+          Effect.mapError((error) =>
+            error.cause instanceof RegistryBindingRefusal
+              ? new WorkstreamVerifiedPreDispatchRefusal({})
+              : error,
+          ),
         ),
     },
   };
