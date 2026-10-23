@@ -1599,7 +1599,27 @@
     "apps/server/src/jones/workstreams/operations/ports.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/service.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/service.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/operations/testFixtures.ts": "jones-owned",
+    "apps/mobile/src/features/workstreams/Controls.operations.test.tsx": "jones-owned",
+    "apps/mobile/src/features/workstreams/operations.test.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/SetupStatusContent.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/SetupStatusContent.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamPicker.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/environmentWorkstreamsRequest.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/operations-preview.html": "jones-owned",
+    "apps/web/src/jones/workstreams/operations.fixtures.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/operationsPreview.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamOperations.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx": "jones-owned",
+    "packages/client-runtime/src/jones/workstreams/operations.test.ts": "jones-owned",
+    "packages/client-runtime/src/jones/workstreams/operations.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/fullAppFixture.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2122,6 +2142,18 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/scheduledTasks/fifoPermit.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamOperations.ts"
+    },
+    {
+      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "to": "apps/web/src/jones/workstreams/WorkstreamsSetupStatus.tsx"
     }
   ]
 }

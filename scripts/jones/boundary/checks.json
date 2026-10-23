@@ -2482,6 +2482,28 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-workstream-app-operations",
+      "tests": [
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
+        "apps/mobile/src/features/workstreams/operations.test.ts",
+        "apps/web/src/jones/workstreams/SetupStatusContent.test.tsx",
+        "apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx",
+        "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/operations.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/mobile/src/features/workstreams/Controls.operations.test.tsx apps/mobile/src/features/workstreams/operations.test.ts apps/web/src/jones/workstreams/SetupStatusContent.test.tsx apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx packages/client-runtime/src/jones/workstreams/operations.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "vp run --filter @t3tools/mobile typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

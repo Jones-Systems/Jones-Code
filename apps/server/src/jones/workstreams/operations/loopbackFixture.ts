@@ -124,15 +124,32 @@ async function startLoopbackHandler(handler: (request: Request) => Promise<Respo
 }
 
 /** HTTP adaptation only: all registry mutations and receipts belong to the existing synthetic transport. */
-export async function startLoopbackControlPlane() {
+export async function startLoopbackControlPlane(
+  options: {
+    readonly sources?: readonly WorkstreamsRegistrationContextT3Source[];
+    readonly registryId?: string;
+    readonly signingSecret?: string;
+    readonly emptyAssignments?: boolean;
+  } = {},
+) {
+  const fixtureSources = options.sources ?? sources;
+  const fixtureSecret = options.signingSecret ?? signingSecret;
   const bodies = new Map<string, string>();
   const registry = makeSyntheticWorkstreamTransport({
     principalId: "22222222-2222-4222-8222-222222222222",
-    assignments: [
-      { sourceInstanceId: "source-a", nativeThreadId: "shared-thread" },
-      { sourceInstanceId: "source-b", nativeThreadId: "shared-thread" },
-      { sourceInstanceId: "source-b", nativeThreadId: "other-thread" },
-    ],
+    ...(options.sources?.[0]
+      ? {
+          authorityNamespace: options.sources[0].authority_namespace,
+          storeGeneration: options.sources[0].store_generation,
+        }
+      : {}),
+    assignments: options.emptyAssignments
+      ? []
+      : [
+          { sourceInstanceId: "source-a", nativeThreadId: "shared-thread" },
+          { sourceInstanceId: "source-b", nativeThreadId: "shared-thread" },
+          { sourceInstanceId: "source-b", nativeThreadId: "other-thread" },
+        ],
   });
   const observations = {
     accepted: 0,
@@ -147,7 +164,7 @@ export async function startLoopbackControlPlane() {
   const pin = {
     protocol: "workstreams-registry-binding/1.0.0",
     manifest_sha256: "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
-    registry_instance_id: "11111111-1111-4111-8111-111111111111",
+    registry_instance_id: options.registryId ?? "11111111-1111-4111-8111-111111111111",
     canonical_origin: "https://workstreams.test",
     owner_id: "owner-fixture",
     principal_id: principalId,
@@ -157,9 +174,13 @@ export async function startLoopbackControlPlane() {
   const authority = { ...pin };
   const faults = {
     commandGate: null as Promise<void> | null,
+    commandOperations: null as readonly WorkstreamCommand["action"]["operation"][] | null,
     commandEntered: null as (() => void) | null,
     changeGrantBeforeSubmit: false,
     commandResponse: "valid" as "valid" | "missing" | "invalid" | "replayed" | "lost",
+    commandResponseOperations: null as readonly WorkstreamCommand["action"]["operation"][] | null,
+    hideLostReceipts: false,
+    lostCommandIds: new Set<string>(),
     listResponse: "valid" as "valid" | "missing",
     receiptResponse: "valid" as "valid" | "missing",
     readResponse: "valid" as "valid" | "missing" | "invalid",
@@ -203,7 +224,7 @@ export async function startLoopbackControlPlane() {
       manifest,
       header("x-control-registry-binding"),
     ].join("\n");
-    const expected = NodeCrypto.createHmac("sha256", Buffer.from(signingSecret, "base64"))
+    const expected = NodeCrypto.createHmac("sha256", Buffer.from(fixtureSecret, "base64"))
       .update(canonical)
       .digest("base64url");
     if (
@@ -247,17 +268,26 @@ export async function startLoopbackControlPlane() {
         dispatch,
         NodeCrypto.createHash("sha256").update(payload).digest("hex"),
       ].join("\n");
-      const mac = NodeCrypto.createHmac("sha256", Buffer.from(signingSecret, "base64"))
+      const mac = NodeCrypto.createHmac("sha256", Buffer.from(fixtureSecret, "base64"))
         .update(responseCanonical)
         .digest("base64url");
-      const mode = commandPost
-        ? faults.commandResponse
+      const command = commandPost ? decodeCommand(body) : null;
+      const mode = command
+        ? faults.commandResponseOperations === null ||
+          faults.commandResponseOperations.includes(command.action.operation)
+          ? faults.commandResponse
+          : "valid"
         : url.pathname.startsWith("/workstreams/v1/commands/")
-          ? faults.receiptResponse
+          ? faults.hideLostReceipts && faults.lostCommandIds.has(url.pathname.split("/").at(-1)!)
+            ? "missing"
+            : faults.receiptResponse
           : url.pathname === "/workstreams/v1/workstreams"
             ? faults.listResponse
             : faults.readResponse;
-      if (mode === "lost") return Response.error();
+      if (mode === "lost") {
+        if (command && faults.hideLostReceipts) faults.lostCommandIds.add(command.command_id);
+        return Response.error();
+      }
       if (mode !== "missing") {
         responseHeaders.set("x-control-registry-binding", header("x-control-registry-binding"));
         responseHeaders.set("x-control-registry-dispatch", dispatch);
@@ -293,7 +323,7 @@ export async function startLoopbackControlPlane() {
         principal_id: principalId,
         authorization_revision: 1,
         grant_id: "grant-fixture",
-        sources,
+        sources: fixtureSources,
       };
     } else if (url.pathname === "/workstreams/v1/capabilities") {
       observations.capabilities += 1;
@@ -308,7 +338,12 @@ export async function startLoopbackControlPlane() {
       const command = decodeCommand(body);
       observations.submissions += 1;
       faults.commandEntered?.();
-      if (faults.commandGate) await faults.commandGate;
+      if (
+        faults.commandGate &&
+        (faults.commandOperations === null ||
+          faults.commandOperations.includes(command.action.operation))
+      )
+        await faults.commandGate;
       const prior = bodies.get(command.command_id);
       if (prior !== undefined && prior !== body)
         return respond(
@@ -364,6 +399,27 @@ export async function startLoopbackControlPlane() {
   });
   return {
     ...listener,
+    // Test driver commands use the same model and receipt ledger, without the injected wire faults.
+    command: async (action: WorkstreamCommand["action"]) => {
+      const capabilities = await Effect.runPromise(registry.getCapabilities(contract));
+      const command: WorkstreamCommand = {
+        command_id: NodeCrypto.randomUUID(),
+        expected_registry_version: capabilities.context.registry_version,
+        expected_server_generation: capabilities.context.server_generation,
+        action,
+      };
+      const body = JSON.stringify(command);
+      bodies.set(command.command_id, body);
+      return Effect.runPromise(
+        registry.submitCommand({ ...contract, command, body, idempotencyKey: command.command_id }),
+      );
+    },
+    memberships: (workstreamId: string) =>
+      Effect.runPromise(registry.listMemberships({ ...contract, limit: 100, workstreamId })),
+    snapshot: async () => ({
+      workstreams: await Effect.runPromise(registry.listWorkstreams({ ...contract, limit: 100 })),
+      references: await Effect.runPromise(registry.listReferences({ ...contract, limit: 100 })),
+    }),
     observations,
     faults,
     authority,
@@ -376,7 +432,7 @@ export async function startLoopbackControlPlane() {
         registryBinding: token,
         authorizationRevision: 1,
         keyId: "key-fixture",
-        signingSecret,
+        signingSecret: fixtureSecret,
         registrationContextVersion: "2.0.0" as const,
       },
     },

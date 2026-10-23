@@ -183,3 +183,14 @@ is deliberately no invented CP launch command here. Root must record the actual
 J-A launcher and arguments before calling this recipe runnable end to end.
 
 No step in either recipe has been run for this candidate.
+
+The test-only [full-app registry adapter](../../apps/server/src/jones/workstreams/operations/fullAppFixture.ts)
+can support the required real-app before/after journey. Its caller must use a
+unique private home, the normal server launcher and authentication, and the
+server's observed environment ID, authority namespace, store generation and
+stamped build. It seeds Alpha and Beta and exposes membership gates, lost replies
+and competing owner assignments without replacing the app's HTTP handlers or
+projections. Capture the full application sidebar and Settings, then read back
+the registry and reload. A source revision, served-build correspondence and
+successful teardown must accompany that evidence. This helper's presence is
+not evidence that the full-app journey has run.

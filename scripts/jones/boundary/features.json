@@ -1545,6 +1545,22 @@
         "packages/contracts/src/jones/environmentHttpGroups.test.ts"
       ],
       "scope": "Jones-owned Workstream operation contract, deterministic child IDs, qualified planning, serialized operation service, exact-byte receipt recovery and sealing. Production HTTP adapters share the application-owned operation service and advertise capability only when wired; cached setup status exposes signed registry UUIDs and bounded diagnostics. Synthetic and production-layer loopback tests cover restart adoption, unknown effects, contention, qualification, memory-only reads and compatibility. No Jones durable journal, migration or installed-runtime change."
+    },
+    {
+      "id": "workstream-app-operations",
+      "tests": [
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
+        "apps/mobile/src/features/workstreams/operations.test.ts",
+        "apps/web/src/jones/workstreams/SetupStatusContent.test.tsx",
+        "apps/web/src/jones/workstreams/WorkstreamPicker.test.tsx",
+        "apps/web/src/jones/workstreams/environmentOperationsTransport.test.ts",
+        "apps/web/src/jones/workstreams/remoteThreadAssignment.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamOperations.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsDurableDisplay.test.tsx",
+        "apps/web/src/jones/workstreams/useWorkstreamsReconnect.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/operations.test.ts"
+      ],
+      "scope": "Web/desktop and mobile use the shared retained operation client, signed setup registry UUID, capability-gated assignment/create, pending and conflict readback, searchable inline creation and setup diagnostics. Records all 29 J-C paths in inventory. Shared hooks: settings.jones-code.tsx registers WorkstreamsSetupStatus; client-runtime package.json exports ./jones/workstreams/operations. Existing Jones-owned state/sidebar/mobile modules consume these interfaces. Legacy and secondary-membership paths remain covered by their existing feature groups. The test-only fullAppFixture and parameterized loopbackFixture accept the actual isolated server source/authority/generation, generate fixture-only signed registry binding UUIDs and expose controlled pending/lost-reply/competing-assignment faults. Full-app native Browser evidence requires the root-run launcher; synthetic component tests alone are not that evidence."
     }
   ]
 }
