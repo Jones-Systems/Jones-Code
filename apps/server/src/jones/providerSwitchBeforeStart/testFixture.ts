@@ -17,4 +17,4 @@ export const layer = Layer.effect(
       }),
     );
   }),
-).pipe(Layer.provide(NodeServices.layer));
+).pipe(Layer.provide(NodeServices.layer), Layer.orDie);
