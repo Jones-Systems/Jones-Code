@@ -20,6 +20,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as IntentStore from "./IntentStore.ts";
+import * as ObservationSupport from "./ObservationSupport.ts";
 import { CancelRemoteAdmissionTool } from "../remoteAdmissionIntegration/tools.ts";
 
 const retry = Schedule.exponential(Duration.seconds(2)).pipe(
@@ -145,6 +146,30 @@ export const make = Effect.fn("RemoteDelegationLifecycle.make")(function* (
         }
         let launched = intent.launched;
         if (launched === null || (launched.runId === null && task.result === null)) {
+          if (!(yield* ObservationSupport.supported(forwarding, caller, envelope.environmentId))) {
+            const error = ObservationSupport.unsupported();
+            if (!intent.launchStarted) {
+              yield* finishDenied(intent, error);
+              return;
+            }
+            // A missing launch receipt is an unknown effect, including an admission
+            // that may have been approved there. Keep its original key and hold.
+            if (task.result === null)
+              yield* threads
+                .dispatch({
+                  type: "message.dispatch",
+                  commandId: CommandId.make(`${id}:observation-reconciliation`),
+                  threadId: envelope.request.parentThreadId,
+                  messageId: MessageId.make(`${id}:observation-reconciliation`),
+                  text: `Remote task ${task.id} in ${envelope.label}: observation support is unavailable; launch reconciliation is on hold. The original launch may already exist. Its intent and any owner admission remain pending. Upgrade the receiving server to reconcile the original request; do not launch a replacement.`,
+                  attachments: [],
+                  createdBy: "system",
+                  creationSource: "mcp",
+                  dispatchMode: { type: "queue_after_active" },
+                })
+                .pipe(Effect.mapError(unavailable));
+            return yield* error;
+          }
           yield* store.beginLaunch(id);
           const outcome = yield* forwarding
             .call(

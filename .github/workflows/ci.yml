@@ -20,13 +20,22 @@ on:
         type: string
         required: false
         default: ""
+      native_jobs:
+        description: Run the macOS native jobs even when none of the files they check changed
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+# A newer pull request or manual run cancels the one it supersedes; manual runs
+# with different shard inputs still run side by side. Main pushes share one
+# group without cancelling: the running push finishes, since it records shard
+# weights and is the CI result an update candidate's source needs, and GitHub
+# replaces a still-pending push with the newest one.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'workflow_dispatch' && format('dispatch-{0}-{1}-{2}', github.ref, inputs.server_shards, inputs.weights_source_run_id)) || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   # Lint, typecheck, and the desktop build each get a runner so they run side by
@@ -561,31 +570,38 @@ jobs:
             cargo test --locked --manifest-path "native/$crate/Cargo.toml"
           done
 
-  # The static analysis below needs a macOS runner, so gate it on the native
-  # sources it actually lints. Detection is API-only (no checkout) and fails open: if
-  # the diff cannot be resolved, the lint runs.
-  mobile_native_changes:
-    name: Mobile Native Changes
+  # The macOS jobs below need a scarce hosted runner shared across the
+  # organization, so each is gated on the files it checks. Detection is
+  # API-only (no checkout) and fails open: if the diff cannot be resolved,
+  # every gated job runs.
+  native_changes:
+    name: Native Changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      changed: ${{ steps.detect.outputs.changed }}
+      mobile: ${{ steps.detect.outputs.mobile }}
+      enrollment: ${{ steps.detect.outputs.enrollment }}
     steps:
-      - name: Detect mobile native changes
+      - name: Detect native changes
         id: detect
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BEFORE_SHA: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          FORCE_NATIVE: ${{ inputs.native_jobs }}
         run: |
           set -uo pipefail
 
           fail_open() {
-            echo "$* Running native static analysis."
-            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "$* Running every native job."
+            echo "mobile=true" >> "$GITHUB_OUTPUT"
+            echo "enrollment=true" >> "$GITHUB_OUTPUT"
             exit 0
           }
 
@@ -593,17 +609,22 @@ jobs:
             printf '%s\n' "$1" | grep -c . || true
           }
 
+          if [[ "${FORCE_NATIVE}" == "true" ]]; then
+            fail_open "The manual run asked for the native jobs."
+          fi
+
           # One row per changed file, holding the new path and, for a rename,
           # the path it replaced: renaming a matched file out of the matched
-          # paths removes a lint input just like editing it.
+          # paths removes a checked input just like editing it.
           row='[.filename, (.previous_filename // empty)] | @tsv'
 
+          stack_base=
           if [[ -n "${PR_NUMBER}" ]]; then
             stack_base=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.stack.base.ref // empty') \
               || fail_open "Could not read native stack membership."
-            if [[ -n "$stack_base" ]]; then
-              fail_open "Native stack qualification covers lower layers as well as this PR."
-            fi
+          fi
+
+          if [[ -n "${PR_NUMBER}" && -z "${stack_base}" ]]; then
             # The PR files endpoint stops at 3000 files and pagination cannot
             # extend it, so cross-check against the count the PR itself reports.
             expected=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.changed_files') \
@@ -616,7 +637,19 @@ jobs:
               fail_open "GitHub listed only ${listed} of ${expected} changed files."
             fi
           else
-            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${BEFORE_SHA}...${GITHUB_SHA}" --jq ".files[]? | ${row}") \
+            # Native stack qualification covers lower layers as well as this
+            # PR, so a stacked PR compares its head against the stack's base.
+            # A push compares against the commit it replaced. A manual run
+            # compares against the default branch, so a run on that branch
+            # itself finds no changes.
+            if [[ -n "${PR_NUMBER}" ]]; then
+              base="${stack_base}" head="${PR_HEAD_SHA}"
+            elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+              base="${DEFAULT_BRANCH}" head="${GITHUB_SHA}"
+            else
+              base="${BEFORE_SHA}" head="${GITHUB_SHA}"
+            fi
+            rows=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${base}...${head}" --jq ".files[]? | ${row}") \
               || fail_open "Could not resolve changed files."
 
             # The compare endpoint reports at most 300 files and pagination does
@@ -629,26 +662,37 @@ jobs:
 
           paths=$(tr '\t' '\n' <<< "$rows")
 
+          detect() {
+            local output="$1" description="$2" pattern="$3"
+            if grep -qE "$pattern" <<< "$paths"; then
+              echo "Changed ${description}:"
+              grep -E "$pattern" <<< "$paths"
+              echo "${output}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "No ${description} changed."
+              echo "${output}=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+
           # Sources scripts/mobile-native-static-check.ts lints, plus the tool
           # and rule configuration that decides how it lints them, plus the
           # root package.json that defines the lint:mobile command.
-          pattern='^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$'
+          detect mobile "mobile native sources or lint configuration" \
+            '^apps/mobile/.*\.(swift|kt|kts)$|^apps/mobile/(\.swiftlint\.yml|detekt\.yml|\.editorconfig|Brewfile)$|^scripts/mobile-native-static-check\.ts$|^package\.json$|^\.github/workflows/ci\.yml$'
 
-          if grep -qE "$pattern" <<< "$paths"; then
-            echo "Native sources or lint configuration changed:"
-            grep -E "$pattern" <<< "$paths"
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No mobile native sources or lint configuration changed."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
+          # The modules the native enrollment qualification names, plus the
+          # dependency manifests and root test configuration that decide how
+          # they run on the pinned Node. Their other imports reach most of the
+          # server; the Linux leg runs on every change and covers those.
+          detect enrollment "native enrollment sources or runtime configuration" \
+            '^apps/server/src/jones/workstreams/enrollment/|^apps/server/src/environment/[Nn]ativeStoreAuthority|^packages/shared/src/nodeSqliteClient|^(package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|vite\.config\.ts)$|^\.github/workflows/ci\.yml$'
 
   mobile_native_static_analysis:
     name: Mobile Native Static Analysis
-    needs: mobile_native_changes
+    needs: native_changes
     # Skip only on an explicit "no": a gate job that failed or errored leaves the
     # output empty, and that must run the lint rather than silently skip it.
-    if: ${{ !cancelled() && needs.mobile_native_changes.outputs.changed != 'false' }}
+    if: ${{ !cancelled() && needs.native_changes.outputs.mobile != 'false' }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -675,35 +719,25 @@ jobs:
       - name: Lint mobile native sources
         run: vp run lint:mobile
 
+  # The Linux and macOS legs run the same steps (shared through a YAML anchor)
+  # and differ only in runner and expected platform. Only the macOS leg is
+  # gated, because it needs the scarce runner.
   native_enrollment_qualification:
-    name: Native Enrollment (${{ matrix.os }}, Node ${{ matrix.node }})
+    name: Native Enrollment (ubuntu-24.04, Node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-24.04
-            platform: linux
-            architecture: x64
-            node: "24.22.1"
+          - node: "24.22.1"
             sqlite: "3.53.4"
-          - os: macos-15
-            platform: darwin
-            architecture: arm64
-            node: "24.22.1"
+          - node: "26.8.2"
             sqlite: "3.53.4"
-          - os: ubuntu-24.04
-            platform: linux
-            architecture: x64
-            node: "26.8.2"
-            sqlite: "3.53.4"
-          - os: macos-15
-            platform: darwin
-            architecture: arm64
-            node: "26.8.2"
-            sqlite: "3.53.4"
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
-    steps:
+    env:
+      QUALIFICATION_PLATFORM: linux
+      QUALIFICATION_ARCHITECTURE: x64
+    steps: &native_enrollment_steps
       - name: Checkout
         uses: actions/checkout@v6
         with:
@@ -728,8 +762,6 @@ jobs:
         env:
           JONES_NATIVE_ENROLLMENT_QUALIFICATION_NODE: ${{ matrix.node }}
           JONES_NATIVE_ENROLLMENT_QUALIFICATION_SQLITE: ${{ matrix.sqlite }}
-          QUALIFICATION_PLATFORM: ${{ matrix.platform }}
-          QUALIFICATION_ARCHITECTURE: ${{ matrix.architecture }}
         run: |
           qualification_node="$(command -v node)"
           "$qualification_node" --input-type=module <<'NODE'
@@ -759,6 +791,26 @@ jobs:
             apps/server/src/environment/NativeStoreAuthority.test.ts \
             apps/server/src/environment/nativeStoreAuthorityPersistence.test.ts \
             packages/shared/src/nodeSqliteClient.test.ts
+
+  native_enrollment_qualification_macos:
+    name: Native Enrollment (macos-15, Node ${{ matrix.node }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: "24.22.1"
+            sqlite: "3.53.4"
+          - node: "26.8.2"
+            sqlite: "3.53.4"
+    needs: native_changes
+    # Skip only on an explicit "no", as for the mobile lint.
+    if: ${{ !cancelled() && needs.native_changes.outputs.enrollment != 'false' }}
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      QUALIFICATION_PLATFORM: darwin
+      QUALIFICATION_ARCHITECTURE: arm64
+    steps: *native_enrollment_steps
 
   release_smoke:
     name: Release Smoke
@@ -805,10 +857,11 @@ jobs:
         transfer-report,
         server_timings,
         rust,
-        mobile_native_changes,
+        native_changes,
         mobile_native_static_analysis,
         release_smoke,
         native_enrollment_qualification,
+        native_enrollment_qualification_macos,
       ]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -818,7 +871,10 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
-          # Only the macOS lint skips on purpose, when no native mobile code changed.
-          echo "$RESULTS" | jq -e 'all(to_entries[];
+          # Only the macOS jobs skip on purpose, each when Native Changes found
+          # none of the files it checks.
+          echo "$RESULTS" | jq -e '.native_changes.outputs as $changed | all(to_entries[];
             .value.result == "success"
-            or (.key == "mobile_native_static_analysis" and .value.result == "skipped"))' > /dev/null
+            or (.value.result == "skipped" and (
+              (.key == "mobile_native_static_analysis" and $changed.mobile == "false")
+              or (.key == "native_enrollment_qualification_macos" and $changed.enrollment == "false"))))' > /dev/null

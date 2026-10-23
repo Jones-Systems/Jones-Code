@@ -1,3 +1,8 @@
+import {
+  GoalNotificationDeliveryUnknown,
+  isGoalNotificationDeliveryUnknown,
+  isGoalNotificationNotDelivered,
+} from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
@@ -270,161 +275,193 @@ export const layerExecutor: Layer.Layer<
               );
           }
           case "provider-turn.steer-batch":
-          case "provider-turn.steer":
-            return providerTurnControl
-              .steer({
-                threadId: effect.threadId,
-                providerSessionId: effect.request.providerSessionId,
-                providerThreadId: effect.request.providerThreadId,
-                providerTurnId: effect.request.providerTurnId,
-                messageId: effect.request.messageId,
-                ...(effect.request.type === "provider-turn.steer-batch"
-                  ? { messageIds: effect.request.messageIds }
-                  : {}),
-              })
-              .pipe(
-                Effect.tap(() =>
-                  Effect.gen(function* () {
-                    if (effect.request.type !== "provider-turn.steer") return;
-                    const messageId = effect.request.messageId;
-                    const projection = yield* threads.getThreadRecords(
-                      effect.threadId,
-                      ["messages", "runs"],
-                      { messageIds: [effect.request.messageId] },
-                    );
-                    const message = projection.messages.find((row) => row.id === messageId);
-                    if (message?.delegatedCompletion === undefined) return;
-                    yield* threads.dispatch({
-                      type: "notification.delivery.accept",
-                      commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
-                      threadId: effect.threadId,
-                      messageId: message.id,
-                    });
-                  }),
-                ),
-                Effect.catch((error) =>
-                  Effect.gen(function* () {
-                    if (
-                      findSteerFailure(error) !== undefined ||
-                      !("turnCompleted" in error) ||
-                      !error.turnCompleted ||
-                      (effect.request.type !== "provider-turn.steer" &&
-                        effect.request.type !== "provider-turn.steer-batch")
-                    ) {
-                      return yield* error;
-                    }
-                    if (effect.request.type === "provider-turn.steer-batch") {
-                      const records = yield* threads.getThreadRecords(
+          case "provider-turn.steer": {
+            const request = effect.request;
+            return Effect.gen(function* () {
+              // Read notification identity before sending; a later read failure cannot
+              // turn a delivered or unknown notification into a retryable send.
+              const records =
+                request.type === "provider-turn.steer"
+                  ? yield* threads.getThreadRecords(effect.threadId, ["messages"], {
+                      messageIds: [request.messageId],
+                    })
+                  : undefined;
+              const notificationMessage = records?.messages.find(
+                (message) => message.id === request.messageId && message.notification !== undefined,
+              );
+              return yield* providerTurnControl
+                .steer({
+                  threadId: effect.threadId,
+                  providerSessionId: request.providerSessionId,
+                  providerThreadId: request.providerThreadId,
+                  providerTurnId: request.providerTurnId,
+                  messageId: request.messageId,
+                  ...(request.type === "provider-turn.steer-batch"
+                    ? { messageIds: request.messageIds }
+                    : {}),
+                })
+                .pipe(
+                  Effect.tap(() =>
+                    Effect.gen(function* () {
+                      if (
+                        request.type !== "provider-turn.steer" ||
+                        notificationMessage !== undefined
+                      )
+                        return;
+                      const messageId = request.messageId;
+                      const projection = yield* threads.getThreadRecords(
                         effect.threadId,
                         ["messages", "runs"],
-                        { messageIds: effect.request.messageIds },
+                        { messageIds: [request.messageId] },
                       );
-                      const members = effect.request.messageIds.map((id) =>
-                        records.messages.find((row) => row.id === id),
+                      const message = projection.messages.find((row) => row.id === messageId);
+                      if (message?.delegatedCompletion === undefined) return;
+                      yield* threads.dispatch({
+                        type: "notification.delivery.accept",
+                        commandId: CommandId.make(`command:mailbox-accepted:${effect.id}`),
+                        threadId: effect.threadId,
+                        messageId: message.id,
+                      });
+                    }),
+                  ),
+                  Effect.catch((error) =>
+                    Effect.gen(function* () {
+                      if (findSteerFailure(error) !== undefined) return yield* error;
+                      if (isGoalNotificationDeliveryUnknown(error)) {
+                        return yield* new GoalNotificationDeliveryUnknown({ cause: error });
+                      }
+                      const turnCompleted =
+                        "turnCompleted" in error && error.turnCompleted === true;
+                      if (
+                        notificationMessage !== undefined &&
+                        !turnCompleted &&
+                        !isGoalNotificationNotDelivered(error)
+                      ) {
+                        return yield* new GoalNotificationDeliveryUnknown({ cause: error });
+                      }
+                      if (request.type === "provider-turn.steer-batch") {
+                        if (!turnCompleted) return yield* error;
+                        const records = yield* threads.getThreadRecords(
+                          effect.threadId,
+                          ["messages", "runs"],
+                          { messageIds: request.messageIds },
+                        );
+                        const members = request.messageIds.map((id) =>
+                          records.messages.find((row) => row.id === id),
+                        );
+                        if (members.some((row) => row === undefined)) return yield* error;
+                        for (const [index, member] of members.entries()) {
+                          const message = member!;
+                          yield* threads.dispatch({
+                            type: "message.dispatch",
+                            commandId: CommandId.make(
+                              `command:steer-follow-up:${effect.id}:${index}`,
+                            ),
+                            threadId: effect.threadId,
+                            messageId: message.id,
+                            text: message.text,
+                            attachments: message.attachments,
+                            ...(message.context ? { context: message.context } : {}),
+                            dispatchMode: {
+                              type: index === 0 ? "start_immediately" : "queue_after_active",
+                            },
+                            queuedToolBoundaryEligible: index > 0,
+                            createdBy: message.createdBy,
+                            creationSource: message.creationSource,
+                            ...(message.senderThreadId === undefined
+                              ? {}
+                              : { senderThreadId: message.senderThreadId }),
+                            ...(message.scheduledTaskId === undefined
+                              ? {}
+                              : { scheduledTaskId: message.scheduledTaskId }),
+                          });
+                        }
+                        return;
+                      }
+                      const projection = yield* threads.getThreadRecords(
+                        effect.threadId,
+                        ["messages", "runs"],
+                        { messageIds: [request.messageId] },
                       );
-                      if (members.some((row) => row === undefined)) return yield* error;
-                      for (const [index, member] of members.entries()) {
-                        const message = member!;
-                        yield* threads.dispatch({
+                      const messageId = request.messageId;
+                      const message = projection.messages.find((item) => item.id === messageId);
+                      const run = projection.runs.find((item) => item.id === message?.runId);
+                      if (message === undefined || run === undefined) return yield* error;
+                      if (!turnCompleted && !isGoalNotificationNotDelivered(error)) {
+                        return yield* message.notification === undefined
+                          ? error
+                          : new GoalNotificationDeliveryUnknown({ cause: error });
+                      }
+                      // Reuse the message identity and a stable command receipt so an outbox
+                      // retry cannot append a duplicate message or start a second follow-up.
+                      yield* threads
+                        .dispatch({
                           type: "message.dispatch",
-                          commandId: CommandId.make(
-                            `command:steer-follow-up:${effect.id}:${index}`,
-                          ),
+                          commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
                           threadId: effect.threadId,
                           messageId: message.id,
                           text: message.text,
-                          attachments: message.attachments,
                           ...(message.context ? { context: message.context } : {}),
+                          attachments: message.attachments,
+                          ...(message.delegatedCompletion === undefined &&
+                          message.notification === undefined
+                            ? {}
+                            : { modelSelection: run.modelSelection }),
                           dispatchMode: {
-                            type: index === 0 ? "start_immediately" : "queue_after_active",
+                            type:
+                              message.delegatedCompletion === undefined &&
+                              message.notification === undefined
+                                ? "start_immediately"
+                                : "queue_after_active",
                           },
-                          queuedToolBoundaryEligible: index > 0,
                           createdBy: message.createdBy,
                           creationSource: message.creationSource,
-                          ...(message.senderThreadId === undefined
+                          ...(message.delegatedCompletion === undefined
                             ? {}
-                            : { senderThreadId: message.senderThreadId }),
+                            : { delegatedCompletion: message.delegatedCompletion }),
+                          ...(message.notification === undefined
+                            ? {}
+                            : { notification: message.notification }),
                           ...(message.scheduledTaskId === undefined
                             ? {}
                             : { scheduledTaskId: message.scheduledTaskId }),
-                        });
-                      }
-                      return;
-                    }
-                    const projection = yield* threads.getThreadRecords(
-                      effect.threadId,
-                      ["messages", "runs"],
-                      { messageIds: [effect.request.messageId] },
-                    );
-                    const messageId = effect.request.messageId;
-                    const message = projection.messages.find((item) => item.id === messageId);
-                    const run = projection.runs.find((item) => item.id === message?.runId);
-                    if (message === undefined || run === undefined) return yield* error;
-                    // Reuse the message identity and a stable command receipt so an outbox
-                    // retry cannot append a duplicate message or start a second follow-up.
-                    yield* threads
-                      .dispatch({
-                        type: "message.dispatch",
-                        commandId: CommandId.make(`command:steer-follow-up:${effect.id}`),
-                        threadId: effect.threadId,
-                        messageId: message.id,
-                        text: message.text,
-                        ...(message.context ? { context: message.context } : {}),
-                        attachments: message.attachments,
-                        ...(message.delegatedCompletion === undefined
-                          ? {}
-                          : { modelSelection: run.modelSelection }),
-                        dispatchMode: {
-                          type:
-                            message.delegatedCompletion === undefined
-                              ? "start_immediately"
-                              : "queue_after_active",
-                        },
-                        createdBy: message.createdBy,
-                        creationSource: message.creationSource,
-                        ...(message.delegatedCompletion === undefined
-                          ? {}
-                          : { delegatedCompletion: message.delegatedCompletion }),
-                        ...(message.notification === undefined
-                          ? {}
-                          : { notification: message.notification }),
-                        ...(message.scheduledTaskId === undefined
-                          ? {}
-                          : { scheduledTaskId: message.scheduledTaskId }),
-                        ...(message.senderThreadId === undefined
-                          ? {}
-                          : { senderThreadId: message.senderThreadId }),
-                      })
-                      .pipe(
-                        // The turn that just completed leaves no further retry
-                        // target once the instance is off: the completed turn
-                        // stands as the thread's result instead of going
-                        // through the outbox's bounded retry on a refusal that
-                        // retrying cannot change.
-                        Effect.catchTags({
-                          ThreadManagementProviderInstanceDisabledError: (disabledError) =>
-                            Effect.logInfo(
-                              "orchestration-v2.effect-worker.steer-follow-up-disabled",
-                              {
-                                threadId: effect.threadId,
-                                messageId: message.id,
-                                projectId: disabledError.projectId,
-                                instanceId: disabledError.instanceId,
-                              },
-                            ),
-                        }),
-                      );
-                  }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
+                          ...(message.senderThreadId === undefined
+                            ? {}
+                            : { senderThreadId: message.senderThreadId }),
+                        })
+                        .pipe(
+                          // The turn that just completed leaves no further retry
+                          // target once the instance is off: the completed turn
+                          // stands as the thread's result instead of going
+                          // through the outbox's bounded retry on a refusal that
+                          // retrying cannot change.
+                          Effect.catchTags({
+                            ThreadManagementProviderInstanceDisabledError: (disabledError) =>
+                              Effect.logInfo(
+                                "orchestration-v2.effect-worker.steer-follow-up-disabled",
+                                {
+                                  threadId: effect.threadId,
+                                  messageId: message.id,
+                                  projectId: disabledError.projectId,
+                                  instanceId: disabledError.instanceId,
+                                },
+                              ),
+                          }),
+                        );
                     }),
-                ),
-              );
+                  ),
+                );
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-turn.restart": {
             const request = effect.request;
             return restartPreparation
@@ -876,11 +913,17 @@ export const layerWithOptions = (
             nonRetryable,
             error,
           });
+          // A failed response after a notification send does not prove non-delivery.
+          // Keep the durable message and failed outbox row for reconciliation, without replay.
+          const executionFailure = Cause.findErrorOption(exit.cause);
+          const notificationDeliveryUnknown =
+            Option.isSome(executionFailure) &&
+            isGoalNotificationDeliveryUnknown(executionFailure.value);
           const updated = nonRetryable
             ? yield* outbox
                 .succeed({ effectId: effect.id, workerId })
                 .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : terminalFailure || effect.attemptCount >= maxAttempts
+            : notificationDeliveryUnknown || terminalFailure || effect.attemptCount >= maxAttempts
               ? yield* outbox
                   .fail({ effectId: effect.id, workerId, error })
                   .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))

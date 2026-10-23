@@ -13810,6 +13810,127 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         event.type === "provider_thread.updated" ? [event.providerThread.goal?.status ?? null] : [],
       );
 
+    it.effect.each(["continue", "end"] as const)(
+      "retains a notification steer across a held goal turn (%s)",
+      (outcome) =>
+        Effect.gen(function* () {
+          const handlers = new Map<string, (payload: unknown) => Effect.Effect<unknown>>();
+          const outbound: string[] = [];
+          const heldObserved = yield* Deferred.make<void>();
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: `goal-notification-held-${outcome}`,
+              entries: [
+                ...codexReplayPreamble({
+                  nativeThreadId,
+                  nativeTurnId: "goal-held",
+                  prompt: "Work",
+                }),
+                notification("goal active", "thread/goal/updated", {
+                  threadId: nativeThreadId,
+                  turnId: "goal-held",
+                  goal: codexGoal("active", 10),
+                }),
+                notification("turn done", "turn/completed", {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: "goal-held", status: "completed" }),
+                }),
+                notification("goal accounted", "thread/goal/updated", {
+                  threadId: nativeThreadId,
+                  turnId: null,
+                  goal: codexGoal("active", 11),
+                }),
+                ...(outcome === "continue"
+                  ? request(
+                      4,
+                      "turn/steer",
+                      {
+                        expectedTurnId: "goal-next",
+                        input: [{ type: "text", text: "PR ready" }],
+                        threadId: nativeThreadId,
+                      },
+                      { turnId: "goal-next" },
+                    )
+                  : []),
+              ],
+            }),
+            (event) =>
+              event.type === "provider_thread.updated" &&
+              event.providerThread.goal?.tokensUsed === 11
+                ? Deferred.succeed(heldObserved, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+            (method) =>
+              Effect.sync(() => {
+                outbound.push(method);
+              }),
+            undefined,
+            {
+              onNotification: (method, handler) => {
+                handlers.set(method, handler);
+              },
+            },
+          );
+          const input = yield* goalTurnInput(harness, "Work");
+          yield* harness.runtime.startTurn(input);
+          yield* Deferred.await(heldObserved);
+          const entered = yield* Deferred.make<void>();
+          const steer = yield* Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            return yield* harness.runtime.steerTurn({
+              threadId: harness.threadId,
+              runId: input.runId,
+              providerThread: harness.providerThread,
+              providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                nativeTurnId: "goal-held",
+              }),
+              message: {
+                ...input.message,
+                messageId: MessageId.make("goal-notification-held"),
+                text: "PR ready",
+              },
+            });
+          }).pipe(Effect.result, Effect.forkScoped);
+          yield* Deferred.await(entered);
+          assert.notInclude(outbound, "turn/steer");
+          if (outcome === "continue") {
+            yield* handlers.get("turn/started")!({
+              threadId: nativeThreadId,
+              turn: makeCodexReplayTurn({ id: "goal-next", status: "inProgress" }),
+            });
+            const result = yield* Fiber.join(steer);
+            assert.equal(
+              result._tag,
+              "Success",
+              result._tag === "Failure" ? errorCauseChainText(result.failure) : undefined,
+            );
+            assert.equal(outbound.filter((method) => method === "turn/steer").length, 1);
+          } else {
+            yield* handlers.get("thread/goal/updated")!({
+              threadId: nativeThreadId,
+              turnId: "goal-held",
+              goal: codexGoal("complete", 10),
+            });
+            const result = yield* Fiber.join(steer);
+            assert.equal(result._tag, "Failure");
+            if (result._tag === "Failure")
+              assert.nestedPropertyVal(
+                result.failure,
+                "cause._tag",
+                "GoalNotificationNotDelivered",
+              );
+            assert.notInclude(outbound, "turn/steer");
+          }
+          assert.notInclude(outbound, "turn/interrupt");
+          assert.notInclude(outbound, "thread/goal/set");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
     it.effect("direct goal pause finishes the current turn without interrupting", () =>
       Effect.gen(function* () {
         const outbound: Array<string> = [];

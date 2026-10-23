@@ -1,3 +1,10 @@
+import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
+import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import {
+  blockingQuestions,
+  questionsChanged,
+} from "../jones/remoteDelegation/BlockingQuestions.ts";
+import type { RemoteBlockingQuestions } from "@t3tools/contracts";
 import { planQueuedSteerBatch } from "@t3tools/shared/jones/queuedSteerBatch";
 import { queuedSteerBatchCandidates } from "../jones/orchestration/QueuedSteerBatch.ts";
 import * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -167,6 +174,8 @@ export interface ThreadManagementSendResult {
 }
 
 export interface ThreadManagementWaitInput {
+  readonly observeBlockingQuestions?: boolean;
+  readonly questionResumeToken?: string;
   readonly projectId: ProjectId;
   readonly threadId: ThreadId;
   readonly runId?: RunId;
@@ -180,6 +189,8 @@ export interface ThreadManagementWaitInput {
 }
 
 export interface ThreadManagementWaitResult {
+  readonly blockingQuestions?: RemoteBlockingQuestions;
+  readonly observationChanged?: boolean;
   readonly threadId: ThreadId;
   readonly run: OrchestrationV2Run | null;
   readonly timedOut: boolean;
@@ -339,7 +350,7 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
-export interface ThreadManagementServiceShape {
+export interface ThreadManagementServiceShape extends ObservationPorts {
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -974,7 +985,7 @@ const make = Effect.gen(function* () {
       dispatchMode,
 
       ...(input.creationSource === "mcp" &&
-      input.senderThreadId !== undefined &&
+      (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
       input.scheduledTaskId === undefined &&
       (input.mode === "queue" || input.mode === "auto")
         ? { queuedToolBoundaryEligible: true }
@@ -1082,24 +1093,41 @@ const make = Effect.gen(function* () {
       runs: ReadonlyArray<OrchestrationV2Run>,
     ) {
       const current = yield* outcome(runs);
+      const questions =
+        input.observeBlockingQuestions === true
+          ? blockingQuestions(
+              yield* getProjectThreadRecords(input, ["runtimeRequests", "nodes", "runs"]),
+            )
+          : undefined;
+      const questionChanged =
+        questions !== undefined && questionsChanged(questions, input.questionResumeToken);
       if (!current.settled || !untilDelegatedWorkSettled) {
-        return { ...current, resultRun: undefined };
+        return { ...current, resultRun: undefined, questions, questionChanged };
       }
 
       // A declined continuation records no event, so its effect settling wakes
       // the wait too.
 
       const resultRun = yield* delegatedWorkResult;
-      return { ...current, settled: resultRun !== undefined, resultRun };
+      return {
+        ...current,
+        settled: resultRun !== undefined,
+        resultRun,
+        questions,
+        questionChanged,
+      };
     });
     const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
       threadId: input.threadId,
       run: current.run,
-      timedOut: !current.settled,
+      timedOut: !current.settled && !current.questionChanged,
+      ...(current.questions === undefined
+        ? {}
+        : { blockingQuestions: current.questions, observationChanged: current.questionChanged }),
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
     const initial = yield* evaluate(target.runs);
-    if (initial.settled) return settledResult(initial);
+    if (initial.settled || initial.questionChanged) return settledResult(initial);
 
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
@@ -1111,6 +1139,9 @@ const make = Effect.gen(function* () {
             "thread.deleted",
             // What delegated work reads besides runs: tasks and their
             // deliveries, and a provider thread's background tasks.
+            ...(input.observeBlockingQuestions === true && !untilDelegatedWorkSettled
+              ? (["runtime-request.updated"] as const)
+              : []),
             ...(untilDelegatedWorkSettled
               ? ([
                   "subagent.updated",
@@ -1146,7 +1177,7 @@ const make = Effect.gen(function* () {
           Effect.flatMap((current) => evaluate(current.runs)),
         ),
       ),
-      Stream.filter((current) => current.settled),
+      Stream.filter((current) => current.settled || current.questionChanged),
       Stream.runHead,
       Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
     );
@@ -1465,6 +1496,18 @@ const make = Effect.gen(function* () {
         Effect.andThen(orchestrator.getTurnItem(input)),
         Effect.map((item) => ({ item: item === null ? null : projectTurnItemForDetail(item) })),
       ),
+    ...(orchestrator.recoverRemoteTaskQuestions === undefined
+      ? {}
+      : { recoverRemoteTaskQuestions: orchestrator.recoverRemoteTaskQuestions }),
+    ...(orchestrator.observeRemoteTask === undefined
+      ? {}
+      : { observeRemoteTask: orchestrator.observeRemoteTask }),
+    ...(orchestrator.readRemoteTaskObservation === undefined
+      ? {}
+      : { readRemoteTaskObservation: orchestrator.readRemoteTaskObservation }),
+    ...(orchestrator.reconcileRemoteTaskQuestions === undefined
+      ? {}
+      : { reconcileRemoteTaskQuestions: orchestrator.reconcileRemoteTaskQuestions }),
     getThreadRecords: (threadId, fields, filter) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getThreadRecords(threadId, fields, filter)),

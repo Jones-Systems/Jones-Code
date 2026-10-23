@@ -65,7 +65,18 @@ import {
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  hasPendingChildRuns,
+  latestTerminalResultRun,
+} from "../jones/remoteDelegation/ChildProgress.ts";
+export { hasPendingChildRuns } from "../jones/remoteDelegation/ChildProgress.ts";
+import { blockingQuestions } from "../jones/remoteDelegation/BlockingQuestions.ts";
+import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
+import type { RemoteTaskObservation } from "@t3tools/contracts";
+import {
+  IncomingLinkedMessage,
+  formatLinkedMessageOrigin,
+} from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
@@ -467,18 +478,6 @@ export function delegatedTaskRun(
     : childProjection.runs.find((run) => run.id === spawnTransfer.targetRunId);
 }
 
-export function hasPendingChildRuns(
-  childProjection: Pick<OrchestrationV2ThreadProjection, "runs">,
-  delegatedRun: OrchestrationV2Run | undefined,
-): boolean {
-  return childProjection.runs.some(
-    (run) =>
-      !ThreadManagementService.isTerminalRunStatus(run.status) &&
-      !(run.status === "queued" && run.queueHeld === true) &&
-      (delegatedRun === undefined || run.ordinal > delegatedRun.ordinal),
-  );
-}
-
 function isTerminalTaskStatus(
   status: OrchestratorMcpDelegateTaskResult["status"],
 ): status is TerminalTaskStatus {
@@ -628,29 +627,6 @@ function pageIncludesTerminalTaskResult(input: {
     const text = turnItemText(row.item);
     return text !== null && text.length <= input.maxChars;
   });
-}
-
-function latestTerminalResultRun(
-  projection: Pick<OrchestrationV2ThreadProjection, "messages" | "runs">,
-  delegatedRun: OrchestrationV2Run | undefined,
-): OrchestrationV2Run | undefined {
-  const monitorRunIds = new Set(
-    projection.messages
-      .filter((message) => message.notification?.source.kind === "monitor")
-      .map((message) => message.runId),
-  );
-  return projection.runs
-    .filter(
-      (run) =>
-        ThreadManagementService.isTerminalRunStatus(run.status) &&
-        !monitorRunIds.has(run.id) &&
-        run.status !== "rolled_back" &&
-        (run.id === delegatedRun?.id || run.startedAt !== null),
-    )
-    .reduce<OrchestrationV2Run | undefined>(
-      (latest, run) => (latest === undefined || runRanAfter(run, latest) ? run : latest),
-      undefined,
-    );
 }
 
 function canExposeTaskRunResult(run: OrchestrationV2Run | undefined): run is OrchestrationV2Run {
@@ -1416,12 +1392,52 @@ const make = Effect.gen(function* () {
       ? crypto.randomUUIDv4().pipe(Effect.orDie)
       : Effect.succeed(clientRequestId);
 
+  const readObservation = Effect.fn("OrchestratorMcpService.readObservation")(function* (
+    scope: McpInvocationScope,
+    threadId: ThreadId,
+    originalRunId: RunId,
+    includeProgress = true,
+  ) {
+    const records = yield* threadManagement
+      .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "nodes"], {
+        messageRoles: ["user"],
+      })
+      .pipe(Effect.mapError(threadManagementFailure));
+    const original = records.runs.find((run) => run.id === originalRunId);
+    const questions = blockingQuestions(records);
+    if (original === undefined || questions === undefined)
+      return yield* failure(
+        "orchestration_error",
+        "The remote task observation has no exact run or question attribution.",
+      );
+    const latest = latestTerminalResultRun(records, original);
+    const latestStatus = latest === undefined ? null : taskStatusForRun(latest);
+    return {
+      schemaVersion: "t3.remote-task-observation/v1",
+      environmentId: scope.environmentId,
+      threadId,
+      originalRunId,
+      blockingQuestions: questions,
+      ...(includeProgress
+        ? {
+            childProgress: {
+              hasPendingChildRuns: hasPendingChildRuns(records, original),
+              latestTerminalRunId: latest?.id ?? null,
+              latestTerminalStatus:
+                latestStatus !== null && isTerminalTaskStatus(latestStatus) ? latestStatus : null,
+            },
+          }
+        : {}),
+    } satisfies RemoteTaskObservation;
+  });
+
   const readTask = Effect.fn("OrchestratorMcpService.readTask")(function* (
     scope: McpThreadInvocationScope,
     taskId: NodeId,
     waitTimedOut = false,
     acknowledgeTerminal = false,
     acknowledgementOperation = "task-status-acknowledge",
+    refreshRemoteProgress = false,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     yield* requireCapability(scope);
     const parentProjection = yield* loadProjection(scope.thread.threadId);
@@ -1441,7 +1457,13 @@ const make = Effect.gen(function* () {
       );
     }
     if (task.childThreadId === null)
-      return yield* readRemoteTask(scope, task, waitTimedOut, acknowledgeTerminal);
+      return yield* readRemoteTask(
+        scope,
+        task,
+        waitTimedOut,
+        acknowledgeTerminal,
+        refreshRemoteProgress,
+      );
     const childControls = yield* threadManagement
       .getThreadRecords(
         task.childThreadId,
@@ -1647,14 +1669,15 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * A task that runs in a linked environment, answered from its row here:
-   * the follower records its result once its thread there ends.
+   * The published result stays on the parent. Explicit status reads also fetch
+   * current child progress, and must finish that read before acknowledging it.
    */
   const readRemoteTask = Effect.fn("OrchestratorMcpService.readRemoteTask")(function* (
     scope: McpThreadInvocationScope,
     task: OrchestrationV2Subagent,
     waitTimedOut: boolean,
     acknowledgeTerminal: boolean,
+    refreshRemoteProgress: boolean,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     const status: OrchestratorMcpDelegateTaskResult["status"] =
       task.result === null
@@ -1666,6 +1689,18 @@ const make = Effect.gen(function* () {
           ? task.status
           : "completed";
     const terminal = isTerminalTaskStatus(status);
+    let observation: RemoteTaskObservation | undefined =
+      threadManagement.readRemoteTaskObservation === undefined
+        ? undefined
+        : yield* threadManagement.readRemoteTaskObservation(scope.thread.threadId, task.id);
+    let latestSummary: string | null = null;
+    const awaitingAdmission =
+      task.remoteChild === undefined && task.status === "waiting" && task.result === null;
+    if (refreshRemoteProgress && !awaitingAdmission) {
+      const observed = yield* remoteDelegation.observe(scope, task);
+      observation = observed.observation;
+      latestSummary = observed.latestTerminalSummary;
+    }
     if (
       acknowledgeTerminal &&
       terminal &&
@@ -1706,21 +1741,28 @@ const make = Effect.gen(function* () {
       childNodeId: task.id,
       status,
       workState: terminal ? "result_available" : "working",
-      hasPendingChildRuns: false,
+      hasPendingChildRuns: observation?.childProgress?.hasPendingChildRuns ?? false,
+      ...(observation === undefined ? {} : { remoteObservation: observation }),
       providerInstanceId: task.providerInstanceId,
       model: task.model,
       options: [],
       pendingApproval: null,
       summary: task.result ?? (task.status === "waiting" ? (task.progress ?? null) : null),
       resultContextTransferId: null,
-      latestTerminalRunId: null,
-      latestTerminalStatus: terminal
-        ? (status as OrchestratorMcpDelegateTaskResult["latestTerminalStatus"])
-        : null,
-      latestTerminalSummary: terminal ? task.result : null,
+      latestTerminalRunId: observation?.childProgress?.latestTerminalRunId ?? null,
+      latestTerminalStatus:
+        observation?.childProgress !== undefined
+          ? observation.childProgress.latestTerminalStatus
+          : terminal
+            ? (status as OrchestratorMcpDelegateTaskResult["latestTerminalStatus"])
+            : null,
+      latestTerminalSummary:
+        observation === undefined ? (terminal ? task.result : null) : latestSummary,
       latestTerminalResultContextTransferId: null,
-      // Its questions are asked and answered in the environment it runs in.
-      hasPendingQuestion: task.result === null && task.status === "waiting",
+      // Admission holds and observed remote questions keep their separate identities.
+      hasPendingQuestion:
+        (task.result === null && task.status === "waiting") ||
+        (observation?.blockingQuestions.requests.length ?? 0) > 0,
       waitTimedOut,
     } satisfies OrchestratorMcpDelegateTaskResult;
   });
@@ -2203,6 +2245,7 @@ const make = Effect.gen(function* () {
           };
         }),
         features: {
+          remoteTaskObservationVersion: ObservationSupport.version,
           appOwnedSubagents: true,
           asyncPolling: true,
           cancellation: true,
@@ -2433,7 +2476,7 @@ const make = Effect.gen(function* () {
     }),
     taskStatus: Effect.fn("OrchestratorMcpService.taskStatus")(function* (callerScope, taskId) {
       const scope = yield* requireThreadScope(callerScope, "task_status");
-      return yield* readTask(scope, taskId, false, true);
+      return yield* readTask(scope, taskId, false, true, "task-status-acknowledge", true);
     }),
     cancelTask: Effect.fn("OrchestratorMcpService.cancelTask")(function* (callerScope, input) {
       const scope = yield* requireThreadScope(callerScope, "task_cancel");
@@ -2955,6 +2998,20 @@ const make = Effect.gen(function* () {
         }
       }
       return {
+        remoteMessagePolicy: {
+          schemaVersion: "t3.linked-message-policy/v1",
+          authenticatedOrigin: true,
+          incomingAcceptance: true,
+        },
+        ...(input.childProgressForRunId === undefined
+          ? {}
+          : {
+              remoteObservation: yield* readObservation(
+                scope,
+                input.threadId,
+                input.childProgressForRunId,
+              ),
+            }),
         thread: threadDetail(target, timeline.totalItems, shell, yield* Clock.currentTimeMillis),
         recentRuns: target.runs
           .toSorted((left, right) => right.ordinal - left.ordinal)
@@ -3000,6 +3057,9 @@ const make = Effect.gen(function* () {
             body: input.message,
             acceptedAt: yield* Clock.currentTimeMillis,
             ...(parent === undefined ? {} : { sender: parent.thread }),
+            ...(scope.client?.linked === true
+              ? { remoteSender: formatLinkedMessageOrigin(scope.client) }
+              : {}),
           }),
           attachments: [],
           mode,
@@ -3007,6 +3067,7 @@ const make = Effect.gen(function* () {
           creationSource: "mcp",
         })
         .pipe(
+          Effect.provideService(IncomingLinkedMessage, scope.client?.linked === true),
           Effect.mapError((error) =>
             isThreadManagementError(error)
               ? threadManagementFailure(error)
@@ -3032,6 +3093,10 @@ const make = Effect.gen(function* () {
           projectId: target.thread.projectId,
           threadId: input.threadId,
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
+          ...(input.observeBlockingQuestions === true ? { observeBlockingQuestions: true } : {}),
+          ...(input.questionResumeToken === undefined
+            ? {}
+            : { questionResumeToken: input.questionResumeToken }),
           ...(input.runId === undefined ? {} : { runId: input.runId }),
           timeoutMs: Math.min(
             MAX_WAIT_TIMEOUT_MS,
@@ -3039,7 +3104,31 @@ const make = Effect.gen(function* () {
           ),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      const observationRunId = input.childProgressForRunId ?? input.runId ?? result.run?.id;
+      const remoteObservation =
+        (input.observeBlockingQuestions === true || input.childProgressForRunId !== undefined) &&
+        observationRunId !== undefined
+          ? yield* readObservation(
+              scope,
+              input.threadId,
+              observationRunId,
+              input.childProgressForRunId !== undefined,
+            )
+          : undefined;
       return {
+        ...(remoteObservation === undefined
+          ? {}
+          : {
+              remoteObservation: {
+                ...remoteObservation,
+                ...(result.blockingQuestions === undefined
+                  ? {}
+                  : { blockingQuestions: result.blockingQuestions }),
+              },
+            }),
+        ...(result.observationChanged === undefined
+          ? {}
+          : { observationChanged: result.observationChanged }),
         threadId: input.threadId,
         runId: result.run?.id ?? null,
         status: result.run === null ? "idle" : runOutcome(result.run),

@@ -1,4 +1,7 @@
 import { hasRetainedGoalStopTarget } from "../jones/goals/stopTarget.ts";
+import * as RemoteObservationHooks from "../jones/remoteDelegation/ObservationHooks.ts";
+import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
+import { goalNotificationMaySteer } from "../jones/goals/GoalNotificationDelivery.ts";
 import { buildUserInputRequestRecord } from "../jones/orchestration/userInputRequestRecord.ts";
 import {
   queuedSteerBatchCandidates,
@@ -382,7 +385,7 @@ export interface OrchestratorV2DispatchResult {
   readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>;
 }
 
-export interface OrchestratorV2Shape {
+export interface OrchestratorV2Shape extends RemoteObservationHooks.ObservationPorts {
   readonly stopCurrentThreadRuntime?: (
     input: import("@t3tools/contracts").StopCurrentThreadRuntimeInput,
   ) => Effect.Effect<
@@ -4476,6 +4479,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly scheduledTaskId?: OrchestrationV2ConversationMessage["scheduledTaskId"];
     readonly senderThreadId?: OrchestrationV2ConversationMessage["senderThreadId"];
     readonly delegatedCompletion?: OrchestrationV2ConversationMessage["delegatedCompletion"];
+    readonly notification?: OrchestrationV2ConversationMessage["notification"];
     readonly forceRestart: boolean;
   }) {
     const targetRun = input.projection.runs.find((candidate) => candidate.id === input.targetRunId);
@@ -4638,6 +4642,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const message: OrchestrationV2ConversationMessage = {
           createdBy: input.createdBy,
           creationSource: input.creationSource,
+          ...(input.notification === undefined ? {} : { notification: input.notification }),
           ...(input.delegatedCompletion === undefined
             ? {}
             : { delegatedCompletion: input.delegatedCompletion }),
@@ -4730,6 +4735,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         input.projection.thread.providerInstanceId !== input.modelSelection.instanceId;
       if (
         input.delegatedCompletion === undefined &&
+        input.notification === undefined &&
         (instanceChanged ||
           !modelSelectionsEqual(input.projection.thread.modelSelection, input.modelSelection))
       ) {
@@ -5512,18 +5518,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         taskIds: delivery.taskIds,
       };
     }
+    const active = projection.runs.find((run) => run.status === "running");
+    const activeProvider = projection.providerThreads.find(
+      (row) => row.id === active?.providerThreadId,
+    );
+    const notificationSource =
+      command.notification === undefined
+        ? undefined
+        : (projection.runs.find(
+            (run) =>
+              run.id ===
+              projection.messages.find((message) => message.id === command.messageId)?.runId,
+          ) ??
+          latestExecutedRun(projection.runs) ??
+          undefined);
+    const stoppedNotificationSource =
+      notificationSource !== undefined &&
+      (yield* stopReachedRun(command, command.threadId, notificationSource.id))
+        ? notificationSource
+        : undefined;
     // Route durable mailbox deliveries under the thread lock, using the live
     // session's capabilities. Never interrupt/restart a turn for a notification.
     if (
-      delegatedCompletion !== undefined &&
-      delegatedCompletion.taskIds.every(
-        (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
-      )
+      stoppedNotificationSource === undefined &&
+      ((delegatedCompletion !== undefined &&
+        delegatedCompletion.taskIds.every(
+          (id) => projection.subagents.find((task) => task.id === id)?.completionWake === "always",
+        )) ||
+        goalNotificationMaySteer({
+          message: command,
+          run: active,
+          providerThread: activeProvider,
+          alreadyRecorded: projection.messages.some((message) => message.id === command.messageId),
+        }))
     ) {
-      const active = projection.runs.find((run) => run.status === "running");
-      const providerThread = projection.providerThreads.find(
-        (row) => row.id === active?.providerThreadId,
-      );
       const activeTurn = projection.providerTurns.find(
         (turn) => turn.runAttemptId === active?.activeAttemptId && turn.status === "running",
       );
@@ -5533,11 +5561,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       if (
         active !== undefined &&
         activeTurn !== undefined &&
-        providerThread?.providerSessionId != null &&
+        activeProvider?.providerSessionId != null &&
         (activeMessage === undefined || !isNativeMaintenanceCommand(activeMessage))
       ) {
         const session = yield* providerSessions
-          .get(providerThread.providerSessionId)
+          .get(activeProvider.providerSessionId)
           .pipe(Effect.orElseSucceed(() => Option.none()));
         if (
           Option.isSome(session) &&
@@ -5609,11 +5637,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         effects,
         projection,
         modelSelection:
-          delegatedCompletion === undefined
+          delegatedCompletion === undefined && command.notification === undefined
             ? modelSelection
             : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)?.modelSelection ??
               modelSelection),
         delegatedCompletion,
+        ...(command.notification === undefined ? {} : { notification: command.notification }),
         targetRunId: dispatchMode.targetRunId,
         messageId: command.messageId,
         text: dispatchText,
@@ -5646,7 +5675,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       projection.thread.worktreePath === null
         ? latestRun
         : undefined;
-    const queueBehindRun = activeRun ?? worktreeMissingRun;
+    const queueBehindRun = activeRun ?? worktreeMissingRun ?? stoppedNotificationSource;
     const pendingMergeBackTransfers = pendingMergeBackTransfersForThread(projection);
     const startsOrQueuesRun =
       dispatchMode.type === "defer_start" ||
@@ -5765,7 +5794,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.queuedToolBoundaryEligible === undefined
           ? {}
           : { queuedToolBoundaryEligible: command.queuedToolBoundaryEligible }),
-        ...(worktreeMissingRun !== undefined ||
+        ...(stoppedNotificationSource !== undefined ||
+        worktreeMissingRun !== undefined ||
         projection.runs.some(
           (candidate) =>
             candidate.status === "queued" &&
@@ -14026,18 +14056,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } satisfies OrchestratorV2DispatchResult;
     }
 
+    const linkedMessage = yield* IncomingLinkedMessage;
     const incomingTarget =
-      ((command.type === "message.dispatch" && command.createdBy !== "user") ||
-        command.type === "queued-run.edit" ||
-        command.type === "runtime-request.respond") &&
-      command.senderThreadId !== undefined &&
-      command.senderThreadId !== command.threadId
+      command.type === "message.dispatch" && linkedMessage
         ? command.threadId
-        : command.type === "thread.merge_back" &&
-            command.createdBy !== "user" &&
-            command.sourceThreadId !== command.targetThreadId
-          ? command.targetThreadId
-          : undefined;
+        : ((command.type === "message.dispatch" && command.createdBy !== "user") ||
+              command.type === "queued-run.edit" ||
+              command.type === "runtime-request.respond") &&
+            command.senderThreadId !== undefined &&
+            command.senderThreadId !== command.threadId
+          ? command.threadId
+          : command.type === "thread.merge_back" &&
+              command.createdBy !== "user" &&
+              command.sourceThreadId !== command.targetThreadId
+            ? command.targetThreadId
+            : undefined;
     if (incomingTarget !== undefined) {
       const target = yield* projectionStore
         .getThread(incomingTarget)
@@ -15301,7 +15334,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }).pipe(Effect.mapError((cause) => importedError(candidate.threadId, cause))),
   );
 
+  const remoteObservationHooks = yield* RemoteObservationHooks.make(dispatchWithReceiptEffect);
+
   return OrchestratorV2.of({
+    ...remoteObservationHooks,
     ...(Option.isSome(capturedStop) ? { stopCurrentThreadRuntime: capturedStop.value.stop } : {}),
     reviewImportedHistory,
     startWithImportedHistory,

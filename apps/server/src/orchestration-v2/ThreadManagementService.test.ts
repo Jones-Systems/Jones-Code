@@ -15,12 +15,16 @@ import {
   CommandId,
   EnvironmentId,
   MessageId,
+  NodeId,
   type OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
+  ProviderSessionId,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
   ProjectId,
   ProviderInstanceId,
   RunId,
+  RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -643,6 +647,187 @@ it.effect(
         run: { id: runId, status: "completed" },
         resultRun: { id: wakeRunId, status: "completed" },
       });
+    }),
+);
+
+it.effect("question-aware wait returns a changed blocking question before the task settles", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project:question-observation");
+    const threadId = ThreadId.make("thread:question-observation");
+    const runId = RunId.make("run:question-observation");
+    const run = {
+      id: runId,
+      ordinal: 1,
+      status: "running",
+      rootNodeId: NodeId.make("node:question-observation"),
+      startedAt: DateTime.makeUnsafe(0),
+      completedAt: null,
+    } as unknown as OrchestrationV2Run;
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadEventSequence: () => Effect.succeed(0),
+          restartContinuationPending: () => Effect.succeed(false),
+          delegatedTaskResultPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: () => Stream.never,
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: { id: threadId, projectId, deletedAt: null },
+              runs: [run],
+              messages: [],
+              subagents: [],
+              providerThreads: [],
+              runtimeRequests: [
+                {
+                  id: "request:question-observation",
+                  nodeId: run.rootNodeId,
+                  kind: "user_input",
+                  status: "pending",
+                  responseCapability: { type: "live" },
+                },
+              ],
+            } as unknown as OrchestrationV2ThreadProjection),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerReceiptsTest),
+    );
+    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(layerTest),
+    );
+    const fiber = yield* service
+      .waitForThread({
+        projectId,
+        threadId,
+        runId,
+        timeoutMs: 10,
+        untilDelegatedWorkSettled: true,
+        observeBlockingQuestions: true,
+      } as Parameters<typeof service.waitForThread>[0])
+      .pipe(Effect.forkChild);
+    yield* TestClock.adjust(Duration.millis(10));
+    const result = yield* Fiber.join(fiber);
+    expect(result).toMatchObject({
+      timedOut: false,
+      blockingQuestions: { requests: [{ requestId: "request:question-observation", runId }] },
+    });
+  }),
+);
+
+it.effect.each(["resolved", "replaced", "terminal"] as const)(
+  "question-aware wait holds an unchanged token without polling until %s",
+  (change) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:question-resume");
+      const threadId = ThreadId.make("thread:question-resume");
+      const runId = RunId.make("run:question-resume");
+      const nodeId = NodeId.make("node:question-resume");
+      let run = {
+        id: runId,
+        ordinal: 1,
+        status: "running",
+        rootNodeId: nodeId,
+        startedAt: DateTime.makeUnsafe(0),
+        completedAt: null,
+      } as OrchestrationV2Run;
+      const request: OrchestrationV2RuntimeRequest = {
+        id: RuntimeRequestId.make("request:question-resume"),
+        nodeId,
+        kind: "user_input",
+        status: "pending",
+        providerTurnId: null,
+        nativeRequestRef: null,
+        responseCapability: {
+          type: "live",
+          providerSessionId: ProviderSessionId.make("session:question-resume"),
+        },
+        createdAt: DateTime.makeUnsafe(0),
+        resolvedAt: null,
+      };
+      let requests = [request];
+      let reads = 0;
+      const subscribed = yield* Deferred.make<void>();
+      const returned = yield* Deferred.make<void>();
+      const events = yield* Queue.unbounded<OrchestrationV2StoredEvent>();
+      const eventType = change === "terminal" ? "run.updated" : "runtime-request.updated";
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: () => Effect.succeed(false),
+            delegatedTaskResultPending: () => Effect.succeed(false),
+            streamStoredEventsFrom: (input) =>
+              input?.eventType === eventType
+                ? Stream.fromEffect(Deferred.succeed(subscribed, undefined)).pipe(
+                    Stream.drain,
+                    Stream.concat(Stream.fromQueue(events)),
+                  )
+                : Stream.never,
+            getThreadRecords: () =>
+              Effect.sync(() => {
+                reads++;
+                return {
+                  thread: { id: threadId, projectId, deletedAt: null },
+                  runs: [run],
+                  nodes: [],
+                  messages: [],
+                  subagents: [],
+                  providerThreads: [],
+                  runtimeRequests: requests,
+                } as unknown as OrchestrationV2ThreadProjection;
+              }),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const waitInput = {
+        projectId,
+        threadId,
+        runId,
+        timeoutMs: 3_600_000,
+        untilDelegatedWorkSettled: true,
+        observeBlockingQuestions: true,
+      };
+      const first = yield* service.waitForThread(waitInput);
+      expect(first.blockingQuestions?.requests).toHaveLength(1);
+      const waiting = yield* service
+        .waitForThread({ ...waitInput, questionResumeToken: first.blockingQuestions!.resumeToken })
+        .pipe(
+          Effect.tap(() => Deferred.succeed(returned, undefined)),
+          Effect.forkChild,
+        );
+      yield* Effect.raceFirst(Deferred.await(subscribed), Fiber.await(waiting));
+      const before = reads;
+      yield* TestClock.adjust(Duration.seconds(30));
+      expect(yield* Deferred.isDone(returned)).toBe(false);
+      expect(reads).toBe(before);
+      requests =
+        change === "replaced"
+          ? [{ ...request, id: RuntimeRequestId.make("request:replacement") }]
+          : [];
+      if (change === "terminal")
+        run = { ...run, status: "completed", completedAt: DateTime.makeUnsafe(1_000) };
+      yield* Queue.offer(events, {
+        sequence: 1,
+        event: {
+          threadId,
+          type: eventType,
+          payload: change === "terminal" ? run : { ...request, status: "resolved" },
+        },
+      } as OrchestrationV2StoredEvent);
+      const result = yield* Fiber.join(waiting);
+      expect(result.timedOut).toBe(false);
+      expect(result.observationChanged).toBe(true);
+      expect(result.blockingQuestions?.requests.map((entry) => entry.requestId)).toEqual(
+        change === "replaced" ? ["request:replacement"] : [],
+      );
+      if (change === "terminal") expect(result.resultRun?.status).toBe("completed");
     }),
 );
 

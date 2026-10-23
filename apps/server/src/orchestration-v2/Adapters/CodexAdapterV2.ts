@@ -1,3 +1,4 @@
+import { GoalNotificationNotDelivered } from "../../jones/goals/GoalNotificationDelivery.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import { boundedSteer, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import {
@@ -8565,9 +8566,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     (candidate) => candidate.providerTurnId === providerTurnId,
                   );
                   if (activeTurn === undefined) {
-                    return yield* toProtocolError(
-                      `Provider turn ${turnInput.providerTurnId} is not active and cannot be steered.`,
-                    );
+                    return yield* new GoalNotificationNotDelivered();
                   }
                   const producer = currentProducer;
                   const codexInput = yield* toCodexInput(turnInput);
