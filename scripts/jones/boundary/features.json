@@ -1653,6 +1653,14 @@
         "apps/server/src/workstreams/ControlPlaneWorkstreamTransport.test.ts"
       ],
       "scope": "Opt-in registration v3 carries immutable enrolled provenance and explicit native profile policy. Jones qualifies the local source independently of routine build drift only when provider v2 is accepted, then translates the result into the existing client v2 response with the observed local build. Strict selectors and authority fences remain intact. Transport retains canonical registry binding and authenticated response proof. Synthetic tests cover selector, contract, transport, qualification and client compatibility; installed adoption remains separate."
+    },
+    {
+      "id": "pr-cache-scope-locks",
+      "tests": [
+        "apps/server/src/pullRequest/PullRequestReadCache.test.ts",
+        "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts"
+      ],
+      "scope": "Concurrent sorted shared scope reads and exclusive invalidation avoid waiting for unrelated lookups while preserving revision ordering, persistence, cancellation and fairness. Jones lock helper has a narrow cache import; small shared cache edits retain private revision state, and colocated integration tests reuse the existing filesystem/fault harness."
     }
   ]
 }

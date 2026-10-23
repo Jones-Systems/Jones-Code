@@ -1633,7 +1633,12 @@
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/spec.md.raw": "jones-owned",
     "packages/shared/src/jones/workstreamsRegistryBinding/contract/vectors.sha256.raw": "jones-owned",
     "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.mjs": "jones-owned",
-    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned"
+    "apps/server/src/jones/workstreams/testing/loopbackControlPlane.fixture.d.mts": "jones-owned",
+    "apps/server/src/pullRequest/PullRequestReadCache.ts": "accepted-shared",
+    "apps/server/src/pullRequest/PullRequestReadCache.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/pullRequest/pullRequestScopeLocks.ts": "jones-owned",
+    "apps/server/src/jones/pullRequest/pullRequestScopeLocks.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pr-cache-scope-locks.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
