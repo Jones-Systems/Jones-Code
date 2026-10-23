@@ -197,6 +197,7 @@ export function runOrchestratorV2ProviderReplayScenario<
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -239,6 +240,7 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -247,6 +249,8 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | CommandOutputRecorder.CommandOutputRecorder
   | ProviderSessionManager.ProviderSessionManagerV2,
@@ -260,6 +264,43 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
 }
 
 export function layerWithRegistry<Error>(
+  ...args: Parameters<typeof layerWithRegistryAndServices<Error>>
+): Layer.Layer<
+  | Orchestrator.OrchestratorV2
+  | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
+  | EventSink.EventSinkV2
+  | ProviderSessionManager.ProviderSessionManagerV2
+  | CommandOutputRecorder.CommandOutputRecorder,
+  Error | MigrationError | PlatformError.PlatformError | SqlError
+> {
+  // Narrow the runtime context too: leaked mocks override consumers' real services.
+  return Layer.mergeAll(
+    Layer.effect(Orchestrator.OrchestratorV2, Orchestrator.OrchestratorV2),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectWorkerV2,
+      EffectWorker.OrchestrationEffectWorkerV2,
+    ),
+    Layer.effect(
+      EffectWorker.OrchestrationEffectExecutorV2,
+      EffectWorker.OrchestrationEffectExecutorV2,
+    ),
+    Layer.effect(EffectOutbox.EffectOutboxV2, EffectOutbox.EffectOutboxV2),
+    Layer.effect(EventSink.EventSinkV2, EventSink.EventSinkV2),
+    Layer.effect(
+      ProviderSessionManager.ProviderSessionManagerV2,
+      ProviderSessionManager.ProviderSessionManagerV2,
+    ),
+    Layer.effect(
+      CommandOutputRecorder.CommandOutputRecorder,
+      CommandOutputRecorder.CommandOutputRecorder,
+    ),
+  ).pipe(Layer.provide(layerWithRegistryAndServices(...args)));
+}
+
+/** Exposes domain services for registered-tool tests without broadening existing harness contracts. */
+export function layerWithRegistryAndServices<Error>(
   scenario: Pick<OrchestratorV2ProviderReplayScenario, "name" | "runtimePolicyOverride">,
   registryLayer: Layer.Layer<
     ProviderAdapterRegistry.ProviderAdapterRegistryV2,
@@ -278,13 +319,22 @@ export function layerWithRegistry<Error>(
       MigrationError | PlatformError.PlatformError | SqlError
     >;
     readonly runEffectWorker?: boolean;
+    readonly configureMcp?: boolean;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
   } = {},
 ): Layer.Layer<
+  | ProjectionStore.ProjectionStoreV2
+  | ProviderSwitchService.ProviderSwitchServiceV2
+  | ServerSettings.ServerSettingsService
+  | SqlClient.SqlClient
+  | ThreadCommandExecutor.ThreadCommandExecutor
+  | ThreadManagementService.ThreadManagementService
   | Orchestrator.OrchestratorV2
   | EffectWorker.OrchestrationEffectWorkerV2
+  | EffectWorker.OrchestrationEffectExecutorV2
+  | EffectOutbox.EffectOutboxV2
   | EventSink.EventSinkV2
   | ProviderSessionManager.ProviderSessionManagerV2
   | CommandOutputRecorder.CommandOutputRecorder,
@@ -374,7 +424,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerEventSinkProvided, layerStores)),
   );
   const layerProviderSessionManagerProvided = ProviderSessionManager.layerWithOptions({
-    configureMcp: false,
+    configureMcp: options.configureMcp ?? false,
   }).pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -384,6 +434,7 @@ export function layerWithRegistry<Error>(
         IdAllocator.layer,
         McpProviderSessions.layer,
         McpSessionRegistryTestkit.layer,
+        layerServerSettings,
         layerProviderEventIngestorProvided,
         layerStores,
       ),
@@ -408,6 +459,7 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerEventSinkProvided)),
   );
   const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+    Layer.provide(layerProviderSwitchServiceProvided),
     Layer.provide(Layer.merge(layerRestartPreparationProvided, ControlAdmission.layer)),
     Layer.provide(
       Layer.mergeAll(
@@ -495,6 +547,9 @@ export function layerWithRegistry<Error>(
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
         dispatch: orchestrator.dispatch,
+        getThreadShell: orchestrator.getThreadShell,
+        getProjectThreadRecords: ({ threadId }, fields, filter) =>
+          orchestrator.getThreadRecords(threadId, fields, filter).pipe(Effect.orDie),
         getThreadRecords: orchestrator.getThreadRecords,
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
@@ -534,9 +589,17 @@ export function layerWithRegistry<Error>(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    layerDatabase,
+    layerStores,
+    layerServerSettings,
+    layerThreadManagementProvided,
+    layerProviderSwitchServiceProvided,
+    ThreadCommandExecutor.layer,
     layerOrchestratorProvided,
     layerProviderSessionManagerProvided,
     layerEffectWorkerProvided,
+    layerEffectExecutorProvided,
+    EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
     layerEventSinkProvided,
     layerContinuationWorkerProvided,
     layerCommandOutputHubProvided,

@@ -184,6 +184,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 118, name: "RemoteAdmissionIntegration" },
           { id: 119, name: "PeerEnvironmentLinks" },
           { id: 120, name: "SettlementRestores" },
+          { id: 121, name: "RemoteTaskObservations" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);
