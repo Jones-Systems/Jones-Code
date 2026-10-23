@@ -63,9 +63,9 @@ const input = {
   runtimeMode: "full-access",
 };
 
-it.effect(
-  "held launch runs no handler, rejects agent approval, then owner approval dispatches original once",
-  () =>
+it.effect.each(["browser-session-cookie", "bearer-access-token"] as const)(
+  "held launch rejects agent approval, then %s owner dispatches original once",
+  (method) =>
     Effect.gen(function* () {
       const intake = yield* Intake.RemoteAdmissionIntake;
       const sql = yield* SqlClient.SqlClient;
@@ -98,8 +98,8 @@ it.effect(
         .pipe(Effect.result);
       expect(forbidden._tag).toBe("Failure");
       expect(received).toHaveLength(0);
-      expect((yield* intake.decide(decision, owner)).status).toBe("dispatched");
-      yield* intake.decide(decision, owner);
+      expect((yield* intake.decide(decision, { ...owner, method })).status).toBe("dispatched");
+      yield* intake.decide(decision, { ...owner, method });
       expect(received).toHaveLength(1);
       expect(received[0]).toEqual({ params: input, scope: { ...invocation, issuedAt: 0 } });
       expect(
@@ -245,12 +245,15 @@ it.effect("restart resumes approved work with stored scope exactly once", () =>
   ),
 );
 
-it("owner classification accepts administrative browser pairing and rejects MCP, agent bearer, and missing admin scopes", () => {
+it("owner classification accepts administrative browser pairing and desktop bearer while rejecting non-owners", () => {
   expect(isRemoteAdmissionOwner(owner)).toBe(true);
   expect(isRemoteAdmissionOwner({ ...owner, subject: "one-time-token" })).toBe(true);
   expect(isRemoteAdmissionOwner({ ...owner, subject: "reusable-dev-token-child" })).toBe(true);
   expect(isRemoteAdmissionOwner({ ...owner, subject: "mcp-client" })).toBe(false);
-  expect(isRemoteAdmissionOwner({ ...owner, method: "bearer-access-token" })).toBe(false);
+  expect(isRemoteAdmissionOwner({ ...owner, method: "bearer-access-token" })).toBe(true);
+  expect(
+    isRemoteAdmissionOwner({ ...owner, subject: "agent", method: "bearer-access-token" }),
+  ).toBe(false);
   expect(isRemoteAdmissionOwner({ ...owner, method: "dpop-access-token" })).toBe(false);
   expect(isRemoteAdmissionOwner({ ...owner, scopes: new Set() })).toBe(false);
 });
