@@ -10,6 +10,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/cli/service.ts",
+      "to": "apps/server/src/jones/hostService/systemBootService.ts"
+    },
+    {
+      "from": "apps/server/src/cli/update.ts",
+      "to": "apps/server/src/jones/hostService/systemBootService.ts"
+    },
+    {
       "from": "apps/server/src/cloud/bootService.ts",
       "to": "apps/server/src/jones/cloud/serviceLog.ts"
     },
