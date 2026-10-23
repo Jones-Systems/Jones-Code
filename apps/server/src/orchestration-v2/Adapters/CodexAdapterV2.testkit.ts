@@ -1,3 +1,5 @@
+import * as Deferred from "effect/Deferred";
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -210,6 +212,9 @@ export function makeCodexReplayClientFactory(input: {
   return {
     open: (openInput) =>
       Effect.gen(function* () {
+        const processExited = yield* Deferred.make<void>();
+        openInput.captureProcessExit?.(Deferred.await(processExited));
+        yield* Effect.addFinalizer(() => Deferred.succeed(processExited, undefined));
         const context = yield* Layer.build(
           replayLayer(
             openInput.onTermination === undefined ? {} : { onTermination: openInput.onTermination },
@@ -272,6 +277,7 @@ function makeCodexProviderAdapterRegistryReplayLayer(input: {
         layerServerConfig,
         NodeServices.layer,
         IdAllocator.layer,
+        ControlAdmission.layer,
       ),
     ),
   );
