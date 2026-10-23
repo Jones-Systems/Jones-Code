@@ -62,7 +62,7 @@ NodeTest.test("PNG metadata uses encoded physical dimensions", () => {
 const endpoint = {
   id: "primary",
   httpBaseUrl: "http://127.0.0.1:43773",
-  wsBaseUrl: "ws://127.0.0.1:43773/ws",
+  wsBaseUrl: "ws://127.0.0.1:43773/",
 };
 const threadCommand = {
   type: "thread.create",
@@ -383,5 +383,25 @@ NodeTest.test(
         (error) => !error.message.includes("authentication reached"),
       );
     NodeAssert.equal(fixture.calls.length, 0);
+  },
+);
+
+NodeTest.test(
+  "fixture RPC accepts the already-normalized /ws endpoint without duplicating its path",
+  async () => {
+    const fixture = backendFixture();
+    await requestLocalBackend(
+      {
+        endpoint: { ...endpoint, wsBaseUrl: "ws://127.0.0.1:43773/ws" },
+        method: "dispatch",
+        payload: threadCommand,
+      },
+      fixture.dependencies,
+    );
+    const url = new URL(fixture.sockets[0].url);
+    NodeAssert.equal(url.pathname, "/ws");
+    NodeAssert.equal(url.searchParams.get("orchestrationProtocol"), "2");
+    NodeAssert.equal(url.searchParams.get("wsTicket"), "synthetic-ticket");
+    NodeAssert.equal(fixture.sockets[0].closed, true);
   },
 );

@@ -1,3 +1,7 @@
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { loadScenario } from "./scenario-api.mjs";
 import * as NodeTest from "node:test";
 import * as NodeAssert from "node:assert/strict";
 import {
@@ -202,6 +206,24 @@ NodeTest.test(
       const value = fresh();
       mutate(value);
       NodeAssert.throws(() => assertFreshAdmission(value));
+    }
+  },
+);
+
+NodeTest.test(
+  "staged scenario imports its colocated support with the loader content-hash query",
+  async () => {
+    const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jcue-staged-self-config-"));
+    try {
+      for (const [source, target] of [
+        ["./scenarios/thread-self-configure.mjs", "scenario.mjs"],
+        ["./thread-self-configure-support.mjs", "thread-self-configure-support.mjs"],
+      ])
+        await NodeFSP.copyFile(new URL(source, import.meta.url), NodePath.join(root, target));
+      const scenario = await loadScenario(NodePath.join(root, "scenario.mjs"));
+      NodeAssert.equal(typeof scenario.run, "function");
+    } finally {
+      await NodeFSP.rm(root, { recursive: true, force: true });
     }
   },
 );

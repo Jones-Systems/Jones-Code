@@ -4,7 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 // The runner stages this entry as /harness/scenario.mjs and stages top-level
 // harness modules alongside it. Source imports retain the same support module.
 const support = new URL(
-  import.meta.url.endsWith("/scenario.mjs")
+  new URL(import.meta.url).pathname.endsWith("/scenario.mjs")
     ? "./thread-self-configure-support.mjs"
     : "../thread-self-configure-support.mjs",
   import.meta.url,
