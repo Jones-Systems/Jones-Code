@@ -18,6 +18,8 @@ const providerCore = (file) =>
   import(NodeURL.pathToFileURL(root + "/packages/provider-core/src/server/" + file + ".ts"));
 const [
   Start,
+  RestartPreparation,
+  ControlAdmission,
   Projection,
   Run,
   Sessions,
@@ -33,6 +35,8 @@ const [
   Instances,
 ] = await Promise.all([
   app("orchestration-v2/ProviderTurnStartService"),
+  app("jones/orchestration/RestartPreparation"),
+  app("jones/orchestration/ControlAdmission"),
   app("orchestration-v2/ProjectionStore"),
   app("orchestration-v2/RunExecutionService"),
   app("orchestration-v2/ProviderSessionManager"),
@@ -64,6 +68,8 @@ const session = {
   compactThread: () => Effect.void,
 };
 const dependencies = Layer.mergeAll(
+  ControlAdmission.layer,
+  Layer.mock(RestartPreparation.RestartPreparation)({ assertThreadOpen: () => Effect.void }),
   Layer.mock(Handoff.ContextHandoffServiceV2)({}),
   Id.layer,
   FileSystem.layerNoop({}),
