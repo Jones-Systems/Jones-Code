@@ -2390,6 +2390,20 @@
         "node scripts/mobile-native-static-check.ts",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-context-handoff-recovery",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

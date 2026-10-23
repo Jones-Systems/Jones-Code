@@ -1,3 +1,7 @@
+import {
+  makeCodexHandoffCompaction,
+  HandoffCompactionError,
+} from "../../jones/provider/codex/CodexHandoffCompaction.ts";
 import { controlCodexGoal } from "../../jones/goals/CodexGoalControl.ts";
 import { retainScopedCommand } from "../../jones/processPlacement/scopedCommand.ts";
 import type { PhysicalProcessLease } from "@t3tools/provider-core/server/jones/runtimeTypes";
@@ -2214,7 +2218,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         let capacityScopeClosed = false;
         let nativeStartUnknown = false;
         const lateStarts = makeCodexLateStartRecovery();
-        const hasUnknownNativeStart = () => nativeStartUnknown || lateStarts.blocked;
+        const handoffCompaction = makeCodexHandoffCompaction();
+        const hasUnknownNativeStart = () =>
+          nativeStartUnknown || lateStarts.blocked || handoffCompaction.blocked;
         type CapacitySignalWithoutBinding<T> = T extends { readonly binding: unknown }
           ? Omit<T, "binding">
           : never;
@@ -4950,6 +4956,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("thread/tokenUsage/updated", (payload) =>
           Effect.gen(function* () {
+            const maintenanceBinding = {
+              runtimeGeneration: currentProducer.generation,
+              nativeThreadId: payload.threadId,
+            };
+            if (handoffCompaction.owns(maintenanceBinding)) {
+              yield* handoffCompaction.usage(maintenanceBinding, payload.turnId, {
+                usedTokens: payload.tokenUsage.last.totalTokens,
+                ...(payload.tokenUsage.modelContextWindow == null
+                  ? {}
+                  : { maxTokens: payload.tokenUsage.modelContextWindow }),
+              });
+              return;
+            }
             accumulateCodexTurnTokenUsage(
               usageStateForThread(payload.threadId),
               payload.turnId,
@@ -5036,6 +5055,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("turn/started", (payload) =>
           Effect.gen(function* () {
+            const binding = {
+              runtimeGeneration: currentProducer.generation,
+              nativeThreadId: payload.threadId,
+            };
+            if (handoffCompaction.owns(binding)) {
+              yield* handoffCompaction.started(binding, payload.turn.id);
+              return;
+            }
             const context = (yield* Ref.get(activeTurns)).get(payload.turn.id);
             if (context !== undefined) {
               if (context.nativeStartReady !== undefined) {
@@ -5371,6 +5398,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/started", (payload) =>
           Effect.gen(function* () {
+            if (
+              handoffCompaction.owns({
+                runtimeGeneration: currentProducer.generation,
+                nativeThreadId: payload.threadId,
+              })
+            )
+              return;
             const context = yield* awaitActiveTurn(payload.turnId);
             if (context === undefined) {
               return;
@@ -5496,6 +5530,15 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerNotification("item/completed", (payload) =>
           Effect.gen(function* () {
+            const binding = {
+              runtimeGeneration: currentProducer.generation,
+              nativeThreadId: payload.threadId,
+            };
+            if (handoffCompaction.owns(binding)) {
+              if (payload.item.type === "contextCompaction")
+                yield* handoffCompaction.compacted(binding, payload.turnId);
+              return;
+            }
             if (payload.item.type === "contextCompaction")
               // The notification callback runs on the input reader. Let it read
               // the injection response while the session-scoped request waits.
@@ -6814,6 +6857,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         ): Effect.Effect<void> =>
           Effect.gen(function* () {
             const producer = yield* CodexProducerContext;
+            const binding = {
+              runtimeGeneration: currentProducer.generation,
+              nativeThreadId: payload.threadId,
+            };
+            if (handoffCompaction.owns(binding)) {
+              yield* handoffCompaction.completed(
+                binding,
+                payload.turn.id,
+                payload.turn.status === "completed",
+              );
+              return;
+            }
             const terminalStatus = mapCodexTurnStatus(payload.turn.status);
             if (
               producer !== undefined &&
@@ -8219,6 +8274,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           injectHistory: (input) =>
             Effect.gen(function* () {
+              if (hasUnknownNativeStart())
+                return yield* toProtocolError(
+                  "Codex has an unconfirmed native effect; history injection is not safe.",
+                );
               yield* NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, {
                 threadId: input.providerThread.appThreadId,
                 runtimeGeneration: currentProducer.generation,
@@ -9514,9 +9573,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     yield* turnTerminalizationPermit
                       .withPermits(1)(releaseGoalHold(binding.nativeThreadId))
                       .pipe(Effect.provideService(CodexProducerContext, producer));
+                    yield* handoffCompaction.cancel("cancelled");
                     producer.active = false;
                     producer.eventProducer.drain();
                     yield* Scope.close(producer.scope, Exit.void);
+                    yield* handoffCompaction.retire({
+                      runtimeGeneration: producer.generation,
+                      nativeThreadId: binding.nativeThreadId,
+                    });
                   }),
                 ),
               };
@@ -9636,7 +9700,109 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   }),
               ),
             ),
-          interruptTurn: (value) => withProducer(runtime.interruptTurn(value)),
+          compactForContextHandoff: (value) =>
+            Effect.gen(function* () {
+              const prepared = yield* lifecyclePermit.withPermits(1)(
+                Effect.gen(function* () {
+                  yield* value.revalidateStartAdmission ?? Effect.void;
+                  const nativeThreadId = yield* getNativeThreadId(value.providerThread);
+                  const producer = currentProducer;
+                  if (
+                    hasUnknownNativeStart() ||
+                    capacityScopeClosed ||
+                    !producer.active ||
+                    producer.bindings.get(nativeThreadId)?.id !== value.providerThread.id ||
+                    value.providerThread.runtimeIdentity?.runtimeGeneration !==
+                      producer.generation ||
+                    (yield* Ref.get(activeTurns)).size > 0 ||
+                    (yield* Ref.get(pendingRootTurns)).size > 0 ||
+                    goalHolds.has(nativeThreadId) ||
+                    goalActivations.has(nativeThreadId) ||
+                    goalStops.has(nativeThreadId) ||
+                    goalsByNativeThread.get(nativeThreadId)?.status === "active" ||
+                    value.providerThread.goal?.status === "active" ||
+                    capacityByThread.has(nativeThreadId) ||
+                    (yield* Ref.get(runningCommandItemsByTurn)).size > 0 ||
+                    (yield* Ref.get(runningDynamicToolsByTurn)).size > 0
+                  )
+                    return yield* new HandoffCompactionError({ reason: "ineligible" });
+                  const binding = { runtimeGeneration: producer.generation, nativeThreadId };
+                  const request = yield* handoffCompaction.begin({
+                    ...binding,
+                    runId: value.runId,
+                    attemptId: value.attemptId,
+                  });
+                  return { producer, binding, request };
+                }),
+              );
+              // Stop must acquire lifecyclePermit even while compact/start has not acknowledged.
+              return yield* Effect.gen(function* () {
+                yield* value.revalidateStartAdmission ?? Effect.void;
+                if (!prepared.producer.active || currentProducer !== prepared.producer)
+                  return yield* new HandoffCompactionError({ reason: "cancelled" });
+                yield* prepared.request.assertActive;
+                // Keep the acknowledgement observer alive after caller cancellation so
+                // late terminal evidence can reconcile the fence without replaying input.
+                const acknowledgement = yield* prepared.producer.client
+                  .request("thread/compact/start", { threadId: prepared.binding.nativeThreadId })
+                  .pipe(
+                    Effect.andThen(prepared.request.acknowledge),
+                    Effect.onError(() => prepared.request.cancel),
+                    Effect.forkIn(prepared.producer.scope, { startImmediately: true }),
+                  );
+                yield* Fiber.join(acknowledgement);
+                const usage = yield* prepared.request.wait;
+                yield* value.revalidateStartAdmission ?? Effect.void;
+                if (!prepared.producer.active || currentProducer !== prepared.producer)
+                  return yield* new HandoffCompactionError({ reason: "cancelled" });
+                yield* restoreAdditionalContext(prepared.binding.nativeThreadId);
+                yield* prepared.request.assertActive;
+                yield* value.revalidateStartAdmission ?? Effect.void;
+                yield* prepared.request.release;
+                return usage;
+              }).pipe(
+                Effect.raceFirst(prepared.request.wait.pipe(Effect.andThen(Effect.never))),
+                Effect.raceFirst(
+                  Deferred.await(prepared.producer.termination).pipe(
+                    Effect.flatMap(() =>
+                      Effect.fail(new HandoffCompactionError({ reason: "failed" })),
+                    ),
+                  ),
+                ),
+                Effect.timeoutOrElse({
+                  duration: "2 minutes",
+                  orElse: () => Effect.fail(new HandoffCompactionError({ reason: "timeout" })),
+                }),
+                Effect.onError(() => prepared.request.cancel),
+              );
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapterTurnStartError({
+                    driver: CODEX_PROVIDER,
+                    threadId: value.threadId,
+                    providerThreadId: value.providerThread.id,
+                    runId: value.runId,
+                    cause,
+                  }),
+              ),
+            ),
+          interruptTurn: (value) =>
+            Effect.gen(function* () {
+              const binding = {
+                runtimeGeneration: currentProducer.generation,
+                nativeThreadId: value.providerThread.nativeThreadRef?.nativeId ?? "",
+              };
+              if (handoffCompaction.owns(binding)) {
+                const turnId = handoffCompaction.nativeTurnId(binding);
+                yield* handoffCompaction.cancel("cancelled");
+                if (turnId !== undefined)
+                  yield* client
+                    .request("turn/interrupt", { threadId: binding.nativeThreadId, turnId })
+                    .pipe(Effect.ignore);
+              }
+              yield* withProducer(runtime.interruptTurn(value));
+            }),
           rollbackThread: (value) =>
             lifecyclePermit.withPermits(1)(
               Effect.suspend(() =>

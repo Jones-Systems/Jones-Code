@@ -757,6 +757,14 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Confirmed maintenance only; must not attribute a provider turn to the pending input. */
+  readonly compactForContextHandoff?: (
+    input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<
+    NonNullable<OrchestrationV2ProviderThread["contextUsage"]>,
+    ProviderAdapterV2Error,
+    Scope.Scope
+  >;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

@@ -1453,6 +1453,16 @@
         "apps/web/src/threadRoutes.test.ts"
       ],
       "scope": "Web child-input title links and Open question/Open approval actions navigate with the selected child environment and thread identity; mobile child-input navigation uses the same scoped identity. The tiny callback edits remain in the existing accepted-shared ChatView and ThreadDetailScreen files because extracting navigation would add an unnecessary adapter. Their hook paths remain owned by composer-shortcuts-extraction and thread-read-dwell respectively. Existing selector tests cover local descendants, remote linked tasks and nested remote children; route tests cover scoped route resolution. Browser interaction evidence covers actual banner controls and the destination view; those unit tests alone do not prove click wiring. Existing ID-only related-thread callbacks keep their same-environment contract. No provider, selector, wire, stored-state or missing-thread fallback changes."
+    },
+    {
+      "id": "context-handoff-recovery",
+      "tests": [
+        "apps/server/src/jones/provider/codex/CodexHandoffCompaction.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts"
+      ],
+      "scope": "One confirmed Codex maintenance compaction after a local reclaimable handoff budget rejection; never attributes the unsent request to maintenance. Shared adapter replay and turn-start test exceptions exercise existing native and orchestration harnesses. ProviderAdapter adds an optional server-only capability; session hooks preserve activity. Other providers and explicit /compact retain existing paths. Session-manager integration tests prove the scoped maintenance activity lease survives delivery and clears on failure without clearing an accepted prompt lease."
     }
   ]
 }
