@@ -284,6 +284,8 @@ export interface JonesDesktopUpdateOptions {
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
+  /** Test adapter; production reads the installed bundle through the native plist boundary. */
+  readonly readInstalledBundleIdentity?: typeof readMacBundleIdentity;
   readonly stageApp?: typeof stageJonesMacApp;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
   /**
@@ -1034,7 +1036,14 @@ export class JonesDesktopUpdateController {
         this.#staged === undefined ? "checking" : "staged",
         this.#staged === undefined ? "checking" : "downloaded",
       );
+      const installedBundle = await (this.#options.readInstalledBundleIdentity ?? readMacBundleIdentity)(this.#options.appPath);
+      if (!installedBundle.bundleIdentifier?.trim() ||
+          (this.#bootstrap?.bundleIdentifier !== undefined && this.#bootstrap.bundleIdentifier !== installedBundle.bundleIdentifier) ||
+          (installedBundle.bundleIdentifier === "com.jonessystems.jonescode" && this.#bootstrap?.bundleIdentifier !== installedBundle.bundleIdentifier)) {
+        throw new Error("Installed desktop identity is not admitted; update discovery held.");
+      }
       const result = await this.#client.check({
+        desktopBundleIdentifier: installedBundle.bundleIdentifier,
         installedSource: this.#source,
         platform: "darwin",
         architecture: this.#options.architecture,

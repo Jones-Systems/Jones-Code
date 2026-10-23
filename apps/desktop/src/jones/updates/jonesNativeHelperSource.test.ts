@@ -4,8 +4,15 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
+import { jonesNativeHelperSource as productionNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { hashMacApp } from "./jonesMacStaging.ts";
+
+// These fixtures model filesystem/state recovery. Native signature admission has its
+// own command-boundary tests in jonesSigningSource.test.ts.
+const jonesNativeHelperSource = productionNativeHelperSource.replace(
+  "\nparser = argparse.ArgumentParser()",
+  "\nverify_signing_transition = lambda expected, candidate: None\nverify_rollback_signature = lambda expected, retained: None\nparser = argparse.ArgumentParser()",
+);
 
 const fixtures = new Set<string>();
 async function cleanupFixture(root: string): Promise<void> {

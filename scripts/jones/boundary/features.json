@@ -4,6 +4,22 @@
   "baseline": "6c3d95a10f2bf20ab3369ef2ea720e34eb66b190",
   "features": [
     {
+      "id": "macos-signing",
+      "tests": [
+        "packages/shared/src/jones/jonesActions.test.ts",
+        "apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts",
+        "scripts/jones/signing/admission.node-test.mjs",
+        "scripts/sign-macos.test.ts",
+        "scripts/jones/signing/policy.test.ts",
+        "scripts/jones/signing/profile.test.ts",
+        "scripts/jones/signing/sign.test.ts",
+        "apps/desktop/src/jones/updates/jonesSigningSource.test.ts",
+        "apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts",
+        "scripts/build-desktop-artifact.test.ts"
+      ],
+      "scope": "Explicit production Developer ID identity, component signing, protected default-branch workflow and credential lifecycle; optional native browser passkeys retain their configuration gates. Native swap and rollback enforce signatures without changing paired-state or provenance protocols. Legacy default identity and bootstrap activation remain held. Synthetic transaction signing commands are stubbed; actual signatures, notarization and permission continuity require trusted artifact qualification."
+    },
+    {
       "id": "workstreams-sidebar-assignment",
       "tests": ["apps/web/src/jones/workstreams/Sidebar.assignment.browser.test.tsx"],
       "scope": "Renderer integration mounts production Sidebar and WorkstreamNativeSidebar with synthetic environment/controller boundaries. Real row context menus exercise assignment-ref lookup and selected-action dispatch for ordinary and pinned threads; refreshed grouping, pin retention, control-thread isolation, and denied/unknown controller outcomes are checked. Native shell menus, transport, enrollment, persistence, and pointer dragging are outside this slice."

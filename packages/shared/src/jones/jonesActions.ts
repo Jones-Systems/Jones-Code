@@ -156,7 +156,15 @@ function digest(value: unknown): string {
   if (!HASH.test(result)) throw new JonesActionsError("unqualified");
   return result;
 }
-function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitecture) {
+const PRODUCTION_DESKTOP_ID = "com.jonessystems.jonescode";
+const PRODUCTION_DESKTOP_WORKFLOW = ".github/workflows/jones-desktop-signing.yml";
+
+function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitecture, desktopBundleIdentifier?: string) {
+  if (desktopBundleIdentifier !== undefined &&
+      (platform !== "darwin" || !["com.t3tools.t3code", PRODUCTION_DESKTOP_ID].includes(desktopBundleIdentifier)))
+    throw new JonesActionsError("unqualified");
+  if (platform === "darwin" && architecture === "arm64" && desktopBundleIdentifier === PRODUCTION_DESKTOP_ID)
+    return { workflow: PRODUCTION_DESKTOP_WORKFLOW, name: "desktop-mac-production-arm64" };
   if (platform === "darwin" && architecture === "arm64")
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
@@ -271,6 +279,7 @@ export class JonesActionsClient {
   async check(input: {
     readonly installedSource: string;
     readonly targetSource?: string;
+    readonly desktopBundleIdentifier?: string;
     readonly platform: JonesActionsPlatform;
     readonly architecture: JonesActionsArchitecture;
   }): Promise<JonesActionsCheckResult> {
@@ -278,7 +287,7 @@ export class JonesActionsClient {
       source(input.installedSource);
       const targetSource =
         input.targetSource === undefined ? undefined : source(input.targetSource);
-      const approved = spec(input.platform, input.architecture);
+      const approved = spec(input.platform, input.architecture, input.desktopBundleIdentifier);
       const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
       // Installed source must itself be on canonical main, including after a force rewrite.
@@ -662,7 +671,7 @@ export function jonesCandidateHandle(candidate: JonesActionsCandidate): string {
 }
 
 function validateJonesActionsCandidate(candidate: JonesActionsCandidate): void {
-  const approved = spec(candidate.platform, candidate.architecture);
+  const approved = spec(candidate.platform, candidate.architecture, candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW ? PRODUCTION_DESKTOP_ID : undefined);
   if (
     candidate.schema !== 1 ||
     candidate.repository !== JONES_ACTIONS_REPOSITORY ||
@@ -715,6 +724,9 @@ function parseJonesArtifactReceipt(
     item.architecture !== candidate.architecture ||
     item.artifact !== expectedArtifact
   )
+    throw new JonesActionsError("unqualified");
+  if (candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW &&
+      (item.signed !== true || item.notarized !== true || item.bundleIdentifier !== PRODUCTION_DESKTOP_ID || item.teamId !== "2CUPSQS986"))
     throw new JonesActionsError("unqualified");
   digest(item.sha256);
   return item as unknown as JonesArtifactReceipt;

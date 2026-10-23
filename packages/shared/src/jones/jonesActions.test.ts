@@ -112,6 +112,7 @@ function zip(entries: ReadonlyArray<ZipFixtureEntry>): Buffer {
 
 function fixture(
   options: {
+    desktop?: "legacy" | "production";
     run?: Record<string, unknown>;
     ci?: Record<string, unknown>;
     artifact?: Record<string, unknown>;
@@ -124,8 +125,9 @@ function fixture(
   } = {},
 ) {
   const version = "0.0.0-preview.20261002.101.2";
-  const workflow = ".github/workflows/artifact-cli-linux.yml";
-  const payloadName = `t3-${version}-linux-x64.tar.gz`,
+  const workflow = options.desktop === "production" ? ".github/workflows/jones-desktop-signing.yml" : options.desktop === "legacy" ? ".github/workflows/artifact-desktop-mac.yml" : ".github/workflows/artifact-cli-linux.yml";
+  const artifactPrefix = options.desktop === "production" ? "desktop-mac-production-arm64" : options.desktop === "legacy" ? "desktop-mac-arm64" : "jones-code-cli-linux-x64";
+  const payloadName = options.desktop ? `T3-Code-${version}-arm64.dmg` : `t3-${version}-linux-x64.tar.gz`,
     payload = "verified archive fixture";
   const receipt = {
     schema: 1,
@@ -138,8 +140,9 @@ function fixture(
     runId: "101",
     runAttempt: "2",
     version,
-    platform: "linux",
-    architecture: "x64",
+    platform: options.desktop ? "darwin" : "linux",
+    architecture: options.desktop ? "arm64" : "x64",
+    ...(options.desktop === "production" ? { signed: true, notarized: true, bundleIdentifier: "com.jonessystems.jonescode", teamId: "2CUPSQS986" } : {}),
     artifact: payloadName,
     sha256: sha256(payload),
     ...options.receipt,
@@ -147,7 +150,7 @@ function fixture(
   const envelope = zip([
     { name: "ARTIFACT.json", content: JSON.stringify(receipt) },
     { name: "SOURCE_COMMIT", content: CURRENT },
-    { name: "SHA256SUMS", content: `${sha256(payload)}  ${payloadName}\n` },
+    { name: options.desktop ? `${payloadName}.sha256` : "SHA256SUMS", content: `${sha256(payload)}  ${payloadName}\n` },
     { name: payloadName, content: payload },
     ...(options.extra ? [options.extra] : []),
   ]);
@@ -168,7 +171,7 @@ function fixture(
   const ci = { ...baseRun, id: 99, path: ".github/workflows/ci.yml", ...options.ci };
   const artifact = {
     id: 301,
-    name: `jones-code-cli-linux-x64-101-2--${version}`,
+    name: `${artifactPrefix}-101-2--${version}`,
     size_in_bytes: envelope.length,
     expired: false,
     expires_at: "2026-10-09T12:00:00Z",
@@ -191,7 +194,7 @@ function fixture(
         return { sha: CURRENT, tree: { sha: TREE }, ...options.commit };
       if (endpoint === `${ROOT}/compare/${OLD}...${CURRENT}?per_page=1`)
         return { status: "ahead", merge_base_commit: { sha: OLD }, ...options.comparison };
-      if (endpoint.includes("/actions/workflows/artifact-cli-linux.yml/runs?"))
+      if (endpoint.includes(`/actions/workflows/${NodePath.posix.basename(workflow)}/runs?`))
         return { workflow_runs: [run] };
       if (endpoint.includes("/actions/workflows/ci.yml/runs?")) return { workflow_runs: [ci] };
       if (endpoint === `${ROOT}/actions/runs/101`) return run;
@@ -915,5 +918,39 @@ describe("JonesActionsClient.relation", () => {
     await expect(
       compare(new JonesActionsError("authentication-required")).client.relation(BASE, HEAD),
     ).rejects.toMatchObject({ reason: "authentication-required" });
+  });
+});
+
+
+describe("production desktop workflow selection", () => {
+  const input = { installedSource: OLD, platform: "darwin", architecture: "arm64", desktopBundleIdentifier: "com.jonessystems.jonescode" } as const;
+  it("discovers and stages only the exact signed main artifact", async () => {
+    const f = fixture({ desktop: "production" });
+    const result = await f.client.check(input);
+    expect(result.state).toBe("available");
+    if (result.state !== "available") throw new Error("Production fixture unavailable");
+    expect(result.candidate.workflow).toBe(".github/workflows/jones-desktop-signing.yml");
+    const staged = await f.client.stage(result.candidate, await cache());
+    expect(staged.receipt).toMatchObject({ signed: true, notarized: true, teamId: "2CUPSQS986" });
+    await expect(validateJonesStagedArtifact(NodePath.dirname(staged.payloadPath), result.candidate)).resolves.toMatchObject({ candidate: result.candidate });
+  });
+  it("keeps omitted/legacy IDs on preview and rejects unknown or empty IDs", async () => {
+    for (const desktopBundleIdentifier of [undefined, "com.t3tools.t3code"]) {
+      const f = fixture({ desktop: "legacy" });
+      const result = await f.client.check({ ...input, desktopBundleIdentifier });
+      expect(result).toMatchObject({ state: "available", candidate: { workflow: ".github/workflows/artifact-desktop-mac.yml" } });
+    }
+    for (const desktopBundleIdentifier of ["", "com.other.app"]) {
+      expect(await fixture({ desktop: "production" }).client.check({ ...input, desktopBundleIdentifier })).toMatchObject({ state: "blocked", reason: "unqualified" });
+    }
+  });
+  it.each([{ event: "pull_request" }, { event: "workflow_dispatch" }, { head_branch: "topic" }, { path: ".github/workflows/artifact-desktop-mac.yml" }, { head_repository: { full_name: "other/fork" } }])("rejects wrong production run provenance %j", async (run) => {
+    expect((await fixture({ desktop: "production", run }).client.check(input)).state).not.toBe("available");
+  });
+  it.each([{ signed: false }, { notarized: false }, { teamId: "WRONGTEAM1" }, { bundleIdentifier: "com.t3tools.t3code" }])("refuses a production receipt downgrade %j", async (receipt) => {
+    const f = fixture({ desktop: "production", receipt });
+    const result = await f.client.check(input);
+    if (result.state !== "available") throw new Error("Production fixture unavailable");
+    await expect(f.client.stage(result.candidate, await cache())).rejects.toMatchObject({ reason: "unqualified" });
   });
 });

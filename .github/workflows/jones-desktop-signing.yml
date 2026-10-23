@@ -1,0 +1,133 @@
+name: Jones Production Desktop Signing
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - packages/shared/src/jones/jonesActions*
+      - scripts/jones/signing/**
+      - scripts/sign-macos*
+      - scripts/build-desktop-artifact.ts
+      - apps/desktop/src/jones/updates/**
+      - .github/workflows/jones-desktop-signing.yml
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: jones-production-signing
+  cancel-in-progress: false
+
+jobs:
+  source-checks:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout public PR source without credentials
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+      - uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          run-install: true
+      - name: Test signing policy and transaction rejection without credentials
+        run: |
+          node --test --test-concurrency=1 scripts/jones/signing/admission.node-test.mjs
+          vp test run packages/shared/src/jones/jonesActions.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts scripts/sign-macos.test.ts scripts/jones/signing/policy.test.ts scripts/jones/signing/profile.test.ts scripts/jones/signing/sign.test.ts scripts/build-desktop-artifact.test.ts apps/desktop/src/jones/updates/jonesSigningSource.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts --maxWorkers=1 --no-file-parallelism
+      - name: Compile the credential importer without importing any identity
+        run: clang -fsyntax-only -framework Foundation -framework Security scripts/jones/signing/import-identity.m
+      - name: Check affected TypeScript packages
+        run: |
+          vp run --filter @t3tools/shared typecheck
+          vp run --filter @t3tools/scripts typecheck
+          vp run --filter @t3tools/desktop typecheck
+  sign:
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.JONES_MACOS_SIGNING_ENABLED == 'true')
+    runs-on: macos-15
+    environment: macos-signing
+    timeout-minutes: 60
+    env:
+      JONES_MACOS_RELEASE_MODE: production
+      JONES_MACOS_PRODUCTION_ID: ${{ vars.JONES_MACOS_PRODUCTION_ID }}
+      JONES_MACOS_NATIVE_PASSKEYS: ${{ vars.JONES_MACOS_NATIVE_PASSKEYS || 'disabled' }}
+      T3CODE_DESKTOP_UPDATE_REPOSITORY: Jones-Systems/Jones-Code
+      CARGO_BUILD_JOBS: '3'
+      CMAKE_BUILD_PARALLEL_LEVEL: '3'
+    steps:
+      - name: Checkout exact canonical source without credentials
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: '1'
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+      - name: Require explicitly approved production identity
+        run: node --input-type=module -e 'import { productionSigning } from "./scripts/jones/signing/policy.ts"; productionSigning(process.env);'
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+      - name: Prepare public build inputs
+        run: |
+          test "$(uname -m)" = arm64
+          vp run --filter @t3tools/desktop ensure:electron
+          rustup target add aarch64-apple-darwin
+          cp .env.example .env
+          base=$(node -p "require('./apps/server/package.json').version.split('-')[0]")
+          version="${base}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          node scripts/update-release-package-versions.ts "$version"
+          node scripts/stamp-jones-build.ts
+      - name: Sign, notarize and package with job-owned credentials
+        env:
+          MACOS_SIGNING_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_SIGNING_CERTIFICATE_P12_BASE64 }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_API_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_API_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          MACOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.MACOS_PROVISIONING_PROFILE_BASE64 }}
+          T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+          T3CODE_CLERK_PASSKEY_RP_DOMAINS: ${{ vars.T3CODE_CLERK_PASSKEY_RP_DOMAINS }}
+        run: node scripts/jones/signing/production-build.ts
+      - name: Upload only the sealed production artifact and public provenance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: desktop-mac-production-arm64-${{ github.run_id }}-${{ github.run_attempt }}--${{ env.JONES_PRODUCTION_VERSION }}
+          path: |
+            artifacts/desktop-production/*.dmg
+            artifacts/desktop-production/*.dmg.sha256
+            artifacts/desktop-production/ARTIFACT.json
+            artifacts/desktop-production/SOURCE_COMMIT
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
