@@ -18,10 +18,6 @@
       "to": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts"
     },
     {
-      "from": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts",
-      "to": "apps/server/src/orchestration-v2/ContextHandoffDelivery.ts"
-    },
-    {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
       "to": "apps/server/src/jones/provider/codex/ContextHandoffRecovery.ts"
     }
