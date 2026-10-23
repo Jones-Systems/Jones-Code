@@ -1,3 +1,5 @@
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
+import { boundedSteer, verifyCodexProcessExit } from "../../jones/orchestration/LateSteer.ts";
 import {
   makeCodexHandoffCompaction,
   HandoffCompactionError,
@@ -1378,6 +1380,9 @@ export interface CodexAppServerClientFactoryShape {
     readonly settings: CodexSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly onTermination?: CodexClient.CodexAppServerClientOptions["onTermination"];
+    readonly captureProcessExit?: (
+      readback: Effect.Effect<void, CodexErrors.CodexAppServerError>,
+    ) => void;
   }) => Effect.Effect<
     CodexClient.CodexAppServerClient["Service"],
     ProviderAdapter.ProviderAdapterOpenSessionError,
@@ -1529,6 +1534,7 @@ const layerCodexAppServerClientFactoryCommand = (
                 }),
             ),
           );
+          input.captureProcessExit?.(verifyCodexProcessExit(handle));
           const context = yield* Layer.build(
             CodexClient.layerChildProcess(handle, {
               ...options,
@@ -1673,6 +1679,7 @@ export const layerAppServerClientFactory: Layer.Layer<
               }),
           ),
         );
+        input.captureProcessExit?.(verifyCodexProcessExit(handle));
         const launcherRead = yield* PhysicalProcess.readLocalProcess(Number(handle.pid)).pipe(
           Effect.provideService(FileSystem.FileSystem, processFileSystem),
         );
@@ -1714,6 +1721,7 @@ export const layerAppServerClientFactory: Layer.Layer<
 );
 
 export type CodexAdapterV2DriverEnv =
+  | ControlAdmission.ControlAdmission
   | CodexAppServerClientFactory
   | Crypto.Crypto
   | FileSystem.FileSystem
@@ -1780,6 +1788,7 @@ export const CodexAdapterV2Driver: ProviderAdapterDriver<CodexSettings, CodexAda
 const layer: Layer.Layer<
   ProviderAdapter.ProviderAdapterV2,
   never,
+  | ControlAdmission.ControlAdmission
   | CodexAppServerClientFactory
   | Crypto.Crypto
   | FileSystem.FileSystem
@@ -1857,6 +1866,7 @@ interface CodexRuntimeProducer {
   readonly bindings: Map<string, OrchestrationV2ProviderThread>;
   readonly pendingReroutes: Map<string, ReadonlyArray<string>>;
   readonly termination: Deferred.Deferred<CodexErrors.CodexAppServerError>;
+  readonly processExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
   active: boolean;
   physicalProcess?: PhysicalProcessLease;
 }
@@ -1897,6 +1907,17 @@ function codexObservedRuntimeIdentity(response: {
 export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
   adapterOptions: CodexAdapterV2Options,
 ) {
+  const controlAdmission = yield* ControlAdmission.ControlAdmission;
+  const assertControlAdmission = controlAdmission.assertOpen(adapterOptions.instanceId).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ProviderRuntimeBindingError({
+          driver: CODEX_PROVIDER,
+          detail: "A native control request has an unknown outcome.",
+          cause,
+        }),
+    ),
+  );
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const readMcpSession = (threadId: ThreadId | null) =>
     threadId === null ? Effect.succeed(undefined) : mcpSessions.read(threadId);
@@ -1911,6 +1932,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("CodexAdapterV2.openSession")(
       function* (input) {
+        yield* assertControlAdmission;
         const scope = yield* Scope.Scope;
         const nativeCreationGuard = input.nativeCreationGuard;
         if (nativeCreationGuard !== undefined && input.runtimeLifecycle === undefined)
@@ -1964,6 +1986,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     threadId,
                     cwd: runtimePolicy.cwd,
                   });
+                  yield* assertControlAdmission;
+                  let processExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
                   const actualClient = yield* clientFactory.open({
                     instanceId: adapterOptions.instanceId,
                     threadId,
@@ -1973,6 +1997,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     environment: resolvedRuntime?.environment ?? adapterOptions.environment,
                     onTermination: (error) =>
                       Deferred.succeed(termination, error).pipe(Effect.asVoid),
+                    captureProcessExit: (readback) => {
+                      processExit = readback;
+                    },
                   });
                   return {
                     eventProducer: ProviderEventOrigin.makeProviderEventProducer({
@@ -1983,6 +2010,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                     generation,
                     termination,
+                    processExit,
                     client: actualClient,
                     scope: producerScope,
                     resolvedRuntime,
@@ -2037,12 +2065,36 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           registrations.push(install);
           return install(currentProducer);
         };
+        const requestAdmission = (method: unknown, params: unknown) =>
+          ControlAdmission.isCodexMutation(method, params)
+            ? controlAdmission
+                .assertOpen(adapterOptions.instanceId)
+                .pipe(
+                  Effect.mapError((cause) =>
+                    CodexErrors.CodexAppServerRequestError.internalError(
+                      "Native mutation is held pending control reconciliation.",
+                      undefined,
+                      { cause },
+                    ),
+                  ),
+                )
+            : Effect.void;
         const client = new Proxy(currentProducer.client, {
           get(_target, property) {
             if (property === "raw")
               return new Proxy(currentProducer.client.raw, {
                 get(_raw, key) {
                   const raw = currentProducer.client.raw;
+                  if (key === "request") {
+                    const request: CodexRuntimeProducer["client"]["raw"]["request"] = (
+                      method,
+                      params,
+                    ) =>
+                      requestAdmission(method, params).pipe(
+                        Effect.andThen(Effect.suspend(() => raw.request(method, params))),
+                      );
+                    return request;
+                  }
                   const member = Reflect.get(raw, key);
                   return typeof member === "function"
                     ? (...args: unknown[]) => Reflect.apply(member, raw, args)
@@ -2052,6 +2104,13 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (property === "handleServerNotification") return handleServerNotification;
             if (property === "handleServerRequest") return handleServerRequest;
             const actual = currentProducer.client;
+            if (property === "request") {
+              const request: CodexRuntimeProducer["client"]["request"] = (method, params) =>
+                requestAdmission(method, params).pipe(
+                  Effect.andThen(Effect.suspend(() => actual.request(method, params))),
+                );
+              return request;
+            }
             const member = Reflect.get(actual, property);
             return typeof member === "function"
               ? (...args: unknown[]) => Reflect.apply(member, actual, args)
@@ -2078,6 +2137,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           function* (threadId: string, targetClient: CodexRuntimeProducer["client"] = client) {
             const context = (yield* Ref.get(additionalContextByThread)).get(threadId);
             if (!context) return;
+            yield* requestAdmission("thread/inject_items", undefined);
             yield* targetClient.request("thread/inject_items", {
               threadId,
               items: Object.entries(context).map(([key, entry]) =>
@@ -7271,6 +7331,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             return;
           if (!currentCapacityBinding(request))
             return yield* toProtocolError("Native physical binding changed before send.");
+          yield* assertControlAdmission;
           request.startDispatched = true;
           const producer = currentProducer;
           const dispatch = lateStarts.begin(request.state.binding, [
@@ -8490,28 +8551,52 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           },
           steerTurn: Effect.fn("CodexAdapterV2.steerTurn")(
             function* (turnInput) {
-              const threadId = yield* getNativeThreadId(turnInput.providerThread);
-              const latestTurnId = latestGoalTurnId(turnInput.providerTurnId);
-              const held = heldGoalTurn(turnInput.providerThread, latestTurnId);
-              const providerTurnId =
-                held === undefined
-                  ? latestTurnId
-                  : ((yield* Deferred.await(held.hold.next))?.providerTurnId ?? latestTurnId);
-              const activeTurn = Array.from((yield* Ref.get(activeTurns)).values()).find(
-                (candidate) => candidate.providerTurnId === providerTurnId,
-              );
-              if (activeTurn === undefined) {
-                return yield* toProtocolError(
-                  `Provider turn ${turnInput.providerTurnId} is not active and cannot be steered.`,
-                );
-              }
-
-              const codexInput = yield* toCodexInput(turnInput);
-              yield* client.request("turn/steer", {
-                expectedTurnId: activeTurn.nativeTurnId,
-                input: codexInput,
-                threadId,
-              });
+              return yield* boundedSteer({
+                instanceId: adapterOptions.instanceId,
+                prepare: Effect.gen(function* () {
+                  const threadId = yield* getNativeThreadId(turnInput.providerThread);
+                  const latestTurnId = latestGoalTurnId(turnInput.providerTurnId);
+                  const held = heldGoalTurn(turnInput.providerThread, latestTurnId);
+                  const providerTurnId =
+                    held === undefined
+                      ? latestTurnId
+                      : ((yield* Deferred.await(held.hold.next))?.providerTurnId ?? latestTurnId);
+                  const activeTurn = Array.from((yield* Ref.get(activeTurns)).values()).find(
+                    (candidate) => candidate.providerTurnId === providerTurnId,
+                  );
+                  if (activeTurn === undefined) {
+                    return yield* toProtocolError(
+                      `Provider turn ${turnInput.providerTurnId} is not active and cannot be steered.`,
+                    );
+                  }
+                  const producer = currentProducer;
+                  const codexInput = yield* toCodexInput(turnInput);
+                  if (
+                    !producer.active ||
+                    producer !== currentProducer ||
+                    !(yield* Ref.get(activeTurns)).has(activeTurn.nativeTurnId)
+                  ) {
+                    return yield* toProtocolError("Codex steer binding changed before dispatch.");
+                  }
+                  return {
+                    binding: {
+                      instanceId: adapterOptions.instanceId,
+                      providerSessionId: input.providerSessionId,
+                      providerThreadId: turnInput.providerThread.id,
+                      providerTurnId,
+                      runtimeGeneration: producer.generation,
+                      nativeThreadId: threadId,
+                      nativeTurnId: activeTurn.nativeTurnId,
+                    },
+                    producerScope: producer.scope,
+                    send: producer.client.request("turn/steer", {
+                      expectedTurnId: activeTurn.nativeTurnId,
+                      input: codexInput,
+                      threadId,
+                    }),
+                  };
+                }),
+              }).pipe(Effect.provideService(ControlAdmission.ControlAdmission, controlAdmission));
             },
             (effect, turnInput) =>
               effect.pipe(
@@ -9644,6 +9729,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           Deferred.await(producer.termination).pipe(
             Effect.flatMap((error) =>
               Effect.gen(function* () {
+                if (error._tag === "CodexAppServerProcessExitedError") {
+                  yield* controlAdmission.retireGeneration({
+                    instanceId: adapterOptions.instanceId,
+                    runtimeGeneration: producer.generation,
+                  });
+                }
                 if (!producer.active || producer !== currentProducer) return;
                 producer.active = false;
                 const completedAt = yield* DateTime.now;
@@ -9726,6 +9817,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           Effect.suspend(() =>
             effect.pipe(Effect.provideService(CodexProducerContext, currentProducer)),
           );
+        const withControlAdmission = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          assertControlAdmission.pipe(Effect.andThen(effect));
+        const withMutationPermit = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          withControlAdmission(lifecyclePermit.withPermits(1)(withControlAdmission(effect)));
         return {
           ...runtime,
           captureRuntimeStop: Effect.fn("CodexAdapterV2.captureRuntimeStop")(
@@ -9739,6 +9834,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // Shared physical processes cannot be closed on behalf of only one native thread.
               if (
                 !producer.active ||
+                producer.processExit === undefined ||
                 producer.bindings.size !== 1 ||
                 bound?.id !== providerThread.id ||
                 binding === undefined ||
@@ -9746,6 +9842,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 providerThread.runtimeIdentity?.runtimeGeneration !== producer.generation
               )
                 return null;
+              const processExit = producer.processExit;
               const isCurrent = Effect.sync(
                 () =>
                   currentProducer === producer &&
@@ -9770,6 +9867,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     producer.active = false;
                     producer.eventProducer.drain();
                     yield* Scope.close(producer.scope, Exit.void);
+                    yield* processExit.pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new ProviderRuntimeBindingError({
+                            driver: CODEX_PROVIDER,
+                            detail: "The captured Codex process exit could not be verified.",
+                            cause,
+                          }),
+                      ),
+                    );
+                    yield* controlAdmission.retireGeneration({
+                      instanceId: adapterOptions.instanceId,
+                      runtimeGeneration: producer.generation,
+                    });
                     yield* handoffCompaction.retire({
                       runtimeGeneration: producer.generation,
                       nativeThreadId: binding.nativeThreadId,
@@ -9780,7 +9891,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
           ),
           ensureThread: (value) =>
-            lifecyclePermit.withPermits(1)(
+            withMutationPermit(
               Effect.suspend(() =>
                 hasUnknownNativeStart()
                   ? Effect.fail(
@@ -9794,7 +9905,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
           resumeThread: (value) =>
-            lifecyclePermit.withPermits(1)(
+            withMutationPermit(
               Effect.suspend(() =>
                 hasUnknownNativeStart()
                   ? Effect.fail(
@@ -9808,7 +9919,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
           forkThread: (value) =>
-            lifecyclePermit.withPermits(1)(
+            withMutationPermit(
               Effect.suspend(() =>
                 hasUnknownNativeStart()
                   ? toProtocolError(
@@ -9829,7 +9940,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? toProtocolError(
                     "Codex has an unconfirmed native effect; another prompt is not safe.",
                   )
-                : lifecyclePermit.withPermits(1)(
+                : withMutationPermit(
                     Effect.gen(function* () {
                       if (hasUnknownNativeStart() || capacityScopeClosed)
                         return yield* toProtocolError(
@@ -9883,6 +9994,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                   ),
             ).pipe(
+              withControlAdmission,
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapterTurnStartError({
@@ -9896,9 +10008,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ),
           compactForContextHandoff: Effect.fn("CodexAdapterV2.compactForContextHandoff")(
             function* (value: ProviderAdapterV2TurnInput) {
-              const prepared = yield* lifecyclePermit.withPermits(1)(
+              const prepared = yield* withMutationPermit(
                 Effect.gen(function* () {
                   yield* value.revalidateStartAdmission ?? Effect.void;
+                  yield* assertControlAdmission;
                   const nativeThreadId = yield* getNativeThreadId(value.providerThread);
                   const producer = currentProducer;
                   if (
@@ -9937,13 +10050,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 yield* prepared.request.assertActive;
                 // Keep the acknowledgement observer alive after caller cancellation so
                 // late terminal evidence can reconcile the fence without replaying input.
-                const acknowledgement = yield* prepared.producer.client
-                  .request("thread/compact/start", { threadId: prepared.binding.nativeThreadId })
-                  .pipe(
-                    Effect.andThen(prepared.request.acknowledge),
-                    Effect.onError(() => prepared.request.cancel),
-                    Effect.forkIn(prepared.producer.scope, { startImmediately: true }),
-                  );
+                const acknowledgement = yield* requestAdmission(
+                  "thread/compact/start",
+                  undefined,
+                ).pipe(
+                  Effect.andThen(prepared.request.beginDispatch),
+                  Effect.andThen(
+                    prepared.producer.client.request("thread/compact/start", {
+                      threadId: prepared.binding.nativeThreadId,
+                    }),
+                  ),
+                  Effect.andThen(prepared.request.acknowledge),
+                  Effect.onError(() => prepared.request.cancel),
+                  Effect.forkIn(prepared.producer.scope, { startImmediately: true }),
+                );
                 yield* Fiber.join(acknowledgement);
                 const usage = yield* prepared.request.wait;
                 yield* value.revalidateStartAdmission ?? Effect.void;
@@ -9987,7 +10107,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   duration: "2 minutes",
                   orElse: () => Effect.fail(new HandoffCompactionError({ reason: "timeout" })),
                 }),
-                Effect.onError(() => prepared.request.cancel),
+                Effect.onError(() => prepared.request.cancelIfUndispatched),
               );
             },
             (effect, value) =>
@@ -10022,7 +10142,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             yield* withProducer(runtime.interruptTurn(value));
           }),
           rollbackThread: (value) =>
-            lifecyclePermit.withPermits(1)(
+            withMutationPermit(
               Effect.suspend(() =>
                 hasUnknownNativeStart()
                   ? toProtocolError("Codex has an unconfirmed native effect; rollback is not safe.")

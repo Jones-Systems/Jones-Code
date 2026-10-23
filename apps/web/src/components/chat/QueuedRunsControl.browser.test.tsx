@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   projection: null as unknown,
   workflow: null as unknown,
   queuedRunStart: undefined as boolean | undefined,
+  review: vi.fn(),
   promote: vi.fn(async (_input: unknown): Promise<void> => undefined),
 }));
 
@@ -40,7 +41,8 @@ vi.mock(import("../../state/entities"), async (importOriginal) => ({
 
 vi.mock(import("../../state/use-atom-command"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useAtomCommand: (() => state.promote) as never,
+  useAtomCommand: ((command: unknown) =>
+    command === "imported-review" ? state.review : state.promote) as never,
 }));
 
 vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
@@ -48,6 +50,17 @@ vi.mock(import("../../assets/assetUrls"), async (importOriginal) => ({
   useAssetUrls: ((_environmentId: never, resources: ReadonlyArray<{ attachmentId: string }>) =>
     resources.map((resource) => `https://assets.test/${resource.attachmentId}`)) as never,
 }));
+
+vi.mock(
+  import("../../jones/importedHistory/ContinuationChoiceBanner"),
+  () =>
+    ({
+      importedHistoryCommands: { review: "imported-review" },
+      ContinuationChoiceBanner: () => (
+        <div data-testid="duplicate-imported-banner">Saved continuation request</div>
+      ),
+    }) as never,
+);
 
 import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { handleComposerEnter } from "./composerSubmission";
@@ -58,6 +71,7 @@ function setup() {
   state.projection = null;
   state.workflow = null;
   state.queuedRunStart = undefined;
+  state.review.mockReset();
   state.promote.mockReset().mockResolvedValue(undefined);
 }
 
@@ -119,6 +133,118 @@ it("previews assistant quotes as readable text and preserves the citation when e
   expect(onEditQueuedRun).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ text: quoteAndText }),
   );
+});
+
+const labels = (container: HTMLElement) =>
+  [...container.querySelectorAll("[aria-label]")].map((element) =>
+    element.getAttribute("aria-label"),
+  );
+
+describe("QueuedRunsControl automatic completion delivery", () => {
+  it("does not render a queue control when only hidden delivery remains", async () => {
+    state.projection = {
+      projection: {
+        thread: { historyOrigin: "native" },
+        messages: [
+          {
+            delegatedCompletion: {
+              parentRunId: "run:parent",
+              generation: 1,
+              taskIds: ["task:child"],
+            },
+            id: "message:completion",
+          },
+        ],
+      },
+    };
+    state.workflow = {
+      activeRun: { id: "run:active" },
+      canPromoteToSteer: true,
+      canReorder: true,
+      queuedRuns: [],
+    };
+
+    await using screen = await renderQueue();
+    const view = screen.container;
+
+    expect(view.childElementCount).toBe(0);
+  });
+});
+
+describe("QueuedRunsControl attachments and edit mode", () => {
+  const workflowWithAttachment = () => ({
+    activeRun: { id: "run:active" },
+    canPromoteToSteer: true,
+    canReorder: true,
+    queuedRuns: [
+      {
+        run: { id: "run:queued", userMessageId: "message:queued" },
+        text: "Queued with a screenshot",
+        attachments: [
+          {
+            type: "image",
+            id: "attachment-1",
+            name: "screenshot.png",
+            mimeType: "image/png",
+            sizeBytes: 128,
+          },
+        ],
+      },
+    ],
+  });
+
+  it("renders an attachment thumbnail on the queued row", async () => {
+    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
+    state.workflow = workflowWithAttachment();
+
+    await using screen = await renderQueue();
+    const view = screen.container;
+
+    expect(view.querySelector("img")?.getAttribute("src")).toBe("https://assets.test/attachment-1");
+    expect(view.textContent).toContain("Queued with a screenshot");
+    expect(labels(view)).toContain("Edit queued message");
+    expect(labels(view)).toContain("Reorder queued message (drag, or press the arrow keys)");
+    expect(labels(view)).not.toContain("Move queued message up");
+  });
+
+  it("drops the optimistic pending row once the projection holds its message", async () => {
+    state.projection = {
+      projection: {
+        thread: { historyOrigin: "native" },
+        messages: [{ id: "message:acknowledged", text: "hello" }],
+      },
+    };
+    state.workflow = {
+      activeRun: { id: "run:active" },
+      canPromoteToSteer: true,
+      canReorder: true,
+      queuedRuns: [],
+    };
+
+    await using screen = await renderQueue({
+      optimisticMessages: [
+        {
+          id: "message:acknowledged" as never,
+          inputIntent: "queued_turn",
+          text: "hello",
+          attachments: [],
+        },
+      ],
+    });
+    const view = screen.container;
+
+    expect(view.childElementCount).toBe(0);
+  });
+
+  it("keeps the original queued message visible while editing", async () => {
+    state.projection = { projection: { thread: { historyOrigin: "native" }, messages: [] } };
+    state.workflow = workflowWithAttachment();
+
+    await using screen = await renderQueue({ editingRunId: "run:queued" as never });
+    const view = screen.container;
+
+    expect(view.textContent).toContain("Queued with a screenshot");
+  });
 });
 
 describe("QueuedRunsControl empty composer Enter", () => {
@@ -248,7 +374,9 @@ describe("QueuedRunsControl empty composer Enter", () => {
 describe("QueuedRunsControl selected run start", () => {
   function idleQueue(historyOrigin: "native" | "v1_import" = "native") {
     setup();
-    state.projection = { projection: { thread: { historyOrigin }, messages: [] } };
+    state.projection = {
+      projection: { thread: { historyOrigin }, messages: [], runs: [], providerThreads: [] },
+    };
     state.workflow = {
       activeRun: null,
       canSendNow: true,
@@ -296,11 +424,60 @@ describe("QueuedRunsControl selected run start", () => {
     });
   });
 
+  it.each(["completed run", "native context"])(
+    "returns to ordinary queued sending after continuation establishes %s",
+    async (transition) => {
+      idleQueue("v1_import");
+      state.queuedRunStart = true;
+      const onImportedHistoryChoice = vi.fn();
+      const ref = createRef<QueuedRunsControlHandle>();
+      const control = () => (
+        <QueuedRunsControl
+          {...baseProps}
+          ref={ref}
+          onImportedHistoryChoice={onImportedHistoryChoice}
+        />
+      );
+      await using screen = await renderUi(control());
+      expect(sendButton(screen.container).disabled).toBe(true);
+      expect(screen.container.textContent).toContain("Review imported history");
+      state.projection = {
+        projection: {
+          thread: { historyOrigin: "v1_import" },
+          messages: [],
+          runs: transition === "completed run" ? [{ status: "completed" }] : [],
+          providerThreads:
+            transition === "native context"
+              ? [
+                  {
+                    providerSessionId: "session:continued",
+                    nativeThreadRef: null,
+                    nativeConversationHeadRef: null,
+                  },
+                ]
+              : [],
+        },
+      };
+      await screen.rerender(control());
+      expect(screen.container.textContent).not.toContain("Review imported history");
+      expect(sendButton(screen.container).disabled).toBe(false);
+      await act(async () => {
+        expect(ref.current?.steerNext(false)).toBe(true);
+      });
+      expect(state.promote).toHaveBeenCalledExactlyOnceWith({
+        environmentId: baseProps.environmentId,
+        input: { threadId: baseProps.threadId, runId: "run:queued" },
+      });
+      expect(state.review).not.toHaveBeenCalled();
+      expect(onImportedHistoryChoice).not.toHaveBeenCalled();
+    },
+  );
+
   it("keeps imported history behind review even when selected-run start is supported", async () => {
     idleQueue("v1_import");
     state.queuedRunStart = true;
     const ref = createRef<QueuedRunsControlHandle>();
-    await using screen = await renderQueue({ ref });
+    await using screen = await renderQueue({ ref, onImportedHistoryChoice: vi.fn() });
     expect(sendButton(screen.container).disabled).toBe(true);
     expect(
       [...screen.container.querySelectorAll("button")].some(
@@ -312,5 +489,130 @@ describe("QueuedRunsControl selected run start", () => {
       expect(ref.current?.steerNext(false)).toBe(false);
     });
     expect(state.promote).not.toHaveBeenCalled();
+  });
+});
+
+describe("imported history queue review ownership", () => {
+  const queued = {
+    run: { id: "run:queued", userMessageId: "message:queued" },
+    messageId: "message:queued",
+    text: "Continue from history",
+    attachments: [],
+  };
+  const setup = (hasQueue = true, providerThreads: unknown[] = []) => {
+    state.projection = {
+      projection: {
+        thread: { historyOrigin: "v1_import" },
+        messages: [],
+        runs: [],
+        providerThreads,
+      },
+    };
+    state.workflow = {
+      activeRun: null,
+      canPromoteToSteer: false,
+      canReorder: true,
+      queuedRuns: hasQueue ? [queued] : [],
+    };
+  };
+  it.each([false, true])("does not own a saved-choice banner with queue=%s", async (hasQueue) => {
+    setup(hasQueue);
+    await using screen = await renderQueue();
+    const view = screen.container;
+    expect(view.querySelector('[data-testid="duplicate-imported-banner"]')).toBeNull();
+  });
+  it("delivers the reviewed snapshot to the sole banner owner", async () => {
+    setup();
+    state.review.mockResolvedValue({
+      _tag: "Success",
+      value: {
+        status: "available",
+        reviewedBasis: "a".repeat(64),
+        reason: null,
+      },
+    });
+    const onImportedHistoryChoice = vi.fn();
+    await using screen = await renderQueue({ onImportedHistoryChoice });
+    const view = screen.container;
+    const review = [...view.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Review imported history"),
+    );
+    expect(review).toBeDefined();
+    await act(async () => review!.click());
+    expect(onImportedHistoryChoice).toHaveBeenCalledTimes(1);
+    const choice = onImportedHistoryChoice.mock.calls[0]![0];
+    expect(choice).toMatchObject({
+      environmentId: baseProps.environmentId,
+      threadId: baseProps.threadId,
+      prepared: {
+        delivery: { type: "queued_run", runId: queued.run.id, messageId: queued.messageId },
+      },
+    });
+    expect(choice.prepared.unchanged()).toBe(true);
+    expect(view.querySelector('[data-testid="duplicate-imported-banner"]')).toBeNull();
+  });
+  it.each(["queue changed", "route changed", "continuation started"])(
+    "discards a review when %s while it is pending",
+    async (change) => {
+      setup();
+      let finishReview!: (result: unknown) => void;
+      state.review.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishReview = resolve;
+          }),
+      );
+      const onImportedHistoryChoice = vi.fn();
+      await using screen = await renderQueue({ onImportedHistoryChoice });
+      await act(async () => {
+        [...screen.container.querySelectorAll("button")]
+          .find((button) => button.textContent?.includes("Review imported history"))!
+          .click();
+      });
+      if (change === "queue changed") {
+        state.workflow = {
+          activeRun: null,
+          canPromoteToSteer: false,
+          canReorder: true,
+          queuedRuns: [queued, { ...queued, run: { ...queued.run, id: "run:second" } }],
+        };
+      } else if (change === "continuation started") {
+        setup(true, [
+          {
+            providerSessionId: "session:continued",
+            nativeThreadRef: null,
+            nativeConversationHeadRef: null,
+          },
+        ]);
+      }
+      await screen.rerender(
+        <QueuedRunsControl
+          {...baseProps}
+          threadId={change === "route changed" ? ThreadId.make("thread:other") : baseProps.threadId}
+          onImportedHistoryChoice={onImportedHistoryChoice}
+        />,
+      );
+      await act(async () => {
+        finishReview({
+          _tag: "Success",
+          value: { status: "available", reviewedBasis: "a".repeat(64), reason: null },
+        });
+      });
+      expect(onImportedHistoryChoice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("offers no imported review once native provider context exists", async () => {
+    setup(true, [
+      {
+        providerSessionId: "session:existing",
+        nativeThreadRef: null,
+        nativeConversationHeadRef: null,
+      },
+    ]);
+    await using screen = await renderQueue({ onImportedHistoryChoice: vi.fn() });
+    const view = screen.container;
+    expect(view.textContent).not.toContain("Review imported history");
+    expect(view.textContent).toContain(queued.text);
   });
 });

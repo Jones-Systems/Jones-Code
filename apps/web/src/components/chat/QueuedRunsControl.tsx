@@ -2,11 +2,13 @@ import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
 import { QueuedSteerBatchAction } from "../../jones/queue/QueuedSteerBatchAction";
 import { useQueuedSteerBatch } from "../../jones/queue/useQueuedSteerBatch";
 import {
-  ContinuationChoiceBanner,
   importedHistoryCommands,
   type PreparedImportedHistoryChoice,
 } from "../../jones/importedHistory/ContinuationChoiceBanner";
-import { resolveImportedHistoryReview } from "@t3tools/client-runtime/jones/imported-history/continuation";
+import {
+  importedHistoryContinuationEligible,
+  resolveImportedHistoryReview,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHistoryCanonical";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { deriveThreadQueueWorkflowState } from "@t3tools/client-runtime/state/thread-workflows";
@@ -86,6 +88,12 @@ export function QueuedRunsControl({
   readonly editingRunId: RunId | null;
   readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
+  readonly onImportedHistoryChoice?: (choice: {
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    prepared: PreparedImportedHistoryChoice | null;
+    reason: string | null;
+  }) => void;
 }) {
   const projection = useThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
@@ -98,8 +106,7 @@ export function QueuedRunsControl({
   const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, {
     reportFailure: false,
   });
-  const [importedChoice, setImportedChoice] = useState<PreparedImportedHistoryChoice | null>(null);
-  const [importedReason, setImportedReason] = useState<string | null>(null);
+  const importedEligible = importedHistoryContinuationEligible(projection);
 
   const [expanded, setExpanded] = useState(true);
   const queueListId = useId();
@@ -127,6 +134,7 @@ export function QueuedRunsControl({
     environmentId: props.environmentId,
     threadId: props.threadId,
     queued,
+    importedEligible,
   });
   // Async review guards always compare against the latest committed route and queue.
   useLayoutEffect(() => {
@@ -134,13 +142,22 @@ export function QueuedRunsControl({
       environmentId: props.environmentId,
       threadId: props.threadId,
       queued,
+      importedEligible,
     };
-  });
+  }, [props.environmentId, props.threadId, queued, importedEligible, currentQueueRef]);
   const reviewImportedQueued = async (runId: RunId, messageId: MessageId) => {
-    if (busyRunId !== null || steerInFlightRef.current) return;
+    const onImportedHistoryChoice = props.onImportedHistoryChoice;
+    if (
+      !importedEligible ||
+      !onImportedHistoryChoice ||
+      busyRunId !== null ||
+      steerInFlightRef.current
+    )
+      return;
     const entry = queued.find((item) => item.run.id === runId && item.messageId === messageId);
-    if (!entry) return;
+    if (!entry || entry !== queued[0]) return;
     const snapshot = importedHistoryCanonicalJson(entry);
+    const queueIdentity = importedHistoryCanonicalJson(queued);
     const environmentId = props.environmentId;
     const threadId = props.threadId;
     const unchanged = () => {
@@ -149,10 +166,12 @@ export function QueuedRunsControl({
         (candidate) => candidate.run.id === runId && candidate.messageId === messageId,
       );
       return (
+        current.importedEligible &&
         current.environmentId === environmentId &&
         current.threadId === threadId &&
         item !== undefined &&
-        importedHistoryCanonicalJson(item) === snapshot
+        importedHistoryCanonicalJson(item) === snapshot &&
+        importedHistoryCanonicalJson(current.queued) === queueIdentity
       );
     };
     steerInFlightRef.current = true;
@@ -162,12 +181,20 @@ export function QueuedRunsControl({
       const result = await reviewImportedHistory({ environmentId, input: { threadId, delivery } });
       const review = resolveImportedHistoryReview(result._tag === "Success" ? result.value : null);
       if (unchanged()) {
-        setImportedReason(review.reason);
-        setImportedChoice(
-          review.status === "available"
-            ? { delivery, reviewedBasis: review.reviewedBasis, draftIdentity: snapshot, unchanged }
-            : null,
-        );
+        onImportedHistoryChoice({
+          environmentId,
+          threadId,
+          reason: review.reason,
+          prepared:
+            review.status === "available"
+              ? {
+                  delivery,
+                  reviewedBasis: review.reviewedBasis,
+                  draftIdentity: snapshot,
+                  unchanged,
+                }
+              : null,
+        });
       }
     })().finally(() => {
       steerInFlightRef.current = false;
@@ -207,7 +234,7 @@ export function QueuedRunsControl({
   const queueBusy = busyRunId !== null || batch.pending;
   const canSend = canDispatchQueuedRun({
     busy: queueBusy,
-    importedHistory: projection?.thread.historyOrigin === "v1_import",
+    importedHistory: importedEligible,
     canStart: workflow?.canSendNow === true,
     canSteer: workflow?.canPromoteToSteer === true,
     queuedRunStart: serverConfig?.environment.capabilities.queuedRunStart,
@@ -322,15 +349,7 @@ export function QueuedRunsControl({
     },
   }));
 
-  if (items.length === 0)
-    return projection?.thread?.historyOrigin === "v1_import" ? (
-      <ContinuationChoiceBanner
-        key={`${props.environmentId}:${props.threadId}`}
-        environmentId={props.environmentId}
-        threadId={props.threadId}
-        prepared={null}
-      />
-    ) : null;
+  if (items.length === 0) return null;
 
   const remove = async (runId: RunId) => {
     if (queueBusy || steerInFlightRef.current) return;
@@ -351,19 +370,6 @@ export function QueuedRunsControl({
 
   return (
     <>
-      {projection?.thread?.historyOrigin === "v1_import" ? (
-        <ContinuationChoiceBanner
-          key={`${props.environmentId}:${props.threadId}`}
-          environmentId={props.environmentId}
-          threadId={props.threadId}
-          prepared={importedChoice}
-          reason={importedReason}
-          onDismiss={() => {
-            setImportedChoice(null);
-            setImportedReason(null);
-          }}
-        />
-      ) : null}
       <ComposerBanner.Attachment>
         <ComposerBanner.Root
           role="region"
@@ -532,7 +538,9 @@ export function QueuedRunsControl({
                       </Tooltip>
                     </ComposerBanner.Content>
                     <ComposerBanner.Actions>
-                      {projection?.thread?.historyOrigin === "v1_import" &&
+                      {importedEligible &&
+                      props.onImportedHistoryChoice &&
+                      item.serverIndex === 0 &&
                       item.runId !== null &&
                       item.messageId !== null ? (
                         <Button

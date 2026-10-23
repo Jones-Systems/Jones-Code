@@ -1,3 +1,10 @@
+import {
+  SteerOutcomeUnknown,
+  SteerNotDispatched,
+  findSteerFailure,
+} from "../jones/orchestration/LateSteer.ts";
+import { ControlAdmissionHeld } from "../jones/orchestration/ControlAdmission.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -12,6 +19,7 @@ import {
   CheckpointId,
   CheckpointScopeId,
   CommandId,
+  MessageId,
   NodeId,
   ProviderSessionId,
   ProviderThreadId,
@@ -92,6 +100,7 @@ function layerExecutorFor(input: {
   readonly threads?: Partial<ThreadManagementService.ThreadManagementService["Service"]>;
   readonly continueAfterRestart?: boolean;
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly steer?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["steer"];
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
@@ -100,7 +109,7 @@ function layerExecutorFor(input: {
       ProviderTurnControlService.ProviderTurnControlServiceV2,
       ProviderTurnControlService.ProviderTurnControlServiceV2.of({
         interrupt: input.interrupt ?? (() => Effect.void),
-        steer: () => Effect.void,
+        steer: input.steer ?? (() => Effect.void),
         interruptAndAwaitTerminal: (request) =>
           record(
             request.replacementProviderSessionId === undefined
@@ -163,6 +172,24 @@ function layerExecutorFor(input: {
     ),
   );
   return EffectWorker.layerExecutor.pipe(
+    Layer.provide(
+      Layer.mock(RestartPreparation.RestartPreparation)({
+        run: ({ interrupt, detach, start }) =>
+          interrupt.pipe(
+            Effect.andThen(detach),
+            Effect.mapError(
+              (cause) =>
+                new RestartPreparation.RestartPreparationError({
+                  threadId,
+                  stage: "interrupt",
+                  cause,
+                }),
+            ),
+            Effect.andThen(start),
+          ),
+        recordSteerFailure: () => Effect.void,
+      }),
+    ),
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
@@ -746,5 +773,68 @@ it.effect.each(["confirmed", "unconfirmed", "failed"] as const)(
         yield* Ref.get(events),
         outcome === "confirmed" ? ["stop-child", "settle-child"] : ["stop-child"],
       );
+    }),
+);
+
+it.effect.each(["single", "batch"] as const)(
+  "typed unknown and held %s steering never becomes a completed-turn follow-up",
+  (kind) =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const now = yield* DateTime.now;
+      const messageId = MessageId.make("message:uncertain");
+      const base = restartEffect(now, {
+        type: "replace",
+        replacementProviderSessionId: ProviderSessionId.make(
+          "provider-session:effect-worker-restart:replacement",
+        ),
+      });
+      const effect = {
+        ...base,
+        request: {
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+          messageId,
+          ...(kind === "batch"
+            ? {
+                type: "provider-turn.steer-batch" as const,
+                messageIds: [messageId, MessageId.make("message:second")],
+              }
+            : { type: "provider-turn.steer" as const }),
+        },
+      };
+      for (const failure of [
+        new SteerOutcomeUnknown({
+          instanceId: "codex",
+          nativeThreadId: "native-thread",
+          nativeTurnId: "native-turn",
+        }),
+        new SteerNotDispatched({ instanceId: "codex" }),
+        new ControlAdmissionHeld({ instanceId: "codex" }),
+      ]) {
+        const result = yield* EffectWorker.OrchestrationEffectExecutorV2.pipe(
+          Effect.flatMap((executor) => executor.execute(effect)),
+          Effect.exit,
+          Effect.provide(
+            layerExecutorFor({
+              events,
+              steer: () =>
+                Effect.fail(
+                  new ProviderTurnControlService.ProviderTurnControlError({
+                    threadId,
+                    operation: "steer",
+                    providerTurnId,
+                    turnCompleted: true,
+                    cause: failure,
+                  }),
+                ),
+            }),
+          ),
+        );
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.equal(findSteerFailure(result.cause), failure);
+      }
+      assert.deepEqual(yield* Ref.get(events), []);
     }),
 );

@@ -1,3 +1,4 @@
+import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
 import { ContinuationChoiceBanner } from "../jones/importedHistory/ContinuationChoiceBanner";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { listenForWorkspaceFileDragEnd } from "../jones/questionAnswer/workspaceFileDragLifecycle";
@@ -2881,7 +2882,7 @@ export default function ChatView(props: ChatViewProps) {
     scheduleComposerFocus,
   });
   const { onResume, isResuming } = useComposerResume({
-    isImportedHistory: serverProjection?.thread.historyOrigin === "v1_import",
+    isImportedHistory: importedHistoryContinuationEligible(serverProjection),
     environmentId,
     routeThreadKey,
     currentRouteThreadKeyRef,
@@ -2918,8 +2919,8 @@ export default function ChatView(props: ChatViewProps) {
     activeEnvironmentUnavailable,
     defaultRuntimeMode,
   });
-  const { onSend, importedHistoryChoice } = useComposerSend({
-    isImportedHistory: serverProjection?.thread.historyOrigin === "v1_import",
+  const { onSend, importedHistoryChoice, onImportedHistoryChoice } = useComposerSend({
+    isImportedHistory: importedHistoryContinuationEligible(serverProjection),
     steeringBlockedByQuestion: pendingQuestionBlocksSteering(pendingUserInputs),
     environmentId,
     routeThreadKey,
@@ -3028,6 +3029,7 @@ export default function ChatView(props: ChatViewProps) {
         editingRunId={queuedRunEdit.editingRunId}
         onEditQueuedRun={queuedRunEdit.beginEdit}
         onCancelEdit={queuedRunEdit.cancelEdit}
+        onImportedHistoryChoice={onImportedHistoryChoice}
       />
     ) : null;
   // One-shot: the resend "Work locally" queued fires once, then the marker clears.
@@ -3473,7 +3475,7 @@ export default function ChatView(props: ChatViewProps) {
                   data-chat-composer-stack="true"
                   className="group/composer-stack pointer-events-auto relative z-10 mx-auto w-full max-w-(--chat-content-max-width)"
                 >
-                  {serverProjection?.thread.historyOrigin === "v1_import" && activeThread ? (
+                  {importedHistoryContinuationEligible(serverProjection) && activeThread ? (
                     <ContinuationChoiceBanner
                       key={`${activeThread.environmentId}:${activeThread.id}`}
                       environmentId={activeThread.environmentId}

@@ -1492,5 +1492,9 @@ export function useComposerSend(input: ComposerSendInput) {
     }
   };
 
-  return { onSend, importedHistoryChoice: importedHistory.banner };
+  return {
+    onSend,
+    importedHistoryChoice: importedHistory.banner,
+    onImportedHistoryChoice: importedHistory.onImportedHistoryChoice,
+  };
 }

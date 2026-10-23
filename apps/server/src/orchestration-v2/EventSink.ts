@@ -1,3 +1,4 @@
+import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
@@ -161,6 +162,12 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly writeHistoricalTerminal?: (
+    input: HistoricalTerminalHistory.HistoricalTerminalInput,
+  ) => Effect.Effect<
+    { readonly handled: boolean; readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent> },
+    EventSinkV2Error
+  >;
   readonly readDeletionWorktreeRemovalStartForTarget?: (
     threadId: ThreadId,
     target: DeletionWorktreeRemovalTargetV1,
@@ -237,6 +244,7 @@ export interface EventSinkV2Shape {
   >;
 
   readonly write: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -278,6 +286,7 @@ export interface EventSinkV2Shape {
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -308,6 +317,7 @@ export interface EventSinkV2Shape {
    * a newer attempt that already claimed the thread.
    */
   readonly writeIfProviderThreadOwner: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -503,6 +513,7 @@ const layerBase: Layer.Layer<
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
+    const historicalTerminals = yield* HistoricalTerminalHistory.make;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
@@ -625,13 +636,27 @@ const layerBase: Layer.Layer<
       input: Pick<
         Parameters<EventSinkV2Shape["write"]>[0],
         | "events"
+        | "historicalTerminal"
         | "runtimeEvidence"
         | "runtimeIdentityObservation"
         | "runtimeIdentityBoundary"
         | "runtimeIdentityRequest"
         | "runtimeIdentityPreviousRequest"
-      >,
+      > & { readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2> },
     ) {
+      if (input.historicalTerminal !== undefined) {
+        if (
+          input.runtimeIdentityBoundary !== undefined ||
+          input.runtimeIdentityObservation !== undefined ||
+          input.runtimeIdentityRequest !== undefined ||
+          input.runtimeIdentityPreviousRequest !== undefined ||
+          (input.effects?.length ?? 0) > 0
+        )
+          return null;
+        const historical = yield* historicalTerminals.select(input.historicalTerminal);
+        if (historical === "stale" || historical === "deferred") return null;
+        if (historical !== "ordinary") return [historical];
+      }
       const capture = input.runtimeEvidence;
       const update = input.events.find((event) => event.type === "provider-thread.updated");
       if (input.runtimeIdentityBoundary !== undefined) {
@@ -792,7 +817,9 @@ const layerBase: Layer.Layer<
       });
 
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
-      input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0],
+      input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0] & {
+        readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
+      },
     ) {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.command_id": input.commandId ?? null,
@@ -865,6 +892,7 @@ const layerBase: Layer.Layer<
         }).pipe(Effect.withTracerEnabled(false)),
         ({ committed, outcomes }) =>
           Effect.gen(function* () {
+            historicalTerminals.rememberCommitted(input.effects, committed);
             if (input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
@@ -938,6 +966,7 @@ const layerBase: Layer.Layer<
           (result) =>
             Effect.gen(function* () {
               if (!result.committed) return;
+              historicalTerminals.rememberCommitted(input.effects ?? [], result.storedEvents);
               if (input.effects !== undefined && input.effects.length > 0) {
                 yield* effectOutbox.notifyAvailable(input.effects.length);
               }
@@ -1420,6 +1449,8 @@ const layerBase: Layer.Layer<
         }),
         (result) =>
           Effect.gen(function* () {
+            if (result.committed && result.receipt.status === "accepted")
+              historicalTerminals.rememberCommitted(input.effects, result.storedEvents);
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
             if (
               result.committed &&
@@ -2014,6 +2045,34 @@ const layerBase: Layer.Layer<
 
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      writeHistoricalTerminal: (input) => {
+        const attempt = commitThenPublish(
+          Effect.gen(function* () {
+            const selected = yield* historicalTerminals.select(input);
+            if (selected === "ordinary")
+              return { handled: false, deferred: false, storedEvents: [], outcomes: [] };
+            if (selected === "stale" || selected === "deferred")
+              return {
+                handled: true,
+                deferred: selected === "deferred",
+                storedEvents: [],
+                outcomes: [],
+              };
+            const storedEvents = (yield* eventStore.append({ events: [selected] })).filter(
+              isPublicStoredOrchestrationEvent,
+            );
+            const outcomes = yield* applyStoredEvents(storedEvents);
+            return { handled: true, deferred: false, storedEvents, outcomes };
+          }),
+          (result) => publishStoredEvents(result.storedEvents, result.outcomes),
+        );
+        // Even a no-write commit traverses the publication lane. Retry the DB
+        // admission once after an earlier commit has installed its locator.
+        return attempt.pipe(
+          Effect.flatMap((result) => (result.deferred ? attempt : Effect.succeed(result))),
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
+        );
+      },
       readDeletionWorktreeRemovalStartForTarget: (threadId, target) =>
         deletionAdmission
           .readTarget(threadId, target)

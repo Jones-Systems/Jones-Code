@@ -33,7 +33,7 @@ export function useImportedHistoryComposer(
       if (
         importedHistoryCorrelationStorage(scopeThreadRef(environmentId, threadId)).read() !== null
       )
-        return refuse("Observe the saved choice before another submission.");
+        return refuse("Check continuation status before another submission.");
     } catch {
       return refuse("Imported history correlation storage is unavailable.");
     }
@@ -78,6 +78,7 @@ export function useImportedHistoryComposer(
   return {
     blockSubmission,
     prepareReview,
+    onImportedHistoryChoice: setChoice,
     banner: {
       prepared: current?.prepared ?? null,
       reason: current?.reason ?? null,
