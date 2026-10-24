@@ -2798,6 +2798,17 @@
         "node --check apps/server/integration/jones-e2e/physicalHost.worker.ts",
         "PYTHONDONTWRITEBYTECODE=1 python3 apps/server/integration/jones-e2e/physicalHost.transport.test.py"
       ]
+    },
+    {
+      "id": "jones-ci-change-selection",
+      "tests": [
+        "scripts/jones/ci/selection.node-test.cjs",
+        "scripts/jones/ci/check-results.node-test.cjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/selection.node-test.cjs scripts/jones/ci/check-results.node-test.cjs",
+        "node scripts/jones/check-boundary.ts --strict --json"
+      ]
     }
   ]
 }

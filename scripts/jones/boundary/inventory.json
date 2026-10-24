@@ -1755,7 +1755,8 @@
     "apps/server/integration/jones-e2e/physicalHost.operator.py": "jones-owned",
     "apps/server/integration/jones-e2e/physicalHost.transport.test.py": "jones-owned",
     "apps/server/integration/jones-e2e/physicalHost.request.example.json": "jones-owned",
-    "apps/server/integration/jones-e2e/physicalHost.md": "jones-owned"
+    "apps/server/integration/jones-e2e/physicalHost.md": "jones-owned",
+    "scripts/jones/boundary/fragments/ci-change-selection.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

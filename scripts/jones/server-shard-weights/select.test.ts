@@ -466,15 +466,17 @@ describe("formatOutputs", () => {
 
 describe("parseShardCount", () => {
   it.each([
-    [undefined, 6],
-    ["", 6],
+    [undefined, 8],
+    ["", 8],
     ["6", 6],
+    ["7", 7],
     ["8", 8],
+    ["9", 9],
   ])("reads %s as %i shards", (input, count) => {
     expect(parseShardCount(input)).toBe(count);
   });
 
-  it.each(["7", "10", "six"])("rejects %s", (input) => {
+  it.each(["1", "5", "10", "six"])("rejects %s", (input) => {
     expect(() => parseShardCount(input)).toThrow();
   });
 });

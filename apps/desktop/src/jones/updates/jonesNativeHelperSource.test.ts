@@ -26,6 +26,14 @@ async function fixture() {
 
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
+def seed_record(path, value, exclusive=False):
+    # These isolated input records have no observer until synchronous setup ends.
+    # Restore real fsync before every tested transition and durability fault.
+    fsync = os.fsync
+    try:
+        os.fsync = lambda descriptor: None
+        durable(path, value, exclusive)
+    finally: os.fsync = fsync
 # Exercise the real allocation/release protocol with small fixture-only capacity.
 RECOVERY_HEADROOM = 16384
 home, profile = root / 'userdata', root / 'profile'
@@ -47,7 +55,7 @@ expected = {'protocol': 1, 'owner': 'desktop', 'generation': 'previous', 'transa
     'appPath': str(previous_app), 'executablePath': str(previous_app / 'Contents/MacOS/Jones'),
     'version': 'same-preview-version', 'sourceSha': 'a' * 40, 'sourceTree': 'b' * 40, 'appDigest': app_digest(previous_app)}
 manifest_path = root / 'runtime' / 'jones-active-install.json'
-durable(manifest_path, expected, True)
+seed_record(manifest_path, expected, True)
 transaction_id = 'e' * 64
 tx = root / 'runtime' / 'jones-updates' / 'transactions' / transaction_id
 tx.mkdir(parents=True)
@@ -63,27 +71,27 @@ staged = {'handle': 'f' * 64, 'receiptPath': str(root / 'mac-app-receipt.json'),
 if fault == 'candidate-gate-missing': staged.pop('startupGateProtocol')
 if fault == 'candidate-gate-wrong': staged['startupGateProtocol'] = 2
 if fault == 'candidate-gate-boolean': staged['startupGateProtocol'] = True
-durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+seed_record(staged['receiptPath'], {'app': staged, 'candidate': candidate,
     'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}}, True)
 staging = manifest_path.parent / 'jones-updates' / 'staging'; staging.mkdir()
 selection_path = staging / (expected['sourceSha'] + '-' + 'e' * 64 + '.json')
 selection = {'schema': 1, 'source': 'jones-actions', 'home': expected['home'], 'profile': expected['profile'],
              'currentVersion': expected['version'], 'installedSource': expected['sourceSha'], 'active': expected,
              'artifactDirectory': str(root / 'artifact'), 'app': staged}
-durable(selection_path, selection, True)
+seed_record(selection_path, selection, True)
 selection_digest = digest(selection_path)
 claim = preparation_claim(expected, staged['handle'], transaction_id, selection_path, selection_digest)
 attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
 attempt_path = manifest_path.parent / 'jones-updates' / 'attempt-selections' / (attempt_key + '.json')
-durable(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
-durable(tx / 'prepare-intent.json', claim, True)
-durable(tx / 'prepare-dispatched.json', claim, True)
+seed_record(attempt_path, {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+seed_record(tx / 'prepare-intent.json', claim, True)
+seed_record(tx / 'prepare-dispatched.json', claim, True)
 continuation = dict(claim, prepared=True)
-durable(tx / 'continuation.json', continuation, True)
+seed_record(tx / 'continuation.json', continuation, True)
 intent = {'protocol': 1, 'transactionId': transaction_id, 'expected': expected, 'staged': staged,
     'continuationReceipt': str(tx / 'continuation.json'), 'processes': [{'pid': 123, 'identity': 'owned-native-process'}],
     'listener': 'http://127.0.0.1:3777'}
-durable(tx / 'intent.json', intent, True)
+seed_record(tx / 'intent.json', intent, True)
 events = []
 authority_state = 'active'
 def persisted_transition(operation, guard=None):
@@ -340,6 +348,50 @@ else:
 `;
 
 describe("Jones native helper", () => {
+  it("seeds equivalent private records and restores real durability before activation", async () => {
+    const f = await fixture();
+    try {
+      const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
+      const setup = activationScenario.split("\nevents = []")[0];
+      const observe = String.raw`
+fsync_calls = []
+real_fsync = os.fsync
+def observed_fsync(descriptor):
+    fsync_calls.append(descriptor)
+    return real_fsync(descriptor)
+os.fsync = observed_fsync
+`;
+      const scenario = String.raw`
+assert fsync_calls == [], 'Unobserved fixture records repeated durable disk flushes'
+assert os.fsync is observed_fsync, 'Fixture seeding did not restore real durability'
+records = [manifest_path, pathlib.Path(staged['receiptPath']), selection_path, attempt_path,
+           tx / 'prepare-intent.json', tx / 'prepare-dispatched.json', tx / 'continuation.json', tx / 'intent.json']
+for index, path in enumerate(records):
+    reference = root / 'reference' / str(index) / path.name
+    durable(reference, read(path), True)
+    assert path.read_bytes() == reference.read_bytes()
+    assert stat.S_IMODE(path.stat().st_mode) == stat.S_IMODE(reference.stat().st_mode) == 0o600
+    assert path.stat().st_nlink == reference.stat().st_nlink == 1
+assert len(fsync_calls) == 2 * len(records), 'Real durable publication lost its file or parent flush'
+before = manifest_path.read_bytes()
+try: seed_record(manifest_path, {'must': 'not overwrite'}, True)
+except FileExistsError: pass
+else: raise AssertionError('Fixture seeding replaced an exclusive record')
+assert manifest_path.read_bytes() == before
+assert os.fsync is observed_fsync, 'Failed fixture seeding did not restore real durability'
+assert len(fsync_calls) == 2 * len(records)
+assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
+`;
+      NodeChildProcess.execFileSync(
+        "python3",
+        ["-c", `${definitions}\n${observe}\n${setup}\n${scenario}`, f.directory, "success"],
+        { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+      );
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("releases reserves across successful generations while protecting the current recovery pair", async () => {
     const f = await fixture();
     try {
@@ -1394,15 +1446,14 @@ assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-ex
 assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
 if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
 `;
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", `${nativeFunctions}\n${runtime}\n${scenario}`, f.directory, "trial-mismatch", fault],
-        {
-          encoding: "utf8",
-          timeout: 10000,
-          maxBuffer: 1024 * 1024,
-        },
-      );
+      // Keep generated programs out of argv: Linux limits each argument to 128 KiB.
+      const script = NodePath.join(f.directory, "retirement-scenario.py");
+      await NodeFSP.writeFile(script, `${nativeFunctions}\n${runtime}\n${scenario}`);
+      NodeChildProcess.execFileSync("python3", [script, f.directory, "trial-mismatch", fault], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
     } finally {
       await f.cleanup();
     }
