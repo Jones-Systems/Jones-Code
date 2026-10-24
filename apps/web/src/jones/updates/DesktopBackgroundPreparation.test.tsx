@@ -1,4 +1,5 @@
-import { act, type ReactNode } from "react";
+import { type ReactNode } from "react";
+import { act } from "../testing/nodeRenderer";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
@@ -38,8 +39,8 @@ import {
 } from "./DesktopBackgroundPreparation";
 
 let tree: ReactTestRenderer | undefined;
-afterEach(() => {
-  act(() => tree?.unmount());
+afterEach(async () => {
+  await act(() => tree?.unmount());
   tree = undefined;
   toasts.add.mockReset();
   vi.unstubAllGlobals();
@@ -93,9 +94,9 @@ describe("describeDesktopBackgroundPreparation", () => {
 });
 
 describe("DesktopBackgroundPreparationRow", () => {
-  it("renders nothing for a desktop that cannot prepare in the background", () => {
+  it("renders nothing for a desktop that cannot prepare in the background", async () => {
     vi.stubGlobal("window", { desktopBridge: {} });
-    act(() => {
+    await act(() => {
       tree = create(
         <DesktopBackgroundPreparationRow preparation={{ enabled: false, phase: "off" }} />,
       );
@@ -108,7 +109,7 @@ describe("DesktopBackgroundPreparationRow", () => {
       throw new Error("The settings could not be read.");
     });
     vi.stubGlobal("window", { desktopBridge: { setJonesBackgroundPreparation } });
-    act(() => {
+    await act(() => {
       tree = create(
         <DesktopBackgroundPreparationRow preparation={{ enabled: false, phase: "off" }} />,
       );

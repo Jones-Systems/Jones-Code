@@ -18,7 +18,7 @@ import {
 } from "../../cloud/qualifiedRuntime.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../../../cloud/serviceProtocol.ts";
 import type { PreparationHost } from "./protocol.ts";
-import type { PreparationWorkerCommand } from "./supervisor.ts";
+import type { PreparationWorkerCommand, PreparationWorkerExit } from "./supervisor.ts";
 
 export const BASELINE = "0.0.0-preview.20261002.100";
 export const VERSION = "0.0.0-preview.20261002.101.2";
@@ -435,4 +435,22 @@ export function alive(pid: number): boolean {
   } catch (cause) {
     return (cause as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/** Records actual worker spans using the same native clock as supervisor durationMs. */
+export function makePreparationWorkerObservations() {
+  const spans: Array<readonly [number, number]> = [];
+  return {
+    spans,
+    observe: (exit: PreparationWorkerExit) => {
+      spans.push([Date.now() - exit.durationMs, Date.now()]);
+    },
+  };
+}
+
+/** Measures caller release while the captured worker can still be reaping behind it. */
+export async function measurePreparationCancellation(release: () => Promise<void>) {
+  const cancelled = Date.now();
+  await release();
+  return { elapsedMs: Date.now() - cancelled };
 }

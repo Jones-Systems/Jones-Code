@@ -3,6 +3,7 @@ import * as NodePath from "node:path";
 import {
   createPackageResolver,
   resolvedPackageDependencies,
+  sha256,
   validatePackageName,
 } from "./runtime.mjs";
 
@@ -52,6 +53,23 @@ async function copyClosedTree(source, destination) {
     force: false,
   });
 }
+export async function stageAcpAgent(harness, destination) {
+  const base = await NodeFSP.realpath(harness);
+  const source = NodePath.join(base, "scripts/jones/e2e/acp-stub/agent.mjs");
+  const stat = await NodeFSP.lstat(source).catch((error) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (stat === null) return false;
+  const resolved = await NodeFSP.realpath(source);
+  if (!stat.isFile() || stat.isSymbolicLink() || !resolved.startsWith(`${base}/`))
+    throw new Error("ACP fixture agent must be a contained regular file");
+  const before = await sha256(source);
+  await NodeFSP.copyFile(source, destination, NodeFSP.constants.COPYFILE_EXCL);
+  if ((await sha256(source)) !== before || (await sha256(destination)) !== before)
+    throw new Error("ACP fixture agent changed during staging");
+  return true;
+}
 export async function stageRun({ run, source, harness, scenario, closure, configuration }) {
   const resolver = await createPackageResolver(source);
   source = resolver.source;
@@ -85,7 +103,18 @@ export async function stageRun({ run, source, harness, scenario, closure, config
         NodePath.join(stage, "harness", entry.name),
       );
   }
+  const support = NodePath.join(harness, "apps/desktop/scripts/ui-evidence/support");
+  let hasSupport = false;
+  try {
+    const info = await NodeFSP.lstat(support);
+    if (!info.isDirectory()) throw new Error("Harness support must be a regular directory");
+    hasSupport = true;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (hasSupport) await copyClosedTree(support, NodePath.join(stage, "harness/support"));
   await NodeFSP.cp(scenario, NodePath.join(stage, "harness/scenario.mjs"));
+  await stageAcpAgent(harness, NodePath.join(stage, "harness/acp-stub-agent.mjs"));
   await NodeFSP.writeFile(
     NodePath.join(stage, "harness/config.json"),
     JSON.stringify(configuration),

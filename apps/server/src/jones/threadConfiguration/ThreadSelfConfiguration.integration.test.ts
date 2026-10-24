@@ -195,16 +195,15 @@ function scenario<E>(
             : Effect.fail(new Registry.ProviderAdapterRegistryLookupError({ instanceId: id }));
         },
         list: () => Effect.succeed(adapters.map((a) => a.instanceId)),
-        getMetadata: (id) =>
-          Effect.gen(function* () {
-            const adapter = adapters.find((a) => a.instanceId === id)!;
-            return {
-              driver: adapter.driver,
-              continuationKey: target?.compatible === false ? "home:" + id : "home:shared",
-              enabled: true,
-              capabilities: yield* adapter.getCapabilities(),
-            };
-          }).pipe(Effect.orDie),
+        getMetadata: Effect.fn("ThreadConfigurationTest.getMetadata")(function* (id) {
+          const adapter = adapters.find((a) => a.instanceId === id)!;
+          return {
+            driver: adapter.driver,
+            continuationKey: target?.compatible === false ? "home:" + id : "home:shared",
+            enabled: true,
+            capabilities: yield* adapter.getCapabilities(),
+          };
+        }, Effect.orDie),
       });
       const runtime = Harness.layerWithRegistryAndServices(
         { name, runtimePolicyOverride: { cwd } },
@@ -754,154 +753,151 @@ it.live.each([
   { driver: "codex", compatible: false },
   { driver: "claude-code", compatible: false },
   { driver: "claude-code", compatible: false, enabled: false },
-] as const)(
-  "safe save respects account/handoff eligibility %j",
-  (target) =>
-    scenario(
-      "self-configure-target-" +
-        target.driver +
-        "-" +
-        target.compatible +
-        "-" +
-        ("enabled" in target ? target.enabled : true),
-      false,
-      ({ threadId, call, state }) =>
-        Effect.gen(function* () {
-          const orchestrator = yield* Orchestrator.OrchestratorV2;
-          const sink = yield* Sink.EventSinkV2;
-          const worker = yield* Worker.OrchestrationEffectWorkerV2;
-          const before = yield* decodeEvidence(
-            (yield* call("t3_thread_configuration")).structuredContent,
+] as const)("safe save respects account/handoff eligibility %j", (target) =>
+  scenario(
+    "self-configure-target-" +
+      target.driver +
+      "-" +
+      target.compatible +
+      "-" +
+      ("enabled" in target ? target.enabled : true),
+    false,
+    ({ threadId, call, state }) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const sink = yield* Sink.EventSinkV2;
+        const worker = yield* Worker.OrchestrationEffectWorkerV2;
+        const before = yield* decodeEvidence(
+          (yield* call("t3_thread_configuration")).structuredContent,
+        );
+        const selection = {
+          ...replacement,
+          instanceId: ProviderInstanceId.make("target-provider"),
+        };
+        const response = yield* call("t3_thread_self_configure", {
+          clientRequestId: "target-save",
+          modelSelection: selection,
+          expectedConfigurationRevision: before.configurationRevision,
+          executionPrecondition: before.executionPrecondition,
+        });
+        if (
+          (target.driver === "codex" && !target.compatible) ||
+          ("enabled" in target && !target.enabled)
+        ) {
+          assert.equal(response.isError, true);
+          assert.deepEqual(
+            (yield* orchestrator.getThreadProjection(threadId)).thread.modelSelection,
+            initialSelection,
           );
-          const selection = {
-            ...replacement,
-            instanceId: ProviderInstanceId.make("target-provider"),
-          };
-          const response = yield* call("t3_thread_self_configure", {
-            clientRequestId: "target-save",
-            modelSelection: selection,
-            expectedConfigurationRevision: before.configurationRevision,
-            executionPrecondition: before.executionPrecondition,
-          });
-          if (
-            (target.driver === "codex" && !target.compatible) ||
-            ("enabled" in target && !target.enabled)
-          ) {
-            assert.equal(response.isError, true);
-            assert.deepEqual(
-              (yield* orchestrator.getThreadProjection(threadId)).thread.modelSelection,
-              initialSelection,
-            );
-            assert.lengthOf((yield* Ref.get(state)).opened, 1);
-            return;
-          }
-          const receipt = yield* decodeReceipt(response.structuredContent);
-          assert.deepEqual(receipt.acceptance.committedSelection, selection);
-          assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
-          assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
-          if (target.driver === "codex" && target.compatible) {
-            // The web composer includes its inherited selection even without a picker change.
-            const explicit = "explicit" in target ? target.explicit : false;
-            yield* orchestrator.dispatch(
-              yield* decodeCommand({
-                type: "message.dispatch",
-                commandId: CommandId.make("ordinary-follow-up:" + threadId),
-                threadId,
-                messageId: MessageId.make("ordinary-follow-up:" + threadId),
-                text: "ordinary web follow-up",
-                attachments: [],
-                createdBy: "user",
-                creationSource: "web",
-                modelSelection: selection,
-                ...(explicit === undefined ? {} : { modelSelectionExplicit: explicit }),
-                deliveryIntent: "auto",
-                dispatchMode: { type: "start_immediately" },
-              }),
-            );
-            yield* worker.drain();
-            const afterFollowUp = yield* orchestrator.getThreadProjection(threadId);
-            assert.equal(afterFollowUp.runs[0]?.id, before.executionPrecondition!.runId);
-            if (explicit !== false) {
-              assert.notEqual(
-                afterFollowUp.runs[0]?.activeAttemptId,
-                before.executionPrecondition!.attemptId,
-              );
-              assert.lengthOf(afterFollowUp.attempts, 2);
-              assert.deepEqual(afterFollowUp.runs[0]?.modelSelection, selection);
-              assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, selection);
-              return;
-            }
-            assert.equal(
+          assert.lengthOf((yield* Ref.get(state)).opened, 1);
+          return;
+        }
+        const receipt = yield* decodeReceipt(response.structuredContent);
+        assert.deepEqual(receipt.acceptance.committedSelection, selection);
+        assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
+        assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+        if (target.driver === "codex" && target.compatible) {
+          // The web composer includes its inherited selection even without a picker change.
+          const explicit = "explicit" in target ? target.explicit : false;
+          yield* orchestrator.dispatch(
+            yield* decodeCommand({
+              type: "message.dispatch",
+              commandId: CommandId.make("ordinary-follow-up:" + threadId),
+              threadId,
+              messageId: MessageId.make("ordinary-follow-up:" + threadId),
+              text: "ordinary web follow-up",
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+              modelSelection: selection,
+              ...(explicit === undefined ? {} : { modelSelectionExplicit: explicit }),
+              deliveryIntent: "auto",
+              dispatchMode: { type: "start_immediately" },
+            }),
+          );
+          yield* worker.drain();
+          const afterFollowUp = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(afterFollowUp.runs[0]?.id, before.executionPrecondition!.runId);
+          if (explicit !== false) {
+            assert.notEqual(
               afterFollowUp.runs[0]?.activeAttemptId,
               before.executionPrecondition!.attemptId,
             );
-            assert.lengthOf(afterFollowUp.attempts, 1);
-            assert.equal(afterFollowUp.runs[0]?.status, "running");
-            assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
-            assert.lengthOf((yield* Ref.get(state)).opened, 1);
-            assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
+            assert.lengthOf(afterFollowUp.attempts, 2);
+            assert.deepEqual(afterFollowUp.runs[0]?.modelSelection, selection);
+            assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, selection);
+            return;
           }
-          const firstDone = yield* sink.stream({ threadId }).pipe(
-            Stream.filter(
-              ({ event }) =>
-                event.type === "run.updated" &&
-                event.payload.ordinal === 1 &&
-                event.payload.status === "completed",
-            ),
-            Stream.take(1),
-            Stream.runDrain,
-            Effect.forkScoped,
+          assert.equal(
+            afterFollowUp.runs[0]?.activeAttemptId,
+            before.executionPrecondition!.attemptId,
           );
-          yield* finishActive(state);
-          yield* Fiber.join(firstDone);
-          yield* worker.drain();
-          const completed = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(completed.runs[0]?.id, before.executionPrecondition!.runId);
-          assert.equal(completed.runs[0]?.activeAttemptId, before.executionPrecondition!.attemptId);
-          assert.equal(completed.attempts[0]?.status, "completed");
-          assert.isTrue(
-            completed.turnItems.some(
-              (item) =>
-                item.type === "assistant_message" &&
-                item.text === "continued-after-self-configuration",
-            ),
-          );
-          const nextDone = yield* sink.stream({ threadId }).pipe(
-            Stream.filter(
-              ({ event }) =>
-                event.type === "run.updated" &&
-                event.payload.ordinal === 2 &&
-                ["completed", "failed"].includes(event.payload.status),
-            ),
-            Stream.take(1),
-            Stream.runDrain,
-            Effect.forkScoped,
-          );
-          yield* orchestrator.dispatch({
-            type: "message.dispatch",
-            commandId: CommandId.make("target-next:" + threadId),
-            threadId,
-            messageId: MessageId.make("target-next:" + threadId),
-            text: "inherit target",
-            attachments: [],
-            modelSelection: initialSelection,
-            modelSelectionExplicit: false,
-            createdBy: "user",
-            creationSource: "web",
-            dispatchMode: { type: "start_immediately" },
-          });
-          yield* Fiber.join(nextDone);
-          yield* worker.drain();
-          const projection = yield* orchestrator.getThreadProjection(threadId);
-          assert.equal(projection.runs[1]?.status, "completed");
-          assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, selection);
-          assert.equal((yield* Ref.get(state)).closedSessionCount, 1);
-          assert.deepEqual(projection.thread.modelSelection, selection);
-          assert.equal(projection.contextHandoffs.length > 0, target.driver !== "codex");
-        }),
-      target,
-    ),
-  30_000,
+          assert.lengthOf(afterFollowUp.attempts, 1);
+          assert.equal(afterFollowUp.runs[0]?.status, "running");
+          assert.equal((yield* Ref.get(state)).closedSessionCount, 0);
+          assert.lengthOf((yield* Ref.get(state)).opened, 1);
+          assert.notEqual((yield* call("t3_thread_organize", { action: "pin" })).isError, true);
+        }
+        const firstDone = yield* sink.stream({ threadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.ordinal === 1 &&
+              event.payload.status === "completed",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* finishActive(state);
+        yield* Fiber.join(firstDone);
+        yield* worker.drain();
+        const completed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(completed.runs[0]?.id, before.executionPrecondition!.runId);
+        assert.equal(completed.runs[0]?.activeAttemptId, before.executionPrecondition!.attemptId);
+        assert.equal(completed.attempts[0]?.status, "completed");
+        assert.isTrue(
+          completed.turnItems.some(
+            (item) =>
+              item.type === "assistant_message" &&
+              item.text === "continued-after-self-configuration",
+          ),
+        );
+        const nextDone = yield* sink.stream({ threadId }).pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.payload.ordinal === 2 &&
+              ["completed", "failed"].includes(event.payload.status),
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make("target-next:" + threadId),
+          threadId,
+          messageId: MessageId.make("target-next:" + threadId),
+          text: "inherit target",
+          attachments: [],
+          modelSelection: initialSelection,
+          modelSelectionExplicit: false,
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: "start_immediately" },
+        });
+        yield* Fiber.join(nextDone);
+        yield* worker.drain();
+        const projection = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(projection.runs[1]?.status, "completed");
+        assert.deepEqual((yield* Ref.get(state)).started[1]?.selection, selection);
+        assert.equal((yield* Ref.get(state)).closedSessionCount, 1);
+        assert.deepEqual(projection.thread.modelSelection, selection);
+        assert.equal(projection.contextHandoffs.length > 0, target.driver !== "codex");
+      }),
+    target,
+  ),
 );
 
 it.live(

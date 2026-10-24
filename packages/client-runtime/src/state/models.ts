@@ -78,6 +78,7 @@ export interface EnvironmentThreadShell {
   readonly activeProviderThreadId: OrchestrationV2ThreadShell["activeProviderThreadId"];
   readonly latestRun: ThreadRunSummary | null;
   readonly runtime: ThreadRuntimeSummary | null;
+  readonly blockedOnThreadWait?: boolean;
   readonly latestUserMessageAt: string | null;
   readonly latestUserAuthoredMessageAt?: string | null;
   readonly hasPendingApprovals: boolean;
@@ -143,6 +144,7 @@ export function presentThreadShell(
   const updatedAt = iso(thread.updatedAt);
   const attention = shellAttentionInput(thread, pendingSubagentRequest);
   return {
+    ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
     environmentId,
     id: thread.id,
     projectId: thread.projectId,
@@ -164,9 +166,9 @@ export function presentThreadShell(
     linkOrigin: thread.linkOrigin ?? null,
     delegatedFrom: thread.delegatedFrom ?? null,
     activeProviderThreadId: thread.activeProviderThreadId,
-    ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
     latestRun: attention.latestRun,
     runtime: attention.runtime,
+    blockedOnThreadWait: thread.blockedOnThreadWait ?? false,
     latestUserMessageAt: nullableIso(thread.latestUserMessageAt),
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}
@@ -244,4 +246,12 @@ export function resolveThreadWorkingStartedAt(input: {
     return valid(run.startedAt) ?? valid(run.requestedAt);
   }
   return null;
+}
+
+export function formatWorkingDurationLabel(elapsedMs: number): string {
+  const seconds = Number.isFinite(elapsedMs) ? Math.max(0, Math.floor(elapsedMs / 1000)) : 0;
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }

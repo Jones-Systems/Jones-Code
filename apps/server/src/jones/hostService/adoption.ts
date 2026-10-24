@@ -96,7 +96,7 @@ interface ArtifactMetadata {
   readonly platform: "linux" | "darwin";
   readonly architecture: "x64" | "arm64";
   readonly workflow: QualifiedRuntimeArtifact["workflow"];
-  readonly event: "push" | "workflow_dispatch";
+  readonly event: "push" | "schedule" | "workflow_dispatch";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -227,7 +227,12 @@ function decodeMetadata(
     !hash.test(String(m.sha256))
   )
     return refuse("ARTIFACT.json does not bind the exact source and host.");
-  const cliMac = workflow === ".github/workflows/artifact-cli-mac.yml";
+  const acceptedEvents =
+    workflow === ".github/workflows/artifact-cli-mac.yml"
+      ? ["workflow_dispatch"]
+      : workflow === ".github/workflows/artifact-desktop-mac.yml"
+        ? ["push", "schedule"]
+        : ["push"];
   if (
     m.workflow !== workflow ||
     (host.platform === "darwin" &&
@@ -235,7 +240,8 @@ function decodeMetadata(
         ".github/workflows/artifact-cli-mac.yml",
         ".github/workflows/artifact-desktop-mac.yml",
       ].includes(String(workflow))) ||
-    m.event !== (cliMac ? "workflow_dispatch" : "push")
+    typeof m.event !== "string" ||
+    !acceptedEvents.includes(m.event)
   )
     return refuse("Workflow or event is not an accepted main build.");
   const filename =

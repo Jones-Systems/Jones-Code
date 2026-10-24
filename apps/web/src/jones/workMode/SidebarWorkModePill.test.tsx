@@ -1,4 +1,5 @@
-import { act, type ReactElement, type ReactNode } from "react";
+import { act } from "../testing/nodeRenderer";
+import { type ReactElement, type ReactNode } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { SidebarWorkModePill } from "./SidebarWorkModePill";
@@ -45,7 +46,6 @@ vi.mock("../../components/ui/tooltip", () => ({
 }));
 
 beforeEach(() => {
-  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   state.environment.connection.phase = "connected";
   state.environment.serverConfig.environment.capabilities.workMode = true;
   state.environment.serverConfig.settings.workModeEnabled = false;

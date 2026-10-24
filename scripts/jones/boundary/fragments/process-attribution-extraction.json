@@ -7,11 +7,7 @@
   ],
   "hookPaths": [
     "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
-    "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
     "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-    "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-    "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
-    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
     "apps/server/src/provider/Drivers/CodexDriver.test.ts",
     "apps/server/src/provider/ProviderInstanceRegistryHydration.ts",
     "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
@@ -23,15 +19,15 @@
   ],
   "tombstones": [
     "apps/server/src/resourceTelemetry/ProcessAttribution.test.ts",
-    "apps/server/src/resourceTelemetry/ProcessAttribution.ts"
+    "apps/server/src/resourceTelemetry/ProcessAttribution.ts",
+    "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
+    "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts"
   ],
   "allowedImports": [
     {
       "from": "apps/server/src/diagnostics/ProcessDiagnostics.test.ts",
-      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/AcpRegistryOrchestratorV2.live.test.ts",
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
@@ -40,18 +36,6 @@
     },
     {
       "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
-      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/CursorOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/GrokOrchestratorV2.live.test.ts",
-      "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
-    },
-    {
-      "from": "apps/server/src/orchestration-v2/OpenCode2OrchestratorV2.live.test.ts",
       "to": "apps/server/src/jones/resourceTelemetry/ProcessAttribution.ts"
     },
     {
